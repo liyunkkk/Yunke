@@ -17,6 +17,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -41,6 +42,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -706,27 +708,35 @@ private fun AssistantComposer(
             animationSpec = folmeSpring(damping = 0.92f, response = 0.34f),
         ),
     ) {
-        ConversationCapsule(
-            title = state.conversationTitle.ifBlank {
-                stringResource(R.string.conversation_unnamed)
-            },
-            isMenuVisible = state.isHistoryMenuVisible,
-            enabled = state.phase != EtaVoicePhase.PROCESSING,
-            colors = colors,
-            onClick = onToggleHistoryMenu,
-        )
-        ScreenContextAttachment(
-            state = state.screenContext,
-            enabled = state.phase != EtaVoicePhase.PROCESSING,
-            colors = colors,
-            onSelect = onScreenContextSelect,
-            onRemove = onScreenContextRemove,
-        )
-        ScreenTranslationCapsule(
-            enabled = state.phase != EtaVoicePhase.PROCESSING,
-            colors = colors,
-            onClick = onScreenTranslation,
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ConversationCapsule(
+                title = state.conversationTitle.ifBlank {
+                    stringResource(R.string.conversation_unnamed)
+                },
+                isMenuVisible = state.isHistoryMenuVisible,
+                enabled = state.phase != EtaVoicePhase.PROCESSING,
+                colors = colors,
+                onClick = onToggleHistoryMenu,
+            )
+            ScreenContextAttachment(
+                state = state.screenContext,
+                enabled = state.phase != EtaVoicePhase.PROCESSING,
+                colors = colors,
+                onSelect = onScreenContextSelect,
+                onRemove = onScreenContextRemove,
+            )
+            ScreenTranslationCapsule(
+                enabled = state.phase != EtaVoicePhase.PROCESSING,
+                colors = colors,
+                onClick = onScreenTranslation,
+            )
+        }
         if (state.screenContext.phase != EtaScreenContextPhase.CONSUMED) {
             Spacer(Modifier.height(7.dp))
         }
