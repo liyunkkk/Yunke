@@ -36,6 +36,7 @@ internal object AgentToolRequirements {
             "get_current_location", "get_device_environment", "memory_get", "memory_write",
             "skills_list", "skills_read", "skills_read_resource", "skills_list_curated",
             "skills_inspect_github", "skills_install_from_github", "delegate_to_kimi_code",
+            "get_assistant_config", "update_assistant_config",
         )
         register(
             RootRequirement.PARTIAL,

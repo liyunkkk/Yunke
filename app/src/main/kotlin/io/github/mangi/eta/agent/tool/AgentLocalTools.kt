@@ -139,6 +139,8 @@ internal class AgentLocalTools(
         },
     )
 
+    private val selfConfigTool = AssistantSelfConfigTool(context)
+
     /**
      * Kimi 子代理走守护任务 + REST 直连。
      * 与 UI 侧的 Kimi Web 面板共用同一守护任务宿主，
@@ -267,6 +269,8 @@ internal class AgentLocalTools(
                 "skills_list_curated" -> textResult(skillsListCurated())
                 "skills_inspect_github" -> textResult(skillsInspectGitHub(args))
                 "skills_install_from_github" -> textResult(skillsInstallFromGitHub(args))
+                "get_assistant_config" -> textResult(selfConfigTool.getAssistantConfig())
+                "update_assistant_config" -> textResult(selfConfigTool.updateAssistantConfig(args))
                 else -> textResult(
                     errorResult(
                         code = "UNKNOWN_TOOL",
