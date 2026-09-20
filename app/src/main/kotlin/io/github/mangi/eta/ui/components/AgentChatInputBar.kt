@@ -54,6 +54,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
@@ -525,6 +526,9 @@ internal fun AgentChatInputBar(
                                             "continue" -> onContinue()
                                             "send" -> {
                                                 val submittedText = textFieldState.text.toString()
+                                                // Q1-A：浮窗未接入外部草稿（draftField == null）时，
+                                                // 提交后必须清空内部 TextFieldState，否则文字残留。
+                                                if (draftField == null) textFieldState.clearText()
                                                 onSubmit(submittedText)
                                             }
                                         }

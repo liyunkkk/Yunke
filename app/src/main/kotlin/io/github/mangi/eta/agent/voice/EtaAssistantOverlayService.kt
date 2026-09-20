@@ -109,9 +109,12 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
     private val runtimeClient = AgentRuntimeClient(this, AndroidAgentLogger)
     private val runMessageProjector = AgentRunMessageProjector()
-    private val conversationKey = "eta_assistant_${UUID.randomUUID()}"
     private var conversationHistory = emptyList<AgentModelClient.ConversationMessage>()
     private var currentConversationId: String? = null
+    // Q2-A：会话键必须跟随当前会话 ID，不能每次随机，
+    // 否则浮窗每轮都生成新的 assistant-xxx 会话，与主界面无法统一。
+    private val conversationKey: String
+        get() = "eta_assistant_${currentConversationId ?: "transient"}"
 
     private var windowManager: WindowManager? = null
     private var windowView: ComposeView? = null

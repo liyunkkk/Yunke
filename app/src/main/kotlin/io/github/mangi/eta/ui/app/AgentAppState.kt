@@ -4972,12 +4972,16 @@ private fun String.isReadOnlyExternalArchiveConversation(): Boolean =
     startsWith(EXTERNAL_ARCHIVE_CONVERSATION_PREFIX)
 
 private fun archiveConversationId(source: String, conversationKey: String): String {
-    val prefix = if (source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE) {
-        ASSISTANT_CONVERSATION_PREFIX
-    } else {
-        EXTERNAL_ARCHIVE_CONVERSATION_PREFIX
+    if (source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE) {
+        // Q2-A：浮窗会话键形如 eta_assistant_conv-xxx，需解包映射回真实会话 ID，
+        // 让浮窗与主界面共用同一个会话；只有 transient / 空值时才回退到独立归档 ID。
+        val unwrapped = conversationKey.removePrefix("eta_assistant_").trim()
+        if (unwrapped.isNotBlank() && unwrapped != "transient") {
+            return unwrapped
+        }
+        return ASSISTANT_CONVERSATION_PREFIX + stableArchiveId("$source:$conversationKey")
     }
-    return prefix + stableArchiveId("$source:$conversationKey")
+    return EXTERNAL_ARCHIVE_CONVERSATION_PREFIX + stableArchiveId("$source:$conversationKey")
 }
 
 private const val ASSISTANT_CONVERSATION_PREFIX = "assistant-"

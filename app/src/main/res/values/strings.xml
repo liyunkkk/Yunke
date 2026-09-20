@@ -458,6 +458,8 @@
   <string name="ui_no_skills_installed_yet_4e960f">No Skills installed yet</string>
   <string name="ui_replace_user_skills_250e98">Replace Skill?</string>
   <string name="ui_how_can_i_help_you_e75391">How can I help you?</string>
+  <string name="siri_hero_subtitle">Use the on-device assistant — with better answers, improved instruction-following, and image understanding.</string>
+  <string name="siri_hero_try_it">Try it</string>
   <string name="ui_server_side_web_search_ddb8e0">Provider-hosted web search</string>
   <string name="ui_permissions_560165">Permissions</string>
   <string name="ui_permissions_and_status_35f368">Permissions and status</string>

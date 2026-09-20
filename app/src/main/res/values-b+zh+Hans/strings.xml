@@ -469,6 +469,8 @@
   <string name="ui_no_skills_installed_yet_4e960f">尚未安装任何 Skill</string>
   <string name="ui_replace_user_skills_250e98">替换 Skill？</string>
   <string name="ui_how_can_i_help_you_e75391">有什么可以帮你？</string>
+  <string name="siri_hero_subtitle">使用设备端智能助手——更准确的回答、更强的指令遵循能力，以及图像理解。</string>
+  <string name="siri_hero_try_it">试一试</string>
   <string name="ui_server_side_web_search_ddb8e0">Provider 托管网页搜索</string>
   <string name="ui_permissions_560165">权限</string>
   <string name="ui_permissions_and_status_35f368">权限与状态</string>

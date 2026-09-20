@@ -10,6 +10,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -24,6 +25,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -33,6 +36,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DocumentScanner
@@ -80,6 +84,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -1552,53 +1557,85 @@ private fun EmptyChatState(
     )
 
     Box(modifier = modifier.fillMaxSize()) {
+        // Q4-A：借鉴旧版空态的中间布局（居中 Hero：主标题 + 副标题 + Try it 胶囊），
+        // 仅对齐布局形态，不引入旧版 Siri 主题体系，视觉仍沿用现版表面样式。
         Column(
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(bottom = 56.dp),
+                .padding(bottom = 120.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
                 text = stringResource(R.string.ui_how_can_i_help_you_e75391),
-                style = MiuixTheme.textStyles.headline1,
+                style = MiuixTheme.textStyles.title2,
                 color = MiuixTheme.colorScheme.onSurface,
             )
 
-            Spacer(modifier = Modifier.height(30.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            AnimatedVisibility(
-                visible = showSuggestions,
-                enter = fadeIn(
-                    animationSpec = tween(durationMillis = 220)
-                ) + slideInVertically(
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
-                    ),
-                    initialOffsetY = { it / 3 },
-                ),
-                exit = fadeOut(
-                    animationSpec = tween(durationMillis = 130)
-                ) + slideOutVertically(
-                    animationSpec = tween(durationMillis = 180),
-                    targetOffsetY = { it / 4 },
-                ),
+            Text(
+                text = stringResource(R.string.siri_hero_subtitle),
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.widthIn(max = 320.dp),
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
+                    .border(
+                        width = 0.5.dp,
+                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                    .clickable { onSuggestionClick(suggestions.first().prompt) }
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    suggestions.chunked(2).forEach { rowItems ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            rowItems.forEach { item ->
-                                SuggestionCard(
-                                    item = item,
-                                    onClick = { onSuggestionClick(item.prompt) },
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                        }
-                    }
+                Text(
+                    text = stringResource(R.string.siri_hero_try_it),
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showSuggestions,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = fadeIn(
+                animationSpec = tween(durationMillis = 220)
+            ) + slideInVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                initialOffsetY = { it / 3 },
+            ),
+            exit = fadeOut(
+                animationSpec = tween(durationMillis = 130)
+            ) + slideOutVertically(
+                animationSpec = tween(durationMillis = 180),
+                targetOffsetY = { it / 4 },
+            ),
+        ) {
+            // Q4-A：底部建议改为横排滚动 chips（宽 150dp），对齐旧版布局。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                suggestions.forEach { item ->
+                    SuggestionCard(
+                        item = item,
+                        onClick = { onSuggestionClick(item.prompt) },
+                        modifier = Modifier.width(150.dp),
+                    )
                 }
             }
         }
@@ -1623,17 +1660,18 @@ private fun SuggestionCard(
             .clickable(onClick = onClick)
             .padding(horizontal = 13.dp, vertical = 12.dp),
     ) {
-        Icon(
-            imageVector = item.icon,
-            contentDescription = null,
-            modifier = Modifier.size(17.dp),
-            tint = MiuixTheme.colorScheme.onBackground,
-        )
-        Spacer(modifier = Modifier.height(9.dp))
+        // Q4-A：借鉴旧版两行文建议 chip（标题行 + 内容行）。
         Text(
             text = item.title,
             style = MiuixTheme.textStyles.body2,
             color = MiuixTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+            text = item.prompt,
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             maxLines = 1,
         )
     }

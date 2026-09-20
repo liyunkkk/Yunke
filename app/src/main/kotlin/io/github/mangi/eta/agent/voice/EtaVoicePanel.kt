@@ -112,6 +112,7 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.squircle.squircleBackground
 import top.yukonga.miuix.kmp.squircle.squircleClip
+import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 
 internal enum class EtaVoicePhase {
@@ -737,9 +738,9 @@ private fun AssistantComposer(
                 onClick = onScreenTranslation,
             )
         }
-        if (state.screenContext.phase != EtaScreenContextPhase.CONSUMED) {
-            Spacer(Modifier.height(7.dp))
-        }
+        // Q3a：间距无条件保留。上游曾把它改成「非 CONSUMED 才留」，
+        // 导致发送后 phase 变 CONSUMED、间距塌陷，三胶囊被压到贴住输入框。
+        Spacer(Modifier.height(7.dp))
         // 与主界面共用同一个输入栏：附件入口、推理强度、模型选择、助手切换
         // 全部走同一套组件，两处不再各写一份；附件预览条也由输入栏自己渲染。
         key(state.conversationId) {
@@ -819,7 +820,12 @@ private fun ScreenContextAttachment(
                     modifier = Modifier
                         .height(34.dp)
                         .squircleSurface(
-                            color = colors.input.copy(alpha = 0.9f),
+                            color = colors.input.copy(alpha = 0.62f),
+                            cornerRadius = 17.dp,
+                        )
+                        .squircleBorder(
+                            width = 0.5.dp,
+                            color = colors.borderHighlight.copy(alpha = 0.55f),
                             cornerRadius = 17.dp,
                         )
                         .clickable(enabled = available, onClick = onSelect)
@@ -873,7 +879,12 @@ private fun ScreenTranslationCapsule(
         modifier = Modifier
             .height(34.dp)
             .squircleSurface(
-                color = colors.input.copy(alpha = 0.9f),
+                color = colors.input.copy(alpha = 0.62f),
+                cornerRadius = 17.dp,
+            )
+            .squircleBorder(
+                width = 0.5.dp,
+                color = colors.borderHighlight.copy(alpha = 0.55f),
                 cornerRadius = 17.dp,
             )
             .clickable(enabled = enabled, onClick = onClick)
@@ -1005,7 +1016,12 @@ private fun ConversationCapsule(
         modifier = Modifier
             .height(32.dp)
             .squircleSurface(
-                color = colors.input.copy(alpha = 0.82f),
+                color = colors.input.copy(alpha = 0.62f),
+                cornerRadius = 16.dp,
+            )
+            .squircleBorder(
+                width = 0.5.dp,
+                color = colors.borderHighlight.copy(alpha = 0.55f),
                 cornerRadius = 16.dp,
             )
             .clickable(enabled = enabled, onClick = onClick)
