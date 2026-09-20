@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="execution_channel">任務執行</string>
+    <string name="execution_title">芸珂 正在執行</string>
+    <string name="execution_summary">%1$d 項任務正在運行，可返回 芸珂 查看進度</string>
+    <string name="execution_stop">停止運行任務</string>
+    <string name="execution_phase_preparing">🚀 正在準備…</string>
+    <string name="execution_phase_preparing_detail">正在初始化執行環境</string>
+    <string name="execution_phase_thinking">🧠 深度思考…</string>
+    <string name="execution_phase_thinking_detail">正在梳理推導步驟</string>
+    <string name="execution_phase_tool">⚡ %1$s</string>
+    <string name="execution_phase_tool_generic">⚡ 執行工具</string>
+    <string name="execution_phase_generating">✍️ 正在回覆…</string>
+    <string name="execution_phase_generating_detail">正在生成解答內容</string>
+    <string name="execution_phase_translating">🌐 智慧翻譯…</string>
+    <string name="execution_phase_translating_detail">正在翻譯螢幕文字</string>
+    <string name="execution_completed_channel">任務完成通知</string>
+    <string name="execution_completed_default">任務執行完成</string>
+    <string name="execution_failed_default">任務執行失敗</string>
+</resources>

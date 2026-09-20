@@ -162,10 +162,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        isForeground = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isForeground = false
+    }
+
     @Suppress("DEPRECATION")
     private fun recreateWithoutTransition() {
         overridePendingTransition(0, 0)
         recreate()
         overridePendingTransition(0, 0)
+    }
+
+    companion object {
+        @Volatile
+        var isForeground = false
+            private set
     }
 }

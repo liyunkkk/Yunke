@@ -992,6 +992,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             )
         }
 
+        fun isServiceActive(): Boolean = activeService != null
+
         fun dismiss(context: Context) {
             context.applicationContext.stopService(
                 Intent(context.applicationContext, EtaAssistantOverlayService::class.java),

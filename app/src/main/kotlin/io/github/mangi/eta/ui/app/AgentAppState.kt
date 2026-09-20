@@ -46,6 +46,7 @@ import io.github.mangi.eta.agent.model.AgentVideoGenerationParser
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
+import io.github.mangi.eta.agent.runtime.AgentNotificationTrampolineActivity
 import io.github.mangi.eta.agent.runtime.AgentRunArchiveStore
 import io.github.mangi.eta.agent.runtime.AgentRunCheckpointStore
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
@@ -75,6 +76,7 @@ import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.ModelUsageDelta
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.data.repository.UsageStatsRepository
+import io.github.mangi.eta.ui.MainActivity
 
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.isSteerSupplement
@@ -2148,6 +2150,22 @@ internal class AgentAppState(
             }
             withContext(Dispatchers.Main) {
                 applyRunResult(runId, result, acknowledgeRuntimeResult = true)
+                if (!MainActivity.isForeground && result.error != LEGACY_STOPPED_ERROR && result.error != SYNTHETIC_STATUS_STOPPED) {
+                    val title = prompt.lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
+                    val content = if (result.ok) {
+                        result.content.trim().take(200)
+                    } else {
+                        result.error.orEmpty()
+                    }
+                    AgentExecutionService.postCompletionNotification(
+                        context = appContext,
+                        runId = runId,
+                        title = title,
+                        content = content,
+                        isError = !result.ok,
+                        source = AgentNotificationTrampolineActivity.SOURCE_MAIN,
+                    )
+                }
             }
         }
         runJobs[runId] = preparationJob

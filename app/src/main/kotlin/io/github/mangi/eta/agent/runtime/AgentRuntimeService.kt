@@ -76,6 +76,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private val pendingStartRequests = linkedMapOf<String, PendingStartRequest>()
     @Volatile
     private var overlayRunId: String? = null
+    @Volatile private var executionNotificationTracker: AgentExecutionNotificationTracker? = null
 
     private data class PendingStartRequest(
         val incoming: AgentRuntimeWire.IncomingRunRequest,
@@ -321,8 +322,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         )
         // Root 入口保留原有绑定服务生命周期；新增 FGS 不能成为厂商后台入口的新前置权限。
         val allowBoundFallback = RootAccess.isGranted
+        val executionSource = if (request.handoff?.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE) {
+            AgentNotificationTrampolineActivity.SOURCE_OVERLAY
+        } else {
+            AgentNotificationTrampolineActivity.SOURCE_MAIN
+        }
         val executionHeld = AgentExecutionService.acquire(
-            this, "run:${request.runId}", allowBoundFallback = allowBoundFallback,
+            this, "run:${request.runId}", allowBoundFallback = allowBoundFallback, source = executionSource,
         ) { session.cancel("已停止") }
         if (!executionHeld && (!allowBoundFallback || AgentExecutionService.backupMaintenance)) {
             session.complete(AgentRuntimeWire.RunResult(
@@ -362,10 +368,24 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             supplementsByRunId[request.runId] = extras
         }
 
+        val notificationTracker = AgentExecutionNotificationTracker(
+            context = this,
+            handler = mainHandler,
+            onStateChanged = { executionState ->
+                AgentExecutionService.updateExecutionState(executionState)
+            },
+        )
+        executionNotificationTracker = notificationTracker
+
         thread(name = "agent-runtime") {
             try {
                 executeRun(session, request)
             } finally {
+                notificationTracker.reset()
+                if (executionNotificationTracker === notificationTracker) {
+                    executionNotificationTracker = null
+                }
+                AgentExecutionService.resetExecutionState()
                 AgentExecutionService.release("run:${request.runId}")
             }
         }
@@ -416,6 +436,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         mainHandler.post {
             if (!sessions.contains(session)) return@post
+            executionNotificationTracker?.onEvent(event)
             if (
                 AgentOverlayVisibilityPolicy.shouldRecordForegroundExecution(
                     event,
