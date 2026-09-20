@@ -47,7 +47,7 @@ private object ProviderRequestInterceptor : Interceptor {
         val host = original.url.host
         if (host == "openrouter.ai" || host.endsWith(".openrouter.ai")) {
             if (original.header("X-Title").isNullOrBlank()) {
-                builder.header("X-Title", "Eta")
+                builder.header("X-Title", "Yunke")
             }
             if (original.header("HTTP-Referer").isNullOrBlank()) {
                 builder.header("HTTP-Referer", "https://github.com/y2485871697/Eta")

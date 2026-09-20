@@ -23,7 +23,7 @@ internal object ProviderRequestHeaders {
                 builder.set("session-id", sessionId)
             }
         } else {
-            builder.set("User-Agent", "Eta")
+            builder.set("User-Agent", "Yunke")
         }
         CustomHeaderFilter.mergeInto(builder, customHeaders)
         if (baseUrl.toHttpUrlOrNull()?.host == "opencode.ai") {

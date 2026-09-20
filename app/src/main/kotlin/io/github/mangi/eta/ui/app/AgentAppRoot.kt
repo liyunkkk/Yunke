@@ -992,7 +992,7 @@ fun AgentAppRoot(
                     conversationExportConfirmation = false
                     val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
                     val title = conversationExportTitle.replace(Regex("""[\\/:*?"<>|]"""), "_").take(40)
-                    conversationExportLauncher.launch("代鱼-$title-$stamp.zip")
+                    conversationExportLauncher.launch("芸珂-$title-$stamp.zip")
                 },
             )
         }

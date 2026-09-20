@@ -60,7 +60,7 @@ class ChatImageSupportTest {
         assertEquals("image/png", chatImageMimeType("data:image/png;base64,xx"))
         assertEquals("png", chatImageFileExtension("image/png"))
         assertEquals("jpg", chatImageFileExtension("image/jpeg"))
-        assertTrue(chatImageFileName("image/webp").startsWith("Eta-"))
+        assertTrue(chatImageFileName("image/webp").startsWith("Yunke-"))
         assertTrue(chatImageFileName("image/webp").endsWith(".webp"))
         assertTrue(chatVideoFileName("video/mp4").endsWith(".mp4"))
         assertTrue(chatVideoFileName("video/webm", "clip.webm").endsWith(".webm"))

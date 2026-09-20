@@ -11,8 +11,8 @@
     <string name="voice_mode_connecting">正在连接…</string>
     <string name="voice_mode_listening">正在听你说…</string>
     <string name="voice_mode_transcribing">正在完成识别…</string>
-    <string name="voice_mode_thinking">代鱼正在思考…</string>
-    <string name="voice_mode_speaking">代鱼正在说话</string>
+    <string name="voice_mode_thinking">芸珂正在思考…</string>
+    <string name="voice_mode_speaking">芸珂正在说话</string>
     <string name="voice_mode_universal_settings_summary">离线识别 · 当前聊天模型 · 已配置朗读音色</string>
     <string name="voice_mode_universal_settings_hint">语音识别和朗读继续在原有设置页配置。语音对话会把识别文字发给当前聊天模型，朗读完后继续聆听。</string>
     <string name="voice_mode_doubao_provider">实时通话提供商</string>

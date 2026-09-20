@@ -202,7 +202,7 @@ internal object ChatImageGallery {
 
 internal fun chatVideoFileName(mimeType: String, displayName: String = ""): String {
     val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-    return "Eta-$stamp.${AgentVideoCodec.extensionForMime(mimeType, displayName)}"
+    return "Yunke-$stamp.${AgentVideoCodec.extensionForMime(mimeType, displayName)}"
 }
 
 internal fun markdownImageDestination(content: String, node: ASTNode): String? {
@@ -278,7 +278,7 @@ internal fun chatImageFileExtension(mimeType: String): String = when (mimeType.l
 
 internal fun chatImageFileName(mimeType: String): String {
     val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-    return "Eta-$stamp.${chatImageFileExtension(mimeType)}"
+    return "Yunke-$stamp.${chatImageFileExtension(mimeType)}"
 }
 
 internal fun sniffMimeType(bytes: ByteArray): String {

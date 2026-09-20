@@ -1263,7 +1263,7 @@ private fun isAgentAccessibilityEnabled(context: Context): Boolean {
 }
 
 private fun defaultDiagnosticLogFileName(): String =
-    "代鱼-诊断日志-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.zip"
+    "芸珂-诊断日志-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.zip"
 
 private fun isEtaAssistantActive(context: Context): Boolean =
     VoiceInteractionService.isActiveService(
