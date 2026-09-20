@@ -36,8 +36,23 @@ jobs:
         with:
           cache-provider: basic
 
-      - name: 配置 Android SDK 工具
-        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+      - name: 配置 Android SDK
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          if [[ ! -d "$sdk_root" ]]; then
+            echo "::error::未找到 Android SDK 目录: $sdk_root"
+            exit 1
+          fi
+          sdkmanager="$(find "$sdk_root/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          if [[ -z "$sdkmanager" ]]; then
+            echo "::error::未找到 sdkmanager"
+            exit 1
+          fi
+          echo "$(dirname "$sdkmanager")" >> "$GITHUB_PATH"
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
+          yes | "$sdkmanager" --licenses >/dev/null || true
 
       - name: 安装 Android SDK 37
         run: sdkmanager --channel=3 "platforms;android-37.0"
