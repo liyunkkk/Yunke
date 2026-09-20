@@ -676,7 +676,7 @@ fun AgentAppRoot(
                                                     it.execute(
                                                         "am start --user current -n " +
                                                             "com.oplus.battery/com.oplus.powermanager.fuelgaue.PowerControlActivity " +
-                                                            "--es title Eta --es pkgName io.github.mangi.eta --es drainType APP",
+                                                            "--es title 芸珂 --es pkgName io.github.mangi.eta --es drainType APP",
                                                     )
                                                 }
                                             }

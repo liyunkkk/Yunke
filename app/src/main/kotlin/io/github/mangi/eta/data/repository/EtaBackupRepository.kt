@@ -569,7 +569,7 @@ internal object EtaBackupRepository {
             throw EtaBackupException("会话备份文件格式无效", failure)
         }
         if (exported.format != EtaConversationExport.FORMAT) {
-            throw EtaBackupException("这不是 Eta 会话备份")
+            throw EtaBackupException("这不是 芸珂 会话备份")
         }
         require(exported.schemaVersion in 1..EtaConversationExport.SCHEMA_VERSION) { "不支持的会话备份版本" }
         require(exported.messages.all { it.conversationId == exported.conversation.id }) { "会话消息引用无效" }
@@ -585,10 +585,10 @@ internal object EtaBackupRepository {
 
     private fun validate(document: EtaBackupDocument) {
         if (document.format != EtaBackupDocument.FORMAT) {
-            throw EtaBackupException("这不是 Eta 备份文件")
+            throw EtaBackupException("这不是 芸珂 备份文件")
         }
         if (document.schemaVersion !in EtaBackupDocument.MIN_SUPPORTED_SCHEMA..EtaBackupDocument.SCHEMA_VERSION) {
-            throw EtaBackupException("不支持的 Eta 备份版本：${document.schemaVersion}")
+            throw EtaBackupException("不支持的 芸珂 备份版本：${document.schemaVersion}")
         }
         listOf(document.skillFiles, document.assistantAvatars).forEach { files ->
             require(files.size <= 10_000) { "备份嵌入文件过多" }

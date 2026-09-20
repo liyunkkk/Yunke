@@ -964,7 +964,7 @@ internal fun SettingsScreen(
                         onClick = {
                             val intent = android.content.Intent(
                                 android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://github.com/y2485871697/Eta"),
+                                android.net.Uri.parse("https://github.com/liyunkkk/Yunke"),
                             )
                             context.startActivity(intent)
                         },
@@ -1247,7 +1247,7 @@ private fun PowerAssistantTarget.displayName(context: Context): String =
     when (this) {
         PowerAssistantTarget.OEM -> context.getString(R.string.power_assistant_system_default)
         PowerAssistantTarget.GEMINI -> "Gemini"
-        PowerAssistantTarget.ETA -> "Eta"
+        PowerAssistantTarget.ETA -> "芸珂"
     }
 
 private fun isAgentAccessibilityEnabled(context: Context): Boolean {
