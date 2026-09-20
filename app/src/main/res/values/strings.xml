@@ -1448,4 +1448,11 @@
   <string name="ui_compress_endpoint_hint">仅用于摘要，不影响正常对话。</string>
   <string name="ui_compress_endpoint_help">How to choose an API</string>
   <string name="ui_compress_models_loading">Loading models…</string>
+  <string name="screen_translation_start">Translate screen</string>
+  <string name="screen_translation_btn_translate">Translate</string>
+  <string name="screen_translation_btn_cancel">Cancel</string>
+  <string name="screen_translation_translating">Translating…</string>
+  <string name="screen_translation_error_no_key">No API key configured</string>
+  <string name="screen_translation_error_failed">Translation request failed</string>
+  <string name="screen_translation_close">Close</string>
 </resources>

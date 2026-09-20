@@ -1422,4 +1422,11 @@
   <string name="ui_compress_endpoint_help">接口怎么选</string>
   <string name="ui_compress_models_loading">正在加载模型…</string>
   <string name="ui_auto_compress_context_summary">达到阈值时，自动摘要较早对话。</string>
+  <string name="screen_translation_start">屏幕翻译</string>
+  <string name="screen_translation_btn_translate">翻译</string>
+  <string name="screen_translation_btn_cancel">取消</string>
+  <string name="screen_translation_translating">正在翻译…</string>
+  <string name="screen_translation_error_no_key">未配置 API Key</string>
+  <string name="screen_translation_error_failed">翻译请求失败</string>
+  <string name="screen_translation_close">关闭</string>
 </resources>

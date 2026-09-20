@@ -266,6 +266,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         onInputChange = { inputText = it },
                         onScreenContextSelect = ::selectScreenContext,
                         onScreenContextRemove = ::removeScreenContext,
+                        onScreenTranslation = ::startScreenTranslation,
                         onSubmit = ::submitInput,
                         onStop = ::stopCurrentRun,
                         onClose = ::dismissAndStop,
@@ -772,6 +773,16 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 hasAttachment = screenContextAttachment != null,
             ),
         )
+    }
+
+    /**
+     * 屏幕翻译入口：启动翻译控制器与覆盖层，隐藏自身面板。
+     * 翻译运行期间不再需要本面板，用户通过覆盖层控制胶囊停止翻译。
+     */
+    private fun startScreenTranslation() {
+        io.github.mangi.eta.agent.translation.ScreenTranslationController.start(applicationContext)
+        io.github.mangi.eta.agent.translation.ScreenTranslationOverlayService.show(applicationContext)
+        hideForForegroundOperation()
     }
 
     private fun removeScreenContext() {

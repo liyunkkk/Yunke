@@ -119,16 +119,29 @@ open class AgentAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 pruneWindowContentGenerations()
                 signalWindowChanged()
+                notifyScreenTranslationActivity()
             }
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 bumpWindowContentGeneration(event.windowId)
                 observeScrollEvent(event)
+                notifyScreenTranslationActivity()
             }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED ->
+            AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> {
                 bumpWindowContentGeneration(event.windowId)
+                notifyScreenTranslationActivity()
+            }
         }
+    }
+
+    /**
+     * 屏幕翻译特性：内容变化事件转发给 ScreenTranslationController（防抖采集）。
+     * 未启用时零开销（isRunning 检查在前）。
+     */
+    private fun notifyScreenTranslationActivity() {
+        if (!io.github.mangi.eta.agent.translation.ScreenTranslationController.isRunning()) return
+        io.github.mangi.eta.agent.translation.ScreenTranslationController.onScreenContentChanged()
     }
 
     override fun onInterrupt() = Unit

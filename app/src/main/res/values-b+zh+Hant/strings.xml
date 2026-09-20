@@ -1422,4 +1422,11 @@
   <string name="ui_compress_endpoint_help">如何選擇介面</string>
   <string name="ui_compress_models_loading">正在載入模型…</string>
   <string name="ui_auto_compress_context_summary">達到門檻時，自動摘要較早對話。</string>
+  <string name="screen_translation_start">螢幕翻譯</string>
+  <string name="screen_translation_btn_translate">翻譯</string>
+  <string name="screen_translation_btn_cancel">取消</string>
+  <string name="screen_translation_translating">正在翻譯…</string>
+  <string name="screen_translation_error_no_key">未設定 API Key</string>
+  <string name="screen_translation_error_failed">介面請求失敗</string>
+  <string name="screen_translation_close">關閉</string>
 </resources>

@@ -47,6 +47,7 @@ import androidx.compose.material.icons.rounded.CancelPresentation
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -210,6 +211,7 @@ internal fun EtaVoicePanel(
     onInputChange: (String) -> Unit,
     onScreenContextSelect: () -> Unit,
     onScreenContextRemove: () -> Unit,
+    onScreenTranslation: () -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
@@ -287,6 +289,7 @@ internal fun EtaVoicePanel(
                 onInputChange = onInputChange,
                 onScreenContextSelect = onScreenContextSelect,
                 onScreenContextRemove = onScreenContextRemove,
+                onScreenTranslation = onScreenTranslation,
                 onSubmit = {
                     keyboard?.hide()
                     onSubmit()
@@ -313,6 +316,7 @@ private fun BoxScope.AssistantPanel(
     onInputChange: (String) -> Unit,
     onScreenContextSelect: () -> Unit,
     onScreenContextRemove: () -> Unit,
+    onScreenTranslation: () -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
@@ -571,6 +575,7 @@ private fun BoxScope.AssistantPanel(
             onInputChange = onInputChange,
             onScreenContextSelect = onScreenContextSelect,
             onScreenContextRemove = onScreenContextRemove,
+            onScreenTranslation = onScreenTranslation,
             onSubmit = onSubmit,
             onStop = onStop,
             modifier = Modifier
@@ -594,6 +599,7 @@ private fun AssistantComposer(
     onInputChange: (String) -> Unit,
     onScreenContextSelect: () -> Unit,
     onScreenContextRemove: () -> Unit,
+    onScreenTranslation: () -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -609,6 +615,11 @@ private fun AssistantComposer(
             colors = colors,
             onSelect = onScreenContextSelect,
             onRemove = onScreenContextRemove,
+        )
+        ScreenTranslationCapsule(
+            enabled = state.phase != EtaVoicePhase.PROCESSING,
+            colors = colors,
+            onClick = onScreenTranslation,
         )
         if (state.screenContext.phase != EtaScreenContextPhase.CONSUMED) {
             Spacer(Modifier.height(7.dp))
@@ -704,6 +715,39 @@ private fun ScreenContextAttachment(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ScreenTranslationCapsule(
+    enabled: Boolean,
+    colors: EtaVoicePanelColors,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .height(34.dp)
+            .squircleSurface(
+                color = colors.input.copy(alpha = 0.9f),
+                cornerRadius = 17.dp,
+            )
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Translate,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = if (enabled) colors.inputPrimary else colors.inputTertiary,
+        )
+        Spacer(Modifier.size(7.dp))
+        Text(
+            text = stringResource(R.string.screen_translation_start),
+            color = if (enabled) colors.inputPrimary else colors.inputSecondary,
+            fontSize = 12.sp,
+            maxLines = 1,
+        )
     }
 }
 
