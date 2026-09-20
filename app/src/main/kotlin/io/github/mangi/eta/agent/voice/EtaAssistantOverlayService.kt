@@ -360,7 +360,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             title = "EtaAssistantOverlay"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && wm.isCrossWindowBlurEnabled) {
                 flags = flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                blurBehindRadius = 24
+                // 柔光玻璃：对齐原版 79a23839 的模糊半径（110），
+                // 24 会让浮窗背景看起来是"半透明色块"而非磨砂玻璃。
+                blurBehindRadius = 110
             }
         }
         runCatching { wm.addView(view, params) }.onFailure { throwable ->

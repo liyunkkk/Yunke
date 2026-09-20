@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.components
 
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.verticalScroll
@@ -198,6 +199,10 @@ internal fun AgentChatInputBar(
     /** 浮窗不显示麦克风入口：符合浮窗交互约定，同时避开 overlay 无
      *  ActivityResultRegistryOwner 时语音权限 launcher 的崩溃。 */
     showVoiceEntry: Boolean = true,
+    /** 浮窗（TYPE_APPLICATION_OVERLAY + Service context）没有 Activity 窗口 token，
+     *  任何 WindowDialog/Dialog.show 都会抛 BadTokenException 并杀死进程。
+     *  开启后弹层全部改走 Popup 路线（挂在 overlay 自己的窗口 token 下）。 */
+    overlayMode: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val textFieldState = rememberTextFieldState(initialText = input)
@@ -474,6 +479,7 @@ internal fun AgentChatInputBar(
                                     options = availableReasoningEfforts,
                                     enabled = !isStreaming || isPaused,
                                     onEffortChange = onReasoningEffortChange,
+                                    overlayMode = overlayMode,
                                 )
                             }
 
@@ -484,6 +490,7 @@ internal fun AgentChatInputBar(
                                 selectedAssistantId = assistantId,
                                 onEditAssistant = onEditAssistant,
                                 onAssistantSelected = onAssistantSelected,
+                                overlayMode = overlayMode,
                             )
                         }
 
@@ -502,11 +509,13 @@ internal fun AgentChatInputBar(
                         }
 
                         // Keep context details accessible even for an empty draft or an unknown limit.
-                        AgentContextUsageButton(
-                            usage = liveUsage,
-                            sendBlocked = contextSendBlocked,
-                        )
-                        Spacer(modifier = Modifier.width(2.dp))
+                        if (showContextUsage) {
+                            AgentContextUsageButton(
+                                usage = liveUsage,
+                                sendBlocked = contextSendBlocked,
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                        }
 
                         AgentModelPickerButton(
                             state = modelPickerState,
@@ -638,6 +647,7 @@ private fun ThinkingEffortChip(
     enabled: Boolean,
     onEffortChange: (ReasoningEffort) -> Unit,
     modifier: Modifier = Modifier,
+    overlayMode: Boolean = false,
 ) {
     var showPicker by remember { mutableStateOf(false) }
     val active = effort != ReasoningEffort.OFF
@@ -666,13 +676,45 @@ private fun ThinkingEffortChip(
             tint = if (pickerEnabled) contentColor else contentColor.copy(alpha = 0.38f),
         )
     }
-    ThinkingEffortPickerDialog(
-        show = showPicker && pickerEnabled,
-        effort = effort,
-        options = options,
-        onDismiss = { showPicker = false },
-        onEffortChange = onEffortChange,
-    )
+    if (overlayMode) {
+        // 浮窗：无 Activity token，必须走 Popup（挂在 overlay 窗口下）。
+        EtaDropdownMenu(
+            expanded = showPicker && pickerEnabled,
+            onDismissRequest = { showPicker = false },
+            preferAbove = true,
+            minWidth = 0.dp,
+            focusable = false,
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    modifier = Modifier.height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    text = {
+                        androidx.compose.material3.Text(
+                            text = option.displayName,
+                            color = if (option == effort) {
+                                MiuixTheme.colorScheme.primary
+                            } else {
+                                MiuixTheme.colorScheme.onSurface
+                            },
+                        )
+                    },
+                    onClick = {
+                        showPicker = false
+                        onEffortChange(option)
+                    },
+                )
+            }
+        }
+    } else {
+        ThinkingEffortPickerDialog(
+            show = showPicker && pickerEnabled,
+            effort = effort,
+            options = options,
+            onDismiss = { showPicker = false },
+            onEffortChange = onEffortChange,
+        )
+    }
 }
 
 @Composable
@@ -885,6 +927,7 @@ private fun AssistantPickerButton(
     onEditAssistant: (String) -> Unit,
     onAssistantSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
+    overlayMode: Boolean = false,
 ) {
     val profiles by AssistantRepository.profiles.collectAsState()
     val repositoryActiveId by AssistantRepository.activeId.collectAsState()
@@ -907,19 +950,58 @@ private fun AssistantPickerButton(
             )
         }
     }
-    AssistantPickerDialog(
-        show = showPicker && enabled,
-        onDismiss = { showPicker = false },
-        onSelect = { id ->
-            showPicker = false
-            onAssistantSelected(id)
-        },
-        onEdit = { id ->
-            showPicker = false
-            onEditAssistant(id)
-        },
-        selectedAssistantId = activeId,
-    )
+    if (overlayMode) {
+        // 浮窗：无 Activity token，助手选择改走 Popup（①A 裁决）。
+        EtaDropdownMenu(
+            expanded = showPicker && enabled,
+            onDismissRequest = { showPicker = false },
+            preferAbove = true,
+            minWidth = 0.dp,
+            focusable = false,
+        ) {
+            profiles.forEach { profile ->
+                DropdownMenuItem(
+                    modifier = Modifier.height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    text = {
+                        androidx.compose.material3.Text(
+                            text = profile.name,
+                            color = if (profile.id == activeId) {
+                                MiuixTheme.colorScheme.primary
+                            } else {
+                                MiuixTheme.colorScheme.onSurface
+                            },
+                        )
+                    },
+                    leadingIcon = {
+                        AssistantAvatar(
+                            assistant = profile,
+                            size = 22.dp,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    },
+                    onClick = {
+                        showPicker = false
+                        onAssistantSelected(profile.id)
+                    },
+                )
+            }
+        }
+    } else {
+        AssistantPickerDialog(
+            show = showPicker && enabled,
+            onDismiss = { showPicker = false },
+            onSelect = { id ->
+                showPicker = false
+                onAssistantSelected(id)
+            },
+            onEdit = { id ->
+                showPicker = false
+                onEditAssistant(id)
+            },
+            selectedAssistantId = activeId,
+        )
+    }
 }
 
 internal fun resolveChatComposerSendMode(

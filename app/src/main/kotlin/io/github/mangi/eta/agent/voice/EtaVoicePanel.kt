@@ -69,14 +69,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -85,7 +81,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
@@ -445,9 +440,17 @@ private fun BoxScope.AssistantPanel(
     )
     val currentAnimatedHeight = rememberUpdatedState(animatedHeightPx)
     val sheetHeightPx = draggedHeightPx ?: animatedHeightPx
-    val visibleSheetHeightPx = sheetHeightPx.coerceAtMost(
-        (maxContentHeightPx - imeOverlapPx).coerceAtLeast(0f),
-    )
+    // 输入栏（含附件/推理/助手/模型/发送）是 sheet 之下固定占位的一层。
+    // 消息区必须为它预留高度，否则 IME 弹出时输入栏会被消息区顶出可视区。
+    val composerReservedHeightPx = with(density) {
+        val base = 136.dp
+        val historyExtra = if (state.isHistoryMenuVisible) 180.dp else 0.dp
+        (base + historyExtra).toPx()
+    }
+    val maxAvailableForSheetPx = (
+        maxContentHeightPx - imeOverlapPx - composerReservedHeightPx
+        ).coerceAtLeast(0f)
+    val visibleSheetHeightPx = sheetHeightPx.coerceAtMost(maxAvailableForSheetPx)
     val nearFullscreen = sheetHeightPx >= maxContentHeightPx * 0.88f
     val handoffReady = canOpenConversation && nearFullscreen &&
         (handoffPullPx >= handoffThresholdPx ||
@@ -528,67 +531,6 @@ private fun BoxScope.AssistantPanel(
         }
     }
 
-    val dragByState = rememberUpdatedState<(Float) -> Float>(::dragBy)
-    val finishDragState = rememberUpdatedState<(Float) -> Unit>(::finishDrag)
-    val nestedScrollConnection = remember(
-        baseContentHeightPx,
-        maxContentHeightPx,
-        canOpenConversation,
-        listState,
-    ) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                val current = draggedHeightPx ?: currentAnimatedHeight.value
-                if (
-                    available.y < 0f &&
-                    canOpenConversation &&
-                    current >= maxContentHeightPx * 0.88f
-                ) {
-                    directHandoffPullPx += -available.y
-                    if (directHandoffPullPx >= directHandoffThresholdPx) {
-                        triggerHandoff()
-                    }
-                    // 第二段上滑由父容器在 pre-scroll 阶段完整消费，避免列表或
-                    // overscroll 先截走事件后，接管手势永远达不到阈值。
-                    return Offset(0f, available.y)
-                }
-                val shouldResize = (available.y < 0f && current < maxContentHeightPx) ||
-                    (available.y > 0f && current > baseContentHeightPx && !listState.canScrollBackward)
-                return if (shouldResize) {
-                    Offset(0f, dragByState.value(available.y))
-                } else {
-                    Offset.Zero
-                }
-            }
-
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource,
-            ): Offset {
-                if (available.y == 0f) return Offset.Zero
-                val current = draggedHeightPx ?: currentAnimatedHeight.value
-                val atUpperEdge = available.y < 0f && current >= maxContentHeightPx * 0.88f
-                val atLowerEdge = available.y > 0f && current <= baseContentHeightPx
-                return if (atUpperEdge || atLowerEdge) {
-                    Offset(0f, dragByState.value(available.y))
-                } else {
-                    Offset.Zero
-                }
-            }
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                finishDragState.value(available.y)
-                return Velocity.Zero
-            }
-
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                finishDragState.value(available.y)
-                return Velocity.Zero
-            }
-        }
-    }
-
     val bottomInset = with(density) { bottomInsetPx.toDp() }
     val messageRevealOffsetPx = with(density) { 12.dp.toPx() }
     val sheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
@@ -598,6 +540,12 @@ private fun BoxScope.AssistantPanel(
             .fillMaxWidth()
             .offset(y = with(density) { sheetTranslationPx.toDp() })
             .clip(sheetShape)
+            // 吸收 sheet 内的空白点击，避免穿透到 scrim 触发 onClose 关掉浮窗。
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+            )
             .drawBehind {
                 val bgAlpha = sheetBackgroundAlpha.value
                 val glassBrush = Brush.verticalGradient(
@@ -625,8 +573,7 @@ private fun BoxScope.AssistantPanel(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(with(density) { visibleSheetHeightPx.toDp() })
-                .nestedScroll(nestedScrollConnection),
+                .height(with(density) { visibleSheetHeightPx.toDp() }),
         ) {
             DragHandle(
                 colors = colors,
@@ -784,7 +731,7 @@ private fun AssistantComposer(
                 modelPickerState = state.modelPickerState,
                 history = history,
                 autoCompressEnabled = autoCompressEnabled,
-                showContextUsage = state.messages.isNotEmpty(),
+                showContextUsage = false,
                 isStreaming = state.phase == EtaVoicePhase.PROCESSING,
                 reasoningEffort = state.reasoningEffort,
                 availableReasoningEfforts = state.availableReasoningEfforts,
@@ -809,6 +756,7 @@ private fun AssistantComposer(
                 onAssistantSelected = onAssistantSelected,
                 focusRequester = focusRequester,
                 showVoiceEntry = false,
+                overlayMode = true,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
