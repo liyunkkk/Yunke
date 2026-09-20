@@ -125,5 +125,36 @@ internal object AgentContextAppToolCatalog {
                         )
                 )
             )
+            .put(
+                AgentToolSchema.function(
+                    name = "delegate_to_kimi_code",
+                    description = "将复杂代码编写、重构或项目文件批量修改任务委派给内置的 Kimi Code 编程子代理执行。子代理运行在隔离的 Linux 环境中，能够就地读写代码、运行测试并汇报变更。适用于多文件代码修改、逻辑重构、写脚本等重型编码任务。",
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put(
+                                    "task",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "具体的重构或编码任务描述与指令")
+                                )
+                                .put(
+                                    "project_path",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "工作目录绝对路径，默认 /workspace")
+                                )
+                                .put(
+                                    "timeout_seconds",
+                                    JSONObject()
+                                        .put("type", "integer")
+                                        .put("description", "执行超时时间（秒），默认 120，范围 10 到 600")
+                                )
+                        )
+                        .put("required", JSONArray().put("task"))
+                )
+            )
     }
 }

@@ -12,6 +12,7 @@ import io.github.mangi.eta.agent.device.DeviceControlUnavailableException
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.device.RootShellDeviceController
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
+import io.github.mangi.eta.agent.kimi.SupervisorKimiDaemonGateway
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentScreenObservationContract
 import io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy
@@ -109,6 +110,18 @@ internal class AgentLocalTools(
         rootAvailable = rootAvailable,
     )
     private val imageTools = AgentImageTools(context, rootCommandExecutor, rootAvailable)
+    private val detachedTaskSupervisor = DetachedTaskSupervisor(
+        skillsDirectoryProvider = { runSkillsRoot },
+        logger = logger,
+        recordsFile = DetachedTaskSupervisor.defaultRecordsFile(context),
+        linuxRootfsPath = AlpineEnvironmentPaths.rootfsDir(context).absolutePath,
+        linuxRootfsPathProvider = { environment ->
+            environment.linuxDistribution?.let { distribution ->
+                LinuxEnvironmentPaths.rootfsDir(context, distribution).absolutePath
+            }
+        },
+        linuxSharedMountsProvider = { SharedFolderMounts.current() },
+    )
     private val terminalController = RootShellTerminalController(
         processSupervisor = io.github.mangi.eta.agent.terminal.ShellProcessSupervisor(skillsDirectoryProvider = { runSkillsRoot }),
         logger = logger,
@@ -119,22 +132,22 @@ internal class AgentLocalTools(
                 LinuxEnvironmentPaths.rootfsDir(context, distribution).absolutePath
             }
         },
-        detachedSupervisor = DetachedTaskSupervisor(
-            skillsDirectoryProvider = { runSkillsRoot },
-            logger = logger,
-            recordsFile = DetachedTaskSupervisor.defaultRecordsFile(context),
-            linuxRootfsPath = AlpineEnvironmentPaths.rootfsDir(context).absolutePath,
-            linuxRootfsPathProvider = { environment ->
-                environment.linuxDistribution?.let { distribution ->
-                    LinuxEnvironmentPaths.rootfsDir(context, distribution).absolutePath
-                }
-            },
-            linuxSharedMountsProvider = { SharedFolderMounts.current() },
-        ),
+        detachedSupervisor = detachedTaskSupervisor,
         linuxSharedMountsProvider = { SharedFolderMounts.current() },
         selectedLinuxEnvironmentProvider = {
             LinuxEnvironmentSettingsRepository.current(context).terminalEnvironment
         },
+    )
+
+    /**
+     * Kimi 子代理走守护任务 + REST 直连。
+     * 与 UI 侧的 Kimi Web 面板共用同一守护任务宿主，
+     * 因此无论是从面板还是从 AI 委派，都只会存在一个 `kimi web` 实例。
+     */
+    private val kimiCodeSubagentTool = KimiCodeSubagentTool(
+        context = context,
+        terminalController = terminalController,
+        gateway = SupervisorKimiDaemonGateway(context, detachedTaskSupervisor),
     )
     private val publishedObservation = AtomicReference(PublishedObservation())
     private val runAvailableSkillIds = runAvailableSkillIds
@@ -215,6 +228,7 @@ internal class AgentLocalTools(
                 "search_apps" -> textResult(searchApps(args))
                 "launch_app" -> textResult(launchApp(args))
                 "open_uri" -> textResult(openUri(args))
+                "delegate_to_kimi_code" -> textResult(kimiCodeSubagentTool.delegate(args))
                 "browser_use" -> browserUse(args, toolCall.id)
                 "observe_screen" -> observeScreen(args)
                 "tap" -> textResult(tap(args))
