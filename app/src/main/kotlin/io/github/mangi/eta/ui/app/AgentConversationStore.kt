@@ -61,6 +61,93 @@ internal object AgentConversationStore {
             loadSnapshot(context.applicationContext)
         }
 
+    data class AssistantConversationData(
+        val conversationId: String,
+        val title: String,
+        val messages: List<AgentChatMessageUi>,
+        val history: List<AgentModelClient.ConversationMessage>,
+        val updatedAt: Long = 0L,
+    )
+
+    suspend fun loadAssistantConversation(context: Context, conversationId: String? = null): AssistantConversationData? {
+        val dao = EtaDatabase.get(context.applicationContext).conversationDao()
+        val targetId = conversationId
+            ?: dao.state()?.selectedConversationId
+            ?: dao.conversationsPage(limit = 1, offset = 0).firstOrNull()?.id
+            ?: return null
+        val metadata = dao.conversationEntity(targetId) ?: return null
+        val messageEntities = buildList {
+            var offset = 0
+            while (true) {
+                val page = dao.messagesPage(
+                    conversationId = targetId,
+                    limit = MESSAGE_LOAD_PAGE_SIZE,
+                    offset = offset,
+                )
+                addAll(page)
+                if (page.size < MESSAGE_LOAD_PAGE_SIZE) break
+                offset += page.size
+            }
+        }.sortedBy { it.sortIndex }
+        val messages = messageEntities.mapNotNull { it.toMessageOrNull() }.distinctBy { it.id }
+        val history = AgentConversationCodec.decodeTranscript(dao.contextCheckpoint(targetId)?.historyJson)
+            .ifEmpty { messageEntities.toLegacyHistory() }
+        return AssistantConversationData(
+            conversationId = targetId,
+            title = metadata.title.takeUnless { it == LEGACY_UNNAMED_TITLE }.orEmpty(),
+            messages = messages,
+            history = history,
+            updatedAt = metadata.updatedAt,
+        )
+    }
+
+    suspend fun saveAssistantConversation(
+        context: Context,
+        conversationId: String,
+        title: String,
+        messages: List<AgentChatMessageUi>,
+        history: List<AgentModelClient.ConversationMessage>,
+    ) {
+        val appContext = context.applicationContext
+        saveMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val dao = EtaDatabase.get(appContext).conversationDao()
+                val now = System.currentTimeMillis()
+                val existing = dao.conversationEntity(conversationId)
+                val conversationEntity = ConversationEntity(
+                    id = conversationId,
+                    title = title.ifBlank { existing?.title.orEmpty() },
+                    thinkingEnabled = existing?.thinkingEnabled ?: false,
+                    reasoningEffort = existing?.reasoningEffort ?: ReasoningEffort.DEFAULT.wireValue,
+                    appliedRuntimeRunIdsJson = existing?.appliedRuntimeRunIdsJson ?: "[]",
+                    createdAt = existing?.createdAt ?: now,
+                    updatedAt = now,
+                )
+                val messageEntities = messages.distinctBy { it.id }
+                    .mapIndexedNotNull { index, msg -> msg.toEntityOrNull(conversationId, index) }
+                val checkpoint = ConversationContextCheckpointEntity(
+                    conversationId = conversationId,
+                    historyJson = encodeCheckpoint(history),
+                )
+                dao.upsertConversation(conversationEntity, messageEntities, checkpoint)
+                dao.insertState(ConversationStateEntity(selectedConversationId = conversationId))
+            }
+        }
+    }
+
+    suspend fun selectConversation(context: Context, conversationId: String) {
+        withContext(Dispatchers.IO) {
+            EtaDatabase.get(context.applicationContext).conversationDao()
+                .insertState(ConversationStateEntity(selectedConversationId = conversationId))
+        }
+    }
+
+    suspend fun loadRecentConversations(context: Context, limit: Int = 30): List<ConversationMetadata> =
+        withContext(Dispatchers.IO) {
+            EtaDatabase.get(context.applicationContext).conversationDao()
+                .conversationsPage(limit = limit, offset = 0)
+        }
+
     suspend fun save(
         context: Context,
         selectedConversationId: String?,

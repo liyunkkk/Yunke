@@ -48,6 +48,7 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.MainActivity
 import io.github.mangi.eta.ui.app.AgentAppTheme
+import io.github.mangi.eta.ui.app.AgentConversationStore
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ReasoningEffort
@@ -100,6 +101,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private val runMessageProjector = AgentRunMessageProjector()
     private val conversationKey = "eta_assistant_${UUID.randomUUID()}"
     private var conversationHistory = emptyList<AgentModelClient.ConversationMessage>()
+    private var currentConversationId: String? = null
 
     private var windowManager: WindowManager? = null
     private var windowView: ComposeView? = null
@@ -176,6 +178,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         screenContextAttachment = null
         inputText = ""
         uiState = EtaVoiceUiState(
+            messages = uiState.messages,
+            conversationId = currentConversationId,
+            conversationTitle = uiState.conversationTitle,
+            historyConversations = uiState.historyConversations,
+            isHistoryMenuVisible = false,
             screenContext = EtaScreenContextUiState(
                 phase = EtaScreenContextPhase.CAPTURING,
             ),
@@ -183,6 +190,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             reasoningEffort = uiState.reasoningEffort,
             availableReasoningEfforts = uiState.availableReasoningEfforts,
         )
+        scope.launch {
+            loadInitialConversation()
+        }
         hiddenForForegroundOperation = false
         handoffInProgress = false
         handoffExitRequested = false
@@ -283,6 +293,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         onScreenContextSelect = ::selectScreenContext,
                         onScreenContextRemove = ::removeScreenContext,
                         onScreenTranslation = ::startScreenTranslation,
+                        onToggleHistoryMenu = ::toggleHistoryMenu,
+                        onSelectConversation = ::selectConversation,
+                        onNewConversation = ::newConversation,
                         onModelSelected = ::selectModel,
                         onSubmit = ::submitInput,
                         onStop = ::stopCurrentRun,
@@ -394,9 +407,17 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         val previewImages = attachment?.let { listOf(it.previewDataUrl) }.orEmpty()
         screenContextAttachment = null
         inputText = ""
+        if (currentConversationId == null) {
+            currentConversationId = "conv-${UUID.randomUUID()}"
+        }
+        val targetConvId = currentConversationId ?: return
+        val newTitle = uiState.conversationTitle.ifBlank { normalized.take(40) }
         activeRunId = UUID.randomUUID().toString()
         val runId = activeRunId ?: return
         uiState = uiState.copy(
+            conversationId = targetConvId,
+            conversationTitle = newTitle,
+            isHistoryMenuVisible = false,
             phase = EtaVoicePhase.PROCESSING,
             status = EtaVoiceStatus.Reasoning,
             screenContext = EtaScreenContextStateReducer.consume(),
@@ -452,6 +473,20 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 }
                 if (!hiddenForForegroundOperation) {
                     updateSoftInput(visible = false)
+                }
+                val finalMessages = uiState.messages
+                val finalHistory = conversationHistory
+                val saveConvId = currentConversationId ?: targetConvId
+                val saveTitle = uiState.conversationTitle.ifBlank { newTitle }
+                scope.launch {
+                    AgentConversationStore.saveAssistantConversation(
+                        context = this@EtaAssistantOverlayService,
+                        conversationId = saveConvId,
+                        title = saveTitle,
+                        messages = finalMessages,
+                        history = finalHistory,
+                    )
+                    refreshHistoryConversations(saveConvId)
                 }
                 hiddenForForegroundOperation
             }
@@ -809,6 +844,135 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 enabled = activeRunId == null,
             ),
         )
+    }
+
+    private suspend fun loadInitialConversation() {
+        val convData = AgentConversationStore.loadAssistantConversation(this, currentConversationId)
+        val recent = AgentConversationStore.loadRecentConversations(this)
+        withContext(Dispatchers.Main.immediate) {
+            if (convData != null) {
+                currentConversationId = convData.conversationId
+                conversationHistory = convData.history
+                val items = recent.map { meta ->
+                    AssistantConversationItem(
+                        id = meta.id,
+                        title = meta.title,
+                        updatedAt = meta.updatedAt,
+                        isCurrent = meta.id == convData.conversationId,
+                    )
+                }
+                uiState = uiState.copy(
+                    messages = convData.messages.distinctBy { it.id },
+                    conversationId = convData.conversationId,
+                    conversationTitle = convData.title,
+                    historyConversations = items,
+                )
+            } else {
+                val newId = "conv-${UUID.randomUUID()}"
+                currentConversationId = newId
+                val items = recent.map { meta ->
+                    AssistantConversationItem(
+                        id = meta.id,
+                        title = meta.title,
+                        updatedAt = meta.updatedAt,
+                        isCurrent = false,
+                    )
+                }
+                uiState = uiState.copy(
+                    conversationId = newId,
+                    historyConversations = items,
+                )
+            }
+        }
+    }
+
+    private fun refreshHistoryConversations(activeId: String? = currentConversationId) {
+        scope.launch {
+            val recent = AgentConversationStore.loadRecentConversations(
+                this@EtaAssistantOverlayService,
+            )
+            withContext(Dispatchers.Main.immediate) {
+                val items = recent.map { meta ->
+                    AssistantConversationItem(
+                        id = meta.id,
+                        title = meta.title,
+                        updatedAt = meta.updatedAt,
+                        isCurrent = meta.id == activeId,
+                    )
+                }
+                uiState = uiState.copy(historyConversations = items)
+            }
+        }
+    }
+
+    private fun toggleHistoryMenu() {
+        val next = !uiState.isHistoryMenuVisible
+        uiState = uiState.copy(isHistoryMenuVisible = next)
+        if (next) {
+            updateSoftInput(visible = false)
+            refreshHistoryConversations()
+        }
+    }
+
+    private fun selectConversation(targetId: String) {
+        if (activeRunId != null) return
+        if (targetId == currentConversationId) {
+            uiState = uiState.copy(isHistoryMenuVisible = false)
+            return
+        }
+        scope.launch {
+            val data = AgentConversationStore.loadAssistantConversation(
+                this@EtaAssistantOverlayService,
+                targetId,
+            )
+            val recent = AgentConversationStore.loadRecentConversations(
+                this@EtaAssistantOverlayService,
+            )
+            if (data != null) {
+                AgentConversationStore.selectConversation(
+                    this@EtaAssistantOverlayService,
+                    data.conversationId,
+                )
+            }
+            withContext(Dispatchers.Main.immediate) {
+                if (data != null) {
+                    currentConversationId = data.conversationId
+                    conversationHistory = data.history
+                    val items = recent.map { meta ->
+                        AssistantConversationItem(
+                            id = meta.id,
+                            title = meta.title,
+                            updatedAt = meta.updatedAt,
+                            isCurrent = meta.id == data.conversationId,
+                        )
+                    }
+                    inputText = ""
+                    uiState = uiState.copy(
+                        messages = data.messages.distinctBy { it.id },
+                        conversationId = data.conversationId,
+                        conversationTitle = data.title,
+                        historyConversations = items,
+                        isHistoryMenuVisible = false,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun newConversation() {
+        cancelCurrentRun()
+        val newId = "conv-${UUID.randomUUID()}"
+        currentConversationId = newId
+        conversationHistory = emptyList()
+        inputText = ""
+        uiState = uiState.copy(
+            messages = emptyList(),
+            conversationId = newId,
+            conversationTitle = "",
+            isHistoryMenuVisible = false,
+            historyConversations = uiState.historyConversations.map { it.copy(isCurrent = false) },
+        )
+        showKeyboard()
     }
 
     private var currentReasoningCapabilities: ModelReasoningCapabilities? = null
