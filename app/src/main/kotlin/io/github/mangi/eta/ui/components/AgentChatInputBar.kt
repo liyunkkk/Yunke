@@ -54,7 +54,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldLineLimits
-import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
@@ -154,6 +153,7 @@ private val InputContainerShape = RoundedCornerShape(20.dp)
 @Composable
 internal fun AgentChatInputBar(
     input: String,
+    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
     modelPickerState: AgentModelPickerUiState,
     history: List<AgentModelClient.ConversationMessage>,
     billedContextTokens: Int? = null,
@@ -196,16 +196,13 @@ internal fun AgentChatInputBar(
     onAssistantSelected: (String) -> Unit = {},
     /** 宿主可注入自己的 FocusRequester；浮窗用它驱动输入框聚焦。 */
     focusRequester: FocusRequester = remember { FocusRequester() },
-    /** 浮窗不显示麦克风入口：符合浮窗交互约定，同时避开 overlay 无
-     *  ActivityResultRegistryOwner 时语音权限 launcher 的崩溃。 */
-    showVoiceEntry: Boolean = true,
     /** 浮窗（TYPE_APPLICATION_OVERLAY + Service context）没有 Activity 窗口 token，
      *  任何 WindowDialog/Dialog.show 都会抛 BadTokenException 并杀死进程。
      *  开启后弹层全部改走 Popup 路线（挂在 overlay 自己的窗口 token 下）。 */
     overlayMode: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val textFieldState = rememberTextFieldState(initialText = input)
+    val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
     val draftText = textFieldState.text.toString()
     val historyTokenCount = remember(history) {
@@ -265,22 +262,15 @@ internal fun AgentChatInputBar(
         onAttachFolder = onAttachFolder,
     )
     LaunchedEffect(isEditingMessage) {
-        // 编辑态由外部业务状态驱动；普通输入只保留在本地，避免每个字符把聊天舞台
-        // 的消息流、滚动和 Markdown 一起带入重组。
-        if (isEditingMessage || wasEditingMessage) {
+        // 编辑模式切换由业务状态驱动；日常输入使用会话拥有的 TextFieldState，
+        // 不让每个字符触发消息列表和 Markdown 重组。
+        if (draftField == null && (isEditingMessage || wasEditingMessage)) {
             textFieldState.setTextAndPlaceCursorAtEnd(input)
         }
         if (isEditingMessage && !wasEditingMessage && !drawerBlocksIme) {
             showChatInputIme(focusRequester, keyboard, view)
         }
         wasEditingMessage = isEditingMessage
-    }
-
-    LaunchedEffect(isStreaming) {
-        if (isStreaming) {
-            // 发送按钮、建议词和外部恢复都可能启动流式任务，统一清掉本地草稿。
-            textFieldState.clearText()
-        }
     }
 
     CompositionLocalProvider(LocalChatInputFocusRequester provides focusRequester) {
@@ -390,8 +380,9 @@ internal fun AgentChatInputBar(
                             alpha = 0.08f,
                         ),
                     )
+                    // Q2-A：半透明输入框底色，让浮窗 blurBehindRadius 透出来（本体与浮窗统一）。
                     .squircleSurface(
-                        color = MiuixTheme.colorScheme.surfaceContainer,
+                        color = MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.35f),
                         cornerRadius = 20.dp,
                     )
                     .squircleBorder(
@@ -442,16 +433,8 @@ internal fun AgentChatInputBar(
                     }
                 }
 
-                // The speech target is 48dp, while action buttons are 40dp.
-                // Center BOTH layers and reserve the row height even when speech is hidden.
-                Box(
-                    modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
+                ChatComposerActionRow(
+                    actions = {
                         if (isEditingMessage) {
                             IconButton(
                                 onClick = onCancelMessageEdit,
@@ -495,18 +478,7 @@ internal fun AgentChatInputBar(
                         }
 
                         Spacer(modifier = Modifier.weight(1f))
-                        if (!isEditingMessage && showVoiceEntry) {
-                            VoiceEntryButton(
-                                textFieldState = textFieldState,
-                                showGeneration = showMorphLoading,
-                                interactionBlocked = drawerBlocksIme,
-                                resetKey = isStreaming to isEditingMessage,
-                                voiceState = voiceState,
-                                onStartVoiceMode = onStartVoiceMode,
-                                onStopVoiceMode = onStopVoiceMode,
-                            )
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
+
 
                         // Keep context details accessible even for an empty draft or an unknown limit.
                         if (showContextUsage) {
@@ -553,7 +525,6 @@ internal fun AgentChatInputBar(
                                             "continue" -> onContinue()
                                             "send" -> {
                                                 val submittedText = textFieldState.text.toString()
-                                                textFieldState.clearText()
                                                 onSubmit(submittedText)
                                             }
                                         }
@@ -619,19 +590,28 @@ internal fun AgentChatInputBar(
                                 }
                             }
                         }
-                    }
-                    // Editing has asymmetric controls: center against the whole row,
-                    // not the remaining space between the cancel and model/send buttons.
-                    if (isEditingMessage) {
-                        ChatSpeechIndicator(
-                            modifier = Modifier.align(Alignment.Center),
-                            textFieldState = textFieldState,
-                            showGeneration = showMorphLoading,
-                            interactionBlocked = drawerBlocksIme,
-                            resetKey = isStreaming to isEditingMessage,
-                        )
-                    }
-                }
+                    },
+                    indicator = {
+                        if (isEditingMessage) {
+                            ChatSpeechIndicator(
+                                textFieldState = textFieldState,
+                                showGeneration = showMorphLoading,
+                                interactionBlocked = drawerBlocksIme,
+                                resetKey = isStreaming to isEditingMessage,
+                            )
+                        } else {
+                            VoiceEntryButton(
+                                textFieldState = textFieldState,
+                                showGeneration = showMorphLoading,
+                                interactionBlocked = drawerBlocksIme,
+                                resetKey = isStreaming to isEditingMessage,
+                                voiceState = voiceState,
+                                onStartVoiceMode = onStartVoiceMode,
+                                onStopVoiceMode = onStopVoiceMode,
+                            )
+                        }
+                    },
+                )
             }
         }
     }
@@ -1038,7 +1018,15 @@ private fun VoiceEntryButton(
     val view = LocalView.current
     val context = LocalContext.current
     var picker by remember { mutableStateOf(false) }
+    var lastSelected by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY)) }
+    fun rememberMode(mode: VoiceEntryMode) {
+        lastSelected = mode.wireValue
+        Prefs.putString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY, mode.wireValue)
+    }
     var pendingMode by remember { mutableStateOf<VoiceEntryMode?>(null) }
+    // 浮窗（overlay Service）没有 ActivityResultRegistryOwner，权限请求改走透明跳板。
+    val hasRegistryOwner =
+        androidx.activity.compose.LocalActivityResultRegistryOwner.current != null
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val mode = pendingMode
         pendingMode = null
@@ -1049,17 +1037,41 @@ private fun VoiceEntryButton(
     fun startMode(mode: VoiceEntryMode) {
         if (!io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
                 io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) return
+        rememberMode(mode)
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             onStartVoiceMode(mode)
         } else {
             pendingMode = mode
-            permission.launch(Manifest.permission.RECORD_AUDIO)
+            if (hasRegistryOwner) {
+                permission.launch(Manifest.permission.RECORD_AUDIO)
+            } else {
+                // 浮窗：借透明 Activity 承载权限请求
+                VoicePermissionTrampolineActivity.requestRecordAudio(context) { granted ->
+                    val pending = pendingMode
+                    pendingMode = null
+                    if (granted && pending != null) {
+                        onStartVoiceMode(pending)
+                    } else if (pending != null) {
+                        Toast.makeText(
+                            context,
+                            R.string.speech_permission_denied,
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+            }
         }
     }
     val config by io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.collectAsState()
     val modes = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.modes(config)
     val canChoose = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.canChoose(config)
-    var dictationStartRequest by remember { mutableStateOf(0) }
+    val directMode = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.directMode(config, lastSelected)
+    val directLabel = when (directMode) {
+        VoiceEntryMode.DICTATION -> R.string.voice_mode_dictation
+        VoiceEntryMode.UNIVERSAL -> R.string.voice_mode_universal
+        VoiceEntryMode.DOUBAO_DUPLEX -> R.string.voice_mode_doubao
+        null -> R.string.voice_mode_choose
+    }
     LaunchedEffect(Unit) { io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.load(context) }
     LaunchedEffect(modes) {
         if (!canChoose) picker = false
@@ -1071,7 +1083,7 @@ private fun VoiceEntryButton(
         picker = false
     }
     val active = voiceState.active || voiceState.error != null
-    val choose: (() -> Unit)? = if (canChoose) ({ TouchHaptics.click(view); picker = true }) else null
+    val choose: (() -> Unit)? = if (canChoose) ({ picker = true }) else null
     Box {
     if (VoiceEntryMode.DICTATION in modes && !active) {
         ChatSpeechIndicator(
@@ -1080,10 +1092,15 @@ private fun VoiceEntryButton(
             interactionBlocked = interactionBlocked,
             resetKey = resetKey,
             onLongClick = choose,
-            onUnavailableClick = choose,
-            onIdleClick = choose,
+            onUnavailableClick = if (canChoose) ({ picker = true }) else null,
+            onIdleClick = when (directMode) {
+                VoiceEntryMode.DICTATION -> null
+                null -> if (canChoose) ({ picker = true }) else null
+                else -> ({ startMode(directMode) })
+            },
+            idleDescription = context.getString(directLabel),
+            onStartRequested = { rememberMode(VoiceEntryMode.DICTATION) },
             suspendCapture = picker,
-            startRequest = dictationStartRequest,
             forceVisible = true,
         )
     } else {
@@ -1092,17 +1109,23 @@ private fun VoiceEntryButton(
                 .size(48.dp)
                 .clip(CircleShape)
                 .then(if (modes.isNotEmpty() || active) Modifier.semantics {
-                    contentDescription = context.getString(if (active) R.string.voice_mode_stop else R.string.voice_mode_open)
+                    contentDescription = context.getString(if (active) R.string.voice_mode_stop else directLabel)
                 }.combinedClickable(
                     enabled = !interactionBlocked,
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() },
-                    onLongClick = if (!active) choose else null,
+                    hapticFeedbackEnabled = false,
+                    onLongClick = if (!active) choose?.let { callback ->
+                        {
+                            TouchHaptics.longPress(view)
+                            callback()
+                        }
+                    } else null,
                     onClick = {
                         TouchHaptics.click(view)
                         when {
                             active -> onStopVoiceMode()
-                            modes.size == 1 -> io.github.mangi.eta.agent.voice.VoiceEntryPolicy.directMode(config)?.let(::startMode)
+                            directMode != null -> startMode(directMode)
                             modes.size > 1 -> picker = true
                         }
                     },
@@ -1121,8 +1144,12 @@ private fun VoiceEntryButton(
         onDismiss = { picker = false },
         onSelect = { mode ->
             picker = false
-            if (mode in modes) {
-                if (mode == VoiceEntryMode.DICTATION) dictationStartRequest++ else startMode(mode)
+            pendingMode = null
+            if (!interactionBlocked && io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
+                    io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) {
+                TouchHaptics.click(view)
+                // Choosing changes the default only; a separate tap starts capture or a call.
+                rememberMode(mode)
             }
         },
     )

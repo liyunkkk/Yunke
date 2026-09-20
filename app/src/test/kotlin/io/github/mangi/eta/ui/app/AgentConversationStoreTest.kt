@@ -77,6 +77,7 @@ class AgentConversationStoreTest {
                     content = "| 项目 | 内容 |\n| --- | --- |\n| 电量 | 88% |",
                     isStreaming = false,
                     renderMarkdown = true,
+                    generatedAtMillis = 1_800_000_000_000L,
                     usage = TokenUsageUi(
                         contextTokens = 100,
                         inputTokens = 30,

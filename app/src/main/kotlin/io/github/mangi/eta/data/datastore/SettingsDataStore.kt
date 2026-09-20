@@ -54,6 +54,8 @@ internal object SettingsDataStore {
         booleanPreferencesKey("appearance_morph_loading_indicator")
     private val APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE =
         booleanPreferencesKey("appearance_morph_loading_before_response")
+    private val APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED =
+        booleanPreferencesKey("appearance_message_timestamps_enabled")
     private val APP_LAUNCH_COUNT = intPreferencesKey("app_launch_count")
     private val UPDATE_DISMISSED_VERSION = stringPreferencesKey("update_dismissed_version")
     private val UPDATE_LAST_CHECK_AT = longPreferencesKey("update_last_check_at")
@@ -532,6 +534,7 @@ internal object SettingsDataStore {
             interfaceScale = this[APPEARANCE_INTERFACE_SCALE] ?: 1f,
             morphLoadingIndicator = this[APPEARANCE_MORPH_LOADING_INDICATOR] ?: true,
             morphLoadingBeforeResponseOnly = this[APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE] ?: false,
+            messageTimestampsEnabled = this[APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED] ?: false,
         ).normalized(),
     )
 
@@ -548,6 +551,7 @@ internal object SettingsDataStore {
         this[APPEARANCE_INTERFACE_SCALE] = settings.interfaceScale
         this[APPEARANCE_MORPH_LOADING_INDICATOR] = settings.morphLoadingIndicator
         this[APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE] = settings.morphLoadingBeforeResponseOnly
+        this[APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED] = settings.messageTimestampsEnabled
     }
 }
 

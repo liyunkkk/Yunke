@@ -1,25 +1,37 @@
 package io.github.mangi.eta.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.voice.tts.SpeechEngineResolver
+import io.github.mangi.eta.agent.voice.tts.ReadAloudVoiceHistory
 import io.github.mangi.eta.agent.voice.tts.SpeechPlayback
-import io.github.mangi.eta.agent.voice.tts.SpeechVoices
 import io.github.mangi.eta.agent.voice.tts.SpeechVoice
+import io.github.mangi.eta.agent.voice.tts.SpeechVoices
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.data.repository.ProviderRepository
@@ -28,17 +40,16 @@ import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 @Composable
 internal fun TtsSettingsScreen(onBack: () -> Unit) {
     var personalPage by remember { mutableStateOf(false) }
     if (personalPage) {
-        DoubaoVoiceSettings(page = "voices", onBack = { personalPage = false })
+        PersonalVoicesScreen(onBack = { personalPage = false })
         return
     }
     val context = LocalContext.current
+    val view = LocalView.current
     var cloud by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_TTS_MODE) == "cloud") }
     var providerId by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID)) }
     var modelId by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_ID)) }
@@ -51,19 +62,24 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
     }
     val selectedProvider = remember(providers, providerId) { providers.firstOrNull { it.id == providerId } }
     val engine = remember(selectedProvider, modelId) { SpeechEngineResolver.resolve(selectedProvider, modelId) }
+    val mimoVoices by io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.state.collectAsState()
+    LaunchedEffect(Unit) { runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.load(context) } } }
     val personalVoices by io.github.mangi.eta.agent.voice.doubao.PersonalVoices.state.collectAsState()
     LaunchedEffect(Unit) { io.github.mangi.eta.agent.voice.doubao.PersonalVoices.load(context) }
-    val catalog = remember(engine, modelId, personalVoices, selectedProvider) {
+    val catalog = remember(engine, modelId, personalVoices, mimoVoices, selectedProvider) {
         SpeechVoices.catalog(engine, modelId) + if (engine == io.github.mangi.eta.agent.voice.tts.SpeechEngine.DOUBAO && !io.github.mangi.eta.agent.voice.tts.DoubaoSpeech.usesCreate(modelId)) {
             personalVoices.filter { it.tts && it.accepted && it.account == io.github.mangi.eta.agent.voice.doubao.PersonalVoices.account(selectedProvider?.apiKey.orEmpty()) }
                 .map { SpeechVoice(it.id, it.name, personal = true) }
+        } else if (engine == io.github.mangi.eta.agent.voice.tts.SpeechEngine.MIMO) {
+            mimoVoices.filter { it.providerId == selectedProvider?.id }.map { SpeechVoice(it.id, it.name, personal = true) }
         } else emptyList()
     }
+    LaunchedEffect(Unit) { ReadAloudVoiceHistory.rememberCurrent(context) }
     val playback by SpeechPlayback.state.collectAsState()
     val sample = stringResource(R.string.tts_sample)
     LaunchedEffect(cloud, providerId, selectedProvider?.id, engine, modelId, catalog, voice) {
         // A missing/expired personal voice must not silently become a public voice.
-        if (voice.startsWith("etaClone") || voice.startsWith("S_")) return@LaunchedEffect
+        if (voice.startsWith("etaClone") || voice.startsWith("S_") || voice.startsWith("mimo-local-")) return@LaunchedEffect
         if (!SpeechVoices.shouldReplaceStoredVoice(
                 cloud = cloud,
                 providerId = providerId,
@@ -77,12 +93,13 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
         val fallback = catalog.first().id
         voice = fallback
         Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, fallback)
+        ReadAloudVoiceHistory.remember(context, providerId, modelId, fallback)
     }
     MiuixScaffoldPage(title = stringResource(R.string.tts_title), onBack = onBack) {
         item(key = "my_voices") {
             Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 ArrowPreference(title = "我的声音", summary = "导入、制作和试听个人声音",
-                    insideMargin = PaddingValues(16.dp), onClick = { personalPage = true })
+                    insideMargin = PaddingValues(16.dp), onClick = { TouchHaptics.click(view); personalPage = true })
             }
         }
         item(key = "tts_mode") {
@@ -93,6 +110,7 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
                     checked = cloud,
                     insideMargin = PaddingValues(16.dp),
                     onCheckedChange = {
+                        TouchHaptics.click(view)
                         SpeechPlayback.stop()
                         cloud = it
                         Prefs.putString(Prefs.Keys.AGENT_TTS_MODE, if (it) "cloud" else "system")
@@ -107,7 +125,7 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
                         title = stringResource(R.string.tts_model),
                         summary = models.selectedModel?.let { "${it.providerName} · ${it.displayName}" } ?: stringResource(R.string.tts_select_model),
                         insideMargin = PaddingValues(16.dp),
-                        onClick = { picker = true },
+                        onClick = { TouchHaptics.click(view); picker = true },
                     )
                     ArrowPreference(
                         title = stringResource(R.string.tts_voice),
@@ -115,12 +133,7 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
                             ?: voice.ifBlank { stringResource(R.string.tts_select_voice) },
                         insideMargin = PaddingValues(16.dp),
                         enabled = models.selectedModel != null && catalog.isNotEmpty(),
-                        onClick = { voicePicker = true },
-                    )
-                    Text(
-                        stringResource(R.string.tts_protocol_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        onClick = { TouchHaptics.click(view); voicePicker = true },
                     )
                 }
             }
@@ -133,23 +146,20 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
                         ?: stringResource(if (playback.preparing) R.string.tts_preparing else R.string.tts_manual_hint),
                     insideMargin = PaddingValues(16.dp),
                     enabled = !playback.recording && (!cloud || (models.selectedModel != null && voice.isNotBlank())),
-                    onClick = { SpeechPlayback.toggle(context, "tts-preview", sample) },
+                    onClick = { TouchHaptics.click(view); SpeechPlayback.toggle(context, "tts-preview", sample) },
                 )
             }
         }
-        item(key = "tts_privacy") {
-            Text(stringResource(R.string.tts_privacy), style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 28.dp, vertical = 10.dp))
-        }
     }
-    CompressModelPickerDialog(
+    TtsModelPickerDialog(
         state = models, show = picker, onDismiss = { picker = false },
         title = stringResource(R.string.tts_model),
         onModelSelected = { provider, model ->
             SpeechPlayback.stop()
             if (providerId != provider || modelId != model) {
-                voice = ""
-                Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, "")
+                ReadAloudVoiceHistory.remember(context, providerId, modelId, voice)
+                voice = ReadAloudVoiceHistory.restore(context, provider, model)
+                Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, voice)
             }
             providerId = provider
             modelId = model
@@ -167,6 +177,7 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
             SpeechPlayback.stop()
             voice = id
             Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, id)
+            ReadAloudVoiceHistory.remember(context, providerId, modelId, id)
             voicePicker = false
         },
     )
@@ -180,44 +191,50 @@ private fun TtsVoicePickerDialog(
     onDismiss: () -> Unit,
     onSelected: (String) -> Unit,
 ) {
-    WindowDialog(
-        show = show,
-        title = stringResource(R.string.tts_voice),
+    if (!show) return
+    val view = LocalView.current
+    AlertDialog(
         onDismissRequest = onDismiss,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 520.dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            val personal = voices.filter { it.personal }
-            val female = voices.filter { !it.personal && "_female_" in it.id }
-            val male = voices.filter { !it.personal && "_male_" in it.id }
-            val other = voices.filter { !it.personal && "_female_" !in it.id && "_male_" !in it.id }
-            if (female.isNotEmpty()) {
-                VoiceSectionTitle(stringResource(R.string.tts_voice_female))
-                female.forEach { VoiceRow(it, selectedId, onSelected) }
+        title = { Text(stringResource(R.string.tts_voice)) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState())
+                    .selectableGroup(),
+            ) {
+                val personal = voices.filter { it.personal }
+                val female = voices.filter { !it.personal && "_female_" in it.id }
+                val male = voices.filter { !it.personal && "_male_" in it.id }
+                val other = voices.filter { !it.personal && "_female_" !in it.id && "_male_" !in it.id }
+                if (female.isNotEmpty()) {
+                    VoiceSectionTitle(stringResource(R.string.tts_voice_female))
+                    female.forEach { VoiceRow(it, selectedId, onSelected) }
+                }
+                if (male.isNotEmpty()) {
+                    VoiceSectionTitle(stringResource(R.string.tts_voice_male))
+                    male.forEach { VoiceRow(it, selectedId, onSelected) }
+                }
+                other.forEach { VoiceRow(it, selectedId, onSelected) }
+                if (personal.isNotEmpty()) {
+                    VoiceSectionTitle(stringResource(R.string.tts_voice_personal))
+                    personal.forEach { VoiceRow(it, selectedId, onSelected) }
+                }
             }
-            if (male.isNotEmpty()) {
-                VoiceSectionTitle(stringResource(R.string.tts_voice_male))
-                male.forEach { VoiceRow(it, selectedId, onSelected) }
-            }
-            other.forEach { VoiceRow(it, selectedId, onSelected) }
-            if (personal.isNotEmpty()) {
-                VoiceSectionTitle(stringResource(R.string.tts_voice_personal))
-                personal.forEach { VoiceRow(it, selectedId, onSelected) }
-            }
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = { TouchHaptics.click(view); onDismiss() }) { Text(stringResource(R.string.action_close)) }
+        },
+    )
 }
 
 @Composable
 private fun VoiceSectionTitle(text: String) {
     Text(
         text = text,
-        style = MiuixTheme.textStyles.subtitle,
-        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 4.dp, vertical = 8.dp),
@@ -226,15 +243,25 @@ private fun VoiceSectionTitle(text: String) {
 
 @Composable
 private fun VoiceRow(voice: SpeechVoice, selectedId: String, onSelected: (String) -> Unit) {
-    Column(
+    val view = LocalView.current
+    val selected = voice.id == selectedId
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onSelected(voice.id) }
-            .padding(horizontal = 4.dp, vertical = 10.dp),
+            .heightIn(min = 56.dp)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = { TouchHaptics.click(view); onSelected(voice.id) })
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        RadioButton(selected = selected, onClick = null)
+        // Public and personal voices share the same typography, including the selected row.
         Text(
             text = voice.name,
-            color = if (voice.id == selectedId) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Normal,
+            fontStyle = FontStyle.Normal,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f).padding(start = 12.dp),
         )
     }
 }

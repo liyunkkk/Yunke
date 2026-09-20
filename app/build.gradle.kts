@@ -165,6 +165,9 @@ dependencies {
     testImplementation(libs.json)
     testImplementation(libs.room.testing)
     testImplementation(libs.robolectric)
+    // Match the Compose UI supplied by miuix 0.9.4-rc01; selection needs real gesture coverage.
+    testImplementation("androidx.compose.ui:ui-test-junit4:1.12.0-rc01")
+    debugImplementation("androidx.compose.ui:ui-test-manifest:1.12.0-rc01")
 }
 
 // Pin and verify the small JNI runtime; speech model is opt-in at runtime, never bundled.

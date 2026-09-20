@@ -12,11 +12,11 @@ import org.junit.Test
 
 class AgentPromptBuilderTest {
     @Test
-    fun currentModelIdentityFollowsConfigWithCustomOrEmptyProviderPrompt() {
+    fun generatedSystemPromptDoesNotInjectModelIdentity() {
         for (providerPrompt in listOf("自定义回答风格", "")) {
             val config = modelConfig(providerPrompt, terminalTools = false, browserTools = false)
                 .copy(model = "provider/model-a", modelDisplayName = "显示名称")
-            for (modelId in listOf(config.model, "provider/model-b")) {
+            for (modelId in listOf(config.model, "provider/model-b", "gpt-6-astra")) {
                 val messages = AgentPromptBuilder.buildSystemMessages(
                     config = config.copy(model = modelId),
                     skillContext = SkillContext.EMPTY,
@@ -24,15 +24,31 @@ class AgentPromptBuilderTest {
                     rootAvailable = false,
                 )
 
-                val identity = messages.systemContents().single { it.contains("当前配置的模型：") }
-                assertTrue(identity.contains("以系统提示中的助手人格为准"))
-                assertTrue(identity.contains("当前配置的模型：\"$modelId\""))
-                assertFalse(identity.contains(config.modelDisplayName))
-                if (modelId != config.model) assertFalse(identity.contains(config.model))
+                val contents = messages.systemContents()
+                assertTrue(contents.any { it.contains("以系统提示中的助手人格为准") })
+                assertFalse(contents.any { it.contains("当前配置的模型：") })
+                assertFalse(contents.any { it.contains("询问所用模型时按当前配置") })
+                assertFalse(contents.any { it.contains("模型名称可能是服务商别名") })
+                assertFalse(contents.any { it.contains(modelId) || it.contains(config.modelDisplayName) })
                 if (providerPrompt.isNotBlank()) {
                     assertEquals(providerPrompt, messages.getJSONObject(0).getString("content"))
                 }
             }
+        }
+    }
+
+    @Test
+    fun visionCapabilityWarningRemainsWithoutModelIdentity() {
+        for (vision in listOf(false, true)) {
+            val contents = AgentPromptBuilder.buildSystemMessages(
+                config = modelConfig("", terminalTools = false, browserTools = false)
+                    .copy(model = "provider-routing-only", supportsVision = vision),
+                skillContext = SkillContext.EMPTY,
+                memoryContext = AgentMemoryContext.DISABLED,
+                rootAvailable = false,
+            ).systemContents()
+            assertEquals(!vision, contents.any { it.contains("当前模型未启用图片输入") })
+            assertFalse(contents.any { it.contains("provider-routing-only") })
         }
     }
 

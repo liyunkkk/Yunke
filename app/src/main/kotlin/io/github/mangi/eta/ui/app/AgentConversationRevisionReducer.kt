@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentContextCompactor
+import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentChatUiState
 import io.github.mangi.eta.ui.model.AgentMessageUi
@@ -42,7 +44,9 @@ internal object AgentConversationRevisionReducer {
         val laterTurnCount = state.messages.drop(userMessageIndex + 1).count {
             it is UserMessageUi && !it.isSteerSupplement()
         }
-        val compacted = historyIndex == null
+        val compacted = historyIndex == null && wasRemovedByCompaction(state, userMessageIndex)
+        // A missing match is not proof of compaction. Fail closed instead of erasing history.
+        if (historyIndex == null && !compacted) return null
 
         return Boundary(
             userMessage = userMessage,
@@ -73,7 +77,9 @@ internal object AgentConversationRevisionReducer {
             state.messages[index] is UserMessageUi
         } ?: return null
         val historyUserIndex = historyUserIndex(state, userMessageIndex)
-        if (historyUserIndex == null && (state.messages[userMessageIndex] as UserMessageUi).isSteerSupplement()) return null
+        if (historyUserIndex == null &&
+            ((state.messages[userMessageIndex] as UserMessageUi).isSteerSupplement() ||
+                !wasRemovedByCompaction(state, userMessageIndex))) return null
         val messages = state.messages.take(targetIndex + 1)
         val history = if (historyUserIndex == null) {
             reconstructHistory(messages)
@@ -96,15 +102,16 @@ internal object AgentConversationRevisionReducer {
         val expected = user.content.trim()
         val steering = io.github.mangi.eta.agent.model.AgentContextCompactor.steeringUserContent(user.content).trim()
         fun matches(message: AgentModelClient.ConversationMessage): Boolean {
-            if (message.role != "user") return false
-            val text = message.content.ifBlank {
-                runCatching {
-                    val parts = org.json.JSONArray(message.contentJson)
-                    (0 until parts.length()).mapNotNull { parts.optJSONObject(it)?.optString("text") }
-                        .filter { it.isNotBlank() }.joinToString("\n")
-                }.getOrDefault("")
-            }.trim()
-            return text == expected || text == steering
+            if (message.role != "user" || AgentContextCompactor.isCompressionSummary(message)) return false
+            val text = historyText(message)
+            if (text == expected || text == steering) return true
+            // Attachment envelopes differ between UI/persisted/vision requests. Only normalize
+            // inside the same proven owner turn, never across repeated questions or supplements.
+            if (message.turnId != runId || user.isSteerSupplement()) return false
+            val parsed = AgentFileReferencePromptCodec.parse(text)
+            val ui = AgentFileReferencePromptCodec.parse(expected)
+            return ui.request.isNotBlank() && parsed.request.trim() == ui.request.trim() &&
+                parsed.conversations == ui.conversations
         }
         val candidates = state.history.indices.filter { matches(state.history[it]) }
         val inTurn = candidates.filter { state.history[it].turnId == runId }
@@ -115,6 +122,36 @@ internal object AgentConversationRevisionReducer {
                 (inTurn.isEmpty() || it.id.removePrefix("user-").substringBefore("-supplement-") == runId)
         }
         return scoped.getOrNull(scoped.size - 1 - laterDuplicates)
+    }
+
+    private fun historyText(message: AgentModelClient.ConversationMessage): String =
+        message.content.ifBlank {
+            runCatching {
+                val parts = org.json.JSONArray(message.contentJson)
+                (0 until parts.length()).mapNotNull { index ->
+                    parts.optJSONObject(index)?.takeIf { it.optString("type") == "text" }?.optString("text")
+                }.filter { it.isNotBlank() }.joinToString("\n")
+            }.getOrDefault("")
+        }.trim()
+
+    /** Evidence must place this specific missing message before a real summary boundary.
+     * A tool-pruning marker or a summary elsewhere in the conversation is insufficient. */
+    private fun wasRemovedByCompaction(state: AgentChatUiState, uiIndex: Int): Boolean {
+        val user = state.messages[uiIndex] as UserMessageUi
+        val owner = user.id.removePrefix("user-").substringBefore("-supplement-")
+        if (state.history.any { it.role == "user" && it.turnId == owner }) return false
+        val markers = state.messages.withIndex().filter { (_, message) ->
+            message is ContextCompactedMessageUi && message.compactedCount > 0 && message.summary.isNotBlank()
+        }
+        if (markers.isNotEmpty()) return markers.any { it.index > uiIndex }
+        // Legacy conversations may lack UI markers. Require a real summary plus a retained,
+        // exactly matched later user turn; do not infer from a smaller history list alone.
+        val summaryIndex = state.history.indexOfLast(AgentContextCompactor::isCompressionSummary)
+        if (summaryIndex < 0) return false
+        return (uiIndex + 1 until state.messages.size).any { later ->
+            state.messages[later] is UserMessageUi &&
+                historyUserIndex(state, later)?.let { it > summaryIndex } == true
+        }
     }
 
     fun outboundHistory(state: AgentChatUiState): List<AgentModelClient.ConversationMessage> {

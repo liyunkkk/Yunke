@@ -92,16 +92,23 @@ internal object SpeechPlayback {
         start(context, owner, markdown)
     }
 
-    private fun start(context: Context, owner: String, markdown: String, diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts")) {
+    fun previewMimo(context: Context, voice: io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.Voice, text: String) {
+        val owner = "mimo-preview:${voice.id}"
+        if (recordingToken != null) return
+        if (state.value.owner == owner) { stop(); return }
+        start(context, owner, text, overrideVoice = voice)
+    }
+
+    private fun start(context: Context, owner: String, markdown: String, diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts"), overrideVoice: io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.Voice? = null) {
         stop()
         val token = epoch.next()
         val app = context.applicationContext
         // Capture preferences once: settings changed while loading must not mix provider/model/voice.
-        val cloud = Prefs.getString(Prefs.Keys.AGENT_TTS_MODE) == "cloud"
+        val cloud = overrideVoice != null || Prefs.getString(Prefs.Keys.AGENT_TTS_MODE) == "cloud"
         diagnostic.mark("tts.begin", "chars" to markdown.length, "cloud" to if (cloud) 1 else 0)
-        val providerId = Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID)
+        val providerId = overrideVoice?.providerId ?: Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID)
         val modelId = Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_ID)
-        val voiceId = Prefs.getString(Prefs.Keys.AGENT_TTS_VOICE).trim()
+        val voiceId = overrideVoice?.id ?: Prefs.getString(Prefs.Keys.AGENT_TTS_VOICE).trim()
         mutableState.value = SpeechPlaybackState(owner, preparing = true)
         job = scope.launch {
             // A new player cannot overlap the previous player's finally/shutdown.
@@ -125,9 +132,10 @@ internal object SpeechPlayback {
                                 val provider = ProviderRepository.providerById(providerId)
                                     ?.takeIf(SpeechSynthesisModels::isReadAloudProvider)
                                     ?: throw SpeechPlaybackFailure("该提供商不支持此朗读接入方式")
-                                val model = provider.models.firstOrNull { it.id == modelId && it.isEnabled && it.supportsSpeechSynthesis }
-                                    ?: SpeechSynthesisModels.catalogModels(provider).firstOrNull { it.id == modelId || it.modelId == modelId }
-                                    ?: throw SpeechPlaybackFailure("朗读模型已不可用，请重新配置或选择系统朗读")
+                                if (voiceId.startsWith("mimo-local-")) io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.load(app)
+                                val model = SpeechSynthesisModels.mergeCatalog(provider).firstOrNull {
+                                    (if (overrideVoice != null) it.modelId == "mimo-v2.5-tts" else it.id == modelId) && it.isEnabled && SpeechSynthesisModels.isReadAloudModel(it)
+                                } ?: throw SpeechPlaybackFailure("朗读模型已不可用，请重新配置或选择系统朗读")
                                 RuntimeConfigRepository.buildRuntimeConfig(provider, model)
                             }
                             io.github.mangi.eta.agent.voice.doubao.PersonalVoices.load(app)

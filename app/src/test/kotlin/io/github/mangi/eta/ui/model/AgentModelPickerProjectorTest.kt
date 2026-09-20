@@ -16,6 +16,27 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentModelPickerProjectorTest {
+    @Test fun readAloudHidesCreationModelsAndInvalidatesOldSelection() {
+        val providers = listOf(
+            provider(id = "mixed", models = listOf(model(id = "tts-1"), model(id = "mimo-v2.5-tts-voiceclone"), model(id = "mimo-v2.5-tts-voicedesign"))),
+            provider(id = "creation-only", models = listOf(model(id = "mimo-v2.5-tts-voiceclone"))),
+        )
+        val result = AgentModelPickerProjector.project(providers, "mixed", "mimo-v2.5-tts-voiceclone", speechOnly = true)
+        assertEquals(listOf("mixed"), result.providerGroups.map { it.providerId })
+        assertEquals(listOf("tts-1"), result.providerGroups.single().models.map { it.modelId })
+        assertNull(result.selectedModel)
+    }
+
+    @Test fun doubaoReadAloudOmitsGeneratedAudioFromBuiltInCatalog() {
+        val provider = io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting(
+            id = "doubao", name = "豆包", baseUrl = "https://openspeech.bytedance.com", apiKey = "test",
+        )
+        val result = AgentModelPickerProjector.project(listOf(provider), "doubao", "seed-audio-1.0", speechOnly = true)
+        assertEquals(listOf("seed-tts-2.0"), result.providerGroups.single().models.map { it.modelId })
+        assertNull(result.selectedModel)
+        assertTrue(io.github.mangi.eta.data.model.SpeechSynthesisModels.mergeCatalog(provider).any { it.modelId == "seed-audio-1.0" })
+    }
+
     @Test fun speechPickerHidesChatModelsAndEmptyProviders() {
         val providers = listOf(
             provider(id = "chat", models = listOf(model(id = "gpt-5"))),

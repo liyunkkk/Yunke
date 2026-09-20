@@ -208,7 +208,8 @@ internal sealed interface AgentEvent {
 
     data class RunFinished(
         val round: Int,
-        val contentChars: Int
+        val contentChars: Int,
+        val generatedAtMillis: Long? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
             "run_finished round=$round, content_chars=$contentChars"

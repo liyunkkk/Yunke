@@ -492,6 +492,7 @@ fun AgentAppRoot(
                         requestOverheadTokens = agentState.requestOverheadTokens,
                         billedOverheadTokens = agentState.billedOverheadTokens,
                         conversationKey = agentState.conversationPaneState.selectedConversationId,
+                        draftField = agentState.currentDraftField(),
                         onAction = { action ->
                             when (action) {
                                 is AgentHomeAction.ReasoningEffortChanged ->
@@ -558,6 +559,7 @@ fun AgentAppRoot(
                         requestOverheadTokens = agentState.requestOverheadTokens,
                         billedOverheadTokens = agentState.billedOverheadTokens,
                         conversationKey = agentState.conversationPaneState.selectedConversationId,
+                        draftField = agentState.currentDraftField(),
                         onAction = { action ->
                             when (action) {
                                 AgentChatAction.NavigateBack -> popRoute()
@@ -806,6 +808,14 @@ fun AgentAppRoot(
                     currentProviderId = agentState.homeState.providerId,
                     currentModelId = agentState.homeState.modelId,
                 )
+            }
+            entry<AppRoute.AuxiliaryVision>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
+                    feature = io.github.mangi.eta.agent.model.ModelFeature.VISION, onBack = ::popRoute)
+            }
+            entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
+                    feature = io.github.mangi.eta.agent.model.ModelFeature.TITLE, onBack = ::popRoute)
             }
             entry<AppRoute.TtsSettings>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.TtsSettingsScreen(onBack = ::popRoute)

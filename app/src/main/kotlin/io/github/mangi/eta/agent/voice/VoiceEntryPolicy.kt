@@ -9,6 +9,10 @@ internal object VoiceEntryPolicy {
         if (config.duplexEnabled) add(VoiceEntryMode.DOUBAO_DUPLEX)
     }
     fun enabled(config: DoubaoVoiceConfig.Config, mode: VoiceEntryMode): Boolean = mode in modes(config)
-    fun directMode(config: DoubaoVoiceConfig.Config): VoiceEntryMode? = modes(config).singleOrNull()
+    fun directMode(config: DoubaoVoiceConfig.Config, lastSelected: String = ""): VoiceEntryMode? {
+        val available = modes(config)
+        // Unknown/disabled history must not silently enable a mode or guess dictation.
+        return available.firstOrNull { it.wireValue == lastSelected } ?: available.singleOrNull()
+    }
     fun canChoose(config: DoubaoVoiceConfig.Config): Boolean = modes(config).size > 1
 }

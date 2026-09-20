@@ -15,6 +15,80 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentConversationRevisionReducerTest {
+    @Test fun missingHistoryWithoutSummaryBlocksAllDestructiveRevisionPaths() {
+        val state = conversationState().copy(history = conversationState().history.drop(4))
+        val before = state.copy()
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-1"))
+        assertNull(AgentConversationRevisionReducer.deleteFromTurn(state, "user-1"))
+        assertNull(AgentConversationRevisionReducer.branchPrefix(state, "assistant-1"))
+        assertEquals(before, state)
+    }
+
+    @Test fun attachmentEnvelopeDifferenceMatchesWithinTheSameTurn() {
+        val envelope = "# Files mentioned by the user:\n\n## photo.jpg: /cache/photo.jpg\n\n## My request:\n图里有什么"
+        val prefix = listOf(AgentModelClient.ConversationMessage("user", "earlier", turnId = "run-old"),
+            AgentModelClient.ConversationMessage("assistant", "previous answer", turnId = "run-old"))
+        val state = conversationState().copy(
+            messages = listOf(UserMessageUi("user-run-old", "earlier"),
+                UserMessageUi("user-run-image", envelope, images = listOf("preview"))),
+            history = prefix + AgentModelClient.ConversationMessage("user", contentJson =
+                """[{"type":"text","text":"图里有什么"},{"type":"image_file","path":"/cache/photo.jpg"}]""",
+                turnId = "run-image"),
+        )
+        val boundary = AgentConversationRevisionReducer.boundary(state, "user-run-image")!!
+        assertFalse(boundary.contextWasCompacted)
+        assertEquals(prefix, boundary.historyPrefix)
+    }
+
+    @Test fun attachmentNormalizationCannotMatchAnotherTurnWithTheSameQuestion() {
+        val envelope = "# Files mentioned by the user:\n\n## photo.jpg: /cache/photo.jpg\n\n## My request:\n图里有什么"
+        val state = conversationState().copy(
+            messages = listOf(UserMessageUi("user-run-image", envelope, images = listOf("preview"))),
+            history = listOf(AgentModelClient.ConversationMessage("user", "图里有什么", turnId = "run-other")),
+        )
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-run-image"))
+    }
+
+    @Test fun missingMessageAfterRealMarkerIsNotAssumedCompacted() {
+        val marker = io.github.mangi.eta.ui.model.ContextCompactedMessageUi("marker", 2, "摘要")
+        val state = conversationState().copy(messages = listOf(marker, UserMessageUi("user-new", "new")),
+            history = listOf(AgentModelClient.ConversationMessage("system", "[对话摘要] old")))
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-new"))
+    }
+
+    @Test fun realMarkerBeforeRetainedTailAllowsRevisingRemovedMessage() {
+        val marker = io.github.mangi.eta.ui.model.ContextCompactedMessageUi("marker", 2, "摘要")
+        val state = conversationState().copy(
+            messages = listOf(UserMessageUi("user-old", "old"), marker, UserMessageUi("user-new", "new")),
+            history = listOf(AgentModelClient.ConversationMessage("system", "[对话摘要] old"),
+                AgentModelClient.ConversationMessage("user", "new")),
+        )
+        assertTrue(AgentConversationRevisionReducer.boundary(state, "user-old")!!.contextWasCompacted)
+        assertFalse(AgentConversationRevisionReducer.boundary(state, "user-new")!!.contextWasCompacted)
+    }
+
+    @Test fun toolPruningMarkerDoesNotProveSummaryCompaction() {
+        val marker = io.github.mangi.eta.ui.model.ContextCompactedMessageUi("pruned", 0, "",
+            compressorLabel = "工具输出修剪（非摘要）")
+        val state = conversationState().copy(messages = listOf(UserMessageUi("user-old", "missing"), marker),
+            history = listOf(AgentModelClient.ConversationMessage("user", "unrelated")))
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-old"))
+    }
+
+    @Test fun existingTurnWithDifferentPayloadCannotBeCalledCompacted() {
+        val marker = io.github.mangi.eta.ui.model.ContextCompactedMessageUi("marker", 2, "摘要")
+        val state = conversationState().copy(messages = listOf(UserMessageUi("user-run-task", "changed"), marker),
+            history = listOf(AgentModelClient.ConversationMessage("user", "original", turnId = "run-task")))
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-run-task"))
+    }
+
+    @Test fun genericSystemTextDoesNotProveCompaction() {
+        val state = conversationState().copy(history = listOf(
+            AgentModelClient.ConversationMessage("system", "已压缩"),
+            AgentModelClient.ConversationMessage("user", "第二问")))
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-1"))
+    }
+
     @Test fun missingSupplementCannotEraseItsOriginalTurn() {
         val state = conversationState().copy(
             messages = listOf(
@@ -120,7 +194,7 @@ class AgentConversationRevisionReducerTest {
         val full = conversationState()
         val compacted = full.copy(
             history = listOf(
-                AgentModelClient.ConversationMessage(role = "system", content = "已压缩"),
+                AgentModelClient.ConversationMessage(role = "system", content = "[对话摘要]\n第一轮已归档"),
                 AgentModelClient.ConversationMessage(role = "user", content = "第二问"),
                 AgentModelClient.ConversationMessage(role = "assistant", content = "第二答"),
                 AgentModelClient.ConversationMessage(role = "user", content = "第三问"),
@@ -245,7 +319,7 @@ class AgentConversationRevisionReducerTest {
         val full = conversationState()
         val compacted = full.copy(
             history = listOf(
-                AgentModelClient.ConversationMessage(role = "system", content = "已压缩"),
+                AgentModelClient.ConversationMessage(role = "system", content = "[对话摘要]\n第一轮已归档"),
                 AgentModelClient.ConversationMessage(role = "user", content = "第二问"),
                 AgentModelClient.ConversationMessage(role = "assistant", content = "第二答"),
                 AgentModelClient.ConversationMessage(role = "user", content = "第三问"),

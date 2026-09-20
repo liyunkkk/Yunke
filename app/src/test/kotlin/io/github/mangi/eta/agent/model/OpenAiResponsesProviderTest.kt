@@ -21,6 +21,66 @@ import org.junit.Test
 
 class OpenAiResponsesProviderTest {
     @Test
+    fun terminalMessageIdentityRewriteDoesNotRepeatStreamedAnswer() {
+        assertSingleReconciledText(
+            JSONObject().put("item_id", "stream-id").put("output_index", 1).put("content_index", 0),
+            "收到，测试正常。", "收到，测试正常。",
+        )
+    }
+
+    @Test
+    fun terminalOutputIndexShiftWithoutItemIdDoesNotRepeatAnswer() {
+        assertSingleReconciledText(
+            JSONObject().put("output_index", 3).put("content_index", 0),
+            "收到，测试正常。", "收到，测试正常。",
+        )
+    }
+
+    @Test
+    fun terminalRewrittenIdentityCompletesAnEndedPartialBlockInPlace() {
+        assertSingleReconciledText(
+            JSONObject().put("item_id", "stream-id").put("output_index", 0).put("content_index", 0),
+            "收到", "收到，测试正常。",
+        )
+    }
+
+    private fun assertSingleReconciledText(identity: JSONObject, streamed: String, final: String) {
+        val body = event("response.output_text.delta", JSONObject(identity.toString()).put("delta", streamed)) +
+            event("response.output_text.done", JSONObject(identity.toString()).put("text", streamed)) +
+            event("response.completed", JSONObject().put("response", JSONObject()
+                .put("status", "completed").put("output", JSONArray().put(messageItem("terminal-id", final)))))
+        withSseServer(body) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            val result = OpenAiResponsesProvider.complete(
+                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
+            )
+            assertEquals(final, result.assistantMessage.getString("content"))
+            val starts = events.filterIsInstance<ProviderEvent.BlockStart>().filter { it.kind == AssistantBlockKind.TEXT }
+            assertEquals(1, starts.size)
+            val ends = events.filterIsInstance<ProviderEvent.BlockEnd>().filter { it.kind == AssistantBlockKind.TEXT }
+            assertEquals(final, ends.last().content)
+            assertEquals(starts.single().index, ends.last().index)
+        }
+    }
+
+    @Test
+    fun identicalTextInDistinctTerminalPartsMustRemainDistinct() {
+        val body = responseTextEvent("response.output_text.delta", "msg_1", 0, "delta", "相同内容") +
+            responseTextEvent("response.output_text.done", "msg_1", 0, "text", "相同内容") +
+            event("response.completed", JSONObject().put("response", JSONObject()
+                .put("status", "completed").put("output", JSONArray()
+                    .put(messageItem("msg_1", "相同内容")).put(messageItem("msg_2", "相同内容")))))
+        withSseServer(body) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            val result = OpenAiResponsesProvider.complete(
+                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
+            )
+            assertEquals("相同内容相同内容", result.assistantMessage.getString("content"))
+            assertEquals(2, events.filterIsInstance<ProviderEvent.BlockStart>().count { it.kind == AssistantBlockKind.TEXT })
+        }
+    }
+
+    @Test
     fun steeringDoesNotPromotePartialFunctionCallToCompletedResponse() {
         val controller = AgentRunController()
         val body = event("response.output_text.delta", JSONObject().put("delta", "before")) +

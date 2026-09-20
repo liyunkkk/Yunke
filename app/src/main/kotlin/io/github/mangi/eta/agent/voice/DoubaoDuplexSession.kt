@@ -52,6 +52,7 @@ internal class DoubaoDuplexSession(
     private var transcript = ""
     private var reply = ""
     private val textStream = DuplexTextStream(diagnostic)
+    private val interruptionGate = DuplexInterruptionGate()
     private var turnAudioStartBytes = 0L
     private var receivedAudioBytes = 0L
     private var writtenAudioBytes = 0L
@@ -88,19 +89,32 @@ internal class DoubaoDuplexSession(
                         if (captureJob == null) captureJob = launch(Dispatchers.IO) { captureInput(ws) }
                     }
                     "conversation.item.input_audio_transcription.started" -> {
-                        transcript = ""
-                        reply = ""
-                        textStream.reset()
-                        flushOutput()
-                        onState(state(VoiceModePhase.Listening))
+                        interruptionGate.started()
+                        // A speculative VAD event must not discard queued speech or the reply.
+                        diagnostic.mark("interruption.pending")
                     }
-                    "conversation.item.input_audio_transcription.delta" -> {
-                        transcript = DoubaoDuplexProtocol.eventText(event)
-                        onState(state(VoiceModePhase.Listening))
-                    }
+                    "conversation.item.input_audio_transcription.delta",
                     "conversation.item.input_audio_transcription.completed" -> {
-                        transcript = DoubaoDuplexProtocol.eventText(event).ifBlank { transcript }
-                        onState(state(VoiceModePhase.Thinking))
+                        val completed = type.endsWith(".completed")
+                        val recognized = interruptionGate.transcript(
+                            DoubaoDuplexProtocol.eventText(event), completed,
+                        ) {
+                            diagnostic.mark("interruption.confirmed")
+                            transcript = ""
+                            reply = ""
+                            textStream.reset()
+                            flushOutput()
+                        }
+                        if (recognized != null) {
+                            transcript = recognized
+                            onState(state(if (completed) VoiceModePhase.Thinking else VoiceModePhase.Listening))
+                        } else {
+                            diagnostic.mark("interruption.unconfirmed", "completed" to if (completed) 1 else 0)
+                        }
+                    }
+                    "conversation.item.input_audio_transcription.failed" -> {
+                        interruptionGate.started()
+                        diagnostic.mark("interruption.discarded")
                     }
                     "response.output_text.delta", "response.output_text.done" -> {
                         reply = textStream.accept(event, queuedMs)

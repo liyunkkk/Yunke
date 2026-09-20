@@ -781,6 +781,7 @@ internal object AgentRuntimeWire {
                 putString(KEY_TYPE, "run_finished")
                 putInt("round", event.round)
                 putInt("content_chars", event.contentChars)
+                event.generatedAtMillis?.let { putLong("generated_at_millis", it) }
             }
 
             is AgentEvent.RunFailed -> {
@@ -931,6 +932,7 @@ internal object AgentRuntimeWire {
         "run_finished" -> AgentEvent.RunFinished(
             round = bundle.getInt("round"),
             contentChars = bundle.getInt("content_chars"),
+            generatedAtMillis = bundle.getLong("generated_at_millis", 0L).takeIf { it > 0L },
         )
 
         "run_failed" -> AgentEvent.RunFailed(

@@ -1,11 +1,7 @@
 package io.github.mangi.eta.agent.overlay
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -55,7 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -64,9 +60,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -105,82 +98,13 @@ private fun phaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
     AgentOverlayPhase.FAILED -> MiuixTheme.colorScheme.error
 }
 
-// 彩虹光圈颜色（青/黄/橙/粉循环）
-private val RainbowColors = listOf(
-    Color(0xFFB0F2FF),
-    Color(0xFFFAFAA3),
-    Color(0xFFFFB472),
-    Color(0xFFFB8DFF),
-    Color(0xFFB0F2FF),
-    Color(0xFFFB8DFF),
-    Color(0xFFFFB472),
-    Color(0xFFFAFAA3),
-    Color(0xFFB0F2FF),
-)
-
-/**
- * 屏幕四边氛围光窗口：全屏触摸穿透（FLAG_NOT_TOUCHABLE），不挡操作。
- * 窗口类型 TYPE_ACCESSIBILITY_OVERLAY，截图时被 takeScreenshotOfWindow 过滤，对 Agent 透明。
- * - RUNNING：半透明黑底压暗 + 彩虹色旋转 SweepGradient 光圈。
- * - PAUSED / FINISHED / FAILED：不绘制。
- */
-@Composable
-internal fun AgentOverlayGlow(state: AgentOverlayState) {
-    val phase = state.phase
-    if (phase != AgentOverlayPhase.RUNNING) return
-
-    val dimAlpha = 0.31f
-    val transition = rememberInfiniteTransition(label = "glow")
-    val rotation by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(5000), RepeatMode.Restart),
-        label = "rotation",
-    )
-
-    Box(
-        modifier = Modifier.fillMaxSize().drawBehind {
-            // 半透明黑底压暗
-            drawRect(color = Color.Black.copy(alpha = dimAlpha))
-
-            // 彩虹光圈：SweepGradient 描边 + 模糊，全屏 RectF，旋转
-            val w = size.width
-            val h = size.height
-            val cx = w / 2f
-            val cy = h / 2f
-            val strokePx = 40f
-            val colorsArgb = RainbowColors.map { it.toArgb() }
-            val positions = floatArrayOf(
-                0f, 0.13f, 0.257f, 0.37f, 0.505f, 0.634f, 0.744f, 0.87f, 1f
-            )
-            drawIntoCanvas { canvas ->
-                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                    style = android.graphics.Paint.Style.STROKE
-                    strokeWidth = strokePx
-                    maskFilter = android.graphics.BlurMaskFilter(
-                        strokePx,
-                        android.graphics.BlurMaskFilter.Blur.NORMAL,
-                    )
-                }
-                val shader = android.graphics.SweepGradient(cx, cy, colorsArgb.toIntArray(), positions)
-                val matrix = android.graphics.Matrix()
-                matrix.setRotate(rotation, cx, cy)
-                shader.setLocalMatrix(matrix)
-                paint.shader = shader
-                val rect = android.graphics.RectF(0f, 0f, w, h)
-                canvas.nativeCanvas.drawRoundRect(rect, 30f, 30f, paint)
-            }
-        }
-    )
-}
-
 /**
  * 助手光球窗口：始终显示在屏幕右侧中下，点击展开/收起小气泡。
  * 独立小窗口（WRAP_CONTENT），不遮挡页面操作。
  */
 @Composable
 internal fun AgentOverlayOrb(
-    state: AgentOverlayState,
+    phase: AgentOverlayPhase,
     onToggleCollapse: () -> Unit,
 ) {
     var visible by remember { mutableStateOf(false) }
@@ -205,13 +129,8 @@ internal fun AgentOverlayOrb(
     ) {
         // 点击直接交给 Service 侧 toggle，不在 Compose 协程作用域里做延迟动作，
         // 避免 scope 取消导致浮层残留。
-        CollapsedAgentOrb(state = state, onExpand = onToggleCollapse)
+        AssistantOrb(phase = phase, onClick = onToggleCollapse)
     }
-}
-
-@Composable
-private fun CollapsedAgentOrb(state: AgentOverlayState, onExpand: () -> Unit) {
-    AssistantOrb(phase = state.phase, onClick = onExpand)
 }
 
 /**
@@ -225,48 +144,37 @@ private fun AssistantOrb(
     onClick: (() -> Unit)? = null,
 ) {
     val accent = phaseAccent(phase)
-    val pulsing = phase == AgentOverlayPhase.RUNNING
-    val transition = rememberInfiniteTransition(label = "orb")
-    val pulse by transition.animateFloat(
-        initialValue = 0.6f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1400), RepeatMode.Reverse),
-        label = "pulse",
-    )
-    val haloAlpha = if (pulsing) pulse else 0.85f
+    // Read pulse only during drawing; 20 Hz is enough for a 2.8-second breathing cycle.
+    val pulse = rememberAgentOrbPulse(phase)
     val tapModifier = if (onClick != null) Modifier.clickable { onClick() } else Modifier
     Box(
         modifier = modifier
             .then(tapModifier)
             .size(56.dp)
-            .drawBehind {
+            .drawWithCache {
                 val outer = size.minDimension
                 val center = Offset(outer / 2f, outer / 2f)
-                // 外光晕
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(accent.copy(alpha = 0.5f * haloAlpha), Color.Transparent),
-                        center = center,
-                        radius = outer / 2f,
-                    )
-                )
-                // 球体
                 val ballRadius = outer * 0.3f
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(accent, accent.copy(alpha = 0.8f)),
-                        center = Offset(center.x - ballRadius * 0.3f, center.y - ballRadius * 0.3f),
-                        radius = ballRadius,
-                    ),
-                    radius = ballRadius,
+                // Brushes depend only on size/theme, not on each breathing frame.
+                val halo = Brush.radialGradient(
+                    colors = listOf(accent.copy(alpha = 0.5f), Color.Transparent),
                     center = center,
+                    radius = outer / 2f,
                 )
-                // 高光
-                drawCircle(
-                    color = Color.White.copy(alpha = 0.55f),
-                    radius = ballRadius * 0.3f,
-                    center = Offset(center.x - ballRadius * 0.32f, center.y - ballRadius * 0.38f),
+                val ball = Brush.radialGradient(
+                    colors = listOf(accent, accent.copy(alpha = 0.8f)),
+                    center = Offset(center.x - ballRadius * 0.3f, center.y - ballRadius * 0.3f),
+                    radius = ballRadius,
                 )
+                onDrawBehind {
+                    drawCircle(brush = halo, alpha = pulse.value)
+                    drawCircle(brush = ball, radius = ballRadius, center = center)
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.55f),
+                        radius = ballRadius * 0.3f,
+                        center = Offset(center.x - ballRadius * 0.32f, center.y - ballRadius * 0.38f),
+                    )
+                }
             }
     )
 }

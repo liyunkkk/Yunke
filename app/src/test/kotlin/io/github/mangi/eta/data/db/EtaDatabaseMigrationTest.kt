@@ -64,6 +64,7 @@ class EtaDatabaseMigrationTest {
                 EtaDatabase.MIGRATION_24_25,
                 EtaDatabase.MIGRATION_25_26,
                 EtaDatabase.MIGRATION_26_27,
+                EtaDatabase.MIGRATION_27_28,
             )
             .build()
         } catch (error: Throwable) {
@@ -137,6 +138,7 @@ class EtaDatabaseMigrationTest {
             assertEquals(false, provider.responsesStripReasoningStatus)
             assertEquals(false, provider.hostedWebSearchEnabled)
             assertEquals(false, migratedMessage.isEdited)
+            assertEquals(null, migratedMessage.generatedAtMillis)
             assertEquals(emptyList<RuntimeInFlightRunWithEvents>(), inFlightRuns)
             assertEquals(listOf("mcp-1"), mcpServers.map { it.id })
             assertEquals(null, mcpServers.single().toolsExpireAt)

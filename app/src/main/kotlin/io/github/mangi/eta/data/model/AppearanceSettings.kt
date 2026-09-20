@@ -20,6 +20,7 @@ data class AppearanceSettings(
     val interfaceScale: Float = DEFAULT_INTERFACE_SCALE,
     val morphLoadingIndicator: Boolean = true,
     val morphLoadingBeforeResponseOnly: Boolean = false,
+    val messageTimestampsEnabled: Boolean = false,
 ) {
     fun normalized(): AppearanceSettings = copy(
         monetEnabled = true,

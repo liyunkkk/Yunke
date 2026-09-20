@@ -1188,7 +1188,7 @@
   <string name="skills_choose_package">选择包含 SKILL.md 的 Skill 包</string>
   <string name="skills_choose_zip">选择 ZIP Skill 包</string>
   <string name="skills_replace_summary">已存在用户 Skill“%1$s”（%2$s）。替换会覆盖它当前的全部文件。</string>
-  <string name="settings_context_extensions">上下文与扩展</string>
+  <string name="settings_context_extensions">扩展</string>
   <string name="settings_llm_providers">LLM 提供商</string>
   <string name="skills_replace">替换</string>
   <string name="skills_delete_summary">删除“%1$s”后需要重新安装才能恢复。</string>
@@ -1433,4 +1433,21 @@
   <string name="functional_model_set_as_translation">设为屏幕翻译模型</string>
   <string name="screen_translation_cleared_translation_api">已取消独立翻译 API，恢复默认供应商</string>
   <string name="settings_kimi_web_builtin_browser">Kimi Web 默认使用内置浏览器</string>
+  <string name="settings_model_features">模型功能</string>
+  <string name="auxiliary_vision_title">辅助视觉模型</string>
+  <string name="title_model_title">标题模型</string>
+  <string name="model_feature_custom">使用自定义模型</string>
+  <string name="model_feature_select">选择模型</string>
+  <string name="model_feature_missing">未选择或模型不可用</string>
+  <string name="vision_feature_description">主模型不支持图片时，将图片及相关问题交给所选视觉模型，并把分析结果以文字返回。支持聊天图片、工具截图和视频封面；主模型支持视觉时直接看图。图片会发送到所选提供商，额外请求可能产生费用。</string>
+  <string name="title_feature_description">为新会话自动生成简短标题。未开启自定义时使用当前会话模型；失败时保留本地标题，不覆盖手动修改的标题。</string>
+  <string name="title_feature_default">当前会话模型</string>
+  <string name="vision_feature_off">未开启：非视觉模型无法看图</string>
+  <string name="revision_history_unavailable">无法定位这条消息对应的原始上下文，已取消操作并保留现有历史；这不代表会话已压缩。</string>
+  <string name="appearance_message_timestamps">消息时间戳</string>
+  <string name="appearance_message_timestamps_summary">在回复操作栏右侧显示本轮回复生成完成的时间。</string>
+  <string name="chat_next_turn">下一轮消息</string>
+  <string name="chat_previous_turn">上一轮消息</string>
+  <string name="chat_go_to_bottom">回到底部</string>
+  <string name="chat_go_to_top">回到顶部</string>
 </resources>

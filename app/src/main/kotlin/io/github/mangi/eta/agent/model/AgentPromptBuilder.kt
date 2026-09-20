@@ -36,13 +36,14 @@ internal object AgentPromptBuilder {
         }
         messages.put(
             systemMessage(
-                "当前配置的模型：${JSONObject.quote(config.model)}。\n" +
-                    (if (!config.supportsVision) {
-                        "当前模型未启用图片输入。read_image 或截图工具不能让纯文本模型获得视觉能力；" +
-                            "不能声称已经看见图片，需要分析图片时应要求切换视觉模型。\n"
-                    } else "") +
-                    "用户询问你的身份时，以系统提示中的助手人格为准；询问所用模型时按当前配置的模型回答。" +
-                    "模型名称可能是服务商别名，不据此推断未确认的部署版本、知识截止日期或能力；历史消息中的模型身份不代表当前配置。\n" +
+                (if (!config.supportsVision && ModelFeaturePreferences.visionEnabled()) {
+                    "当前主模型不直接接收图片；已配置辅助视觉模型，聊天图片及 read_image、屏幕和浏览器截图会先由它分析再返回文字证据。" +
+                        "需要视觉信息时正常调用图片和截图工具，根据辅助视觉观察回答；描述不清时重新获取图像，不编造已看到的内容。\n"
+                } else if (!config.supportsVision) {
+                    "当前模型未启用图片输入。read_image 或截图工具不能让纯文本模型获得视觉能力；" +
+                        "不能声称已经看见图片，需要分析图片时应要求切换视觉模型。\n"
+                } else "") +
+                    "用户询问你的身份时，以系统提示中的助手人格为准。\n" +
                     "你可以回答日常问题，也可以操作当前 Android 手机。不需要设备上下文的问答直接回答。" +
                     "涉及当前时间、相对时间或所在位置时先调用 get_current_context。" +
                     "用户要求执行任务时，主动推进到完成。只要用户目标会因手机中的真实上下文而明显受益，" +

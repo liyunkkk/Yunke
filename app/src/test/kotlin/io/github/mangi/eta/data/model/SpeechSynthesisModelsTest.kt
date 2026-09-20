@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SpeechSynthesisModelsTest {
+    @Test fun readAloudExcludesCreationModelsButKeepsAudioNamedTtsModels() {
+        listOf("seed-audio-1.0", "vendor/SEED-AUDIO-1.0", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign", "qwen-tts-voice-design").forEach { id ->
+            val model = Model(id = id, modelId = id, displayName = id)
+            assertTrue(id, model.supportsSpeechSynthesis)
+            assertFalse(id, SpeechSynthesisModels.isReadAloudModel(model))
+        }
+        listOf("seed-tts-2.0", "mimo-v2.5-tts", "stepaudio-2.5-tts", "qwen-audio-3.0-tts-flash", "tts-1").forEach { id ->
+            assertTrue(id, SpeechSynthesisModels.isReadAloudModel(Model(id = id, modelId = id, displayName = id)))
+        }
+    }
+
     @Test fun realtimeRequiresEnabledCredentialedOpenspeechProvider() {
         val p = OpenAiCompatibleProviderSetting("d", "d", "https://openspeech.bytedance.com", apiKey = "test")
         assertTrue(SpeechSynthesisModels.isRealtimeVoiceProvider(p))

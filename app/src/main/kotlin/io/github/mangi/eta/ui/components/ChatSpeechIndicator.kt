@@ -56,6 +56,8 @@ internal fun ChatSpeechIndicator(
     suspendCapture: Boolean = false,
     startRequest: Int = 0,
     onIdleClick: (() -> Unit)? = null,
+    idleDescription: String? = null,
+    onStartRequested: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -142,6 +144,7 @@ internal fun ChatSpeechIndicator(
 
     fun requestStart() {
         if (!allowed) return
+        onStartRequested()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) start()
         else { pendingPermission = true; permission.launch(Manifest.permission.RECORD_AUDIO) }
     }
@@ -166,7 +169,7 @@ internal fun ChatSpeechIndicator(
             modifier = Modifier.size(48.dp).clip(CircleShape)
                 .semantics {
                     if (speechEnabled) {
-                        contentDescription = if (!active && onIdleClick != null) context.getString(R.string.voice_mode_choose) else label
+                        contentDescription = if (!active && onIdleClick != null) idleDescription ?: context.getString(R.string.voice_mode_choose) else label
                         if (active) stateDescription = status
                     }
                 }
@@ -175,14 +178,19 @@ internal fun ChatSpeechIndicator(
                     role = Role.Button,
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() },
-                    onLongClick = onLongClick,
+                    hapticFeedbackEnabled = false,
+                    onLongClick = onLongClick?.let { callback ->
+                        {
+                            TouchHaptics.longPress(view)
+                            callback()
+                        }
+                    },
                     onClick = {
                         TouchHaptics.click(view)
                         if (active || pendingPermission) stop()
                         else if (onIdleClick != null) onIdleClick()
                         else if (!allowed) onUnavailableClick?.invoke()
-                        else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) start()
-                        else { pendingPermission = true; permission.launch(Manifest.permission.RECORD_AUDIO) }
+                        else requestStart()
                     },
                 ) else Modifier),
             contentAlignment = Alignment.Center,

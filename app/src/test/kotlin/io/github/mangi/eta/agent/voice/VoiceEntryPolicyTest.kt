@@ -25,4 +25,36 @@ class VoiceEntryPolicyTest {
             }
         }
     }
+
+    @Test fun allCombinationsRespectLastChoiceWithoutEnablingDisabledModes() {
+        for (bits in 0..7) {
+            val config = DoubaoVoiceConfig.Config(
+                inputEnabled = bits and 1 != 0,
+                conversationEnabled = bits and 2 != 0,
+                duplexEnabled = bits and 4 != 0,
+            )
+            val available = VoiceEntryPolicy.modes(config)
+            VoiceEntryMode.entries.forEach { last ->
+                val expected = last.takeIf { it in available } ?: available.singleOrNull()
+                assertEquals(expected, VoiceEntryPolicy.directMode(config, last.wireValue))
+            }
+            assertEquals(available.singleOrNull(), VoiceEntryPolicy.directMode(config, "unknown-mode"))
+        }
+    }
+
+    @Test fun multipleEnabledModesUseTheRememberedConversationOnNextClick() {
+        val config = DoubaoVoiceConfig.Config(inputEnabled = true, conversationEnabled = true, duplexEnabled = true)
+        assertEquals(VoiceEntryMode.UNIVERSAL, VoiceEntryPolicy.directMode(config, "universal"))
+        assertEquals(VoiceEntryMode.DOUBAO_DUPLEX, VoiceEntryPolicy.directMode(config, "doubao_duplex"))
+        assertEquals(VoiceEntryMode.DICTATION, VoiceEntryPolicy.directMode(config, "dictation"))
+        assertNull(VoiceEntryPolicy.directMode(config, ""))
+        assertTrue(VoiceEntryPolicy.canChoose(config))
+    }
+
+    @Test fun disabledHistoryOpensChooserUnlessOnlyOneModeRemains() {
+        val two = DoubaoVoiceConfig.Config(inputEnabled = true, conversationEnabled = true, duplexEnabled = false)
+        assertNull(VoiceEntryPolicy.directMode(two, "doubao_duplex"))
+        assertEquals(VoiceEntryMode.UNIVERSAL, VoiceEntryPolicy.directMode(two.copy(inputEnabled = false), "doubao_duplex"))
+        assertNull(VoiceEntryPolicy.directMode(two.copy(inputEnabled = false, conversationEnabled = false), "doubao_duplex"))
+    }
 }

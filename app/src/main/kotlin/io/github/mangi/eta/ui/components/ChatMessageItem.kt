@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.components
 
+import io.github.mangi.eta.ui.markdown.ChatSelectableText
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
@@ -169,6 +170,7 @@ import io.github.mangi.eta.ui.model.isVideoAt
 import io.github.mangi.eta.ui.model.durationMsAt
 import io.github.mangi.eta.agent.media.AgentVideoCodec
 import io.github.mangi.eta.ui.model.fullImageSourceAt
+import io.github.mangi.eta.ui.model.visibleFileReferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -575,6 +577,9 @@ private fun UserMessageBubble(
     val visiblePrompt = remember(message.content) {
         AgentFileReferencePromptCodec.parse(message.content)
     }
+    val visibleFiles = remember(visiblePrompt.references, message.images, message.imageSources) {
+        message.visibleFileReferences(visiblePrompt.references)
+    }
     val copyText = visiblePrompt.request.ifBlank {
         visiblePrompt.conversations.joinToString(" ") { "@${it.title}" }
     }
@@ -672,9 +677,9 @@ private fun UserMessageBubble(
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
-            if (visiblePrompt.references.isNotEmpty()) {
+            if (visibleFiles.isNotEmpty()) {
                 SentFileReferenceFlow(
-                    references = visiblePrompt.references,
+                    references = visibleFiles,
                     modifier = Modifier.padding(
                         bottom = if (visiblePrompt.request.isNotBlank()) 8.dp else 0.dp
                     ),
@@ -972,6 +977,22 @@ private fun AgentMessageBlock(
                                 tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
                             )
                         }
+                    }
+                }
+                if (LocalAppearanceSettings.current.messageTimestampsEnabled) {
+                    val timestamp = message.generatedAtMillis?.takeIf { it > 0L }
+                    if (timestamp != null) {
+                        val zone = java.time.ZoneId.systemDefault()
+                        val label = remember(timestamp, zone) { formatMessageTimestamp(timestamp, zone) }
+                        Text(
+                            text = label,
+                            modifier = Modifier.weight(1f).padding(start = 6.dp),
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
+                            fontSize = 11.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
@@ -1582,7 +1603,7 @@ private fun chatMarkdownComponents(
         }
     },
     paragraph = { model ->
-        if (revealCoordinator == null || model.node.containsMarkdownImage()) {
+        if (model.node.containsMarkdownImage()) {
             MarkdownParagraph(
                 content = model.content,
                 node = model.node,
@@ -1889,7 +1910,7 @@ private fun ChatRevealRawText(
 private fun ChatRevealMarkdownText(
     model: MarkdownComponentModel,
     style: TextStyle,
-    revealCoordinator: SmoothTextRevealCoordinator,
+    revealCoordinator: SmoothTextRevealCoordinator?,
     modifier: Modifier = Modifier,
     contentChildType: IElementType? = null,
 ) {
@@ -1907,6 +1928,10 @@ private fun ChatRevealMarkdownText(
             )
             pop()
         }
+    }
+    if (revealCoordinator == null) {
+        ChatSelectableText(text = text, style = style, modifier = modifier)
+        return
     }
     ChatRevealAnnotatedText(
         text = text,
@@ -1931,15 +1956,13 @@ private fun ChatRevealAnnotatedText(
         key = RevealBlockKey(node.startOffset),
         coordinator = revealCoordinator,
     )
-    MarkdownText(
-        content = text,
-        node = node,
+    ChatSelectableText(
+        text = text,
         modifier = modifier.smoothTextReveal(revealState),
         style = style.copy(textMotion = TextMotion.Animated),
-        onTextLayout = { layoutResult, _ ->
+        onTextLayout = { layoutResult ->
             revealState.onTextLayout(text.text, layoutResult)
         },
-        sourceContent = sourceContent,
     )
 }
 
@@ -1958,7 +1981,7 @@ private fun ChatHeadingBlock(
     } else {
         MarkdownTokenTypes.ATX_CONTENT
     }
-    if (revealCoordinator == null || model.node.containsMarkdownImage()) {
+    if (model.node.containsMarkdownImage()) {
         MarkdownHeader(
             content = model.content,
             node = model.node,

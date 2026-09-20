@@ -110,12 +110,13 @@ internal object AgentModelClient {
         // Never trim by individual message count/size here. Runtime compaction selects balanced
         // ranges and the loop pauses when the protected request cannot fit.
         val trimmedHistory = AgentTurnIdentity.migrate(history)
+        val imageInput = config.supportsVision || ModelFeaturePreferences.visionEnabled()
         val outboundImages = images.filter { image ->
-            if (image.isVideoMedia()) config.supportsVideo else config.supportsVision
+            if (image.isVideoMedia()) config.supportsVideo else imageInput
         }
-        val outboundHistory = AgentHistoryImageHydrator.hydrateAll(
+        val outboundHistory = if (!config.supportsVision && imageInput) trimmedHistory else AgentHistoryImageHydrator.hydrateAll(
             history = trimmedHistory,
-            supportsVision = config.supportsVision,
+            supportsVision = imageInput,
             supportsVideo = config.supportsVideo,
         )
         val messages = AgentPromptBuilder.buildInitialMessages(

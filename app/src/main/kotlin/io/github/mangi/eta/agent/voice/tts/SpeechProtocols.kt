@@ -146,6 +146,31 @@ internal object SpeechProtocols {
             .post(jsonBody(payload)).build()
     }
 
+    internal fun mimoClone(config: AgentModelClient.ModelConfig, text: String, reference: String): Request {
+        speechCheck(reference.startsWith("data:audio/mpeg;base64,") || reference.startsWith("data:audio/wav;base64,")) { "请选择有效的参考录音" }
+        val payload = JSONObject().put("model", "mimo-v2.5-tts-voiceclone")
+            .put("messages", JSONArray()
+                .put(JSONObject().put("role", "user").put("content", ""))
+                .put(JSONObject().put("role", "assistant").put("content", text)))
+            .put("audio", JSONObject().put("format", "wav").put("voice", reference))
+            .put("stream", false)
+        val headers = Headers.Builder().add("Content-Type", "application/json").add("Accept", "application/json")
+            .add("api-key", config.apiKey).add("Authorization", "Bearer ${config.apiKey}")
+            .also { ProviderRequestHeaders.mergeInto(it, config.baseUrl, config.customHeaders) }.build()
+        return Request.Builder().url(ProviderUrls.openAiChatCompletionsUrl(config.baseUrl)).headers(headers)
+            .post(jsonBody(payload.toString())).build()
+    }
+
+    internal fun decodeMimoClone(bytes: ByteArray): ByteArray {
+        val encoded = JSONObject(bytes.decodeToString()).getJSONArray("choices").getJSONObject(0)
+            .getJSONObject("message").getJSONObject("audio").getString("data")
+        speechCheck(encoded.length <= CloudSpeechSynthesizer.MAX_AUDIO_BYTES) { "试听音频超过大小限制" }
+        val wav = Base64.getDecoder().decode(encoded)
+        speechCheck(wav.size >= 44 && wav.copyOfRange(0, 4).toString(Charsets.US_ASCII) == "RIFF" &&
+            wav.copyOfRange(8, 12).toString(Charsets.US_ASCII) == "WAVE") { "MiMo 未返回有效的 WAV 音频" }
+        return wav
+    }
+
     private fun mimo(config: AgentModelClient.ModelConfig, text: String, voice: String): Request {
         val payload = JSONObject()
             .put("model", config.model)

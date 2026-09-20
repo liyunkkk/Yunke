@@ -33,6 +33,15 @@ class AgentRuntimeWireTest {
         return pipe[0]
     }
 
+    @Test
+    fun completionTimestampSurvivesWireAndDurableEventReplay() {
+        val event = AgentEvent.RunFinished(3, 100, 1_800_000_000_000L)
+        assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+        assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+        val legacy = AgentEvent.RunFinished(1, 20)
+        assertEquals(legacy, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(legacy)))
+    }
+
     @Test fun assistantIdentityTravelsWithConfigAndMissingIdentityDoesNotUseActiveAssistant() {
         val config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test",
             model = "test", systemPrompt = "A", assistantId = "assistant-a")

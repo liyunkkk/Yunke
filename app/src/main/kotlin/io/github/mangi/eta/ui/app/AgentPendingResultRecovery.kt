@@ -24,6 +24,7 @@ internal object AgentPendingResultRecovery {
         result: AgentRuntimeWire.RunResult,
         promptSupplement: AgentUiHandoffPayload.Supplement? = null,
         supplements: List<AgentUiHandoffPayload.Supplement>,
+        generatedAtMillis: Long? = null,
     ): Outcome {
         val content = result.content.takeIf { result.ok && it.isNotBlank() }
         val history = AgentRuntimeHistoryReducer.apply(
@@ -64,6 +65,8 @@ internal object AgentPendingResultRecovery {
                     },
                     isStreaming = false,
                     renderMarkdown = true,
+                    generatedAtMillis = (messages.getOrNull(assistantIndex) as? AgentMessageUi)?.generatedAtMillis
+                        ?: generatedAtMillis?.takeIf { it > 0L },
                 )
                 result.ok -> SystemNoticeMessageUi(
                     id = resultId,

@@ -56,6 +56,7 @@ internal object Prefs {
         const val AGENT_TTS_MODEL_PROVIDER_ID = "agent_tts_model_provider_id"
         const val AGENT_TTS_MODEL_ID = "agent_tts_model_id"
         const val AGENT_TTS_VOICE = "agent_tts_voice"
+        const val AGENT_VOICE_LAST_ENTRY = "agent_voice_last_entry"
         const val AGENT_VOICE_DOUBAO_PROVIDER_ID = "agent_voice_doubao_provider_id"
         const val AGENT_VOICE_DOUBAO_VOICE = "agent_voice_doubao_voice"
         const val AGENT_VOICE_DOUBAO_INSTRUCTIONS = "agent_voice_doubao_instructions"

@@ -27,6 +27,7 @@ class AppearanceSettingsRepositoryTest {
             monetEnabled = true,
             accentColor = AppearanceAccentColor.TEAL,
             interfaceScale = 0.9f,
+            messageTimestampsEnabled = true,
         )
 
         try {

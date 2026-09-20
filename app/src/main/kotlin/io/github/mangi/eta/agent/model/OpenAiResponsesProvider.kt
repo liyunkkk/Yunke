@@ -379,9 +379,23 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         }
 
         fun reconcileFinalPart(part: FinalContentPart) {
-            val matchingBlocks = contentBlocks.filter { block ->
+            val identityMatches = contentBlocks.filter { block ->
                 block.kind == part.kind && block.identity.matches(part.identity)
             }
+            // Some Responses gateways rewrite message IDs or output indexes in the terminal
+            // snapshot. A sole streamed text and sole terminal text with the same prefix are
+            // one logical part. Reconcile on its original index so the UI cannot append it twice.
+            // Never text-deduplicate multiple parts: identical messages can be intentional.
+            val soleTextFallback = if (
+                identityMatches.isEmpty() && part.kind == AssistantBlockKind.TEXT &&
+                finalResult.contentParts.count { it.kind == AssistantBlockKind.TEXT } == 1
+            ) {
+                contentBlocks.singleOrNull { it.kind == AssistantBlockKind.TEXT }?.takeIf { block ->
+                    val streamed = block.content.toString()
+                    streamed.isNotEmpty() && part.rawContent.startsWith(streamed)
+                }
+            } else null
+            val matchingBlocks = if (soleTextFallback != null) listOf(soleTextFallback) else identityMatches
             if (matchingBlocks.size == 1) {
                 val block = matchingBlocks.single()
                 if (block.ended && part.content == block.content.toString()) return

@@ -5,6 +5,8 @@ import android.view.View
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.SelectionState
+import androidx.compose.foundation.text.selection.rememberSelectionState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
@@ -16,63 +18,78 @@ import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationExceptio
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 
 /**
  * 会话文本选区。按住开始选中时震一次；滑动扩展、拖动手柄或取消选择都不震。
  *
  * Compose 选区变化会连发 [HapticFeedbackType.TextHandleMove]，在 HyperOS 上若转成长按
  * 就会跟着滑。这里吞掉系统选区震动，改由长按超时自己触发一次。
- * 长按的移动仍交给原生 SelectionContainer；仅拦截释放事件，避免链接的
- * clickable 把长按松手误判为点击跳转。短按和无障碍点击保持原样。
+ * 只观察事件，不消费 down/move/up：原生选区需要完整手势来结束拖动并显示复制菜单。
+ * 链接防误点在 UriHandler 层处理，不再抢走选区的释放事件。
  */
 @Composable
 internal fun HapticSelectionContainer(
     modifier: Modifier = Modifier,
+    selectionState: SelectionState = rememberSelectionState(),
     content: @Composable () -> Unit,
 ) {
     val view = LocalView.current
     val parent = LocalHapticFeedback.current
     val haptic = remember(parent) { SelectionHapticFeedback(parent) }
-    CompositionLocalProvider(LocalHapticFeedback provides haptic) {
+    val uriHandler = io.github.mangi.eta.ui.markdown.rememberChatUriHandler(LocalUriHandler.current)
+    val linkGuard = remember { SelectionLinkGuard() }
+    val guardedUriHandler = remember(uriHandler, linkGuard) {
+        object : UriHandler {
+            override fun openUri(uri: String) {
+                if (linkGuard.canOpenLink()) uriHandler.openUri(uri)
+            }
+        }
+    }
+    CompositionLocalProvider(
+        LocalHapticFeedback provides haptic,
+        LocalUriHandler provides guardedUriHandler,
+    ) {
         SelectionContainer(
-            modifier = modifier.pointerInput(view) {
+            state = selectionState,
+            modifier = modifier.pointerInput(view, linkGuard) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    linkGuard.onDown()
                     val slop = viewConfiguration.touchSlop
                     val longPressTimeout = viewConfiguration.longPressTimeoutMillis
                     try {
-                        withTimeout(longPressTimeout) {
+                        try {
+                            withTimeout(longPressTimeout) {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                        ?: return@withTimeout
+                                    if (!change.pressed) {
+                                        linkGuard.onUp(change.uptimeMillis - down.uptimeMillis, longPressTimeout)
+                                        return@withTimeout
+                                    }
+                                    if ((change.position - down.position).getDistance() > slop) {
+                                        return@withTimeout
+                                    }
+                                }
+                            }
+                        } catch (_: PointerEventTimeoutCancellationException) {
+                            linkGuard.onLongPress()
+                            fireSelectionStartHaptic(view)
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
-                                val change = event.changes.firstOrNull { it.id == down.id }
-                                if (change == null) return@withTimeout
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
-                                    // Also cover an up delivered at the timeout boundary.
-                                    if (isSelectionLongPressRelease(
-                                            change.uptimeMillis - down.uptimeMillis,
-                                            longPressTimeout,
-                                        )
-                                    ) change.consume()
-                                    return@withTimeout
-                                }
-                                if ((change.position - down.position).getDistance() > slop) {
-                                    return@withTimeout
+                                    linkGuard.onUp(change.uptimeMillis - down.uptimeMillis, longPressTimeout)
+                                    break
                                 }
                             }
                         }
-                    } catch (_: PointerEventTimeoutCancellationException) {
-                        fireSelectionStartHaptic(view)
-                        // Do not consume down/moves: native word selection and drag
-                        // extension must continue. Cancel only the link's tap on up,
-                        // before its child clickable receives the Main pass.
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) {
-                                change.consume()
-                                break
-                            }
-                        }
+                    } finally {
+                        // Cancellation must not leave keyboard/accessibility link activation blocked.
+                        linkGuard.onGestureFinished()
                     }
                 }
             },

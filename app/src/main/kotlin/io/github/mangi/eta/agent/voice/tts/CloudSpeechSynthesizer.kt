@@ -52,6 +52,14 @@ internal class CloudSpeechSynthesizer(
         speechCheck(text.isNotBlank()) { "没有可朗读的文字" }
         speechCheck(voice.isNotBlank()) { "请选择音色" }
         val engine = SpeechEngineResolver.resolve(config.providerSourceType, config.baseUrl, config.model)
+        if (voice.startsWith(io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.PREFIX)) {
+            speechCheck(engine == SpeechEngine.MIMO) { "此个人声音仅支持 MiMo 提供商" }
+            val reference = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.reference(voice, config.providerId)
+            }
+            val request = SpeechProtocols.mimoClone(config, text, reference)
+            return executeAudio(doubaoClient, request, rawMp3 = false) { _, bytes -> SpeechProtocols.decodeMimoClone(bytes) }
+        }
         if (engine == SpeechEngine.DOUBAO) return synthesizeDoubao(config, text, voice)
         val request = SpeechProtocols.request(engine, config, text, voice)
         val client = if (engine == SpeechEngine.MIMO || engine == SpeechEngine.MINIMAX || engine == SpeechEngine.QWEN) {

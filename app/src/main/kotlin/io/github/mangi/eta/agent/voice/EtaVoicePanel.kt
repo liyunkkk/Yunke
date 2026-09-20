@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -82,6 +83,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.ui.components.rememberChatVoiceController
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.ReasoningEffort
@@ -205,7 +207,8 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
                 content = Color(0x8C1C1F26),
                 contentGradientEnd = Color(0x70111317),
                 borderHighlight = Color(0x40FFFFFF),
-                input = Color(0xF2404040),
+                // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
+                input = Color(0x59404040),
                 inputPrimary = Color(0xE6FFFFFF),
                 inputSecondary = Color(0x8AFFFFFF),
                 inputTertiary = Color(0x4DFFFFFF),
@@ -217,7 +220,8 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
                 content = Color(0x8AFFFFFF),
                 contentGradientEnd = Color(0x66EFF3F8),
                 borderHighlight = Color(0x99FFFFFF),
-                input = Color(0xF2FFFFFF),
+                // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
+                input = Color(0x59FFFFFF),
                 inputPrimary = Color(0xE6000000),
                 inputSecondary = Color(0x8A000000),
                 inputTertiary = Color(0x42000000),
@@ -261,6 +265,9 @@ internal fun EtaVoicePanel(
     assistantId: String,
 ) {
     val colors = rememberEtaVoicePanelColors()
+    // 与主界面共用同一个语音控制器；浮窗是 Service，LocalContext/LifecycleOwner 均可用。
+    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
+    val voiceState by voiceController.state.collectAsState()
     val keyboard = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
@@ -755,7 +762,9 @@ private fun AssistantComposer(
                 onEditAssistant = onEditAssistant,
                 onAssistantSelected = onAssistantSelected,
                 focusRequester = focusRequester,
-                showVoiceEntry = false,
+                voiceState = voiceState,
+                onStartVoiceMode = voiceController::start,
+                onStopVoiceMode = voiceController::stop,
                 overlayMode = true,
                 modifier = Modifier.fillMaxWidth(),
             )

@@ -12,7 +12,7 @@ internal object DoubaoDuplexProtocol {
     // Match the official web demo: ASR events are current hypotheses, not append-only text.
     fun eventText(event: JSONObject): String =
         listOf("text", "delta", "transcript", "content")
-            .firstNotNullOfOrNull { key -> event.optString(key).takeIf { it.isNotBlank() } }.orEmpty()
+            .firstNotNullOfOrNull { key -> (event.opt(key) as? String)?.takeIf { it.isNotBlank() } }.orEmpty()
 
     // Output delta is append-only, unlike ASR hypotheses. Keep whitespace chunks intact.
     // The official demo accepts text, delta, transcript and content in that order.

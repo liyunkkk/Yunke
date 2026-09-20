@@ -1175,7 +1175,7 @@
   <string name="skills_choose_package">Choose a skill package containing SKILL.md</string>
   <string name="skills_choose_zip">Choose ZIP skill package</string>
   <string name="skills_replace_summary">A user skill named “%1$s” (%2$s) already exists. Replacing it will overwrite all of its current files.</string>
-  <string name="settings_context_extensions">Context &amp; extensions</string>
+  <string name="settings_context_extensions">Extensions</string>
   <string name="settings_llm_providers">LLM providers</string>
   <string name="skills_replace">Replace</string>
   <string name="skills_delete_summary">After deleting “%1$s”, you will need to reinstall it to restore it.</string>
@@ -1459,4 +1459,21 @@
   <string name="functional_model_set_as_translation">Set as Screen Translation Model</string>
   <string name="screen_translation_cleared_translation_api">Cleared dedicated translation API</string>
   <string name="settings_kimi_web_builtin_browser">Open Kimi Web in built-in browser</string>
+  <string name="settings_model_features">Model features</string>
+  <string name="auxiliary_vision_title">Auxiliary vision model</string>
+  <string name="title_model_title">Title model</string>
+  <string name="model_feature_custom">Use a custom model</string>
+  <string name="model_feature_select">Select model</string>
+  <string name="model_feature_missing">Not selected or unavailable</string>
+  <string name="vision_feature_description">For text-only chat models, send images and the relevant question to the selected vision model. Its description is returned as text. Screenshots and video cover frames are supported. Native vision models continue to read images directly. Extra requests may incur charges.</string>
+  <string name="title_feature_description">Generate a short title for new conversations. When custom selection is off, use the current conversation model. On failure, keep the local title. Manually renamed titles are never overwritten.</string>
+  <string name="title_feature_default">Current conversation model</string>
+  <string name="vision_feature_off">Disabled: text-only models cannot read images</string>
+  <string name="revision_history_unavailable">Cannot locate the original context for this message. Operation cancelled; existing history is preserved. This does not mean the conversation was compressed.</string>
+  <string name="appearance_message_timestamps">Message timestamps</string>
+  <string name="appearance_message_timestamps_summary">Show when each reply finished generating, on the right of its action bar.</string>
+  <string name="chat_next_turn">Next turn</string>
+  <string name="chat_previous_turn">Previous turn</string>
+  <string name="chat_go_to_bottom">Go to bottom</string>
+  <string name="chat_go_to_top">Go to top</string>
 </resources>

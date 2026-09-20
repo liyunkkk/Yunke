@@ -1,41 +1,48 @@
 package io.github.mangi.eta.ui
 
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.ui.Alignment
-import android.media.MediaPlayer
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig
 import io.github.mangi.eta.agent.voice.doubao.DoubaoAsrProtocol
+import io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig
+import io.github.mangi.eta.agent.voice.doubao.PersonalVoicePreview
 import io.github.mangi.eta.agent.voice.doubao.PersonalVoices
 import io.github.mangi.eta.agent.voice.doubao.VoiceCatalogPreferences
 import io.github.mangi.eta.agent.voice.doubao.VoiceCatalogSecretStore
+import io.github.mangi.eta.agent.voice.doubao.VoiceProjectCatalog
+import io.github.mangi.eta.ui.components.EtaMaterialDropdownMenu
+import io.github.mangi.eta.ui.components.EtaMaterialDropdownMenuItem
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
+    val view = LocalView.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var deleteVoice by remember { mutableStateOf<PersonalVoices.Voice?>(null) }
@@ -70,12 +77,16 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
     var consent by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler { if (!busy && !importBusy) back() }
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    val preview = remember { PersonalVoicePreview() }
+    val previewState by preview.state.collectAsState()
+    LaunchedEffect(previewState.error) {
+        previewState.error?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+    }
     LaunchedEffect(Unit) {
         DoubaoVoiceConfig.load(context); PersonalVoices.load(context)
         asrKey = DoubaoVoiceConfig.state.value.asrKey; cloneKey = DoubaoVoiceConfig.state.value.cloneKey
     }
-    DisposableEffect(Unit) { onDispose { player?.release() } }
+    DisposableEffect(preview) { onDispose { preview.stop() } }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             audio = uri; fileName = "已选择录音"; consent = false
@@ -91,11 +102,12 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
         AlertDialog(onDismissRequest = { deleteVoice = null }, title = { Text("移除“${voice.name}”？") },
             text = { Text("仅删除本机记录，不删除云端音色，也不取消云端任务。若朗读正在使用它，移除后需重新选择声音。") },
             confirmButton = { TextButton(onClick = {
-                try { PersonalVoices.removeLocal(voice); player?.release(); player = null; notice = "已移除本机记录" }
+                TouchHaptics.click(view)
+                try { PersonalVoices.removeLocal(voice); if (previewState.matches(voice.account, voice.id)) preview.stop(5); notice = "已移除本机记录" }
                 catch (_: Exception) { notice = "本机记录删除失败，请重试" }
                 deleteVoice = null
             }) { Text("移除记录", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { deleteVoice = null }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { TouchHaptics.click(view); deleteVoice = null }) { Text("取消") } },
         )
     }
     fun beginMode(next: String) {
@@ -104,6 +116,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
         fileName = ""; consent = false; notice = ""; addMenu = false
     }
     val home = page == "voices" && mode == null && !showAccount && !showSync
+    LaunchedEffect(home) { if (!home) preview.stop() }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -116,16 +129,16 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                     else -> "我的声音"
                 }) },
                 navigationIcon = {
-                    IconButton(enabled = !busy && !importBusy, onClick = back) {
+                    IconButton(enabled = !busy && !importBusy, onClick = { TouchHaptics.click(view); back() }) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
                     }
                 },
                 actions = {
                     if (home) Box {
-                        IconButton(onClick = { settingsMenu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音设置") }
-                        DropdownMenu(expanded = settingsMenu, onDismissRequest = { settingsMenu = false }) {
-                            DropdownMenuItem(text = { Text("声音复刻账户") }, onClick = { settingsMenu = false; showAccount = true; notice = "" })
-                            DropdownMenuItem(text = { Text("同步音色名额") }, enabled = config.cloneKey.isNotBlank(), onClick = { settingsMenu = false; showSync = true; notice = "" })
+                        IconButton(onClick = { TouchHaptics.click(view); settingsMenu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音设置") }
+                        EtaMaterialDropdownMenu(expanded = settingsMenu, onDismissRequest = { settingsMenu = false }) {
+                            EtaMaterialDropdownMenuItem(text = "声音复刻账户", onClick = { TouchHaptics.click(view); settingsMenu = false; showAccount = true; notice = "" })
+                            EtaMaterialDropdownMenuItem(text = "同步音色名额", enabled = config.cloneKey.isNotBlank(), onClick = { TouchHaptics.click(view); settingsMenu = false; showSync = true; notice = "" })
                         }
                     }
                 },
@@ -133,12 +146,12 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
         },
         floatingActionButton = {
             if (home) Box {
-                FloatingActionButton(onClick = { if (config.cloneKey.isBlank()) showAccount = true else addMenu = true }) {
+                FloatingActionButton(onClick = { TouchHaptics.click(view); if (config.cloneKey.isBlank()) showAccount = true else addMenu = true }) {
                     Icon(Icons.Rounded.Add, contentDescription = "添加声音")
                 }
-                DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
-                    DropdownMenuItem(text = { Text("用录音制作声音") }, onClick = { beginMode("create") })
-                    DropdownMenuItem(text = { Text("导入已有声音") }, onClick = { beginMode("import") })
+                EtaMaterialDropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                    EtaMaterialDropdownMenuItem(text = "用录音制作声音", onClick = { TouchHaptics.click(view); beginMode("create") })
+                    EtaMaterialDropdownMenuItem(text = "导入已有声音", onClick = { TouchHaptics.click(view); beginMode("import") })
                 }
             }
         },
@@ -161,9 +174,9 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                         } else {
                             if (page == "asr") {
                                 Row {
-                                    RadioButton(!config.cloudAsr, { DoubaoVoiceConfig.save(context, config.copy(cloudAsr = false)) })
+                                    RadioButton(!config.cloudAsr, { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(cloudAsr = false)) })
                                     Text("本机识别", Modifier.padding(top = 12.dp))
-                                    RadioButton(config.cloudAsr, { DoubaoVoiceConfig.save(context, config.copy(cloudAsr = true)) })
+                                    RadioButton(config.cloudAsr, { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(cloudAsr = true)) })
                                     Text("豆包识别", Modifier.padding(top = 12.dp))
                                 }
                                 if (!config.cloudAsr) Text("无需账户。上一页下载语音包后，即可离线识别。")
@@ -176,7 +189,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                         Text("仅在控制台开通了不同服务时更改。")
                                         DoubaoAsrProtocol.resources.forEach { resource ->
                                             Row {
-                                                RadioButton(selected = resource == config.resource, onClick = { DoubaoVoiceConfig.save(context, config.copy(resource = resource)) })
+                                                RadioButton(selected = resource == config.resource, onClick = { TouchHaptics.click(view); DoubaoVoiceConfig.save(context, config.copy(resource = resource)) })
                                                 Text(when (resource) {
                                                     "volc.seedasr.sauc.duration" -> "识别 2.0 · 按时长"
                                                     "volc.seedasr.sauc.concurrent" -> "识别 2.0 · 按并发"
@@ -187,8 +200,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                         }
                                     }
                                     VoiceAction(text = "保存连接设置", primary = true, enabled = asrKey.isNotBlank(), onClick = { DoubaoVoiceConfig.save(context, config.copy(asrKey = asrKey)); notice = "已保存。返回聊天页说一句话，文字出现即识别成功。" })
-                                    VoiceConsoleHelp()
-                                    Text("API Key 是账户连接凭证。保存成功不代表已验证识别权限。", style = MaterialTheme.typography.bodyMedium)
+                                    VoiceConsoleHelp(showKeyHelp = false)
                                 }
                             }
                             if (page == "voices") {
@@ -204,7 +216,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                         if (advanced || postpaid) Column(Modifier.selectableGroup()) {
                                             listOf(false to "已有/免费名额", true to "新建后付费音色").forEach { (value, label) ->
                                                 ListItem(
-                                                    modifier = Modifier.selectable(selected = postpaid == value, role = Role.RadioButton, onClick = { postpaid = value; consent = false }),
+                                                    modifier = Modifier.selectable(selected = postpaid == value, role = Role.RadioButton, onClick = { TouchHaptics.click(view); postpaid = value; consent = false }),
                                                     headlineContent = { Text(label) },
                                                     leadingContent = { RadioButton(selected = postpaid == value, onClick = null) },
                                                 )
@@ -234,7 +246,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                         VoiceAction(text = if (manualId) "收起手动填写" else "备用方式：从控制台复制 ID", enabled = !busy, onClick = { manualId = !manualId; slotId = ""; consent = false })
                                         if (manualId) {
                                             Text("控制台 → 音色库 → 我的音色 → 预付费音色。把“已复刻”筛选改为“全部”或未复刻选项，找未使用名额；复制 S_ 开头的 ID。无需先在网页上传录音。")
-                                            VoiceConsoleHelp()
+                                            VoiceConsoleHelp(showKeyHelp = false)
                                             VoiceTextField(slotId, { slotId = it.trim(); consent = false }, enabled = !busy, label = "粘贴复制的音色 ID", singleLine = true, modifier = Modifier.fillMaxWidth())
                                         }
                                         if (slotId.isNotBlank()) Text(if (mode == "import") "已选择声音，点击导入即可。" else "已选择音色名额。下一步选择录音，不会立即上传。", style = MaterialTheme.typography.bodyMedium)
@@ -263,7 +275,7 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                     Text(if (postpaid) "新建后付费音色" else "使用音色：${PersonalVoices.find(slotId, config.cloneKey)?.name ?: slotId}")
                                     Text(if (postpaid) "需单独开通后付费音色服务；试听按账户规则计费，首次正式合成可能收取音色费。" else "录音会上传豆包，消耗此音色的训练次数，并可能覆盖原来的声音。试听按账户额度或计费规则结算。")
                                     Row(
-                                        modifier = Modifier.fillMaxWidth().toggleable(value = consent, enabled = !busy, role = Role.Checkbox, onValueChange = { consent = it }).padding(vertical = 8.dp),
+                                        modifier = Modifier.fillMaxWidth().toggleable(value = consent, enabled = !busy, role = Role.Checkbox, onValueChange = { TouchHaptics.click(view); consent = it }).padding(vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Checkbox(checked = consent, onCheckedChange = null, enabled = !busy)
@@ -294,17 +306,13 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
                                             PersonalVoiceRow(
                                                 voice = voice,
                                                 enabled = !importBusy,
+                                                previewActive = previewState.matches(voice.account, voice.id),
+                                                previewLoading = previewState.matches(voice.account, voice.id) && previewState.loading,
                                                 onRefresh = { PersonalVoices.refresh(voice, config.cloneKey) },
                                                 onDelete = { deleteVoice = voice },
                                                 onAccept = { PersonalVoices.accept(voice) },
                                                 onPreview = {
-                                                    player?.release()
-                                                    player = MediaPlayer().apply {
-                                                        setOnPreparedListener { it.start() }
-                                                        setOnCompletionListener { it.release(); if (player === it) player = null }
-                                                        setOnErrorListener { mp, _, _ -> mp.release(); if (player === mp) player = null; Toast.makeText(context, "试听链接可能已过期，请查询状态后重试", Toast.LENGTH_LONG).show(); true }
-                                                        try { setDataSource(voice.demo); prepareAsync() } catch (_: Exception) { release() }
-                                                    }
+                                                    preview.toggle(voice.account, voice.id, voice.demo)
                                                 },
                                             )
                                         }
@@ -321,12 +329,12 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun VoiceConsoleHelp() {
+private fun VoiceConsoleHelp(showKeyHelp: Boolean = true) {
     val context = LocalContext.current
     VoiceAction(text = "打开豆包控制台", onClick = {
         context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://console.volcengine.com/speech/new/overview?projectName=default")))
     })
-    Text("获取 Key：控制台 → API Key。获取音色 ID：控制台 → 音色库。二者需属于同一项目。", style = MaterialTheme.typography.bodyMedium)
+    if (showKeyHelp) Text("获取 Key：控制台 → API Key。获取音色 ID：控制台 → 音色库。二者需属于同一项目。", style = MaterialTheme.typography.bodyMedium)
 }
 
 @Composable
@@ -341,32 +349,97 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
     var resultText by remember { mutableStateOf("") }
     var failed by remember { mutableStateOf(false) }
     var projectOptions by remember { mutableStateOf(false) }
+    var projectPicker by remember { mutableStateOf(false) }
+    var projects by remember { mutableStateOf<List<VoiceProjectCatalog.Project>>(emptyList()) }
+    var projectsLoaded by remember { mutableStateOf(false) }
+    var projectLoading by remember { mutableStateOf(false) }
+    var projectError by remember { mutableStateOf("") }
+    val view = LocalView.current
     var busy by remember { mutableStateOf(false) }
     DisposableEffect(Unit) { onDispose { onBusy(false) } }
+    val working = busy || projectLoading
     Text("使用火山访问密钥读取音色名额，不会购买或训练。AK / SK 与豆包 API Key 不同。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     VoiceAction(text = "打开火山访问密钥管理", onClick = {
         context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://console.volcengine.com/iam/keymanage/")))
     })
-    Text("在密钥管理中复制 AK 和 SK，分别填写。不要发到聊天里。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text("在密钥管理中复制 AK 和 SK，分别填写。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     VoiceTextField(ak, {
         if (it.trim() != ak.trim()) {
             runCatching { secretStore.clear() }.onFailure { storageError = "旧 SK 清除失败，请重试" }
             sk = ""
+            projects = emptyList(); projectsLoaded = false; projectError = ""
         }
         ak = it; VoiceCatalogPreferences.save(context, it, project)
-    }, label = "Access Key ID（AK）", enabled = !busy,
+    }, label = "Access Key ID（AK）", enabled = !working,
         visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
     VoiceTextField(sk, {
+        if (sk != it) { projects = emptyList(); projectsLoaded = false; projectError = "" }
         sk = it
         storageError = runCatching { secretStore.save(ak, it) }.fold({ "" }, { "SK 加密保存失败；本次仍可读取名额，离开页面后需重新填写。" })
-    }, label = "Secret Access Key（SK）", enabled = !busy,
+    }, label = "Secret Access Key（SK）", enabled = !working,
         visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
-    VoiceAction(text = "项目：$project · 更改", enabled = !busy, onClick = { projectOptions = !projectOptions })
+    Text("当前项目：${project.ifBlank { "未选择" }}", style = MaterialTheme.typography.bodyLarge)
+    VoiceAction(text = if (projectLoading) "正在获取项目…" else if (projectsLoaded) "刷新项目列表" else "获取项目列表",
+        enabled = !working && ak.isNotBlank() && sk.isNotBlank(), onClick = {
+            projectLoading = true; onBusy(true); projectError = ""
+            val accessKey = ak.trim(); val secretKey = sk.trim()
+            scope.launch {
+                try {
+                    projects = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        VoiceProjectCatalog.list(accessKey, secretKey)
+                    }
+                    projectsLoaded = true
+                    projectPicker = projects.isNotEmpty()
+                    if (projects.isEmpty()) projectError = "未返回项目，可重试或手动填写。"
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    projects = emptyList(); projectsLoaded = false
+                    projectError = when (e) {
+                        is java.io.IOException -> "项目列表连接失败，请检查网络后重试；也可手动填写。"
+                        is org.json.JSONException -> "项目列表响应格式异常，请重试或手动填写。"
+                        else -> e.message ?: "获取项目失败，请核对访问密钥及 IAM 查询权限。"
+                    }
+                } finally { projectLoading = false; onBusy(false) }
+            }
+        })
+    if (projects.isNotEmpty()) VoiceAction(text = "选择项目", enabled = !working, onClick = { projectPicker = true })
+    if (projectError.isNotBlank()) Text(projectError, color = MaterialTheme.colorScheme.error)
+    Text("请选择与声音复刻 API Key 对应的项目；项目列表不能判断 Key 属于哪个项目。", style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant)
+    VoiceAction(text = if (projectOptions) "收起手动填写" else "手动填写项目（备用）", enabled = !working,
+        onClick = { projectOptions = !projectOptions })
     if (projectOptions) {
-        Text("与豆包控制台左上角的项目、已配置的 API Key 保持一致。一般使用 default。", style = MaterialTheme.typography.bodyMedium)
-        VoiceTextField(project, { project = it; VoiceCatalogPreferences.save(context, ak, it) }, label = "项目名称", enabled = !busy, singleLine = true)
+        VoiceTextField(project, { project = it; resultText = ""; failed = false; onResult(""); VoiceCatalogPreferences.save(context, ak, it) }, label = "项目名称", enabled = !working, singleLine = true)
     }
-    VoiceAction(text = if (busy) "正在查找名额…" else "读取我的名额", primary = true, enabled = !busy && apiKey.isNotBlank() && ak.isNotBlank() && sk.isNotBlank() && project.isNotBlank(), modifier = Modifier.fillMaxWidth(), onClick = {
+    if (projectPicker) AlertDialog(
+        onDismissRequest = { projectPicker = false },
+        title = { Text("选择项目") },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState()).selectableGroup()) {
+                projects.forEach { item ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp)
+                        .selectable(selected = project == item.name, enabled = item.allowed && !working, role = Role.RadioButton, onClick = {
+                            TouchHaptics.click(view)
+                            project = item.name
+                            resultText = ""; failed = false; onResult("")
+                            VoiceCatalogPreferences.save(context, ak, item.name)
+                            projectPicker = false; projectOptions = false
+                        }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = project == item.name, enabled = item.allowed && !working, onClick = null)
+                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                            Text(item.displayName, style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (item.allowed) 1f else 0.38f))
+                            if (item.displayName != item.name) Text(item.name, style = MaterialTheme.typography.bodySmall)
+                            if (!item.allowed) Text("无此项目访问权限", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { TouchHaptics.click(view); projectPicker = false }) { Text("关闭") } },
+    )
+    VoiceAction(text = if (busy) "正在查找名额…" else "读取我的名额", primary = true, enabled = !working && apiKey.isNotBlank() && ak.isNotBlank() && sk.isNotBlank() && project.isNotBlank(), modifier = Modifier.fillMaxWidth(), onClick = {
         busy = true; onBusy(true); resultText = ""; failed = false; onResult("")
         val savedKey = apiKey; val accessKey = ak.trim(); val secretKey = sk.trim(); val selectedProject = project.trim()
         scope.launch {
@@ -383,9 +456,10 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
     if (resultText.isNotBlank()) Text(resultText, color = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
     if (storageError.isNotBlank()) Text(storageError, color = MaterialTheme.colorScheme.error)
     Text("SK 在本机加密保存。更换 AK 会清除旧 SK，请使用配对的密钥。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    VoiceAction(text = "清除已记住的信息", enabled = !busy, onClick = {
+    VoiceAction(text = "清除已记住的信息", enabled = !working, onClick = {
         runCatching { secretStore.clear() }.onSuccess {
             VoiceCatalogPreferences.clear(context); ak = ""; project = "default"; sk = ""; storageError = ""
+            projects = emptyList(); projectsLoaded = false; projectError = ""; projectPicker = false
             resultText = "已清除 AK、SK 和项目名"; failed = false
         }.onFailure { storageError = "保存的 SK 清除失败，请重试" }
     })
@@ -395,31 +469,35 @@ private fun VoiceSlotSync(apiKey: String, onBusy: (Boolean) -> Unit, onResult: (
 private fun PersonalVoiceRow(
     voice: PersonalVoices.Voice,
     enabled: Boolean,
+    previewActive: Boolean,
+    previewLoading: Boolean,
     onRefresh: () -> Unit,
     onDelete: () -> Unit,
     onAccept: () -> Unit,
     onPreview: () -> Unit,
 ) {
+    val view = LocalView.current
     var menu by remember { mutableStateOf(false) }
     var showError by remember { mutableStateOf(false) }
     Column {
         ListItem(
-            headlineContent = { Text(voice.name) },
-            supportingContent = { Text(when (voice.status) {
+            headlineContent = { Text(voice.name, style = MaterialTheme.typography.bodyLarge) },
+            supportingContent = { Text(if (previewLoading) "正在加载试听…" else if (previewActive) "正在试听" else when (voice.status) {
                 -2 -> "请求被拒绝"; 0 -> "服务端未找到"; 1 -> "训练中"; 2 -> "训练成功"; 3 -> "训练失败"; 4 -> "已正式使用"; else -> "请求待确认"
             }) },
             leadingContent = { Icon(Icons.Rounded.Mic, contentDescription = null) },
             trailingContent = {
                 Row {
-                    IconButton(enabled = voice.demo.startsWith("https://"), onClick = onPreview) {
-                        Icon(Icons.Rounded.PlayArrow, contentDescription = "试听")
+                    IconButton(enabled = previewActive || voice.demo.startsWith("https://"), onClick = { TouchHaptics.click(view); onPreview() }) {
+                        Icon(if (previewActive) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                            contentDescription = if (previewActive) "停止试听" else "试听")
                     }
                     Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音操作") }
-                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                            DropdownMenuItem(text = { Text("查询状态") }, onClick = { menu = false; onRefresh() })
-                            if (voice.error.isNotBlank()) DropdownMenuItem(text = { Text("错误详情") }, onClick = { menu = false; showError = true })
-                            DropdownMenuItem(text = { Text("移除本机记录") }, enabled = enabled, onClick = { menu = false; onDelete() })
+                        IconButton(onClick = { TouchHaptics.click(view); menu = true }) { Icon(Icons.Rounded.MoreVert, contentDescription = "声音操作") }
+                        EtaMaterialDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            EtaMaterialDropdownMenuItem(text = "查询状态", onClick = { TouchHaptics.click(view); menu = false; onRefresh() })
+                            if (voice.error.isNotBlank()) EtaMaterialDropdownMenuItem(text = "错误详情", onClick = { TouchHaptics.click(view); menu = false; showError = true })
+                            EtaMaterialDropdownMenuItem(text = "移除本机记录", enabled = enabled, onClick = { TouchHaptics.click(view); menu = false; onDelete() })
                         }
                     }
                 }
@@ -433,7 +511,7 @@ private fun PersonalVoiceRow(
     if (showError) AlertDialog(
         onDismissRequest = { showError = false }, title = { Text("错误详情") },
         text = { Text(voice.error, modifier = Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) },
-        confirmButton = { TextButton(onClick = { showError = false }) { Text("关闭") } },
+        confirmButton = { TextButton(onClick = { TouchHaptics.click(view); showError = false }) { Text("关闭") } },
     )
 }
 
@@ -445,6 +523,7 @@ private fun VoiceSlotRow(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
+    val view = LocalView.current
     val status = when {
         slot.status == 1 || slot.catalogState == "Training" -> "制作中"
         slot.status == 4 || slot.catalogState == "Active" -> "已锁定"
@@ -455,7 +534,7 @@ private fun VoiceSlotRow(
     }
     val quota = if (slot.remaining >= 0) "剩余 ${slot.remaining} 次" else "次数待查询"
     ListItem(
-        modifier = Modifier.selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick),
+        modifier = Modifier.selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = { TouchHaptics.click(view); onClick() }),
         headlineContent = { Text(title) },
         supportingContent = { Text("$status · $quota") },
         leadingContent = { RadioButton(selected = selected, enabled = enabled, onClick = null) },
@@ -489,6 +568,8 @@ private fun VoiceAction(
     enabled: Boolean = true,
     primary: Boolean = false,
 ) {
-    if (primary) Button(onClick = onClick, enabled = enabled, modifier = modifier.fillMaxWidth()) { Text(text) }
-    else TextButton(onClick = onClick, enabled = enabled, modifier = modifier) { Text(text) }
+    val view = LocalView.current
+    val click = { TouchHaptics.click(view); onClick() }
+    if (primary) Button(onClick = click, enabled = enabled, modifier = modifier.fillMaxWidth()) { Text(text) }
+    else TextButton(onClick = click, enabled = enabled, modifier = modifier) { Text(text) }
 }

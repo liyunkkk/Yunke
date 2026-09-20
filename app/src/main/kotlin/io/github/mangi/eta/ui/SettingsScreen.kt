@@ -312,7 +312,32 @@ internal fun SettingsScreen(
                 }
             }
 
-            // ── 上下文与扩展 ────────────────────────────────────────────
+            item(key = "section_model_features") {
+                SmallTitle(stringResource(R.string.settings_model_features))
+                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    ArrowPreference(
+                        title = stringResource(R.string.route_context_compression),
+                        startAction = {
+                            PreferenceIcon(
+                                icon = Icons.Rounded.Compress,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.ContextCompression) },
+                    )
+                    ArrowPreference(
+                        title = stringResource(R.string.auxiliary_vision_title),
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.Psychology) },
+                        onClick = { onNavigate(AppRoute.AuxiliaryVision) },
+                    )
+                    ArrowPreference(
+                        title = stringResource(R.string.title_model_title),
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.AutoAwesome) },
+                        onClick = { onNavigate(AppRoute.TitleModel) },
+                    )
+                }
+            }
+
+            // ── 扩展 ────────────────────────────────────────────
             item(key = "section_context_extensions") {
                 SmallTitle(stringResource(R.string.settings_context_extensions))
                 Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
@@ -325,15 +350,7 @@ internal fun SettingsScreen(
                         },
                         onClick = { onNavigate(AppRoute.Assistants()) },
                     )
-                    ArrowPreference(
-                        title = stringResource(R.string.route_context_compression),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Compress,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.ContextCompression) },
-                    )
+
 
                     ArrowPreference(
                         title = stringResource(R.string.route_skills),

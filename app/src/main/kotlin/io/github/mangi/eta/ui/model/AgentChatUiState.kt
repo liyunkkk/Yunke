@@ -52,6 +52,7 @@ data class AgentMessageUi(
     val isStreaming: Boolean = false,
     val renderMarkdown: Boolean = true,
     val usage: TokenUsageUi? = null,
+    val generatedAtMillis: Long? = null,
 ) : AgentChatMessageUi
 
 enum class SystemNoticeCode(val wireValue: String) {

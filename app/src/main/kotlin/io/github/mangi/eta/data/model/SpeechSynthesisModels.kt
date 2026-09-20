@@ -12,7 +12,15 @@ internal object SpeechSynthesisModels {
 
     fun isReadAloudProvider(provider: ProviderSetting): Boolean =
         allowsSpeechEndpoint(provider) && provider.apiKey.isNotBlank() &&
-            mergeCatalog(provider).any { it.isEnabled && it.supportsSpeechSynthesis }
+            mergeCatalog(provider).any { it.isEnabled && isReadAloudModel(it) }
+
+    /** Read-aloud needs plain text + a selectable voice; creation-only models stay in the full catalog. */
+    fun isReadAloudModel(model: Model): Boolean {
+        val id = model.modelId.lowercase()
+        return model.supportsSpeechSynthesis &&
+            listOf("seed-audio", "voiceclone", "voice-clone", "voice_clone",
+                "voicedesign", "voice-design", "voice_design").none { it in id }
+    }
 
     fun isRealtimeVoiceProvider(provider: ProviderSetting): Boolean =
         allowsSpeechEndpoint(provider) && provider.apiKey.isNotBlank() && isDoubaoSpeechHost(provider.baseUrl)

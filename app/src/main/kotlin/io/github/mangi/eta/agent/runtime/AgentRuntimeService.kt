@@ -18,6 +18,7 @@ import android.view.WindowManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -34,7 +35,6 @@ import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentHapticFeedback
 import io.github.mangi.eta.agent.overlay.AgentOverlayBubble
-import io.github.mangi.eta.agent.overlay.AgentOverlayGlow
 import io.github.mangi.eta.agent.overlay.AgentOverlayOrb
 import io.github.mangi.eta.agent.overlay.AgentResultCard
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
@@ -84,16 +84,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     )
 
     private var windowManager: WindowManager? = null
-    private var glowView: ComposeView? = null
     private var orbView: ComposeView? = null
     private var bubbleView: ComposeView? = null
     private var resultCardView: ComposeView? = null
-    private var glowParams: WindowManager.LayoutParams? = null
     private var orbParams: WindowManager.LayoutParams? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var resultCardParams: WindowManager.LayoutParams? = null
 
     private val state = mutableStateOf(AgentOverlayState.Initial)
+    // The compact orb does not display tool details or round counters.
+    private val orbPhase = derivedStateOf { state.value.phase }
     private val collapsed = mutableStateOf(true)
     private var hasExecutedForegroundTool = false
     private val supplementsLock = Any()
@@ -143,15 +143,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
         bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
         orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
         resultCardView = null
         bubbleView = null
         orbView = null
-        glowView = null
         resultCardParams = null
         bubbleParams = null
         orbParams = null
-        glowParams = null
         windowManager = null
         pendingResultTranscripts.values.forEach { prepared -> runCatching { prepared.close() } }
         pendingResultTranscripts.clear()
@@ -860,23 +857,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
         windowManager = wm
 
-        // ── 氛围光窗口：全屏触摸穿透，彩虹光圈，截图时被 takeScreenshotOfWindow 过滤 ─
-        val glow = createOverlayComposeView {
-            AgentOverlayGlow(state = state.value)
-        }
-        val glowLp = glowLayoutParams()
-        runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
-            AndroidAgentLogger.warnThrottled("runtime_glow_add_view_failed") {
-                "Agent runtime glow addView failed: type=${throwable.safeLogType()}"
-            }
-        }
-        glowView = glow
-        glowParams = glowLp
-
+        // No full-screen decorative window: it shared the UI/RenderThread with chat scrolling.
         // ── 光球窗口：始终显示，右侧中下 ──────────────────────────────
         val orb = createOverlayComposeView {
             AgentOverlayOrb(
-                state = state.value,
+                phase = orbPhase.value,
                 onToggleCollapse = ::toggleCollapse,
             )
         }
@@ -988,6 +973,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
+            title = "Eta Agent Orb"
             // 右侧中下，贴近右边缘
             gravity = Gravity.END or Gravity.TOP
             x = dpToPx(8)
@@ -1006,6 +992,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
+            title = "Eta Agent Controls"
             // 跟随光球：右侧中下，窗口外触摸穿透
             gravity = Gravity.END or Gravity.TOP
             x = dpToPx(72)
@@ -1024,6 +1011,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
+            title = "Eta Agent Result"
             // 半屏底部居中，窗口外触摸穿透
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             x = 0
@@ -1041,34 +1029,6 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun overlayContext(): Context =
         AgentAccessibilityService.current() ?: this
-
-    @Suppress("DEPRECATION")
-    private fun glowLayoutParams(): WindowManager.LayoutParams {
-        // 真实屏幕高度（含状态栏 + 导航栏），MATCH_PARENT 在部分设备不含系统栏
-        val realHeight = runCatching {
-            val point = android.graphics.Point()
-            @Suppress("DEPRECATION")
-            windowManager?.defaultDisplay?.getRealSize(point)
-            point.y
-        }.getOrDefault(WindowManager.LayoutParams.MATCH_PARENT)
-        return WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            realHeight,
-            overlayType(),
-            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            // 全屏覆盖（含状态栏/导航栏），触摸穿透不拦截页面操作；
-            // TYPE_ACCESSIBILITY_OVERLAY 让 takeScreenshotOfWindow 过滤掉，对 Agent 透明
-            gravity = Gravity.TOP or Gravity.START
-            x = 0
-            y = 0
-        }
-    }
 
     private fun setBubbleInputMode(focusable: Boolean) {
         val wm = windowManager ?: return
@@ -1111,28 +1071,22 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun removeAmbientWindows() {
         orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
         bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
         orbView = null
         bubbleView = null
-        glowView = null
         orbParams = null
         bubbleParams = null
-        glowParams = null
     }
 
     private fun dismissAndStop() {
         resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
         bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
         orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
         resultCardView = null
         bubbleView = null
         orbView = null
-        glowView = null
         resultCardParams = null
         bubbleParams = null
         orbParams = null
-        glowParams = null
         windowManager = null
         overlayRunId = null
         hasExecutedForegroundTool = false

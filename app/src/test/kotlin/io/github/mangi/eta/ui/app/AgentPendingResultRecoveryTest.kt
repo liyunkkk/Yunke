@@ -16,6 +16,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentPendingResultRecoveryTest {
+    @Test fun recoveryKeepsCompletionTimeInsteadOfUsingRecoveryTime() {
+        val state = AgentChatUiState(messages = listOf(
+            UserMessageUi("user-run-time", "question"),
+            AgentMessageUi("assistant-run-time-1", "answer", generatedAtMillis = 1000L)),
+            input = "", isStreaming = false, thinkingEnabled = false)
+        val result = AgentRuntimeWire.RunResult("run-time", true, "answer")
+        val recovered = AgentPendingResultRecovery.apply(state, "run-time", result,
+            supplements = emptyList(), generatedAtMillis = 2000L)
+        assertEquals(1000L, recovered.state.messages.filterIsInstance<AgentMessageUi>().single().generatedAtMillis)
+        val noTimestamp = state.copy(messages = listOf(UserMessageUi("user-run-time", "question")))
+        val stamped = AgentPendingResultRecovery.apply(noTimestamp, "run-time", result,
+            supplements = emptyList(), generatedAtMillis = 2000L)
+        assertEquals(2000L, stamped.state.messages.filterIsInstance<AgentMessageUi>().single().generatedAtMillis)
+        val legacy = AgentPendingResultRecovery.apply(noTimestamp, "run-time", result, supplements = emptyList())
+        assertEquals(null, legacy.state.messages.filterIsInstance<AgentMessageUi>().single().generatedAtMillis)
+    }
+
     @Test fun stoppedRecoveryKeepsPartialAndFullTranscriptAndIsIdempotent() {
         val initial = AgentModelClient.ConversationMessage("user", "task", turnId = "run-stop")
         val additions = listOf(

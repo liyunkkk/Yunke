@@ -180,6 +180,14 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         item(key = "appearance_interface_card") {
             Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                 SwitchPreference(
+                    title = stringResource(R.string.appearance_message_timestamps),
+                    summary = stringResource(R.string.appearance_message_timestamps_summary),
+                    checked = appearance.messageTimestampsEnabled,
+                    onCheckedChange = { enabled ->
+                        update { current -> current.copy(messageTimestampsEnabled = enabled) }
+                    },
+                )
+                SwitchPreference(
                     title = stringResource(R.string.appearance_blur),
                     summary = stringResource(R.string.appearance_blur_summary),
                     checked = appearance.blurEnabled && blurSupported,

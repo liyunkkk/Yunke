@@ -8,6 +8,31 @@ import org.junit.Test
 
 class AgentContextCompactionUiTest {
     @Test
+    fun pendingPruningThenSummaryFailureKeepsLatestBillInsteadOfOldNineteenPercentBaseline() {
+        val messages = listOf<AgentChatMessageUi>(
+            ContextCompactedMessageUi("old", compactedCount = 10, summary = "old summary",
+                baselineTokens = 51_680),
+            UserMessageUi("u", "continue"),
+        )
+        // Before the fix, clearing livePromptTokens made this old 19% baseline visible.
+        assertEquals(51_680, latestBilledContextTokens(messages))
+        val afterPruning = AgentContextCompactionUi.pendingPruningUsage(238_000, messages)
+        assertEquals(238_000, afterPruning)
+        // A failed summary has no new baseline; repeated pruning must not discard this bill.
+        assertEquals(238_000, AgentContextCompactionUi.pendingPruningUsage(afterPruning, messages))
+    }
+
+    @Test
+    fun pendingPruningWithoutLiveBillKeepsExistingUsageSource() {
+        val messages = listOf<AgentChatMessageUi>(
+            ContextCompactedMessageUi("old", compactedCount = 10, summary = "old summary",
+                baselineTokens = 51_680),
+        )
+        assertEquals(51_680, AgentContextCompactionUi.pendingPruningUsage(null, messages))
+        assertEquals(null, AgentContextCompactionUi.pendingPruningUsage(null, emptyList()))
+    }
+
+    @Test
     fun runtimePruningEventIsRecognizedEvenWhenUiHistoryHasNotCaughtUp() {
         val old = listOf(msg("user", "task"))
         val live = old + msg("assistant", "tool call") + msg("tool", "trimmed")

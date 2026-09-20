@@ -6,8 +6,6 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
@@ -37,7 +35,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.DocumentScanner
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.RocketLaunch
@@ -83,6 +80,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
@@ -117,6 +115,7 @@ import io.github.mangi.eta.ui.model.isResumeAfterCompress
 import io.github.mangi.eta.ui.model.isSteerSupplement
 import kotlin.math.exp
 import kotlin.math.min
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
@@ -162,6 +161,7 @@ internal fun AgentChatBody(
     livePromptTokens: Int? = null,
     autoCompressEnabled: Boolean = false,
     input: String,
+    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
     isStreaming: Boolean,
     isPaused: Boolean = false,
     canContinueDisconnected: Boolean = false,
@@ -315,6 +315,7 @@ internal fun AgentChatBody(
             hasMessages = visibleMessages.isNotEmpty(),
             scrollState = scrollState,
             input = input,
+            draftField = draftField,
             modelPickerState = modelPickerState,
             history = history,
             billedContextTokens = billedContextTokens,
@@ -391,6 +392,7 @@ private fun AgentChatScaffold(
     hasMessages: Boolean,
     scrollState: LazyListState,
     input: String,
+    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
     modelPickerState: AgentModelPickerUiState,
     history: List<AgentModelClient.ConversationMessage>,
     billedContextTokens: Int? = null,
@@ -474,6 +476,7 @@ private fun AgentChatScaffold(
             AgentChatBottomBar(
                 messageBackdrop = messageBackdrop.takeIf { frostEnabled },
                 input = input,
+                draftField = draftField,
                 modelPickerState = modelPickerState,
                 history = history,
                 billedContextTokens = billedContextTokens,
@@ -625,18 +628,35 @@ internal fun AgentConversationMessages(
     }
     val compressingItemCount = if (isCompressingContext || isWaitingForCompression) 1 else 0
     val bottomItemIndex = timelineEntries.size + compressingItemCount
+    val turnStarts = remember(timelineEntries) { timelineEntries.turnStartIndices() }
+    val directionThreshold = with(LocalDensity.current) { 12.dp.toPx() }
+    val directionTracker = remember(scrollState, directionThreshold) {
+        ConversationNavigationDirectionTracker(directionThreshold)
+    }
+    var navigationDirection by remember(scrollState) { mutableStateOf(ConversationNavigationDirection.Down) }
+    var turnNavigationJob by remember(scrollState) { mutableStateOf<Job?>(null) }
+    DisposableEffect(scrollState) {
+        onDispose { turnNavigationJob?.cancel() }
+    }
     val isUserDragging by scrollState.interactionSource.collectIsDraggedAsState()
     // 手指拖走后的惯性也算用户滚动；跟底自己的 scrollBy 不能把这个标志打开。
     var isUserScrolling by remember { mutableStateOf(false) }
     // Observe user motion synchronously, before the asynchronous drag collector
     // and before another scheduled follow frame can mutate the list position.
-    val userScrollConnection = remember(scrollState) {
+    val userScrollConnection = remember(scrollState, directionTracker) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    turnNavigationJob?.cancel()
                     isUserScrolling = true
+                    navigationDirection = directionTracker.onScroll(available.y, userInput = true)
                 }
                 return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                directionTracker.endGesture()
+                return Velocity.Zero
             }
         }
     }
@@ -662,10 +682,12 @@ internal fun AgentConversationMessages(
     var hasLeftBottom by remember { mutableStateOf(false) }
     LaunchedEffect(scrollState) {
         snapshotFlow {
-            Triple(isUserScrolling, scrollState.isConversationAtBottom(), currentAnchor.value)
+            if (turnNavigationJob != null) null
+            else Triple(isUserScrolling, scrollState.isConversationAtBottom(), currentAnchor.value)
         }
             .distinctUntilChanged()
-            .collect { (userScrolling, atBottom, anchored) ->
+            .collect { state ->
+                val (userScrolling, atBottom, anchored) = state ?: return@collect
                 if (userScrolling && !atBottom) hasLeftBottom = true
                 val next = resolveKeepBottomAnchored(
                     current = anchored,
@@ -710,7 +732,7 @@ internal fun AgentConversationMessages(
         resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
-            isUserDragging = isUserScrolling,
+            isUserDragging = isUserScrolling || turnNavigationJob != null,
             isBottomSettling = isBottomSettling,
         )
     )
@@ -723,13 +745,14 @@ internal fun AgentConversationMessages(
         bottomItemIndex,
         keepBottomAnchored,
         isUserScrolling,
+        turnNavigationJob,
         isStreaming,
         scrollToMessageId,
     ) {
         if (shouldSnapConversationToBottom(
                 isStreaming = isStreaming,
                 keepBottomAnchored = keepBottomAnchored,
-                isUserDragging = isUserScrolling,
+                isUserDragging = isUserScrolling || turnNavigationJob != null,
                 hasItems = bottomItemIndex > 0,
                 scrollToMessageId = scrollToMessageId,
             )
@@ -740,7 +763,7 @@ internal fun AgentConversationMessages(
         if (shouldRequestInitialBottom(
                 isStreaming = isStreaming,
                 keepBottomAnchored = keepBottomAnchored,
-                isUserDragging = isUserScrolling,
+                isUserDragging = isUserScrolling || turnNavigationJob != null,
             )
         ) {
             scrollState.requestScrollToItem(bottomItemIndex)
@@ -801,7 +824,7 @@ internal fun AgentConversationMessages(
                 accept(latest)
             }
 
-            if (!shouldFollowBottom || isUserScrolling) {
+            if (!shouldFollowBottom || isUserScrolling || turnNavigationJob != null) {
                 remainingDistancePx = 0f
                 requestIndex = null
                 continue
@@ -827,7 +850,7 @@ internal fun AgentConversationMessages(
                 val latest = bottomFollowDecisions.tryReceive().getOrNull() ?: break
                 accept(latest)
             }
-            if (!shouldFollowBottom || isUserScrolling || requestIndex != null || remainingDistancePx <= 0f) continue
+            if (!shouldFollowBottom || isUserScrolling || turnNavigationJob != null || requestIndex != null || remainingDistancePx <= 0f) continue
 
             val step = smoothBottomFollowStep(
                 distancePx = remainingDistancePx,
@@ -838,7 +861,7 @@ internal fun AgentConversationMessages(
             try {
                 scrollState.scroll {
                     // scroll() may wait for another mutation; check ownership again.
-                    if (!isUserScrolling && shouldFollowBottom) {
+                    if (!isUserScrolling && turnNavigationJob == null && shouldFollowBottom) {
                         consumedStep = StreamPerformanceDiagnostics.measure("follow.scroll") { scrollBy(step) }
                     }
                 }
@@ -882,7 +905,8 @@ internal fun AgentConversationMessages(
             modifier = Modifier
                 .fillMaxSize()
                 .nestedScroll(userScrollConnection)
-                .scrollEndHaptic()
+                // Navigation already emits one explicit click/long-press haptic.
+                .then(if (turnNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
                 .overScrollVertical(),
             contentPadding = PaddingValues(
                 top = 14.dp,
@@ -982,15 +1006,41 @@ internal fun AgentConversationMessages(
             }
         }
 
-        ConversationBackToBottomButton(
-            keepBottomAnchored = keepBottomAnchored,
-            scrollState = scrollState,
-            onBackToBottom = {
-                onBottomAnchorChanged(true)
-                coroutineScope.launch {
-                    scrollState.animateScrollToItem(bottomItemIndex)
+        fun navigateTurn(toEdge: Boolean) {
+            // Do not queue animations on rapid taps; a new drag cancels the active jump.
+            if (turnNavigationJob != null) return
+            val direction = navigationDirection
+            val target = conversationTurnTarget(
+                turnStarts, scrollState.firstVisibleItemIndex, bottomItemIndex, direction, toEdge,
+            )
+            onBottomAnchorChanged(false)
+            turnNavigationJob = coroutineScope.launch {
+                try {
+                    // Let the follow/boundary-haptic observers yield before moving the list.
+                    withFrameNanos { }
+                    scrollState.animateScrollToItem(target)
+                    if (target == bottomItemIndex) snapListToBottom(scrollState, currentBottomItemIndex)
+                    onBottomAnchorChanged(
+                        direction == ConversationNavigationDirection.Down && scrollState.isConversationAtBottom(),
+                    )
+                } finally {
+                    turnNavigationJob = null
                 }
-            },
+            }
+        }
+        val showTurnNavigation by remember(scrollState, navigationDirection, keepBottomAnchored) {
+            derivedStateOf {
+                !keepBottomAnchored && when (navigationDirection) {
+                    ConversationNavigationDirection.Up -> scrollState.canScrollBackward
+                    ConversationNavigationDirection.Down -> !scrollState.isConversationAtBottom()
+                }
+            }
+        }
+        ConversationTurnNavigationButton(
+            direction = navigationDirection,
+            visible = showTurnNavigation,
+            onStep = { navigateTurn(toEdge = false) },
+            onEdge = { navigateTurn(toEdge = true) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = bottomInset + 12.dp),
@@ -1043,7 +1093,7 @@ internal fun smoothBottomFollowStep(
     return min(distancePx, min(easedStep.coerceAtLeast(BOTTOM_FOLLOW_MIN_STEP_PX), speedLimitedStep))
 }
 
-private sealed interface AgentTimelineEntry {
+internal sealed interface AgentTimelineEntry {
     val key: String
 
     data class Message(
@@ -1058,7 +1108,7 @@ private sealed interface AgentTimelineEntry {
     ) : AgentTimelineEntry
 }
 
-private fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEntry> = buildList {
+internal fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEntry> = buildList {
     val workMessages = mutableListOf<AgentChatMessageUi>()
 
     fun flushWorkProcess() {
@@ -1084,6 +1134,12 @@ private fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEntr
         }
     }
     flushWorkProcess()
+}
+
+/** Use projected list indices, not raw message indices (work steps are grouped). */
+internal fun List<AgentTimelineEntry>.turnStartIndices(): List<Int> = mapIndexedNotNull { index, entry ->
+    val user = (entry as? AgentTimelineEntry.Message)?.message as? UserMessageUi
+    index.takeIf { user != null && !user.isSteerSupplement() && !user.isResumeAfterCompress() }
 }
 
 private fun AgentChatMessageUi.isWorkProcessMessage(): Boolean =
@@ -1165,6 +1221,7 @@ internal fun visibleTurnSpeechPreface(
 private fun AgentChatBottomBar(
     messageBackdrop: LayerBackdrop?,
     input: String,
+    draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
     modelPickerState: AgentModelPickerUiState,
     history: List<AgentModelClient.ConversationMessage>,
     billedContextTokens: Int? = null,
@@ -1266,6 +1323,7 @@ private fun AgentChatBottomBar(
         ) {
             AgentChatInputBar(
                 input = input,
+                draftField = draftField,
                 modelPickerState = modelPickerState,
                 history = history,
                 billedContextTokens = billedContextTokens,
@@ -1461,38 +1519,6 @@ private fun LazyListState.isConversationAtBottom(): Boolean {
     } else {
         val viewportEnd = info.viewportEndOffset - info.afterContentPadding
         sentinel.offset + sentinel.size <= viewportEnd + 8
-    }
-}
-
-@Composable
-private fun ConversationBackToBottomButton(
-    keepBottomAnchored: Boolean,
-    scrollState: LazyListState,
-    onBackToBottom: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val isAtBottom by remember(scrollState) {
-        derivedStateOf { scrollState.isConversationAtBottom() }
-    }
-    AnimatedVisibility(
-        visible = !keepBottomAnchored && !isAtBottom,
-        modifier = modifier,
-        enter = fadeIn(tween(160)) + scaleIn(tween(180), initialScale = 0.82f),
-        exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.86f),
-    ) {
-        IconButton(
-            onClick = onBackToBottom,
-            backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
-            minWidth = 40.dp,
-            minHeight = 40.dp,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.ArrowDownward,
-                contentDescription = stringResource(R.string.ui_back_to_bottom_32282e),
-                modifier = Modifier.size(17.dp),
-                tint = MiuixTheme.colorScheme.onSurface,
-            )
-        }
     }
 }
 
