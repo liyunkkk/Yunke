@@ -64,6 +64,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -165,6 +166,8 @@ internal object EtaScreenContextStateReducer {
 
 private data class EtaVoicePanelColors(
     val content: Color,
+    val contentGradientEnd: Color,
+    val borderHighlight: Color,
     val input: Color,
     val inputPrimary: Color,
     val inputSecondary: Color,
@@ -179,23 +182,27 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
     return remember(dark) {
         if (dark) {
             EtaVoicePanelColors(
-                content = Color(0xF52B2C2F),
+                content = Color(0x8C1C1F26),
+                contentGradientEnd = Color(0x70111317),
+                borderHighlight = Color(0x40FFFFFF),
                 input = Color(0xF2404040),
                 inputPrimary = Color(0xE6FFFFFF),
                 inputSecondary = Color(0x8AFFFFFF),
                 inputTertiary = Color(0x4DFFFFFF),
                 tertiary = Color(0x66FFFFFF),
-                scrim = Color(0x52000000),
+                scrim = Color(0x4D000000),
             )
         } else {
             EtaVoicePanelColors(
-                content = Color(0xFAF7F7F9),
+                content = Color(0x8AFFFFFF),
+                contentGradientEnd = Color(0x66EFF3F8),
+                borderHighlight = Color(0x99FFFFFF),
                 input = Color(0xF2FFFFFF),
                 inputPrimary = Color(0xE6000000),
                 inputSecondary = Color(0x8A000000),
                 inputTertiary = Color(0x42000000),
                 tertiary = Color(0x52000000),
-                scrim = Color(0x30000000),
+                scrim = Color(0x20000000),
             )
         }
     }
@@ -511,7 +518,7 @@ private fun BoxScope.AssistantPanel(
 
     val bottomInset = with(density) { bottomInsetPx.toDp() }
     val messageRevealOffsetPx = with(density) { 12.dp.toPx() }
-    val sheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    val sheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
     Column(
         modifier = Modifier
             .align(Alignment.BottomCenter)
@@ -519,10 +526,26 @@ private fun BoxScope.AssistantPanel(
             .offset(y = with(density) { sheetTranslationPx.toDp() })
             .clip(sheetShape)
             .drawBehind {
-                drawRect(
-                    colors.content.copy(
-                        alpha = colors.content.alpha * sheetBackgroundAlpha.value,
+                val bgAlpha = sheetBackgroundAlpha.value
+                val glassBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        colors.content.copy(alpha = colors.content.alpha * bgAlpha),
+                        colors.contentGradientEnd.copy(alpha = colors.contentGradientEnd.alpha * bgAlpha),
                     ),
+                )
+                drawRect(brush = glassBrush)
+                val rimBrush = Brush.verticalGradient(
+                    colors = listOf(
+                        colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * bgAlpha),
+                        colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * 0.45f * bgAlpha),
+                        colors.borderHighlight.copy(alpha = colors.borderHighlight.alpha * 0.2f * bgAlpha),
+                    ),
+                    startY = 0f,
+                    endY = size.height,
+                )
+                drawRect(
+                    brush = rimBrush,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.2.dp.toPx()),
                 )
             },
     ) {

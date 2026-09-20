@@ -302,7 +302,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             title = "EtaAssistantOverlay"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && wm.isCrossWindowBlurEnabled) {
                 flags = flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
-                blurBehindRadius = 24
+                blurBehindRadius = 110
             }
         }
         runCatching { wm.addView(view, params) }.onFailure { throwable ->
