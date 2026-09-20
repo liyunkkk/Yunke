@@ -583,7 +583,7 @@ private fun BoxScope.AssistantPanel(
 
     val bottomInset = with(density) { bottomInsetPx.toDp() }
     val messageRevealOffsetPx = with(density) { 12.dp.toPx() }
-    val sheetShape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+    val sheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
     Column(
         modifier = Modifier
             .align(Alignment.BottomCenter)
