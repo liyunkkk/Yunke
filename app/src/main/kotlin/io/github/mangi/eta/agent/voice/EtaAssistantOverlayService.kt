@@ -17,6 +17,7 @@ import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -43,11 +44,18 @@ import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.EtaApp
+import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.MainActivity
 import io.github.mangi.eta.ui.app.AgentAppTheme
 import io.github.mangi.eta.data.model.AppearanceSettings
+import io.github.mangi.eta.data.model.ModelReasoningCapabilities
+import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
+import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.app.AgentRunMessageProjector
+import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
@@ -61,11 +69,15 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -148,6 +160,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun showEntry() {
+        observeRuntimeSelection()
         if (!Settings.canDrawOverlays(this)) {
             AndroidAgentLogger.warnThrottled("eta_assistant_overlay_permission_missing") {
                 "Eta assistant overlay permission is missing"
@@ -166,6 +179,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             screenContext = EtaScreenContextUiState(
                 phase = EtaScreenContextPhase.CAPTURING,
             ),
+            modelPickerState = uiState.modelPickerState,
+            reasoningEffort = uiState.reasoningEffort,
+            availableReasoningEfforts = uiState.availableReasoningEfforts,
         )
         hiddenForForegroundOperation = false
         handoffInProgress = false
@@ -267,6 +283,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         onScreenContextSelect = ::selectScreenContext,
                         onScreenContextRemove = ::removeScreenContext,
                         onScreenTranslation = ::startScreenTranslation,
+                        onModelSelected = ::selectModel,
                         onSubmit = ::submitInput,
                         onStop = ::stopCurrentRun,
                         onClose = ::dismissAndStop,
@@ -792,6 +809,77 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 enabled = activeRunId == null,
             ),
         )
+    }
+
+    private var currentReasoningCapabilities: ModelReasoningCapabilities? = null
+    private var selectionObservationStarted = false
+
+    private fun observeRuntimeSelection() {
+        if (selectionObservationStarted) return
+        selectionObservationStarted = true
+        scope.launch(Dispatchers.IO) {
+            combine(
+                RuntimeConfigRepository.selectedProviderIdFlow(),
+                RuntimeConfigRepository.selectedModelIdFlow(),
+                ProviderRepository.providersFlow(),
+            ) { providerId, modelId, providers ->
+                Triple(providerId, modelId, providers)
+            }
+                .distinctUntilChanged()
+                .collectLatest { (providerId, modelId, providers) ->
+                    val pickerState = AgentModelPickerProjector.project(
+                        providers = providers,
+                        selectedProviderId = providerId,
+                        selectedModelId = modelId,
+                    )
+                    val capabilities = RuntimeConfigRepository.currentRuntimeConfig()
+                        ?.reasoningCapabilities
+                    withContext(Dispatchers.Main.immediate) {
+                        currentReasoningCapabilities = capabilities
+                        val normalized = capabilities?.normalize(uiState.reasoningEffort) ?: ReasoningEffort.OFF
+                        uiState = uiState.copy(
+                            modelPickerState = pickerState.copy(
+                                isChanging = uiState.modelPickerState.isChanging,
+                            ),
+                            reasoningEffort = normalized,
+                            availableReasoningEfforts = capabilities?.selectableEfforts.orEmpty(),
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun selectModel(modelId: String) {
+        if (activeRunId != null || uiState.modelPickerState.isChanging ||
+            uiState.modelPickerState.selectedModel?.id == modelId
+        ) {
+            return
+        }
+        uiState = uiState.copy(
+            modelPickerState = uiState.modelPickerState.copy(isChanging = true),
+        )
+        scope.launch(Dispatchers.IO) {
+            try {
+                RuntimeConfigRepository.setSelectedModelId(modelId)
+                RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                withContext(Dispatchers.Main.immediate) {
+                    Toast.makeText(
+                        this@EtaAssistantOverlayService,
+                        getString(R.string.state_ui_model_switching_failed_please_try_again_later_4af439),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            } finally {
+                withContext(Dispatchers.Main.immediate) {
+                    uiState = uiState.copy(
+                        modelPickerState = uiState.modelPickerState.copy(isChanging = false),
+                    )
+                }
+            }
+        }
     }
 
     private fun hideForForegroundOperation(onComplete: ((Boolean) -> Unit)? = null) {

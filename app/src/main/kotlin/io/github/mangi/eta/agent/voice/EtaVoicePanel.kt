@@ -85,10 +85,13 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.components.AgentConversationMessages
+import io.github.mangi.eta.ui.components.AgentModelPickerButton
 import io.github.mangi.eta.ui.components.rememberDataUrlBitmap
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
@@ -117,6 +120,9 @@ internal data class EtaVoiceUiState(
     val phase: EtaVoicePhase = EtaVoicePhase.READY,
     val status: EtaVoiceStatus = EtaVoiceStatus.InputRequest,
     val screenContext: EtaScreenContextUiState = EtaScreenContextUiState(),
+    val modelPickerState: AgentModelPickerUiState = AgentModelPickerUiState(),
+    val reasoningEffort: ReasoningEffort = ReasoningEffort.OFF,
+    val availableReasoningEfforts: List<ReasoningEffort> = emptyList(),
 )
 
 internal sealed interface EtaVoiceStatus {
@@ -219,6 +225,7 @@ internal fun EtaVoicePanel(
     onScreenContextSelect: () -> Unit,
     onScreenContextRemove: () -> Unit,
     onScreenTranslation: () -> Unit,
+    onModelSelected: (String) -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
@@ -297,6 +304,7 @@ internal fun EtaVoicePanel(
                 onScreenContextSelect = onScreenContextSelect,
                 onScreenContextRemove = onScreenContextRemove,
                 onScreenTranslation = onScreenTranslation,
+                onModelSelected = onModelSelected,
                 onSubmit = {
                     keyboard?.hide()
                     onSubmit()
@@ -324,6 +332,7 @@ private fun BoxScope.AssistantPanel(
     onScreenContextSelect: () -> Unit,
     onScreenContextRemove: () -> Unit,
     onScreenTranslation: () -> Unit,
+    onModelSelected: (String) -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
@@ -599,6 +608,7 @@ private fun BoxScope.AssistantPanel(
             onScreenContextSelect = onScreenContextSelect,
             onScreenContextRemove = onScreenContextRemove,
             onScreenTranslation = onScreenTranslation,
+            onModelSelected = onModelSelected,
             onSubmit = onSubmit,
             onStop = onStop,
             modifier = Modifier
@@ -623,6 +633,7 @@ private fun AssistantComposer(
     onScreenContextSelect: () -> Unit,
     onScreenContextRemove: () -> Unit,
     onScreenTranslation: () -> Unit,
+    onModelSelected: (String) -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -653,6 +664,7 @@ private fun AssistantComposer(
             colors = colors,
             focusRequester = focusRequester,
             onInputChange = onInputChange,
+            onModelSelected = onModelSelected,
             onSubmit = onSubmit,
             onStop = onStop,
             modifier = Modifier.fillMaxWidth(),
@@ -856,6 +868,7 @@ private fun AssistantInputBar(
     colors: EtaVoicePanelColors,
     focusRequester: FocusRequester,
     onInputChange: (String) -> Unit,
+    onModelSelected: (String) -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
@@ -905,6 +918,14 @@ private fun AssistantInputBar(
                     innerTextField()
                 }
             },
+        )
+        AgentModelPickerButton(
+            state = state.modelPickerState,
+            isStreaming = state.phase == EtaVoicePhase.PROCESSING,
+            isPaused = false,
+            popupAnchorTopPx = 0,
+            popupMaxHeight = 320.dp,
+            onModelSelected = { _, modelId -> onModelSelected(modelId) },
         )
         if (state.phase == EtaVoicePhase.PROCESSING) {
             IconButton(
