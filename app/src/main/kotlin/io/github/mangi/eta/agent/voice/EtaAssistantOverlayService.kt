@@ -37,12 +37,14 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.media.AgentImageCodec
+import io.github.mangi.eta.agent.media.AgentVideoCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
@@ -53,6 +55,7 @@ import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
+import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.app.AgentRunMessageProjector
@@ -293,19 +296,22 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 // ColorOS 在 Overlay 窗口切换期间可能短暂使用软件画布；RuntimeShader
                 // 无法在该画布绘制，因此浮窗统一使用 Miuix 的圆角回退路径。
                 CompositionLocalProvider(LocalSquircleEnabled provides false) {
+                    val activeAssistantId by AssistantRepository.activeId.collectAsState()
                     EtaVoicePanel(
                         state = uiState,
                         input = inputText,
                         inputFocusRequestKey = inputFocusRequestKey,
-                        onInputChange = { inputText = it },
                         onScreenContextSelect = ::selectScreenContext,
                         onScreenContextRemove = ::removeScreenContext,
                         onScreenTranslation = ::startScreenTranslation,
                         onToggleHistoryMenu = ::toggleHistoryMenu,
                         onSelectConversation = ::selectConversation,
                         onNewConversation = ::newConversation,
-                        onModelSelected = ::selectModel,
-                        onSubmit = ::submitInput,
+                        onModelSelected = { _, modelId -> selectModel(modelId) },
+                        onSubmit = { text ->
+                            inputText = text
+                            submitInput()
+                        },
                         onStop = ::stopCurrentRun,
                         onClose = ::dismissAndStop,
                         canOpenConversation = activeRunId == null &&
@@ -315,11 +321,19 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         exitRequested = handoffExitRequested,
                         onOpenConversation = ::openConversation,
                         onAttachImage = ::attachImage,
+                        onAttachVideo = ::attachVideo,
                         onRemoveImage = ::removePendingImage,
                         onAttachFiles = ::attachFiles,
                         onAttachFolder = ::attachFolder,
                         onAttachFilePath = ::attachFilePath,
                         onRemoveFileReference = ::removePendingFileReference,
+                        onReasoningEffortChange = ::updateReasoningEffort,
+                        onAssistantSelected = { id -> AssistantRepository.select(id) },
+                        // 浮窗不承载助手编辑页，交给主界面处理。
+                        onEditAssistant = {},
+                        history = conversationHistory,
+                        autoCompressEnabled = Prefs.isEnabled(Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED),
+                        assistantId = activeAssistantId,
                     )
                 }
             }
@@ -1228,6 +1242,41 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
     }
 
+    /** 推理强度切换：按当前模型能力归一化后写回浮窗状态。 */
+    private fun updateReasoningEffort(effort: ReasoningEffort) {
+        val normalized = currentReasoningCapabilities?.normalize(effort) ?: ReasoningEffort.OFF
+        uiState = uiState.copy(reasoningEffort = normalized)
+    }
+    /** 视频附件：与主界面共用 AgentVideoCodec 导入，产出 isVideo 的 PendingImageUi。 */
+    private fun attachVideo(uri: String) {
+        scope.launch(Dispatchers.IO) {
+            val attachment = runCatching {
+                AgentVideoCodec.importFromUri(this@EtaAssistantOverlayService, Uri.parse(uri))
+            }.getOrNull()
+            if (attachment == null) {
+                withContext(Dispatchers.Main.immediate) {
+                    Toast.makeText(
+                        this@EtaAssistantOverlayService,
+                        getString(R.string.state_ui_unable_to_read_this_video),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                return@launch
+            }
+            val pending = PendingImageUi(
+                id = "vid-${UUID.randomUUID()}",
+                uri = attachment.file.absolutePath,
+                dataUrl = attachment.thumbnail.reference,
+                mimeType = attachment.mimeType,
+                isVideo = true,
+                durationMs = attachment.durationMs.takeIf { it > 0L },
+                byteSize = attachment.bytes,
+            )
+            withContext(Dispatchers.Main.immediate) {
+                uiState = uiState.copy(pendingImages = uiState.pendingImages + pending)
+            }
+        }
+    }
     private fun selectModel(modelId: String) {
         if (activeRunId != null || uiState.modelPickerState.isChanging ||
             uiState.modelPickerState.selectedModel?.id == modelId

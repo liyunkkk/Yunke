@@ -193,9 +193,13 @@ internal fun AgentChatInputBar(
     onCancelMessageEdit: () -> Unit,
     onEditAssistant: (String) -> Unit,
     onAssistantSelected: (String) -> Unit = {},
+    /** 宿主可注入自己的 FocusRequester；浮窗用它驱动输入框聚焦。 */
+    focusRequester: FocusRequester = remember { FocusRequester() },
+    /** 浮窗不显示麦克风入口：符合浮窗交互约定，同时避开 overlay 无
+     *  ActivityResultRegistryOwner 时语音权限 launcher 的崩溃。 */
+    showVoiceEntry: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    val focusRequester = remember { FocusRequester() }
     val textFieldState = rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
     val draftText = textFieldState.text.toString()
@@ -484,7 +488,7 @@ internal fun AgentChatInputBar(
                         }
 
                         Spacer(modifier = Modifier.weight(1f))
-                        if (!isEditingMessage) {
+                        if (!isEditingMessage && showVoiceEntry) {
                             VoiceEntryButton(
                                 textFieldState = textFieldState,
                                 showGeneration = showMorphLoading,
