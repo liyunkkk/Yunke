@@ -119,12 +119,17 @@ internal fun ChatSpeechIndicator(
     }
 
     val latestStart by rememberUpdatedState({ start() })
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val requested = pendingPermission
-        pendingPermission = false
-        if (granted && requested) latestStart()
-        else if (!granted && requested) Toast.makeText(context, R.string.speech_permission_denied, Toast.LENGTH_LONG).show()
-    }
+    // 浮窗（overlay Service）没有 ActivityResultRegistryOwner；该 Local 在组合期被读取，
+    // 缺失即抛异常，因此只有存在 owner 时才创建 launcher，否则走透明跳板 Activity。
+    val registryOwner = androidx.activity.compose.LocalActivityResultRegistryOwner.current
+    val permission = if (registryOwner != null) {
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val requested = pendingPermission
+            pendingPermission = false
+            if (granted && requested) latestStart()
+            else if (!granted && requested) Toast.makeText(context, R.string.speech_permission_denied, Toast.LENGTH_LONG).show()
+        }
+    } else null
     LaunchedEffect(Unit) { io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.load(context); OfflineSpeechPack.initialize(context) }
     LaunchedEffect(allowed, resetKey) {
         stop() // Mode changes, drawer, edit, send/stream transition: invalidate permission and capture.
@@ -145,8 +150,21 @@ internal fun ChatSpeechIndicator(
     fun requestStart() {
         if (!allowed) return
         onStartRequested()
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) start()
-        else { pendingPermission = true; permission.launch(Manifest.permission.RECORD_AUDIO) }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            start()
+        } else {
+            pendingPermission = true
+            if (permission != null) {
+                permission.launch(Manifest.permission.RECORD_AUDIO)
+            } else {
+                // 浮窗：借透明 Activity 承载权限请求
+                VoicePermissionTrampolineActivity.requestRecordAudio(context) { granted ->
+                    pendingPermission = false
+                    if (granted) start()
+                    else Toast.makeText(context, R.string.speech_permission_denied, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
     var handledStartRequest by remember { mutableIntStateOf(startRequest) }
     LaunchedEffect(startRequest) {

@@ -1024,16 +1024,19 @@ private fun VoiceEntryButton(
         Prefs.putString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY, mode.wireValue)
     }
     var pendingMode by remember { mutableStateOf<VoiceEntryMode?>(null) }
-    // 浮窗（overlay Service）没有 ActivityResultRegistryOwner，权限请求改走透明跳板。
-    val hasRegistryOwner =
-        androidx.activity.compose.LocalActivityResultRegistryOwner.current != null
-    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val mode = pendingMode
-        pendingMode = null
-        if (granted && mode != null && io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
-                io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) onStartVoiceMode(mode)
-        else if (!granted && mode != null) Toast.makeText(context, R.string.speech_permission_denied, Toast.LENGTH_LONG).show()
-    }
+    // 浮窗（overlay Service）没有 ActivityResultRegistryOwner；rememberLauncherForActivityResult
+    // 在组合期就会读取该 Local，缺失即抛 IllegalStateException。因此必须按 owner 是否存在
+    // 决定是否创建 launcher，缺失时权限申请改走透明跳板 Activity。
+    val registryOwner = androidx.activity.compose.LocalActivityResultRegistryOwner.current
+    val permission = if (registryOwner != null) {
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val mode = pendingMode
+            pendingMode = null
+            if (granted && mode != null && io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
+                    io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) onStartVoiceMode(mode)
+            else if (!granted && mode != null) Toast.makeText(context, R.string.speech_permission_denied, Toast.LENGTH_LONG).show()
+        }
+    } else null
     fun startMode(mode: VoiceEntryMode) {
         if (!io.github.mangi.eta.agent.voice.VoiceEntryPolicy.enabled(
                 io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig.state.value, mode)) return
@@ -1042,7 +1045,7 @@ private fun VoiceEntryButton(
             onStartVoiceMode(mode)
         } else {
             pendingMode = mode
-            if (hasRegistryOwner) {
+            if (permission != null) {
                 permission.launch(Manifest.permission.RECORD_AUDIO)
             } else {
                 // 浮窗：借透明 Activity 承载权限请求
