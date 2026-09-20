@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.FindReplace
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Keyboard
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.TravelExplore
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.WebAsset
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -126,6 +128,8 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "search_personal_orders" -> Icons.Rounded.ShoppingBag
     "terminal", "terminal_job", "run_command" -> Icons.Rounded.Terminal
     "delegate_to_kimi_code" -> Icons.Rounded.Code
+    "get_assistant_config" -> Icons.Rounded.Info
+    "update_assistant_config" -> Icons.Rounded.Tune
     "read_file" -> Icons.Rounded.Description
     "write_file" -> Icons.Rounded.EditNote
     "list_directory" -> Icons.Rounded.FolderOpen
