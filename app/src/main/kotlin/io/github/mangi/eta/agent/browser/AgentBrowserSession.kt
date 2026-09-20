@@ -96,6 +96,29 @@ internal object AgentBrowserSession {
         }
     }
 
+    /**
+     * 用户主动请求、等待浏览器页面接管后打开的地址。
+     *
+     * 调用方（如 Kimi Web 启动）此时页面尚未创建，直接导航会与接管流程竞态，
+     * 因此只登记地址，由 [acquireUserControl] 在标签页就绪后消费。
+     */
+    @Volatile
+    private var pendingUserUrl: String? = null
+    /** 登记一次用户发起的导航，浏览器页面接管后会自动打开该地址。 */
+    fun requestUserNavigation(url: String) {
+        val trimmed = url.trim()
+        pendingUserUrl = trimmed.ifBlank { null }
+    }
+    private suspend fun consumePendingUserUrl(browser: BrowserTabPool) {
+        val target = pendingUserUrl ?: return
+        pendingUserUrl = null
+        val normalized =
+            if ("://" !in target) "https://$target" else target
+        val input = BrowserActionInput.parse(
+            JSONObject().put("action", "navigate").put("url", normalized).toString(),
+        ) ?: return
+        runCatching { browser.execute(input, singleTab = true) }
+    }
     /** Ownership is reserved before cancellation, so no queued tool can race the UI. */
     suspend fun acquireUserControl(context: Context, owner: Any): BrowserTabPool {
         initialize(context)
@@ -113,6 +136,7 @@ internal object AgentBrowserSession {
                 browser.tabs.value.forEach { it.manager.stopLoading() }
                 browser.releaseAllTabs()
                 browser.ensureTabForUI()
+                consumePendingUserUrl(browser)
                 publishSnapshot()
             }
         }

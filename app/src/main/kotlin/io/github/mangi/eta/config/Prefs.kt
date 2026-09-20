@@ -59,6 +59,8 @@ internal object Prefs {
         const val AGENT_VOICE_DOUBAO_PROVIDER_ID = "agent_voice_doubao_provider_id"
         const val AGENT_VOICE_DOUBAO_VOICE = "agent_voice_doubao_voice"
         const val AGENT_VOICE_DOUBAO_INSTRUCTIONS = "agent_voice_doubao_instructions"
+        /** Kimi Web UI 是否优先使用内置浏览器打开，而不是交给系统浏览器。 */
+        const val KIMI_WEB_USE_BUILTIN_BROWSER = "kimi_web_use_builtin_browser"
         const val HAPTIC_TOUCH_FEEDBACK = "haptic_touch_feedback"
         const val HAPTIC_MESSAGE_GENERATION = "haptic_message_generation"
         const val HAPTIC_INTENSITY = "haptic_intensity"
@@ -82,6 +84,7 @@ internal object Prefs {
             AGENT_THINKING_ENABLED to true,
             AGENT_AUTO_COMPRESS_ENABLED to false,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
+            KIMI_WEB_USE_BUILTIN_BROWSER to true,
             HAPTIC_TOUCH_FEEDBACK to true,
             HAPTIC_MESSAGE_GENERATION to true,
         )
@@ -96,6 +99,7 @@ internal object Prefs {
             AGENT_THINKING_ENABLED,
             AGENT_AUTO_COMPRESS_ENABLED,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED,
+            KIMI_WEB_USE_BUILTIN_BROWSER,
             HAPTIC_TOUCH_FEEDBACK,
             HAPTIC_MESSAGE_GENERATION,
         )

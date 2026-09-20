@@ -1429,4 +1429,8 @@
   <string name="screen_translation_error_no_key">未設定 API Key</string>
   <string name="screen_translation_error_failed">介面請求失敗</string>
   <string name="screen_translation_close">關閉</string>
+  <string name="functional_model_translation">螢幕翻譯</string>
+  <string name="functional_model_set_as_translation">設為螢幕翻譯模型</string>
+  <string name="screen_translation_cleared_translation_api">已取消獨立翻譯 API，恢復默認供應商</string>
+  <string name="settings_kimi_web_builtin_browser">Kimi Web 預設使用內置瀏覽器</string>
 </resources>

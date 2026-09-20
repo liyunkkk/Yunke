@@ -16,10 +16,12 @@ class AgentAttachmentPickerTrampolineActivity : ComponentActivity() {
     companion object {
         const val EXTRA_ACTION = "action"
         const val ACTION_PICK_IMAGES = "pick_images"
+        const val ACTION_PICK_VIDEO = "pick_video"
         const val ACTION_PICK_FILES = "pick_files"
         const val ACTION_PICK_FOLDER = "pick_folder"
 
         private var onImagesCallback: ((List<String>) -> Unit)? = null
+        private var onVideoCallback: ((String) -> Unit)? = null
         private var onFilesCallback: ((List<String>) -> Unit)? = null
         private var onFolderCallback: ((String) -> Unit)? = null
 
@@ -32,6 +34,17 @@ class AgentAttachmentPickerTrampolineActivity : ComponentActivity() {
             EtaAssistantOverlayService.pauseForAttachmentPicker()
             val intent = Intent(context, AgentAttachmentPickerTrampolineActivity::class.java).apply {
                 putExtra(EXTRA_ACTION, ACTION_PICK_IMAGES)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        }
+
+        fun pickVideo(context: Context, onResult: (String) -> Unit) {
+            onVideoCallback = onResult
+            hasResumedOverlay = false
+            EtaAssistantOverlayService.pauseForAttachmentPicker()
+            val intent = Intent(context, AgentAttachmentPickerTrampolineActivity::class.java).apply {
+                putExtra(EXTRA_ACTION, ACTION_PICK_VIDEO)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
@@ -89,6 +102,25 @@ class AgentAttachmentPickerTrampolineActivity : ComponentActivity() {
         }
     }
 
+    private val videoPicker = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        try {
+            if (uri != null) {
+                runCatching {
+                    contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                onVideoCallback?.invoke(uri.toString())
+            }
+        } finally {
+            onVideoCallback = null
+            safeResumeOverlay()
+            finish()
+        }
+    }
     private val filePicker = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris ->
@@ -141,6 +173,9 @@ class AgentAttachmentPickerTrampolineActivity : ComponentActivity() {
         when (intent.getStringExtra(EXTRA_ACTION)) {
             ACTION_PICK_IMAGES -> {
                 photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
+            ACTION_PICK_VIDEO -> {
+                videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
             }
             ACTION_PICK_FILES -> {
                 filePicker.launch(arrayOf("*/*"))

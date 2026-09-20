@@ -8,6 +8,7 @@ import io.github.mangi.eta.agent.terminal.DetachedTaskSupervisor
 import io.github.mangi.eta.agent.terminal.LinuxEnvironmentPaths
 import io.github.mangi.eta.agent.terminal.TerminalEnvironment
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
+import io.github.mangi.eta.config.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -43,13 +44,21 @@ internal class KimiWebLauncher(
             override fun stop(id: String) { daemonSupervisor.stop(id) }
         },
         openUrl = { url ->
-            try {
-                context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            if (Prefs.isEnabled(Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER)) {
+                // 由 AgentAppRoot / LinuxEnvironmentScreen 在收到 Opened 后推入内置浏览器路由。
                 true
-            } catch (_: android.content.ActivityNotFoundException) {
-                false
-            } catch (_: SecurityException) {
-                false
+            } else {
+                try {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, url.toUri())
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                    true
+                } catch (_: android.content.ActivityNotFoundException) {
+                    false
+                } catch (_: SecurityException) {
+                    false
+                }
             }
         },
     )

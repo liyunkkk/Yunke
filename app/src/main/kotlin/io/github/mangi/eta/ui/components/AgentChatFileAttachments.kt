@@ -75,6 +75,7 @@ internal val ChatInputActionIconSize = 24.dp
  */
 internal class AttachmentPickerLaunchers(
     val pickImage: () -> Unit,
+    val pickVideo: () -> Unit,
     val pickFiles: () -> Unit,
     val pickFolder: () -> Unit,
 )
@@ -88,6 +89,7 @@ internal class AttachmentPickerLaunchers(
 @Composable
 internal fun rememberAttachmentPickerLaunchers(
     onAttachImage: (String) -> Unit,
+    onAttachVideo: (String) -> Unit,
     onAttachFiles: (List<String>) -> Unit,
     onAttachFolder: (String) -> Unit,
 ): AttachmentPickerLaunchers {
@@ -96,17 +98,32 @@ internal fun rememberAttachmentPickerLaunchers(
 
     val photoPicker = if (registryOwner != null) {
         rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.PickMultipleVisualMedia(),
-        ) { uris ->
-            uris.forEach { uri ->
+            contract = ActivityResultContracts.PickVisualMedia(),
+        ) { uri ->
+            if (uri != null) {
                 runCatching {
                     context.contentResolver.takePersistableUriPermission(
                         uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION,
                     )
                 }
+                onAttachImage(uri.toString())
             }
-            uris.forEach { uri -> onAttachImage(uri.toString()) }
+        }
+    } else null
+    val videoPicker = if (registryOwner != null) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.PickVisualMedia(),
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                onAttachVideo(uri.toString())
+            }
         }
     } else null
     val filePicker = if (registryOwner != null) {
@@ -151,6 +168,17 @@ internal fun rememberAttachmentPickerLaunchers(
                 }
             }
         },
+        pickVideo = {
+            if (videoPicker != null) {
+                videoPicker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly),
+                )
+            } else {
+                AgentAttachmentPickerTrampolineActivity.pickVideo(context) { uri ->
+                    onAttachVideo(uri)
+                }
+            }
+        },
         pickFiles = {
             if (filePicker != null) {
                 filePicker.launch(arrayOf("*/*"))
@@ -174,54 +202,14 @@ internal fun rememberAttachmentPickerLaunchers(
 
 @Composable
 internal fun AgentAttachmentPickerButton(
-    onAttachImage: (String) -> Unit,
-    onAttachVideo: (String) -> Unit,
-    onAttachFiles: (List<String>) -> Unit,
-    onAttachFolder: (String) -> Unit,
+    launchers: AttachmentPickerLaunchers,
     onAttachFilePath: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
     val view = LocalView.current
     val menuState = rememberEtaMenuState()
     var showPathDialog by remember { mutableStateOf(false) }
     var pathInput by remember { mutableStateOf("") }
-    val photoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia(),
-    ) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            onAttachImage(uri.toString())
-        }
-    }
-    val videoPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia(),
-    ) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            onAttachVideo(uri.toString())
-        }
-    }
-    val filePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
-        if (uris.isNotEmpty()) onAttachFiles(uris.map { it.toString() })
-    }
-    val folderPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree(),
-    ) { uri ->
-        if (uri != null) onAttachFolder(uri.toString())
-    }
 
     val keepIme = rememberKeepImeWhenOpeningMenu()
     Box(modifier = modifier) {
@@ -269,18 +257,10 @@ internal fun AgentAttachmentPickerButton(
                         TouchHaptics.click(view)
                         menuState.dismiss()
                         when (index) {
-                            0 -> photoPicker.launch(
-                                PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly
-                                )
-                            )
-                            1 -> videoPicker.launch(
-                                PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.VideoOnly
-                                )
-                            )
-                            2 -> filePicker.launch(arrayOf("*/*"))
-                            3 -> folderPicker.launch(null)
+                            0 -> launchers.pickImage()
+                            1 -> launchers.pickVideo()
+                            2 -> launchers.pickFiles()
+                            3 -> launchers.pickFolder()
                             4 -> {
                                 pathInput = ""
                                 showPathDialog = true
@@ -341,6 +321,7 @@ internal fun OverlayAttachmentPickerButton(
     val view = LocalView.current
     val launchers = rememberAttachmentPickerLaunchers(
         onAttachImage = onAttachImage,
+        onAttachVideo = {},
         onAttachFiles = onAttachFiles,
         onAttachFolder = onAttachFolder,
     )

@@ -247,6 +247,14 @@ internal fun AgentChatInputBar(
     val keyboard = LocalSoftwareKeyboardController.current
     val view = LocalView.current
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
+    // 附件入口与工具箱面板共用同一套选择器句柄：主界面走 Compose 选择器，
+    // 悬浮窗等没有 ActivityResultRegistry 的场景自动回退 Trampoline Activity。
+    val attachmentLaunchers = rememberAttachmentPickerLaunchers(
+        onAttachImage = onAttachImage,
+        onAttachVideo = onAttachVideo,
+        onAttachFiles = onAttachFiles,
+        onAttachFolder = onAttachFolder,
+    )
     LaunchedEffect(isEditingMessage) {
         // 编辑态由外部业务状态驱动；普通输入只保留在本地，避免每个字符把聊天舞台
         // 的消息流、滚动和 Markdown 一起带入重组。
@@ -450,10 +458,7 @@ internal fun AgentChatInputBar(
                             }
                         } else {
                             AgentAttachmentPickerButton(
-                                onAttachImage = onAttachImage,
-                                onAttachVideo = onAttachVideo,
-                                onAttachFiles = onAttachFiles,
-                                onAttachFolder = onAttachFolder,
+                                launchers = attachmentLaunchers,
                                 onAttachFilePath = onAttachFilePath,
                             )
 

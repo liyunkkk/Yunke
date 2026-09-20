@@ -421,7 +421,7 @@ internal object ScreenTranslationController {
     private fun resolveRuntimeConfig(): AgentModelClient.ModelConfig? {
         val repoConfig = runCatching {
             runBlocking {
-                RuntimeConfigRepository.currentRuntimeConfig()
+                RuntimeConfigRepository.translationRuntimeConfig()
             }
         }.getOrNull()
         if (repoConfig != null && repoConfig.apiKey.isNotBlank()) {

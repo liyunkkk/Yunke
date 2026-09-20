@@ -35,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +59,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.menu.OverlayIconDropdownMenu
 import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
@@ -194,6 +198,10 @@ internal fun ProviderModelsTab(
 ) {
     val context = LocalContext.current
     val storedModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
+    val selectedTranslationProviderId by RuntimeConfigRepository
+        .selectedTranslationProviderIdFlow().collectAsState(initial = null)
+    val selectedTranslationModelId by RuntimeConfigRepository
+        .selectedTranslationModelIdFlow().collectAsState(initial = null)
     val selectedModelId = currentModelId?.takeIf { it.isNotBlank() } ?: storedModelId
     var isFetching by remember { mutableStateOf(false) }
     var isMutatingModel by remember { mutableStateOf(false) }
@@ -414,10 +422,14 @@ internal fun ProviderModelsTab(
                         isFirst = index == 0,
                         isLast = index == filteredModels.lastIndex,
                     ) {
+                        val isTranslation =
+                            provider.id == selectedTranslationProviderId &&
+                                model.id == selectedTranslationModelId
                         ModelListItem(
                             model = model,
                             enabled = !isFetching && !isMutatingModel,
                             isSelected = model.id == selectedModelId,
+                            isTranslationSelected = isTranslation,
                             selectionMode = selectionMode,
                             checked = model.id in selectedModelIds,
                             onToggleChecked = {
@@ -441,6 +453,16 @@ internal fun ProviderModelsTab(
                                 scope.launch {
                                     RuntimeConfigRepository.setSelectedModelId(model.id)
                                     RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                }
+                            },
+                            onSetTranslation = {
+                                scope.launch {
+                                    if (isTranslation) {
+                                        RuntimeConfigRepository.setSelectedTranslationModelId(null)
+                                        RuntimeConfigRepository.setSelectedTranslationProviderId(null)
+                                    } else {
+                                        RuntimeConfigRepository.setSelectedTranslationModelId(model.id)
+                                    }
                                 }
                             },
                         )
@@ -686,12 +708,14 @@ private fun ModelListItem(
     model: Model,
     enabled: Boolean,
     isSelected: Boolean,
+    isTranslationSelected: Boolean,
     selectionMode: Boolean,
     checked: Boolean,
     onToggleChecked: () -> Unit,
     onEnterSelection: () -> Unit,
     onEdit: () -> Unit,
     onSetCurrent: () -> Unit,
+    onSetTranslation: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -736,6 +760,12 @@ private fun ModelListItem(
                 if (isSelected) {
                     TagChip(text = stringResource(R.string.ui_current_25e74d), tone = TagChipTone.Emphasized)
                 }
+                if (isTranslationSelected) {
+                    TagChip(
+                        text = stringResource(R.string.functional_model_translation),
+                        tone = TagChipTone.Emphasized,
+                    )
+                }
             }
         }
         if (selectionMode) {
@@ -757,6 +787,28 @@ private fun ModelListItem(
                         modifier = Modifier
                             .padding(end = 2.dp)
                             .size(20.dp),
+                    )
+                }
+                OverlayIconDropdownMenu(
+                    entry = DropdownEntry(
+                        items = listOf(
+                            DropdownItem(
+                                text = if (isTranslationSelected) {
+                                    stringResource(R.string.screen_translation_cleared_translation_api)
+                                } else {
+                                    stringResource(R.string.functional_model_set_as_translation)
+                                },
+                                enabled = enabled,
+                                onClick = onSetTranslation,
+                            ),
+                        ),
+                    ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MoreHoriz,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
                     )
                 }
                 IconButton(

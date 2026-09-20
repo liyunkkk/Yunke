@@ -458,6 +458,13 @@ internal fun SettingsScreen(
                         key = Prefs.Keys.AGENT_TERMINAL_TOOLS,
                         icon = Icons.Rounded.Terminal,
                     )
+                    SwitchPref(
+                        context = context,
+                        prefs = agentPrefs,
+                        title = stringResource(R.string.settings_kimi_web_builtin_browser),
+                        key = Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER,
+                        icon = Icons.Rounded.Language,
+                    )
 
                     ArrowPreference(
                         title = stringResource(R.string.ui_linux_tool_environment_314d22),

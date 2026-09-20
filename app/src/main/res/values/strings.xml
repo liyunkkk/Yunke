@@ -1455,4 +1455,8 @@
   <string name="screen_translation_error_no_key">No API key configured</string>
   <string name="screen_translation_error_failed">Translation request failed</string>
   <string name="screen_translation_close">Close</string>
+  <string name="functional_model_translation">Screen Translation</string>
+  <string name="functional_model_set_as_translation">Set as Screen Translation Model</string>
+  <string name="screen_translation_cleared_translation_api">Cleared dedicated translation API</string>
+  <string name="settings_kimi_web_builtin_browser">Open Kimi Web in built-in browser</string>
 </resources>

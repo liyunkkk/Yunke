@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.terminal.AlpineEnvironmentInstaller
 import io.github.mangi.eta.agent.terminal.AlpineEnvironmentState
 import io.github.mangi.eta.agent.terminal.AlpineInstallProgress
@@ -50,6 +51,7 @@ import io.github.mangi.eta.agent.terminal.PackageProfileInstallResult
 import io.github.mangi.eta.agent.terminal.PackageProfileInstallStage
 import io.github.mangi.eta.agent.terminal.SharedFolderMounts
 import io.github.mangi.eta.agent.terminal.terminalEnvironment
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import io.github.mangi.eta.ui.app.KimiWebLaunchResult
@@ -295,8 +297,16 @@ internal fun LinuxEnvironmentScreen(
         coroutineScope.launch {
             val result = kimiWebLauncher.launch(selectedDistribution.terminalEnvironment)
             kimiWebLaunching = false
-            if (result is KimiWebLaunchResult.Failed) {
-                resultMessage = result.message(context)
+            when (result) {
+                is KimiWebLaunchResult.Opened -> {
+                    if (Prefs.isEnabled(Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER)) {
+                        AgentBrowserSession.requestUserNavigation(result.url)
+                        onNavigate(AppRoute.Browser)
+                    }
+                }
+                is KimiWebLaunchResult.Failed -> {
+                    resultMessage = result.message(context)
+                }
             }
         }
     }

@@ -53,10 +53,12 @@ import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
 import io.github.mangi.eta.agent.device.DeviceLocationProvider
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.model.AppUpdateOffer
 import io.github.mangi.eta.data.repository.AppUpdateRepository
@@ -363,12 +365,20 @@ fun AgentAppRoot(
                 requestExecutionNotifications()
                 if (appViewModel.kimiWebState.phase != KimiWebPhase.NOT_INSTALLED) {
                     appViewModel.launchKimiWeb { result ->
-                        if (result is KimiWebLaunchResult.Failed) {
-                            Toast.makeText(
-                                context,
-                                result.message(context),
-                                Toast.LENGTH_LONG,
-                            ).show()
+                        when (result) {
+                            is KimiWebLaunchResult.Opened -> {
+                                if (Prefs.isEnabled(Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER)) {
+                                    AgentBrowserSession.requestUserNavigation(result.url)
+                                    pushRoute(AppRoute.Browser)
+                                }
+                            }
+                            is KimiWebLaunchResult.Failed -> {
+                                Toast.makeText(
+                                    context,
+                                    result.message(context),
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
                         }
                     }
                 } else {

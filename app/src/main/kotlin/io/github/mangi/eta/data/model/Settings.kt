@@ -6,6 +6,8 @@ import kotlinx.serialization.Serializable
 data class Settings(
     val selectedProviderId: String? = null,
     val selectedModelId: String? = null,
+    val selectedTranslationProviderId: String? = null,
+    val selectedTranslationModelId: String? = null,
     val memoryEnabled: Boolean = true,
     val fileLoggingEnabled: Boolean = true,
     val appearance: AppearanceSettings = AppearanceSettings(),
