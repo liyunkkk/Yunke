@@ -265,9 +265,6 @@ internal fun EtaVoicePanel(
     assistantId: String,
 ) {
     val colors = rememberEtaVoicePanelColors()
-    // 与主界面共用同一个语音控制器；浮窗是 Service，LocalContext/LifecycleOwner 均可用。
-    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
-    val voiceState by voiceController.state.collectAsState()
     val keyboard = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
@@ -701,6 +698,9 @@ private fun AssistantComposer(
     assistantId: String,
     modifier: Modifier = Modifier,
 ) {
+    // 与主界面共用同一个语音控制器；浮窗为 Service，LocalContext/LocalLifecycleOwner 均可用。
+    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
+    val voiceState by voiceController.state.collectAsState()
     Column(
         modifier = modifier.animateContentSize(
             animationSpec = folmeSpring(damping = 0.92f, response = 0.34f),
