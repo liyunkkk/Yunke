@@ -98,6 +98,11 @@ import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.components.AgentConversationMessages
+import io.github.mangi.eta.ui.components.OverlayAttachmentPickerButton
+import io.github.mangi.eta.ui.components.PendingFileReferenceStrip
+import io.github.mangi.eta.ui.components.PendingImageStrip
+import io.github.mangi.eta.ui.model.PendingFileReferenceUi
+import io.github.mangi.eta.ui.model.PendingImageUi
 import io.github.mangi.eta.ui.components.AgentModelPickerButton
 import io.github.mangi.eta.ui.components.rememberDataUrlBitmap
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
@@ -142,6 +147,8 @@ internal data class EtaVoiceUiState(
     val conversationTitle: String = "",
     val historyConversations: List<AssistantConversationItem> = emptyList(),
     val isHistoryMenuVisible: Boolean = false,
+    val pendingImages: List<PendingImageUi> = emptyList(),
+    val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
     val modelPickerState: AgentModelPickerUiState = AgentModelPickerUiState(),
     val reasoningEffort: ReasoningEffort = ReasoningEffort.OFF,
     val availableReasoningEfforts: List<ReasoningEffort> = emptyList(),
@@ -255,6 +262,12 @@ internal fun EtaVoicePanel(
     onStop: () -> Unit,
     onClose: () -> Unit,
     onOpenConversation: () -> Unit,
+    onAttachImage: (String) -> Unit,
+    onRemoveImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    onRemoveFileReference: (String) -> Unit,
 ) {
     val colors = rememberEtaVoicePanelColors()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -340,6 +353,12 @@ internal fun EtaVoicePanel(
                 onStop = onStop,
                 onClose = onClose,
                 onOpenConversation = onOpenConversation,
+                onAttachImage = onAttachImage,
+                onRemoveImage = onRemoveImage,
+                onAttachFiles = onAttachFiles,
+                onAttachFolder = onAttachFolder,
+                onAttachFilePath = onAttachFilePath,
+                onRemoveFileReference = onRemoveFileReference,
             )
         }
     }
@@ -368,6 +387,12 @@ private fun BoxScope.AssistantPanel(
     onStop: () -> Unit,
     onClose: () -> Unit,
     onOpenConversation: () -> Unit,
+    onAttachImage: (String) -> Unit,
+    onRemoveImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    onRemoveFileReference: (String) -> Unit,
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
@@ -661,6 +686,12 @@ private fun BoxScope.AssistantPanel(
             onModelSelected = onModelSelected,
             onSubmit = onSubmit,
             onStop = onStop,
+            onAttachImage = onAttachImage,
+            onRemoveImage = onRemoveImage,
+            onAttachFiles = onAttachFiles,
+            onAttachFolder = onAttachFolder,
+            onAttachFilePath = onAttachFilePath,
+            onRemoveFileReference = onRemoveFileReference,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
@@ -688,6 +719,12 @@ private fun AssistantComposer(
     onModelSelected: (String) -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
+    onAttachImage: (String) -> Unit,
+    onRemoveImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    onRemoveFileReference: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -719,6 +756,28 @@ private fun AssistantComposer(
         if (state.screenContext.phase != EtaScreenContextPhase.CONSUMED) {
             Spacer(Modifier.height(7.dp))
         }
+        AnimatedVisibility(
+            visible = state.pendingFileReferences.isNotEmpty(),
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(100)),
+        ) {
+            PendingFileReferenceStrip(
+                references = state.pendingFileReferences,
+                onRemoveReference = onRemoveFileReference,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+        AnimatedVisibility(
+            visible = state.pendingImages.isNotEmpty(),
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(100)),
+        ) {
+            PendingImageStrip(
+                images = state.pendingImages,
+                onRemoveImage = onRemoveImage,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         AssistantInputBar(
             state = state,
             input = input,
@@ -728,6 +787,10 @@ private fun AssistantComposer(
             onModelSelected = onModelSelected,
             onSubmit = onSubmit,
             onStop = onStop,
+            onAttachImage = onAttachImage,
+            onAttachFiles = onAttachFiles,
+            onAttachFolder = onAttachFolder,
+            onAttachFilePath = onAttachFilePath,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -932,9 +995,16 @@ private fun AssistantInputBar(
     onModelSelected: (String) -> Unit,
     onSubmit: () -> Unit,
     onStop: () -> Unit,
+    onAttachImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val canSubmit = input.isNotBlank() && state.phase != EtaVoicePhase.PROCESSING
+    val canSubmit = (input.isNotBlank() ||
+        state.pendingImages.isNotEmpty() ||
+        state.pendingFileReferences.isNotEmpty()) &&
+        state.phase != EtaVoicePhase.PROCESSING
     Row(
         modifier = modifier
             .heightIn(min = 48.dp)
@@ -944,9 +1014,16 @@ private fun AssistantInputBar(
                 indication = null,
                 onClick = {},
             )
-            .padding(start = 16.dp, end = 4.dp),
+            .padding(start = 6.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        OverlayAttachmentPickerButton(
+            onAttachImage = onAttachImage,
+            onAttachFiles = onAttachFiles,
+            onAttachFolder = onAttachFolder,
+            onAttachFilePath = onAttachFilePath,
+        )
+        Spacer(Modifier.size(2.dp))
         BasicTextField(
             value = input,
             onValueChange = onInputChange,

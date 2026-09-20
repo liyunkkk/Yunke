@@ -792,7 +792,7 @@ internal fun discreteSliderIndexForTap(x: Float, width: Float, count: Int): Int 
  * 横向跟随 Chip，竖向则避开整个输入面板；默认下拉定位只会避开 Chip 自身。
  */
 @Composable
-private fun PendingImageStrip(
+internal fun PendingImageStrip(
     images: List<PendingImageUi>,
     onRemoveImage: (String) -> Unit,
     modifier: Modifier = Modifier,

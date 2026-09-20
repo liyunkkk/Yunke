@@ -54,6 +54,7 @@ import io.github.mangi.eta.agent.model.AgentFileReference
 import io.github.mangi.eta.agent.model.AgentFileReferenceKind
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
@@ -65,6 +66,111 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 internal val ChatInputPopupMargin = 8.dp
 internal val ChatInputActionSize = 40.dp
 internal val ChatInputActionIconSize = 24.dp
+
+/**
+ * 附件选择器启动句柄。
+ *
+ * 输入栏「+」按钮的弹出菜单与工具箱面板共用同一套选择逻辑与回退路径，
+ * 避免出现两份行为可能走样的实现。
+ */
+internal class AttachmentPickerLaunchers(
+    val pickImage: () -> Unit,
+    val pickFiles: () -> Unit,
+    val pickFolder: () -> Unit,
+)
+
+/**
+ * 创建附件选择器启动句柄。
+ *
+ * 存在 ActivityResultRegistry 时走 Compose 选择器；悬浮窗 Service 等场景没有
+ * LocalActivityResultRegistryOwner，此时回退到 Trampoline Activity 调起系统选择器。
+ */
+@Composable
+internal fun rememberAttachmentPickerLaunchers(
+    onAttachImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+): AttachmentPickerLaunchers {
+    val context = LocalContext.current
+    val registryOwner = androidx.activity.compose.LocalActivityResultRegistryOwner.current
+
+    val photoPicker = if (registryOwner != null) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.PickMultipleVisualMedia(),
+        ) { uris ->
+            uris.forEach { uri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+            }
+            uris.forEach { uri -> onAttachImage(uri.toString()) }
+        }
+    } else null
+    val filePicker = if (registryOwner != null) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenMultipleDocuments(),
+        ) { uris ->
+            uris.forEach { uri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+            }
+            if (uris.isNotEmpty()) onAttachFiles(uris.map { it.toString() })
+        }
+    } else null
+    val folderPicker = if (registryOwner != null) {
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocumentTree(),
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                onAttachFolder(uri.toString())
+            }
+        }
+    } else null
+    return AttachmentPickerLaunchers(
+        pickImage = {
+            if (photoPicker != null) {
+                photoPicker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            } else {
+                AgentAttachmentPickerTrampolineActivity.pickImages(context) { uris ->
+                    uris.forEach { onAttachImage(it) }
+                }
+            }
+        },
+        pickFiles = {
+            if (filePicker != null) {
+                filePicker.launch(arrayOf("*/*"))
+            } else {
+                AgentAttachmentPickerTrampolineActivity.pickFiles(context) { uris ->
+                    onAttachFiles(uris)
+                }
+            }
+        },
+        pickFolder = {
+            if (folderPicker != null) {
+                folderPicker.launch(null)
+            } else {
+                AgentAttachmentPickerTrampolineActivity.pickFolder(context) { uri ->
+                    onAttachFolder(uri)
+                }
+            }
+        },
+    )
+}
 
 @Composable
 internal fun AgentAttachmentPickerButton(
@@ -186,6 +292,117 @@ internal fun AgentAttachmentPickerButton(
         }
     }
 
+    WindowDialog(
+        show = showPathDialog,
+        title = stringResource(R.string.ui_input_file_path_36d474),
+        summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
+        onDismissRequest = { showPathDialog = false },
+    ) {
+        Column {
+            TextField(
+                value = pathInput,
+                onValueChange = { pathInput = it },
+                label = stringResource(R.string.ui_absolute_path_9ac6fc),
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            MiuixDialogActions(
+                confirmText = stringResource(R.string.attachment_add),
+                confirmEnabled = pathInput.trim().startsWith('/'),
+                onCancel = { showPathDialog = false },
+                onConfirm = {
+                    val path = pathInput.trim()
+                    showPathDialog = false
+                    onAttachFilePath(path)
+                },
+                modifier = Modifier.padding(top = 16.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 悬浮窗输入栏的附件入口按钮。
+ *
+ * 与主界面 [AgentAttachmentPickerButton] 共用同一套 [rememberAttachmentPickerLaunchers]：
+ * 浮窗窗口没有 LocalActivityResultRegistryOwner，因此会自动回退到 Trampoline Activity。
+ * 按钮可见尺寸沿用浮窗输入栏其它圆钮的 36dp，保持栏内按钮统一。
+ */
+@Composable
+internal fun OverlayAttachmentPickerButton(
+    onAttachImage: (String) -> Unit,
+    onAttachFiles: (List<String>) -> Unit,
+    onAttachFolder: (String) -> Unit,
+    onAttachFilePath: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val view = LocalView.current
+    val launchers = rememberAttachmentPickerLaunchers(
+        onAttachImage = onAttachImage,
+        onAttachFiles = onAttachFiles,
+        onAttachFolder = onAttachFolder,
+    )
+    var showMenu by remember { mutableStateOf(false) }
+    var showPathDialog by remember { mutableStateOf(false) }
+    var pathInput by remember { mutableStateOf("") }
+    Box(modifier = modifier) {
+        IconButton(
+            onClick = {
+                TouchHaptics.click(view)
+                showMenu = true
+            },
+            minWidth = 36.dp,
+            minHeight = 36.dp,
+            cornerRadius = 18.dp,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Add,
+                contentDescription = stringResource(R.string.ui_add_attachment_dba9e8),
+                modifier = Modifier.size(18.dp),
+                tint = MiuixTheme.colorScheme.onSurface,
+            )
+        }
+        EtaDropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false },
+            preferAbove = true,
+            minWidth = 0.dp,
+            focusable = false,
+        ) {
+            val options = listOf(
+                Triple(stringResource(R.string.attachment_image), Icons.Outlined.Image, 0),
+                Triple(stringResource(R.string.attachment_file), Icons.Rounded.Description, 1),
+                Triple(stringResource(R.string.attachment_folder), Icons.Rounded.FolderOpen, 2),
+                Triple(stringResource(R.string.attachment_enter_path), Icons.Outlined.Link, 3),
+            )
+            options.forEach { (option, icon, index) ->
+                DropdownMenuItem(
+                    modifier = Modifier.height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    text = { androidx.compose.material3.Text(option) },
+                    leadingIcon = {
+                        androidx.compose.material3.Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    },
+                    onClick = {
+                        TouchHaptics.click(view)
+                        showMenu = false
+                        when (index) {
+                            0 -> launchers.pickImage()
+                            1 -> launchers.pickFiles()
+                            2 -> launchers.pickFolder()
+                            3 -> showPathDialog = true
+                        }
+                    },
+                )
+            }
+        }
+    }
     WindowDialog(
         show = showPathDialog,
         title = stringResource(R.string.ui_input_file_path_36d474),

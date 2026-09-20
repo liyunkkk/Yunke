@@ -82,6 +82,13 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import android.content.ContentResolver
+import android.net.Uri
+import io.github.mangi.eta.agent.device.AgentFileReferenceGateway
+import io.github.mangi.eta.agent.model.AgentFileReferenceKind
+import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
+import io.github.mangi.eta.ui.model.PendingFileReferenceUi
+import io.github.mangi.eta.ui.model.PendingImageUi
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 
 /**
@@ -117,6 +124,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var presentedEntryGeneration = -1L
     private var screenContextAttachment: EtaScreenContextAttachment? = null
     private var hiddenForForegroundOperation = false
+    private var isPausedForPicker = false
     private var handoffInProgress = false
     private var handoffExitRequested by mutableStateOf(false)
     private var inputText by mutableStateOf("")
@@ -306,6 +314,12 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                             },
                         exitRequested = handoffExitRequested,
                         onOpenConversation = ::openConversation,
+                        onAttachImage = ::attachImage,
+                        onRemoveImage = ::removePendingImage,
+                        onAttachFiles = ::attachFiles,
+                        onAttachFolder = ::attachFolder,
+                        onAttachFilePath = ::attachFilePath,
+                        onRemoveFileReference = ::removePendingFileReference,
                     )
                 }
             }
@@ -393,18 +407,192 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         inputFocusRequestKey++
     }
 
+    private fun attachImage(uri: String) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val image = AgentImageCodec.fromReference(
+                    context = this@EtaAssistantOverlayService,
+                    value = uri,
+                    source = "user_attach",
+                )
+                if (image == null) {
+                    withContext(Dispatchers.Main.immediate) {
+                        Toast.makeText(
+                            this@EtaAssistantOverlayService,
+                            getString(R.string.state_ui_unable_to_read_this_image_please_try_again_or_us_d94978),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    return@launch
+                }
+                val preview = AgentImageCodec.previewFromReference(this@EtaAssistantOverlayService, image)
+                    ?: image
+                val pending = PendingImageUi(
+                    id = "img-${UUID.randomUUID()}",
+                    uri = image.reference,
+                    dataUrl = preview.reference,
+                    mimeType = image.mimeType,
+                )
+                withContext(Dispatchers.Main.immediate) {
+                    uiState = uiState.copy(pendingImages = uiState.pendingImages + pending)
+                }
+            } finally {
+                val selectedUri = Uri.parse(uri)
+                if (selectedUri.scheme == ContentResolver.SCHEME_CONTENT) {
+                    runCatching {
+                        contentResolver.releasePersistableUriPermission(
+                            selectedUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun removePendingImage(id: String) {
+        uiState = uiState.copy(pendingImages = uiState.pendingImages.filterNot { it.id == id })
+    }
+
+    private fun attachFiles(uris: List<String>) {
+        if (uris.isEmpty()) return
+        resolveAndAttachFileReferences {
+            val gateway = AgentFileReferenceGateway(this@EtaAssistantOverlayService, AndroidAgentLogger)
+            uris.map { uri ->
+                gateway.resolveDocumentUri(
+                    uri = Uri.parse(uri),
+                    expectedKind = AgentFileReferenceKind.File,
+                )
+            }
+        }
+    }
+
+    private fun attachFolder(uri: String) {
+        resolveAndAttachFileReferences {
+            val gateway = AgentFileReferenceGateway(this@EtaAssistantOverlayService, AndroidAgentLogger)
+            listOf(
+                gateway.resolveDocumentUri(
+                    uri = Uri.parse(uri),
+                    expectedKind = AgentFileReferenceKind.Directory,
+                ),
+            )
+        }
+    }
+
+    private fun attachFilePath(path: String) {
+        resolveAndAttachFileReferences {
+            listOf(AgentFileReferenceGateway(AndroidAgentLogger).resolveAbsolutePath(path))
+        }
+    }
+
+    private fun removePendingFileReference(id: String) {
+        uiState = uiState.copy(
+            pendingFileReferences = uiState.pendingFileReferences.filterNot { it.id == id },
+        )
+    }
+
+    private fun resolveAndAttachFileReferences(
+        resolver: () -> List<AgentFileReferenceGateway.Resolution>,
+    ) {
+        scope.launch(Dispatchers.IO) {
+            val resolutions = resolver()
+            val references = resolutions.mapNotNull { resolution ->
+                (resolution as? AgentFileReferenceGateway.Resolution.Success)?.reference
+            }
+            val failures = resolutions.mapNotNull { resolution ->
+                (resolution as? AgentFileReferenceGateway.Resolution.Failure)?.error
+            }
+            withContext(Dispatchers.Main.immediate) {
+                val existingPaths = uiState.pendingFileReferences
+                    .mapTo(mutableSetOf()) { it.reference.absolutePath }
+                val additions = references
+                    .distinctBy { it.absolutePath }
+                    .filter { existingPaths.add(it.absolutePath) }
+                    .map { reference ->
+                        PendingFileReferenceUi(
+                            id = "file-${UUID.randomUUID()}",
+                            reference = reference,
+                        )
+                    }
+                if (additions.isNotEmpty()) {
+                    uiState = uiState.copy(
+                        pendingFileReferences = uiState.pendingFileReferences + additions,
+                    )
+                }
+                val message = when {
+                    failures.size == 1 && references.isEmpty() -> failures.single().userMessage
+                    failures.isNotEmpty() -> resources.getQuantityString(
+                        R.plurals.file_references_added_with_failures,
+                        failures.size,
+                        additions.size,
+                        failures.size,
+                    )
+                    additions.isEmpty() -> getString(R.string.state_ui_the_selected_path_has_been_added_42b432)
+                    else -> null
+                }
+                if (message != null) {
+                    Toast.makeText(this@EtaAssistantOverlayService, message, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private val AgentFileReferenceGateway.Error.userMessage: String
+        get() = when (this) {
+            AgentFileReferenceGateway.Error.UnsupportedDocumentProvider ->
+                getString(R.string.capability_import_denied)
+            AgentFileReferenceGateway.Error.InvalidPath ->
+                getString(R.string.state_ui_please_enter_a_valid_absolute_path_6afeb4)
+            AgentFileReferenceGateway.Error.PathNotFound ->
+                getString(R.string.state_ui_the_path_does_not_exist_or_is_no_longer_accessib_a9776e)
+            AgentFileReferenceGateway.Error.UnsupportedFileType ->
+                getString(R.string.state_ui_only_supports_normal_files_and_folders_4adea0)
+            AgentFileReferenceGateway.Error.TypeMismatch ->
+                getString(R.string.state_ui_the_selected_project_type_does_not_match_3a5c49)
+            AgentFileReferenceGateway.Error.RootUnavailable ->
+                getString(R.string.state_ui_root_is_not_available_and_the_path_cannot_be_ver_fc4c81)
+            AgentFileReferenceGateway.Error.AccessDenied ->
+                getString(R.string.capability_import_denied)
+            AgentFileReferenceGateway.Error.ImportFailed ->
+                getString(R.string.capability_import_failed)
+            AgentFileReferenceGateway.Error.ImportTooLarge ->
+                getString(R.string.capability_import_too_large)
+            AgentFileReferenceGateway.Error.ValidationTimedOut ->
+                getString(R.string.state_ui_path_verification_timed_out_please_try_again_703687)
+        }
+
     private fun submitInput() {
         val prompt = inputText.trim()
-        if (prompt.isBlank() || activeRunId != null) return
+        val hasAttachment = uiState.pendingImages.isNotEmpty() ||
+            uiState.pendingFileReferences.isNotEmpty()
+        if ((prompt.isBlank() && !hasAttachment) || activeRunId != null) return
         submitPrompt(prompt)
     }
 
     private fun submitPrompt(prompt: String) {
         val normalized = prompt.trim()
-        if (normalized.isBlank() || activeRunId != null) return
+        val pendingImages = uiState.pendingImages
+        val pendingFileReferences = uiState.pendingFileReferences
+        if (
+            (normalized.isBlank() && pendingImages.isEmpty() && pendingFileReferences.isEmpty()) ||
+            activeRunId != null
+        ) {
+            return
+        }
+        val fileReferences = pendingFileReferences.map { it.reference }
+        val runtimePrompt = AgentFileReferencePromptCodec.format(normalized, fileReferences)
         val attachment = screenContextAttachment.takeIf { uiState.screenContext.selected }
-        val runImages = attachment?.let { listOf(it.image) }.orEmpty()
-        val previewImages = attachment?.let { listOf(it.previewDataUrl) }.orEmpty()
+        val runImages = attachment?.let { listOf(it.image) }.orEmpty() +
+            pendingImages.map { image ->
+                AgentModelClient.ModelImage(
+                    reference = image.dataUrl,
+                    mimeType = image.mimeType,
+                    bytes = image.dataUrl.length,
+                    source = image.uri,
+                )
+            }
+        val previewImages = attachment?.let { listOf(it.previewDataUrl) }.orEmpty() +
+            pendingImages.map { it.dataUrl }
         screenContextAttachment = null
         inputText = ""
         if (currentConversationId == null) {
@@ -421,9 +609,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             phase = EtaVoicePhase.PROCESSING,
             status = EtaVoiceStatus.Reasoning,
             screenContext = EtaScreenContextStateReducer.consume(),
+            pendingImages = emptyList(),
+            pendingFileReferences = emptyList(),
             messages = uiState.messages + UserMessageUi(
                 id = "user-$runId",
-                content = normalized,
+                content = runtimePrompt,
                 images = previewImages,
             ),
         )
@@ -431,14 +621,14 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         runJob = scope.launch {
             val config = AgentModelClient.loadConfig()
             val payload = AgentExternalArchivePayload(
-                userText = normalized,
+                userText = runtimePrompt,
                 conversationKey = conversationKey,
-                title = normalized.take(40),
+                title = normalized.ifBlank { runtimePrompt }.take(40),
             )
             val result = runtimeClient.run(
                 request = AgentRuntimeWire.RunRequest(
                     runId = runId,
-                    prompt = normalized,
+                    prompt = runtimePrompt,
                     config = config,
                     images = runImages,
                     history = conversationHistory,
@@ -457,7 +647,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 runJob = null
                 if (result.ok) {
                     conversationHistory = conversationHistory +
-                        AgentModelClient.buildUserHistoryMessage(normalized, runImages) +
+                        AgentModelClient.buildUserHistoryMessage(runtimePrompt, runImages) +
                         result.transcript
                     uiState = uiState.copy(
                         phase = EtaVoicePhase.READY,
@@ -804,6 +994,27 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
     }
 
+    private fun pauseWindowForPicker() {
+        if (isPausedForPicker) return
+        isPausedForPicker = true
+        updateSoftInput(visible = false)
+        removeWindow()
+    }
+
+    private fun resumeWindowFromPicker() {
+        if (!isPausedForPicker) return
+        isPausedForPicker = false
+        if (detachingWindowView != null) {
+            windowDetachCallbacks.add {
+                if (!isPausedForPicker && windowView == null) {
+                    showWindow()
+                }
+            }
+        } else {
+            showWindow()
+        }
+    }
+
     private fun updateSoftInput(visible: Boolean) {
         val wm = windowManager ?: return
         val view = windowView ?: return
@@ -953,6 +1164,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         conversationTitle = data.title,
                         historyConversations = items,
                         isHistoryMenuVisible = false,
+                        pendingImages = emptyList(),
+                        pendingFileReferences = emptyList(),
                     )
                 }
             }
@@ -971,6 +1184,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             conversationTitle = "",
             isHistoryMenuVisible = false,
             historyConversations = uiState.historyConversations.map { it.copy(isCurrent = false) },
+            pendingImages = emptyList(),
+            pendingFileReferences = emptyList(),
         )
         showKeyboard()
     }
@@ -1256,6 +1471,18 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
 
         fun isServiceActive(): Boolean = activeService != null
+        fun pauseForAttachmentPicker() {
+            mainHandler.post {
+                activeService?.pauseWindowForPicker()
+            }
+        }
+
+        fun resumeFromAttachmentPicker() {
+            mainHandler.post {
+                activeService?.resumeWindowFromPicker()
+            }
+        }
+
 
         fun dismiss(context: Context) {
             context.applicationContext.stopService(
