@@ -1,5 +1,7 @@
 package io.github.mangi.eta.agent.kimi
 
+import java.util.concurrent.ConcurrentHashMap
+
 /**
  * Kimi 本机服务与守护进程交互的最小抽象。
  *
@@ -29,18 +31,27 @@ internal data class KimiDaemonTask(
  *
  * 之所以不让每次工具调用都重新启动 `kimi web`，是因为 Node 冷启动本身
  * 就要数秒，且多实例会让端口不断递增、旧会话上下文全部丢失。这里按
- * 工作目录缓存 sessionId，让同一项目下的多次委派共享同一个 Kimi 上下文。
+ * **Eta 对话**绑定 sessionId（而非按工作目录），让同一个对话的多轮委派
+ * 始终复用同一个 Kimi 会话持续推进，不会因为换了项目目录就散乱新建。
+ *
+ * 绑定关系会落盘（[KimiSessionBindingStore]），进程被回收后依然有效。
  */
 internal class KimiWebService(
     private val daemon: KimiDaemonGateway,
     private val clientFactory: (origin: String, token: String?) -> KimiWebApiClient = { origin, token ->
         KimiWebApiClient(origin, token)
     },
+    private val bindingStore: KimiSessionBindingStore = InMemoryKimiSessionBindingStore(),
     private val waitAttempts: Int = 40,
     private val waitIntervalMs: Long = 500,
 ) {
 
-    private val sessionByCwd = mutableMapOf<String, String>()
+    /** 对话 id → Kimi sessionId；写入时同步落盘，保证跨进程存活。 */
+    private val sessionBindings = ConcurrentHashMap<String, String>()
+
+    init {
+        sessionBindings.putAll(bindingStore.load())
+    }
 
     /**
      * 已解析成功的端点缓存。
@@ -93,23 +104,45 @@ internal class KimiWebService(
     internal fun cachedEndpointOrNull(): KimiWebEndpoint.Endpoint? = cachedEndpoint
 
     /**
-     * 取得（或创建）指定工作目录的会话 id。
+     * 取得（或创建）绑定到某个对话的会话 id。
      *
-     * 缓存的 id 可能因服务端重启而失效，调用方在收到 SESSION_NOT_FOUND
-     * 时应清理缓存并重试，因此这里额外暴露 [forgetSession]。
+     * 绑定的 id 可能因服务端重启而失效，调用方在收到 SESSION_NOT_FOUND
+     * 时应清理绑定并重试，因此这里额外暴露 [forgetSession]。
+     *
+     * 会话标题优先用对话标题（人类可读，方便在 Kimi 面板里定位），
+     * 缺省时退化为工作目录的末级目录名。
      */
-    fun sessionFor(client: KimiWebApiClient, cwd: String): String {
-        sessionByCwd[cwd]?.takeIf { it.isNotBlank() }?.let { return it }
-        val session = client.createSession(cwd, title = cwd.substringAfterLast('/').ifBlank { null })
-        sessionByCwd[cwd] = session.id
+    fun sessionFor(
+        client: KimiWebApiClient,
+        cwd: String,
+        bindingKey: String,
+        title: String? = null,
+    ): String {
+        sessionBindings[bindingKey]?.takeIf { it.isNotBlank() }?.let { return it }
+        val session = client.createSession(cwd, title = title?.takeIf { it.isNotBlank() }
+            ?: cwd.substringAfterLast('/').ifBlank { null })
+        bind(bindingKey, session.id)
         return session.id
     }
 
-    fun forgetSession(cwd: String) {
-        sessionByCwd.remove(cwd)
+    fun forgetSession(bindingKey: String) {
+        unbind(bindingKey)
     }
 
-    internal fun cachedSessionCount(): Int = sessionByCwd.size
+    internal fun cachedSessionCount(): Int = sessionBindings.size
+
+    /** 绑定是否已存在（供测试与诊断使用）。 */
+    internal fun boundSessionId(bindingKey: String): String? = sessionBindings[bindingKey]
+
+    private fun bind(bindingKey: String, sessionId: String) {
+        sessionBindings[bindingKey] = sessionId
+        bindingStore.save(sessionBindings.toMap())
+    }
+
+    private fun unbind(bindingKey: String) {
+        sessionBindings.remove(bindingKey)
+        bindingStore.save(sessionBindings.toMap())
+    }
 
     private companion object {
         /** 与 [io.github.mangi.eta.ui.app.KimiWebSession.COMMAND] 保持一致的历史命令也视为可用。 */

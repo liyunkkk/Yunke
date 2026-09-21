@@ -9,10 +9,6 @@ import android.service.voice.VoiceInteractionService
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -21,18 +17,14 @@ import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.BugReport
-import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Dashboard
-import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GppMaybe
-import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.HealthAndSafety
 import androidx.compose.material.icons.rounded.Hearing
 import androidx.compose.material.icons.rounded.Inventory
@@ -49,7 +41,6 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Psychology
-import androidx.compose.material.icons.rounded.Restaurant
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Smartphone
@@ -67,12 +58,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -101,7 +88,6 @@ import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import io.github.mangi.eta.ui.components.PreferenceIcon
-import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.navigation.AppRoute
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -114,7 +100,6 @@ import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.HapticBasicComponent
@@ -146,8 +131,6 @@ internal fun SettingsScreen(
     var installingSystemizer by remember { mutableStateOf(false) }
     val currentVersion = remember { AppUpdateRepository.currentVersionName(context) }
     var checkingUpdate by remember { mutableStateOf(false) }
-    var relayStationExpanded by remember { mutableStateOf(false) }
-    var showDonateDialog by remember { mutableStateOf(false) }
     var updateOffer by remember { mutableStateOf<AppUpdateOffer?>(null) }
     val appSettings by SettingsDataStore.settingsFlow().collectAsState(
         initial = io.github.mangi.eta.data.model.Settings(),
@@ -917,61 +900,6 @@ internal fun SettingsScreen(
                         },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.about_telegram_channel),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Campaign,
-                            )
-                        },
-                        endActions = {
-                            Text(
-                                text = "Telegram",
-                                fontSize = MiuixTheme.textStyles.body2.fontSize,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
-                            )
-                        },
-                        onClick = {
-                            openExternalUrl(
-                                context,
-                                "https://t.me/+6JhB2iRjjDExYWM1",
-                                context.getString(R.string.about_telegram_open_failed),
-                            )
-                        },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.about_qq_group),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Groups,
-                            )
-                        },
-                        endActions = {
-                            Text(
-                                text = "QQ",
-                                fontSize = MiuixTheme.textStyles.body2.fontSize,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
-                            )
-                        },
-                        onClick = {
-                            val opened = runCatching {
-                                context.startActivity(
-                                    android.content.Intent(
-                                        android.content.Intent.ACTION_VIEW,
-                                        android.net.Uri.parse("mqqapi://card/show_pslcard?src_type=internal&version=1&uin=735910197&card_type=group&source=qrcode"),
-                                    )
-                                )
-                                true
-                            }.getOrDefault(false)
-                            if (!opened) {
-                                openExternalUrl(
-                                    context,
-                                    "https://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=QZmmrmSQqSAyI8Mo5NHAMc9l6TejcBrw&authKey=mQrh5avqMDc09GunNdtCmuN5tk9UynOekkjHxfuKPjhN4ELWBMJN5edaYw51UXbQ&noverify=0&group_code=735910197",
-                                    context.getString(R.string.about_qq_group_open_failed),
-                                )
-                            }
-                        },
-                    )
-                    ArrowPreference(
                         title = stringResource(R.string.ui_source_code_740296),
                         startAction = {
                             PreferenceIcon(
@@ -993,78 +921,10 @@ internal fun SettingsScreen(
                             context.startActivity(intent)
                         },
                     )
-                    HapticBasicComponent(
-                        title = stringResource(R.string.about_relay_station),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Language,
-                            )
-                        },
-                        endActions = {
-                            Icon(
-                                imageVector = if (relayStationExpanded) {
-                                    Icons.Rounded.ExpandMore
-                                } else {
-                                    Icons.Rounded.ChevronRight
-                                },
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .align(Alignment.CenterVertically)
-                                    .padding(end = 6.dp)
-                                    .size(16.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
-                            )
-                        },
-                        holdDownState = relayStationExpanded,
-                        onClick = { relayStationExpanded = !relayStationExpanded },
-                        bottomAction = if (relayStationExpanded) {
-                            {
-                                Column {
-                                    ArrowPreference(
-                                        title = stringResource(R.string.about_relay_station_st_api),
-                                        insideMargin = PaddingValues(0.dp),
-                                        onClick = {
-                                            openExternalUrl(
-                                                context,
-                                                "https://api.123336.xyz/sign-up?aff=Wd45",
-                                                context.getString(R.string.about_relay_station_open_failed),
-                                            )
-                                        },
-                                    )
-                                    ArrowPreference(
-                                        title = stringResource(R.string.about_relay_station_moyu),
-                                        insideMargin = PaddingValues(0.dp),
-                                        onClick = {
-                                            openExternalUrl(
-                                                context,
-                                                "https://www.u354483.nyat.app:35119/register?aff=5U8U292F5RG6",
-                                                context.getString(R.string.about_relay_station_open_failed),
-                                            )
-                                        },
-                                    )
-                                }
-                            }
-                        } else {
-                            null
-                        },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.about_donate),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Restaurant,
-                            )
-                        },
-                        onClick = { showDonateDialog = true },
-                    )
                 }
             }
         }
     }
-
-        if (showDonateDialog) {
-            DonateQrDialog(onDismiss = { showDonateDialog = false })
-        }
 
         AppUpdateDialog(
             offer = updateOffer,
@@ -1296,58 +1156,6 @@ private fun isEtaAssistantActive(context: Context): Boolean =
     )
 
 
-
-@Composable
-private fun DonateQrDialog(onDismiss: () -> Unit) {
-    var wechatSelected by remember { mutableStateOf(true) }
-    val view = LocalView.current
-    WindowDialog(
-        show = true,
-        title = stringResource(R.string.about_donate),
-        onDismissRequest = onDismiss,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            TabRow(
-                tabs = listOf(
-                    stringResource(R.string.about_donate_wechat),
-                    stringResource(R.string.about_donate_alipay),
-                ),
-                selectedTabIndex = if (wechatSelected) 0 else 1,
-                onTabSelected = {
-                    TouchHaptics.click(view)
-                    wechatSelected = it == 0
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-            )
-            Image(
-                painter = painterResource(
-                    if (wechatSelected) R.drawable.donate_wechat else R.drawable.donate_alipay,
-                ),
-                contentDescription = if (wechatSelected) {
-                    stringResource(R.string.about_donate_wechat)
-                } else {
-                    stringResource(R.string.about_donate_alipay)
-                },
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-            )
-        }
-    }
-}
-
-private fun openExternalUrl(context: Context, url: String, failureMessage: String) {
-    val intent = android.content.Intent(
-        android.content.Intent.ACTION_VIEW,
-        android.net.Uri.parse(url),
-    )
-    runCatching { context.startActivity(intent) }.onFailure {
-        Toast.makeText(context, failureMessage, Toast.LENGTH_SHORT).show()
-    }
-}
 
 private fun SystemizerInstallResult.toToastMessage(context: Context): String =
     when (this) {

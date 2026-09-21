@@ -9,13 +9,14 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Kimi 服务编排测试：找/拉起守护进程 → 解析端点 → 按工作目录复用会话。
+ * Kimi 服务编排测试：找/拉起守护进程 → 解析端点 → 按 Eta 对话绑定复用会话。
  *
- * 这里覆盖的三条行为都直接对应现场故障：
+ * 这里覆盖的行为都直接对应现场故障：
  * 1. 已有健康的 `kimi web` 时必须复用，不能反复新起实例（否则端口递增、上下文全丢）；
  * 2. 端点一旦解析成功就缓存——`readLogs` 只读尾部固定字节，请求日志迟早把启动
  *    横幅挤出窗口，此时再解析就得到"有日志无端点"的假失败；
- * 3. 只有"URL + Token"齐备才算就绪，仅有地址不能拿去发请求。
+ * 3. 只有"URL + Token"齐备才算就绪，仅有地址不能拿去发请求；
+ * 4. 会话按**对话**（而非工作目录）1:1 绑定，并落盘，进程回收后仍复用同一上下文。
  */
 class KimiWebServiceTest {
 
@@ -183,53 +184,87 @@ class KimiWebServiceTest {
     }
 
     @Test
-    fun sessionIsCreatedOncePerWorkingDirectoryThenReused() {
+    fun sessionIsCreatedOncePerConversationThenReused() {
         val gateway = FakeGateway(logs = banner)
         val service = KimiWebService(gateway, waitAttempts = 2, waitIntervalMs = 0L)
         server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
         val client = KimiWebApiClient(server.origin, "token")
 
-        val first = service.sessionFor(client, "/workspace/a")
-        val second = service.sessionFor(client, "/workspace/a")
+        val first = service.sessionFor(client, "/workspace/a", "conv-1")
+        val second = service.sessionFor(client, "/workspace/a", "conv-1")
 
         assertEquals("s-1", first)
         assertEquals(first, second)
-        // 第二次必须走缓存：同一项目下多轮委派要共享 Kimi 上下文。
+        // 第二次必须走缓存：同一对话的多轮委派要共享 Kimi 上下文。
         assertEquals(1, server.requestCount())
         assertEquals(1, service.cachedSessionCount())
     }
 
     @Test
-    fun differentWorkingDirectoriesGetDifferentSessions() {
+    fun sameConversationReusesSessionEvenWhenProjectPathChanges() {
+        // 绑定键是对话而不是目录：中途换项目目录也必须继续同一个 Kimi 会话，
+        // 否则「先问整体方案、再让子代理去另一个仓库改代码」会丢掉前文。
         val gateway = FakeGateway(logs = banner)
         val service = KimiWebService(gateway, waitAttempts = 2, waitIntervalMs = 0L)
         server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
-        server.enqueueEnvelope("""{"id":"s-2","workspace_id":"w","metadata":{"cwd":"/workspace/b"}}""")
         val client = KimiWebApiClient(server.origin, "token")
 
-        assertEquals("s-1", service.sessionFor(client, "/workspace/a"))
-        assertEquals("s-2", service.sessionFor(client, "/workspace/b"))
+        assertEquals("s-1", service.sessionFor(client, "/workspace/a", "conv-1"))
+        assertEquals("s-1", service.sessionFor(client, "/workspace/b", "conv-1"))
+        assertEquals(1, server.requestCount())
+    }
+
+    @Test
+    fun bindingSurvivesProcessRecycleThroughPersistedStore() {
+        // 落盘 store 被新实例复用：模拟进程被回收后重新委派，
+        // 必须命中旧绑定而不是新建会话（否则上下文散乱重建）。
+        val store = InMemoryKimiSessionBindingStore()
+        val gateway = FakeGateway(logs = banner)
+        server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
+        val client = KimiWebApiClient(server.origin, "token")
+
+        val first = KimiWebService(gateway, bindingStore = store, waitAttempts = 2, waitIntervalMs = 0L)
+        assertEquals("s-1", first.sessionFor(client, "/workspace/a", "conv-1"))
+        assertEquals(1, server.requestCount())
+
+        val recycled = KimiWebService(gateway, bindingStore = store, waitAttempts = 2, waitIntervalMs = 0L)
+        assertEquals("s-1", recycled.sessionFor(client, "/workspace/a", "conv-1"))
+        assertEquals(1, server.requestCount())
+        assertEquals("s-1", recycled.boundSessionId("conv-1"))
+    }
+
+    @Test
+    fun differentConversationsGetDifferentSessions() {
+        val gateway = FakeGateway(logs = banner)
+        val service = KimiWebService(gateway, waitAttempts = 2, waitIntervalMs = 0L)
+        server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
+        server.enqueueEnvelope("""{"id":"s-2","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
+        val client = KimiWebApiClient(server.origin, "token")
+
+        assertEquals("s-1", service.sessionFor(client, "/workspace/a", "conv-1"))
+        assertEquals("s-2", service.sessionFor(client, "/workspace/a", "conv-2"))
         assertEquals(2, service.cachedSessionCount())
     }
 
     @Test
-    fun forgetSessionDropsOnlyThatDirectorySoNextCallRecreates() {
+    fun forgetSessionDropsOnlyThatConversationSoNextCallRecreates() {
         val gateway = FakeGateway(logs = banner)
         val service = KimiWebService(gateway, waitAttempts = 2, waitIntervalMs = 0L)
         server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
-        server.enqueueEnvelope("""{"id":"s-3","workspace_id":"w","metadata":{"cwd":"/workspace/b"}}""")
+        server.enqueueEnvelope("""{"id":"s-3","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
         server.enqueueEnvelope("""{"id":"s-2","workspace_id":"w","metadata":{"cwd":"/workspace/a"}}""")
         val client = KimiWebApiClient(server.origin, "token")
 
-        service.sessionFor(client, "/workspace/a")
-        service.sessionFor(client, "/workspace/b")
-        service.forgetSession("/workspace/a")
+        service.sessionFor(client, "/workspace/a", "conv-1")
+        service.sessionFor(client, "/workspace/a", "conv-2")
+        service.forgetSession("conv-1")
 
         assertEquals(1, service.cachedSessionCount())
-        // 未被 forget 的目录仍复用，被 forget 的重开一轮（服务端重启后 sessionId 失效的场景）。
-        assertEquals("s-3", service.sessionFor(client, "/workspace/b"))
-        assertEquals("s-2", service.sessionFor(client, "/workspace/a"))
+        // 未被 forget 的对话仍复用，被 forget 的重开一轮（服务端重启后 sessionId 失效的场景）。
+        assertEquals("s-3", service.sessionFor(client, "/workspace/a", "conv-2"))
+        assertEquals("s-2", service.sessionFor(client, "/workspace/a", "conv-1"))
         assertEquals(3, server.requestCount())
+        assertNull(service.boundSessionId("missing"))
     }
 
     @Test
@@ -258,7 +293,7 @@ class KimiWebServiceTest {
         val service = KimiWebService(gateway, waitAttempts = 1, waitIntervalMs = 0L)
         server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","metadata":{"cwd":"/workspace/demo"}}""")
 
-        service.sessionFor(KimiWebApiClient(server.origin, "token"), "/workspace/demo")
+        service.sessionFor(KimiWebApiClient(server.origin, "token"), "/workspace/demo", "conv-1")
 
         val body = org.json.JSONObject(server.request(0).body)
         assertEquals("demo", body.getString("title"))

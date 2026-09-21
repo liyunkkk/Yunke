@@ -133,6 +133,7 @@ internal class AgentRuntimeRunExecutor(
                 context = appContext,
                 logger = AndroidAgentLogger,
                 browserRunId = request.runId,
+                conversationId = request.effectiveModelSessionId,
                 browserToolsEnabled = {
                     request.config.browserTools && currentPermissions().browserTools
                 },

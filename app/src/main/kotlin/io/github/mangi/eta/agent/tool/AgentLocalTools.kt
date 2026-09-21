@@ -64,6 +64,13 @@ internal class AgentLocalTools(
     private val context: Context,
     private val logger: AgentLogger,
     private val browserRunId: String = "",
+    /**
+     * 当前 Eta 对话 id，作为 Kimi 子代理的会话绑定键。
+     *
+     * 同一个对话的多轮委派据此复用同一个 Kimi 会话；缺省空串时子代理会退化到
+     * `default_main_session`，兼容不传该值的调用点。
+     */
+    private val conversationId: String = "",
     private val browserToolsEnabled: () -> Boolean = {
         Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS)
     },
@@ -150,6 +157,7 @@ internal class AgentLocalTools(
         context = context,
         terminalController = terminalController,
         gateway = SupervisorKimiDaemonGateway(context, detachedTaskSupervisor),
+        conversationId = conversationId,
     )
     private val publishedObservation = AtomicReference(PublishedObservation())
     private val runAvailableSkillIds = runAvailableSkillIds

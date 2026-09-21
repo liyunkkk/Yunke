@@ -74,6 +74,28 @@ internal class KimiWebApiClient(
         )
     }
 
+    /**
+     * 读取会话摘要（`GET /sessions/{id}`）。
+     *
+     * 用途是读取 `last_turn_reason` 判断上一轮是否以 failed 结束。
+     * `/status` 只回 `busy` 与上下文用量，不含失败原因，因此失败判定必须走本方法。
+     */
+    fun sessionSummary(sessionId: String): KimiSessionSummary {
+        val data = get("/sessions/${encode(sessionId)}")
+        return KimiSessionSummary.from(data)
+    }
+
+    /**
+     * 读取服务端全局配置里的 `default_model`（`GET /config`）。
+     *
+     * 该值就是容器内 `config.toml` 的顶层 `default_model`，也是提交提示词时
+     * 必须携带的模型别名——服务端不会把 `default_model` 自动写进 REST 会话的
+     * profile，不显式下发就会以 `model.not_configured` 失败。
+     */
+    fun defaultModel(): String? = runCatching {
+        get("/config").optString("default_model").takeIf { it.isNotBlank() }
+    }.getOrNull()
+
     /** 拉取消息列表；`before_id` 为向前翻页游标。 */
     fun listMessages(sessionId: String, limit: Int = 20, beforeId: String? = null): List<KimiMessage> {
         val query = buildString {
@@ -165,6 +187,19 @@ internal class KimiWebApiException(
     override val message: String,
 ) : IOException("Kimi Web API $code: $message")
 
+/**
+ * 是否为「会话不存在」类错误：服务端重启、会话被删或 id 失效时出现。
+ *
+ * 这类失败可以丢弃缓存直接重建；其他错误（网络、鉴权、5xx）必须原样上报，
+ * 否则会把一次连接抖动误判成会话丢失，静默新建会话并丢掉上下文。
+ */
+internal fun KimiWebApiException.isSessionMissing(): Boolean {
+    val normalized = code.uppercase()
+    if (normalized.contains("SESSION_NOT_FOUND") || normalized.contains("SESSION_NOT_EXIST")) return true
+    if (normalized == "HTTP_404") return true
+    return message.contains("session not found", ignoreCase = true)
+}
+
 /** 会话摘要。 */
 internal data class KimiSession(
     val id: String,
@@ -206,6 +241,36 @@ internal data class KimiSessionStatus(
     val contextTokens: Int,
     val maxContextTokens: Int,
 )
+
+/**
+ * 会话摘要。
+ *
+ * `last_turn_reason` 的取值域由服务端 `sessionSchema` 固定为
+ * `completed` / `cancelled` / `failed`，未执行过则为 `null`。
+ */
+internal data class KimiSessionSummary(
+    val id: String,
+    val workspaceId: String,
+    val lastTurnReason: String?,
+    val model: String?,
+) {
+
+    /** 上一轮是否以失败告终；`null`（从未执行）不算失败。 */
+    val failed: Boolean get() = lastTurnReason == FAILED
+
+    companion object {
+        const val FAILED = "failed"
+
+        fun from(json: JSONObject): KimiSessionSummary = KimiSessionSummary(
+            id = json.optString("id"),
+            workspaceId = json.optString("workspace_id"),
+            lastTurnReason = json.optString("last_turn_reason").takeIf { it.isNotBlank() },
+            model = json.optJSONObject("agent_config")
+                ?.optString("model")
+                ?.takeIf { it.isNotBlank() },
+        )
+    }
+}
 
 internal data class KimiMessage(
     val id: String,

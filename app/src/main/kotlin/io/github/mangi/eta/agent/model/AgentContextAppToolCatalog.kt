@@ -152,6 +152,22 @@ internal object AgentContextAppToolCatalog {
                                         .put("type", "integer")
                                         .put("description", "执行超时时间（秒），默认 120，范围 10 到 600")
                                 )
+                                .put(
+                                    "conversation_id",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put(
+                                            "description",
+                                            "会话绑定键，同一对话的多轮委派复用同一个 Kimi 上下文；" +
+                                                "通常无需填写，由运行时自动注入当前对话 id"
+                                        )
+                                )
+                                .put(
+                                    "conversation_title",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "Kimi 会话标题，便于在 Kimi 面板中定位；缺省用工作目录名")
+                                )
                         )
                         .put("required", JSONArray().put("task"))
                 )
