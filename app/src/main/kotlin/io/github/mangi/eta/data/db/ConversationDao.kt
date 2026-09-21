@@ -54,7 +54,7 @@ internal interface ConversationDao {
     suspend fun totalMessageCount(): Int
 
     @Query(
-        "SELECT type, input_tokens, output_tokens, cached_tokens " +
+        "SELECT conversation_id, type, input_tokens, output_tokens, cached_tokens " +
             "FROM conversation_messages WHERE type IN ('assistant', 'context_compacted')"
     )
     suspend fun usageContentRows(): List<UsageContentRow>
@@ -175,6 +175,7 @@ internal interface ConversationDao {
 
 internal data class UsageContentRow(
     val type: String,
+    @ColumnInfo(name = "conversation_id") val conversationId: String = "",
     @ColumnInfo(name = "input_tokens") val inputTokens: Int? = null,
     @ColumnInfo(name = "output_tokens") val outputTokens: Int? = null,
     @ColumnInfo(name = "cached_tokens") val cachedTokens: Int? = null,

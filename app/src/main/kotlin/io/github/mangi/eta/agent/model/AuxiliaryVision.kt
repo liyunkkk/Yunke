@@ -90,7 +90,7 @@ internal class AuxiliaryVision(
                     .put(JSONObject().put("role", "user").put("content", JSONArray()
                         .put(JSONObject().put("type", "text").put("text", "相关任务与工具观察：\n$context"))
                         .also { parts -> for (j in 0 until imageContent.length()) parts.put(imageContent.get(j)) }))
-                ModelFeatureCompletion.complete(config, prompt, controller, "$sessionId-vision")
+                ModelFeatureCompletion.complete(config, prompt, controller, "$sessionId-vision", usageConversationId = sessionId)
             }
         }
     }

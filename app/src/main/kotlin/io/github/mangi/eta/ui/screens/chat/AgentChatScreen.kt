@@ -36,6 +36,7 @@ internal fun AgentChatScreen(
     }
     key(chatConversationCompositionKey(conversationKey)) {
         AgentChatBody(
+            collaborationConversationId = conversationKey,
             voiceController = voiceController,
             messages = state.messages,
             history = AgentConversationRevisionReducer.outboundHistory(state),
@@ -44,6 +45,10 @@ internal fun AgentChatScreen(
             requestOverheadTokens = requestOverheadTokens,
             billedOverheadTokens = billedOverheadTokens,
             livePromptTokens = state.livePromptTokens,
+            childContexts = state.childContexts,
+            selectedContextTaskId = state.selectedContextTaskId,
+            onContextTaskSelected = { onAction(AgentChatAction.ContextTaskSelected(it)) },
+            compactingModelName = state.compactingModelName,
             input = state.input,
             draftField = draftField,
             isStreaming = state.isStreaming,

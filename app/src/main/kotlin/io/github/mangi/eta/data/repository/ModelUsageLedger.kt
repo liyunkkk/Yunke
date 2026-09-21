@@ -41,6 +41,7 @@ internal data class ModelUsageEvent(
     val cachedTokens: Long = 0L,
     val conversationId: String? = null,
     val round: Int? = null,
+    val requestId: String? = null,
 )
 
 internal data class ModelUsageModelUi(
@@ -89,6 +90,7 @@ internal data class ModelUsageDelta(
     val cachedTokens: Long = 0L,
     val conversationId: String? = null,
     val round: Int? = null,
+    val requestId: String? = null,
     val atMillis: Long = System.currentTimeMillis(),
     val day: LocalDate = Instant.ofEpochMilli(atMillis).atZone(ZoneId.systemDefault()).toLocalDate(),
 )
@@ -108,17 +110,17 @@ internal fun decodeModelUsageSnapshot(raw: String?): ModelUsageSnapshot {
                     val conversations = stringSet(model.optJSONArray("conversations"))
                     val days = stringSet(model.optJSONArray("days"))
                     val input = if (events.isNotEmpty()) {
-                        events.sumOf { it.inputTokens }
+                        maxOf(model.optLong("inputTokens"), events.sumOf { it.inputTokens })
                     } else {
                         model.optLong("inputTokens")
                     }
                     val output = if (events.isNotEmpty()) {
-                        events.sumOf { it.outputTokens }
+                        maxOf(model.optLong("outputTokens"), events.sumOf { it.outputTokens })
                     } else {
                         model.optLong("outputTokens")
                     }
                     val cached = if (events.isNotEmpty()) {
-                        events.sumOf { it.cachedTokens }
+                        maxOf(model.optLong("cachedTokens"), events.sumOf { it.cachedTokens })
                     } else {
                         model.optLong("cachedTokens")
                     }
@@ -129,7 +131,7 @@ internal fun decodeModelUsageSnapshot(raw: String?): ModelUsageSnapshot {
                             inputTokens = input,
                             outputTokens = output,
                             conversationCount = if (events.isNotEmpty()) {
-                                events.mapNotNull { it.conversationId }.toSet().size
+                                (conversations + events.mapNotNull { it.conversationId }).size
                             } else {
                                 conversations.size
                             },
@@ -166,7 +168,7 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     if (delta.inputTokens <= 0L && delta.outputTokens <= 0L && delta.conversationId.isNullOrBlank()) {
         return raw.orEmpty()
     }
-    val root = runCatching { JSONObject(raw.takeUnless { it.isNullOrBlank() } ?: "{}") }
+    val root = runCatching { JSONObject(seedConversationUsage(raw, emptyMap())) }
         .getOrDefault(JSONObject())
     val providers = root.optJSONObject("providers") ?: JSONObject().also {
         root.put("providers", it)
@@ -183,6 +185,12 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     }
     model.put("displayName", delta.modelDisplayName.ifBlank { delta.modelId })
     val events = decodeEvents(model.optJSONArray("events")).toMutableList()
+    // Preserve cumulative counters when the detail window is trimmed; initialize old event-only data.
+    for (field in listOf("inputTokens", "outputTokens", "cachedTokens")) {
+        if (!model.has(field)) model.put(field, events.sumOf {
+            when (field) { "inputTokens" -> it.inputTokens; "outputTokens" -> it.outputTokens; else -> it.cachedTokens }
+        })
+    }
     val incoming = ModelUsageEvent(
         atMillis = delta.atMillis,
         inputTokens = delta.inputTokens.coerceAtLeast(0L),
@@ -190,13 +198,15 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
         cachedTokens = delta.cachedTokens.coerceAtLeast(0L),
         conversationId = delta.conversationId,
         round = delta.round,
+        requestId = delta.requestId,
     )
     val replaceAt = events.indexOfLast { event ->
-        incoming.round != null &&
-            !incoming.conversationId.isNullOrBlank() &&
-            event.round == incoming.round &&
+        if (!incoming.requestId.isNullOrBlank()) event.requestId == incoming.requestId
+        else event.requestId == null && incoming.round != null &&
+            !incoming.conversationId.isNullOrBlank() && event.round == incoming.round &&
             event.conversationId == incoming.conversationId
     }
+    updateConversationUsage(root, incoming, events.getOrNull(replaceAt))
     if (replaceAt >= 0) {
         val previous = events[replaceAt]
         model.put("inputTokens", model.optLong("inputTokens") - previous.inputTokens + incoming.inputTokens)
@@ -239,6 +249,7 @@ private fun decodeEvents(array: JSONArray?): List<ModelUsageEvent> {
                     cachedTokens = item.optLong("k"),
                     conversationId = item.optString("c").takeIf { it.isNotBlank() },
                     round = if (item.has("r")) item.optInt("r") else null,
+                    requestId = item.optString("q").takeIf { it.isNotBlank() },
                 ),
             )
         }
@@ -256,6 +267,7 @@ private fun encodeEvents(events: List<ModelUsageEvent>): JSONArray =
                     if (event.cachedTokens > 0L) json.put("k", event.cachedTokens)
                     json.put("c", event.conversationId.orEmpty())
                     event.round?.let { json.put("r", it) }
+                    event.requestId?.let { json.put("q", it) }
                 },
             )
         }
@@ -275,46 +287,6 @@ private fun eventDay(atMillis: Long): LocalDate =
 
 private const val MAX_MODEL_EVENTS = 4000
 
-internal fun ModelUsageSnapshot.alignedToConversationTotals(
-    inputTokens: Long,
-    outputTokens: Long,
-    cachedTokens: Long,
-): ModelUsageSnapshot {
-    val models = providers.flatMap { provider -> provider.models }
-    if (models.isEmpty()) return this
-    val inputs = distributeTotals(inputTokens, models.map { it.inputTokens })
-    val outputs = distributeTotals(outputTokens, models.map { it.outputTokens })
-    val caches = distributeTotals(cachedTokens, models.map { it.inputTokens })
-    var index = 0
-    return copy(
-        providers = providers.map { provider ->
-            provider.copy(
-                models = provider.models.map { model ->
-                    val aligned = model.copy(
-                        inputTokens = inputs[index],
-                        outputTokens = outputs[index],
-                        cachedTokens = caches[index],
-                    )
-                    index += 1
-                    aligned
-                },
-            )
-        },
-    )
-}
-
-internal fun distributeTotals(total: Long, weights: List<Long>): List<Long> {
-    if (weights.isEmpty()) return emptyList()
-    val safe = weights.map { it.coerceAtLeast(0L) }
-    val sum = safe.sum()
-    if (sum <= 0L) {
-        return List(safe.size) { index -> if (index == safe.lastIndex) total.coerceAtLeast(0L) else 0L }
-    }
-    val raw = safe.map { total.coerceAtLeast(0L) * it / sum }
-    val drift = total.coerceAtLeast(0L) - raw.sum()
-    return raw.mapIndexed { index, value -> if (index == raw.lastIndex) value + drift else value }
-}
-
 internal fun List<ModelUsageEvent>.collapsedByRound(): List<ModelUsageEvent> {
     if (isEmpty()) return this
     val kept = ArrayList<ModelUsageEvent>(size)
@@ -322,10 +294,10 @@ internal fun List<ModelUsageEvent>.collapsedByRound(): List<ModelUsageEvent> {
     forEach { event ->
         val round = event.round
         val conversation = event.conversationId
-        if (round == null || conversation.isNullOrBlank()) {
+        if (event.requestId.isNullOrBlank() && (round == null || conversation.isNullOrBlank())) {
             kept += event
         } else {
-            val key = "$conversation#$round"
+            val key = event.requestId?.let { "request:$it" } ?: "legacy:$conversation#$round"
             val existing = indexByKey[key]
             if (existing == null) {
                 indexByKey[key] = kept.size
@@ -336,10 +308,4 @@ internal fun List<ModelUsageEvent>.collapsedByRound(): List<ModelUsageEvent> {
         }
     }
     return kept
-}
-
-internal fun scaledUsageTotal(conversationTotal: Long, filteredWeight: Long, wholeWeight: Long): Long {
-    if (conversationTotal <= 0L || filteredWeight <= 0L || wholeWeight <= 0L) return 0L
-    if (filteredWeight >= wholeWeight) return conversationTotal
-    return conversationTotal * filteredWeight / wholeWeight
 }

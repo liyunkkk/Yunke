@@ -37,6 +37,7 @@ internal data class ProviderRequest(
     val messages: JSONArray,
     val tools: JSONArray,
     val sessionId: String = java.util.UUID.randomUUID().toString(),
+    val usageConversationId: String = sessionId,
 )
 
 internal data class ProviderResponse(

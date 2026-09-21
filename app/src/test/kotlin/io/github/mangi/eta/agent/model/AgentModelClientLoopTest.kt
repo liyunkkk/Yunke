@@ -1216,7 +1216,17 @@ class AgentModelClientLoopTest {
         val projected = events.filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected }
         assertEquals(135_880, real.first().usage.inputTokens)
         assertTrue(projected.isNotEmpty())
-        assertTrue((projected.first().usage.inputTokens ?: 0) > 135_880)
+        // Before the first bill, the loop now emits a local request estimate.
+        val firstBillIndex = events.indexOf(real.first())
+        val initialEstimates = events.take(firstBillIndex)
+            .filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected }
+        assertTrue(initialEstimates.isNotEmpty())
+        assertTrue(initialEstimates.all { (it.usage.inputTokens ?: 0) > 0 })
+        // Tool results must still project from the actual billed prompt baseline.
+        val afterBill = events.drop(firstBillIndex + 1)
+            .filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected }
+        assertTrue(afterBill.isNotEmpty())
+        assertTrue((afterBill.first().usage.inputTokens ?: 0) > 135_880)
         assertEquals(137_865, real.last().usage.inputTokens)
     }
 
@@ -1274,6 +1284,52 @@ class AgentModelClientLoopTest {
         assertEquals("完成", result.content)
         assertEquals(0, compactCalls)
         assertEquals(2, provider.requests.size)
+    }
+
+    @Test fun malformedDelegationIsRepairedWithoutExecutingOrReplayingSiblingTools() {
+        val events = mutableListOf<AgentEvent>()
+        val executed = mutableListOf<String>()
+        val tools = AgentToolCatalog.build(terminalTools = false, browserTools = false).also {
+            io.github.mangi.eta.agent.delegation.SubAgentTools.appendTo(it, listOf("worker"))
+        }
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(
+                toolCall("bad", "delegate_task", "{}"), toolCall("valid", "get_current_context", "{}"))) },
+            { request, _ ->
+                assertTrue(request.messages.toString().contains("DELEGATION_ARGUMENT_REPAIR"))
+                assertTrue(request.messages.toString().contains("task_created"))
+                assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("repaired", "delegate_task", "{\"task\":\"check evidence\"}")))
+            },
+            { _, _ -> assistant(content = "完成", finishReason = "stop") },
+        ))
+        AgentLoop(modelConfig(), JSONArray().put(AgentConversationCodec.userTextMessage("检查")), tools, provider,
+            AgentModelClient.ToolExecutor { call -> executed += call.id; AgentModelClient.ToolResult("{\"ok\":true}") },
+            AgentRunController(), AgentTraceFormatter(), { events += it }).run()
+        assertEquals(listOf("valid", "repaired"), executed)
+        assertEquals(1, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().count { it.reasonCode == "DELEGATION_ARGUMENT_REPAIR" })
+        assertFalse(events.filterIsInstance<AgentEvent.ToolStarted>().any { it.toolCallId == "bad" })
+    }
+
+    @Test fun repeatedMalformedDelegationDisablesOnlyNewDelegationAfterTwoRepairRounds() {
+        val events = mutableListOf<AgentEvent>()
+        val tools = JSONArray().also { io.github.mangi.eta.agent.delegation.SubAgentTools.appendTo(it, listOf("worker")) }
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("bad1", "delegate_task", "{}"))) },
+            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("bad2", "delegate_task", "{}"))) },
+            { _, _ -> assistant(finishReason = "tool_calls", toolCalls = listOf(toolCall("bad3", "delegate_task", "{}"))) },
+            { request, _ ->
+                val names = (0 until request.tools.length()).map { request.tools.getJSONObject(it).getJSONObject("function").getString("name") }
+                assertFalse("delegate_task" in names)
+                assertTrue("get_task_result" in names)
+                assertTrue(request.messages.toString().contains("DELEGATION_ARGUMENT_REPAIR_EXHAUSTED"))
+                assistant(content = "主代理接手", finishReason = "stop")
+            },
+        ))
+        AgentLoop(modelConfig(), JSONArray().put(AgentConversationCodec.userTextMessage("检查")), tools, provider,
+            AgentModelClient.ToolExecutor { error("Malformed calls must never execute") }, AgentRunController(), AgentTraceFormatter(),
+            { events += it }, toolsForRound = { tools }).run()
+        assertEquals(2, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().size)
+        assertEquals(listOf("bad3"), events.filterIsInstance<AgentEvent.ToolStarted>().map { it.toolCallId })
     }
 
     private fun modelConfig(): AgentModelClient.ModelConfig =

@@ -595,3 +595,19 @@ internal class AgentRunMessageProjector(
 }
 
 private const val MAX_TOOL_RESULT_PREVIEW_CHARS = 48
+
+internal fun mergeCompletedAssistantContent(
+    current: String,
+    fallback: String,
+    sameRoundBlocks: Int,
+): String {
+    val streaming = current.trimEnd()
+    val finished = fallback.trimEnd()
+    if (streaming.isBlank()) return fallback
+    if (finished.isBlank() || streaming == finished) return streaming
+    if (sameRoundBlocks > 1) return current.ifBlank { fallback }
+    if (finished.startsWith(streaming) || streaming.startsWith(finished)) {
+        return if (finished.length >= streaming.length) fallback else current
+    }
+    return current
+}

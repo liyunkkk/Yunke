@@ -6,6 +6,11 @@ internal object AgentSensitiveToolPolicy {
         toolName.startsWith("mcp_") || toolName in sensitiveTools
 
     private val sensitiveTools = setOf(
+        "delegate_task",
+        "manage_agent_workspace",
+        "workspace_file",
+        "get_task_result",
+        "cancel_task",
         "get_setting",
         "wifi_credentials",
         "recent_notifications",

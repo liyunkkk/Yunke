@@ -601,4 +601,13 @@ class AgentRunMessageProjectorTest {
         assertEquals(afterAnswer, messages)
         assertEquals(1, messages.filterIsInstance<ThinkingMessageUi>().size)
     }
+
+    @Test fun completedFallbackDoesNotReplaceVisibleStreamingAnswer() {
+        assertEquals("已显示的回答", mergeCompletedAssistantContent("已显示的回答", "完全不同的终态", 1))
+        assertEquals("已显示的回答。", mergeCompletedAssistantContent("已显示的回答", "已显示的回答。", 1))
+        assertEquals("已显示的回答", mergeCompletedAssistantContent("已显示的回答\n", "已显示的回答", 1))
+        assertEquals("短", mergeCompletedAssistantContent("短", "", 1))
+        assertEquals("终态", mergeCompletedAssistantContent("", "终态", 1))
+        assertEquals("第一段", mergeCompletedAssistantContent("第一段", "另一段", 2))
+    }
 }

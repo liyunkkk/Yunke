@@ -25,20 +25,24 @@ internal class ConversationNavigationDirectionTracker(private val thresholdPx: F
     fun endGesture() { pendingDelta = 0f }
 }
 
-/** The turn containing the viewport's leading item is the current turn. */
-internal fun conversationTurnTarget(
-    turnStarts: List<Int>,
+/** Navigate actual user bubbles, including steering supplements, not logical run/turn boundaries. */
+internal fun conversationUserMessageTarget(
+    userMessageIndices: List<Int>,
     firstVisibleIndex: Int,
     bottomItemIndex: Int,
     direction: ConversationNavigationDirection,
     toEdge: Boolean,
+    firstVisibleScrollOffset: Int = 0,
 ): Int {
     if (toEdge) return if (direction == ConversationNavigationDirection.Down) bottomItemIndex else 0
     return when (direction) {
-        ConversationNavigationDirection.Down -> turnStarts.firstOrNull { it > firstVisibleIndex } ?: bottomItemIndex
+        ConversationNavigationDirection.Down -> userMessageIndices.firstOrNull { it > firstVisibleIndex } ?: bottomItemIndex
         ConversationNavigationDirection.Up -> {
-            val current = turnStarts.indexOfLast { it <= firstVisibleIndex }
-            turnStarts.getOrNull(current - 1) ?: 0
+            // In an answer, first return to its preceding user bubble. If a long user
+            // bubble is clipped, reveal its beginning before moving to the previous one.
+            userMessageIndices.lastOrNull {
+                it < firstVisibleIndex || (it == firstVisibleIndex && firstVisibleScrollOffset > 0)
+            } ?: 0
         }
     }
 }

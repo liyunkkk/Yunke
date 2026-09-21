@@ -28,6 +28,8 @@ internal object SpeechVoices {
         SpeechEngine.GEMINI -> gemini
         SpeechEngine.ELEVENLABS -> elevenlabs
         SpeechEngine.FISH -> emptyList()
+        SpeechEngine.COSYVOICE -> relayVoices(model, "FunAudioLLM/CosyVoice2-0.5B")
+        SpeechEngine.MOSS -> relayVoices(model, "fnlp/MOSS-TTSD-v0.5")
     }
 
     private val openai = listOf(
@@ -101,6 +103,18 @@ internal object SpeechVoices {
     private val elevenlabs = listOf(
         SpeechVoice("JBFqnCBsd6RMkjVDRZzb", "George"),
     )
+
+    // SiliconFlow's documented preset IDs include the upstream model name.
+    // Keep full model IDs intact; the relay's short aliases need canonical prefixes.
+    private fun relayVoices(model: String, canonicalModel: String): List<SpeechVoice> {
+        val prefix = if ("/" in model) model else canonicalModel
+        return listOf(
+            "alex" to "沉稳男声", "benjamin" to "低沉男声",
+            "charles" to "磁性男声", "david" to "欢快男声",
+            "anna" to "沉稳女声", "bella" to "激情女声",
+            "claire" to "温柔女声", "diana" to "欢快女声",
+        ).map { (id, name) -> SpeechVoice("$prefix:$id", name) }
+    }
 
     private fun qwen(model: String): List<SpeechVoice> {
         val id = model.lowercase()

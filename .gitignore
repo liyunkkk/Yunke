@@ -38,3 +38,5 @@ google-services.json
 
 # 临时构建产物（勿提交）
 .tmp-art/
+# Runtime-owned collaboration workspaces and artifacts
+/.agent/

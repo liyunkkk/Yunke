@@ -361,6 +361,16 @@ class AgentSummaryPipelineTest {
         AgentContextCompactor.validateSummary(validSummary())
         assertThrows(IllegalArgumentException::class.java) { AgentContextCompactor.validateSummary("not structured") }
         assertThrows(IllegalArgumentException::class.java) { AgentContextCompactor.validateSummary("## Tasks\n- x") }
+        val sections = AgentContextCompactor.SUMMARY_SECTIONS
+        fun checkpoint(names: List<String>) = names.joinToString("\n") { "## $it\n- (none)" }
+        for (index in sections.indices) {
+            assertNull(AgentContextCompactor.coerceSummary(checkpoint(sections.filterIndexed { i, _ -> i != index })))
+        }
+        assertNull(AgentContextCompactor.coerceSummary(checkpoint(sections + sections.last())))
+        assertNull(AgentContextCompactor.coerceSummary(checkpoint(sections.reversed())))
+        assertNull(AgentContextCompactor.coerceSummary(validSummary() + "\n## Unknown peer\n- content"))
+        assertNull(AgentContextCompactor.coerceSummary(validSummary().replace("## Next Step", "## Next Steps invented")))
+        assertNull(AgentContextCompactor.coerceSummary(validSummary().replace("## Pending Jobs\n- (none)", "## Pending Jobs")))
     }
 
     @Test fun chineseHeadingsAndFencesAreCoercedIntoCheckpoint() {
@@ -452,4 +462,87 @@ class AgentSummaryPipelineTest {
             AgentModelClient.ConversationMessage("user", "supplement", turnId = "run-1"))
         assertEquals(0, AgentContextCompactor.recentKeepStartIndex(messages, 1))
     }
+    @Test fun orderedMergeReceivesIndependentSuccessfulRunEvenWhenChunkSummariesOmitIt() {
+        val run = "35557982887"
+        fun pair(callId: String, state: String) = listOf(
+            AgentModelClient.ConversationMessage("assistant", toolCallsJson = JSONArray().put(JSONObject().put("id", callId)
+                .put("function", JSONObject().put("name", "terminal").put("arguments", JSONObject()
+                    .put("command", "gh run view $run -R owner/repo --json status,conclusion").toString()))).toString()),
+            AgentModelClient.ConversationMessage("tool", toolCallId = callId, content = JSONObject().put("ok", true)
+                .put("exit_code", 0).put("stdout", state).toString()))
+        val source = listOf(AgentModelClient.ConversationMessage("user", "编译"),
+            AgentModelClient.ConversationMessage("assistant", "a".repeat(160_000))) +
+            pair("old", "{\"status\":\"in_progress\"}") +
+            AgentModelClient.ConversationMessage("assistant", "b".repeat(160_000)) +
+            pair("new", "{\"status\":\"completed\",\"conclusion\":\"success\"}") +
+            listOf(AgentModelClient.ConversationMessage("user", "改设置页，之后修复生图参数"),
+                AgentModelClient.ConversationMessage("user", "protected"))
+        var merged = false
+        val before = source.toList()
+        val result = AgentContextCompactor.compress(source, AgentContextCompactor.Config(1, config().copy(contextWindow = 64_000), provider {
+            val body = it.messages.toString()
+            if (body.contains("Reconcile chronological partial checkpoints")) {
+                merged = true
+                assertTrue(body.contains("Independent source evidence"))
+                assertTrue(body.contains(run)); assertTrue(body.contains("success"))
+                assertTrue(body.contains("改设置页，之后修复生图参数"))
+                assertTrue(body.contains("Intermediate checkpoint 1/"))
+            }
+            response(validSummary()) // deliberately loses run facts; independent evidence must survive
+        }), keepStartOverride = source.lastIndex)
+        assertTrue(merged)
+        assertTrue(result.first().content.contains(run)); assertTrue(result.first().content.contains("success"))
+        assertSame(source.last(), result.last()); assertEquals(before, source)
+    }
+
+    @Test fun formatRepairReceivesFullCheckpointPastOldTwelveThousandLimit() {
+        var calls = 0
+        val malformed = "unstructured " + "x".repeat(13_000) + " FINAL_SUCCESS_EVIDENCE"
+        val source = listOf(AgentModelClient.ConversationMessage("user", "x".repeat(80_000)),
+            AgentModelClient.ConversationMessage("user", "protected"))
+        AgentContextCompactor.compress(source, AgentContextCompactor.Config(1, config(), provider {
+            calls++
+            if (calls == 1) response(malformed) else {
+                assertTrue(it.messages.toString().contains("FINAL_SUCCESS_EVIDENCE"))
+                response(validSummary())
+            }
+        }))
+        assertEquals(2, calls)
+    }
+
+    @Test fun singleChunkStalePendingFailsClosedWithoutAdditionalPaidRepairOrTailMutation() {
+        val source = listOf(
+            AgentModelClient.ConversationMessage("user", "build evidence " + "a".repeat(16_000)),
+            AgentModelClient.ConversationMessage("assistant", toolCallsJson = JSONArray().put(JSONObject().put("id", "completed")
+                .put("function", JSONObject().put("name", "terminal").put("arguments", JSONObject()
+                    .put("command", "gh run view 35557982887 -R owner/repo --json status,conclusion").toString()))).toString()),
+            AgentModelClient.ConversationMessage("tool", toolCallId = "completed", content = JSONObject().put("ok", true)
+                .put("exit_code", 0).put("stdout", JSONObject().put("status", "completed").put("conclusion", "success").toString()).toString()),
+            AgentModelClient.ConversationMessage("user", "protected"))
+        val before = source.toList()
+        var calls = 0
+        val failure = assertThrows(IllegalArgumentException::class.java) {
+            AgentContextCompactor.compress(source, AgentContextCompactor.Config(1, config(), provider {
+                calls++
+                response(validSummary().replace("## Pending Jobs\n- (none)", "## Pending Jobs\n- 等待工作流 35557982887 完成"))
+            }), keepStartOverride = 3)
+        }
+        assertTrue(failure.message!!.contains("原历史保持不变"))
+        assertEquals(1, calls); assertEquals(before, source)
+    }
+
+    @Test fun oversizedFormatRepairRefusesInsteadOfTruncatingOrCallingProviderAgain() {
+        val source = listOf(AgentModelClient.ConversationMessage("user", "a".repeat(14_000)),
+            AgentModelClient.ConversationMessage("user", "protected"))
+        var calls = 0
+        assertThrows(IllegalArgumentException::class.java) {
+            AgentContextCompactor.compress(source, AgentContextCompactor.Config(1, config().copy(contextWindow = 8192), provider {
+                calls++
+                response("unstructured " + "x".repeat(50_000) + " FINAL_SUCCESS_EVIDENCE")
+            }))
+        }
+        assertEquals(1, calls)
+        assertEquals("protected", source.last().content)
+    }
+
 }

@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.media.AgentVideoCodec
 import io.github.mangi.eta.data.model.ProviderTypes
+import io.github.mangi.eta.agent.runtime.AgentRunController
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -17,6 +18,7 @@ import org.json.JSONObject
 
 internal class AgentVideoGenerationClient(
     private val httpClient: OkHttpClient = AgentHttpClient.modelClient,
+    private val runController: AgentRunController? = null,
 ) {
     data class InputImage(
         val bytes: ByteArray,
@@ -38,6 +40,7 @@ internal class AgentVideoGenerationClient(
         prompt: String,
         images: List<InputImage> = emptyList(),
     ): Result {
+        runController?.throwIfCancelled()
         require(config.baseUrl.isNotBlank()) { "请先配置 API 地址" }
         require(prompt.isNotBlank()) { "请输入视频描述" }
         require(config.providerType != ProviderTypes.ANTHROPIC) {
@@ -55,9 +58,12 @@ internal class AgentVideoGenerationClient(
         }
         var lastError: String? = null
         attempts.forEach { attempt ->
+            runController?.throwIfCancelled()
             currentCoroutineContext().ensureActive()
             val response = runCatching { execute(config, prompt, inputImages, headers, attempt) }
                 .getOrElse { throwable ->
+                    runController?.throwIfCancelled()
+                    currentCoroutineContext().ensureActive()
                     lastError = throwable.message ?: throwable.javaClass.simpleName
                     return@forEach
                 }
@@ -124,13 +130,18 @@ internal class AgentVideoGenerationClient(
         repeat(MAX_POLLS) { index ->
             currentCoroutineContext().ensureActive()
             if (index > 0) delay(POLL_INTERVAL_MS)
-            val responses = buildList {
-                ArkContentsGenerations.taskUrl(config.baseUrl, taskId)?.let { add(get(it, headers)) }
-                add(get(ProviderUrls.openAiVideoUrl(config.baseUrl, taskId), headers))
-                add(get(ProviderUrls.openAiVideoGenerationUrl(config.baseUrl, taskId), headers))
+            val urls = buildList {
+                ArkContentsGenerations.taskUrl(config.baseUrl, taskId)?.let { add(it) }
+                add(ProviderUrls.openAiVideoUrl(config.baseUrl, taskId))
+                add(ProviderUrls.openAiVideoGenerationUrl(config.baseUrl, taskId))
             }
-            responses.forEach { response ->
-                if (!response.ok) return@forEach
+            for (url in urls) {
+                val response = try { get(url, headers) } catch (failure: Exception) {
+                    runController?.throwIfCancelled()
+                    currentCoroutineContext().ensureActive()
+                    continue
+                }
+                if (!response.ok) continue
                 sniffVideo(response.bytes, response.contentType)?.let { video ->
                     return Result(videos = listOf(video), text = text)
                 }
@@ -209,21 +220,21 @@ internal class AgentVideoGenerationClient(
                 .post(chatBody(config, prompt, images).toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
         }
-        return httpClient.newCall(request).execute().use { toRawResponse(it) }
+        return executeGenerationRequest(httpClient, request, runController) { toRawResponse(it) }
     }
 
     private fun get(url: String, headers: Headers): RawResponse {
         val request = Request.Builder().url(url).headers(headers).get().build()
-        return httpClient.newCall(request).execute().use { toRawResponse(it) }
+        return executeGenerationRequest(httpClient, request, runController) { toRawResponse(it) }
     }
 
     private fun toRawResponse(response: okhttp3.Response): RawResponse {
         val contentType = response.body.contentType()?.toString()
-        val bytes = response.body.bytes()
+        val bytes = response.body.byteStream().readGenerationBytes(MAX_GENERATED_VIDEO_BYTES / 3 * 4 + 1024 * 1024)
         val retryable = response.code !in FATAL_HTTP_CODES
         return RawResponse(
             code = response.code,
-            body = bytes.decodeToStringOrEmpty(),
+            body = if (AgentVideoCodec.sniffMime(bytes) != null) "" else bytes.decodeToStringOrEmpty(),
             bytes = bytes,
             contentType = contentType,
             ok = response.isSuccessful,
@@ -361,11 +372,11 @@ internal class AgentVideoGenerationClient(
 
     private fun download(url: String): ByteArray? {
         val request = Request.Builder().url(url).get().build()
-        return downloadClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@use null
+        return executeGenerationRequest(downloadClient, request, runController) { response ->
+            if (!response.isSuccessful) return@executeGenerationRequest null
             val declared = response.body.contentLength()
-            if (declared > MAX_GENERATED_VIDEO_BYTES) return@use null
-            val bytes = response.body.bytes()
+            if (declared > MAX_GENERATED_VIDEO_BYTES) return@executeGenerationRequest null
+            val bytes = response.body.byteStream().readGenerationBytes(MAX_GENERATED_VIDEO_BYTES)
             bytes.takeIf { it.isNotEmpty() && it.size <= MAX_GENERATED_VIDEO_BYTES }
         }
     }

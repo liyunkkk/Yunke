@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.model
 import io.github.mangi.eta.data.model.ReasoningEffort
 
 sealed interface AgentHomeAction {
+    data class ContextTaskSelected(val taskId: String?) : AgentHomeAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentHomeAction
     data class ModelSelected(val modelId: String, val providerId: String = "") : AgentHomeAction
     data class SubmitMessage(val text: String) : AgentHomeAction
@@ -38,6 +39,7 @@ sealed interface PermissionHealthAction {
 }
 
 sealed interface AgentChatAction {
+    data class ContextTaskSelected(val taskId: String?) : AgentChatAction
     data object NavigateBack : AgentChatAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentChatAction
     data class ModelSelected(val modelId: String, val providerId: String = "") : AgentChatAction

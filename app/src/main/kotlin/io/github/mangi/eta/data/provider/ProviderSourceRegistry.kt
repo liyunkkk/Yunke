@@ -20,6 +20,7 @@ internal object ProviderSourceRegistry {
         ProviderSourceTypes.SILICONFLOW,
         ProviderSourceTypes.OPENROUTER,
         ProviderSourceTypes.DOUBAO_SPEECH,
+        ProviderSourceTypes.COMPATIBLE_SPEECH,
     )
 
     fun normalize(sourceType: String?): String {

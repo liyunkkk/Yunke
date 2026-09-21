@@ -55,6 +55,16 @@ class ToolCatalogUiTest {
     }
 
     @Test
+    fun subAgentActionsHaveTheirOwnIconDistinctFromMemory() {
+        val icon = io.github.mangi.eta.ui.icons.SubAgents
+        listOf("delegate_task", "get_task_result", "cancel_task", "manage_agent_workspace").forEach {
+            assertEquals(icon, iconForTool(it))
+            assertNotEquals(iconForTool("memory_get"), iconForTool(it))
+        }
+        assertEquals("SubAgents", icon.name)
+    }
+
+    @Test
     fun everyDisplayedCardHasExplicitMetadataAndKeepsItsOriginalOrder() {
         val groups = buildToolsState(RuntimeEnvironment.getApplication()).groups
         val allCards = groups.flatMap { it.tools }

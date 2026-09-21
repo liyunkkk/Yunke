@@ -51,6 +51,8 @@ class ShellProcessSupervisorTest {
         assertTrue(payload.contains("eta_mount_required /data/local/tmp"))
         assertTrue(payload.contains("eta_mount_required /data/local/tmp/eta"))
         assertTrue(payload.contains("eta_rootfs/workspace"))
+        assertTrue(payload.contains(TerminalRuntime.temporaryDirectory.absolutePath))
+        assertTrue(payload.contains("eta_rootfs${LongShellCommand.CHROOT_SCRIPTS_DIR}"))
         assertTrue(payload.contains("eta_rootfs/var/minis/workspace"))
         assertTrue(payload.contains("eta_rootfs/var/minis/offloads"))
         assertTrue(payload.contains("eta_rootfs/var/minis/browser"))

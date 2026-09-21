@@ -8,11 +8,18 @@ internal enum class ModelFeature(val key: String) { VISION("agent_auxiliary_visi
 
 /** Store references only; credentials remain in the provider repository. */
 internal data class ModelFeatureSelection(val custom: Boolean, val providerId: String, val modelId: String) {
-    suspend fun resolve(): AgentModelClient.ModelConfig? {
+    suspend fun resolve(generationRole: String? = null): AgentModelClient.ModelConfig? {
         if (providerId.isBlank() || modelId.isBlank()) return null
         val provider = ProviderRepository.providerById(providerId)?.takeIf { it.isEnabled } ?: return null
         val model = provider.models.firstOrNull { it.id == modelId && it.isEnabled } ?: return null
-        if (model.supportsSpeechSynthesis || model.supportsImageGeneration || model.supportsVideoGeneration) return null
+        if (model.supportsSpeechSynthesis) return null
+        val compatible = when (generationRole) {
+            "image_generation" -> model.supportsImageGeneration
+            "video_generation" -> model.supportsVideoGeneration
+            null -> !model.supportsImageGeneration && !model.supportsVideoGeneration
+            else -> false
+        }
+        if (!compatible) return null
         return RuntimeConfigRepository.configForProviderAndModel(providerId, modelId, assistant = null)
     }
 }

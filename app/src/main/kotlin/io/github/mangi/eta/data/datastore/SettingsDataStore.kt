@@ -441,6 +441,11 @@ internal object SettingsDataStore {
         }
     }
 
+    fun modelUsageFlow(): Flow<String> {
+        ensureInitialized()
+        return dataStore.data.map { it[MODEL_USAGE_JSON].orEmpty() }
+    }
+
     suspend fun modelUsageJson(): String {
         ensureInitialized()
         return dataStore.data
@@ -457,6 +462,11 @@ internal object SettingsDataStore {
         dataStore.edit { prefs ->
             prefs[MODEL_USAGE_JSON] = deltaJson
         }
+    }
+
+    suspend fun updateModelUsage(transform: (String) -> String) {
+        ensureInitialized()
+        dataStore.edit { prefs -> prefs[MODEL_USAGE_JSON] = transform(prefs[MODEL_USAGE_JSON].orEmpty()) }
     }
 
     private fun decodeHeatmap(raw: String?): Map<LocalDate, Int> {

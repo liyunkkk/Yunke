@@ -39,7 +39,9 @@ internal sealed interface AgentEvent {
         val reasonDetail: String = "",
     ) : AgentEvent {
         val displayMessage: String
-            get() = "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。" +
+            get() = if (reasonCode == "DELEGATION_ARGUMENT_REPAIR") {
+                "正在补全委派任务参数（$attempt/$maxAttempts）；尚未创建子任务，已完成的工具不会重放。"
+            } else "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。" +
                 reasonDetail.takeIf { it.isNotBlank() }?.let { "\n原因：$it" }.orEmpty()
 
         override fun toLogLine(): String =
@@ -108,6 +110,10 @@ internal sealed interface AgentEvent {
             "assistant_received round=$round, content_chars=$contentChars, " +
                 "reasoning_chars=${reasoningContent.length}, tool_count=${toolNames.size}, " +
                 "tools=${toolNames.take(MAX_LOGGED_TOOL_NAMES).map { it.toSafeLogToken() }}"
+    }
+
+    data class ChildContextUpdated(val stats: io.github.mangi.eta.agent.delegation.SubAgentContextStats) : AgentEvent {
+        override fun toLogLine() = "child_context worker=${stats.worker}, status=${stats.status}, tokens=${stats.contextTokens}"
     }
 
     data class UsageReceived(
@@ -188,6 +194,7 @@ internal sealed interface AgentEvent {
 
     data class ContextCompactionStarted(
         val round: Int,
+        val modelName: String = "",
     ) : AgentEvent {
         override fun toLogLine(): String = "context_compaction_started round=$round"
     }

@@ -152,7 +152,7 @@ internal object AgentTerminalToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "read_file",
-                    description = "读取 Android 文件内容。适合读取配置、日志、小文本文件；大文件用 offset_bytes/max_bytes 分段读取。",
+                    description = "读取 Android 文件内容；支持当前所选 Linux 的 /workspace、/var/minis 和 minis:// 路径，自动映射到宿主文件。适合配置、日志、小文本文件；大文件用 offset_bytes/max_bytes 分段读取。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -199,7 +199,7 @@ internal object AgentTerminalToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "list_directory",
-                    description = "列出 Android 目录内容。默认 /data/local/tmp/eta，输出类似 ls -l。",
+                    description = "列出目录内容；支持当前所选 Linux 的 /workspace、/var/minis 和 minis:// 路径，自动映射到宿主目录。默认 /data/local/tmp/eta，输出类似 ls -l。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(

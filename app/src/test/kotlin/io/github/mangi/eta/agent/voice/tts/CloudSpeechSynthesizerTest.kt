@@ -39,6 +39,21 @@ class CloudSpeechSynthesizerTest {
         }
         assertArrayEquals(mp3, CloudSpeechSynthesizer(http).synthesize(config, "你好", "provider-voice"))
     }
+    @Test fun relayAliasesSendCanonicalPresetVoicesToConfiguredHost() = runBlocking {
+        for ((model, engine, prefix) in listOf(
+            Triple("CosyVoice2", SpeechEngine.COSYVOICE, "FunAudioLLM/CosyVoice2-0.5B"),
+            Triple("MOSS-TTSD", SpeechEngine.MOSS, "fnlp/MOSS-TTSD-v0.5"),
+        )) {
+            val http = client { request ->
+                assertEquals("https://example.com/v1/audio/speech", request.url.toString())
+                val body = JSONObject(Buffer().also { request.body!!.writeTo(it) }.readUtf8())
+                assertEquals(model, body.getString("model"))
+                assertEquals("$prefix:alex", body.getString("voice"))
+            }
+            val voice = SpeechVoices.catalog(engine, model).first().id
+            assertArrayEquals(mp3, CloudSpeechSynthesizer(http).synthesize(config.copy(model = model), "你好", voice))
+        }
+    }
     @Test fun noUniversalVoiceIsSilentlyInvented() = runBlocking {
         val message = failure { CloudSpeechSynthesizer(client()).synthesize(config, "你好", "") }
         assertTrue(message.contains("音色"))

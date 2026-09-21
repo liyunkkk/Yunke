@@ -58,14 +58,30 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun AgentModelPickerButton(
+    conversationId: String? = null,
     state: AgentModelPickerUiState,
     isStreaming: Boolean,
     isPaused: Boolean = false,
+    collaborationTaskRunning: Boolean = isStreaming,
     popupAnchorTopPx: Int,
     popupMaxHeight: Dp,
     onModelSelected: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var showCollaboration by remember { mutableStateOf(false) }
+    var collaboration by remember(conversationId) {
+        mutableStateOf(io.github.mangi.eta.agent.delegation.SubAgentPreferences.enabled(conversationId))
+    }
+    ConversationCollaborationDialog(
+        show = showCollaboration,
+        enabled = collaboration,
+        taskRunning = collaborationTaskRunning,
+        onEnabledChange = {
+            collaboration = it
+            io.github.mangi.eta.agent.delegation.SubAgentPreferences.setEnabled(conversationId, it)
+        },
+        onDismiss = { showCollaboration = false },
+    )
     val menuState = rememberEtaMenuState()
     var expandedProviderIds by remember { mutableStateOf(emptySet<String>()) }
     val selected = state.selectedModel
@@ -83,6 +99,7 @@ internal fun AgentModelPickerButton(
                 menuState.onAnchorClick()
             },
             contentDescription = switchModelDescription,
+            onLongClick = { menuState.dismiss(); showCollaboration = true },
         ) {
             ModelBrandMark(
                 modelId = selected?.modelId,
@@ -250,10 +267,24 @@ private fun ModelPickerRow(
 internal fun AgentContextUsageButton(
     usage: AgentContextUsageUi,
     sendBlocked: Boolean = false,
+    popupMaxHeight: Dp = 360.dp,
     modifier: Modifier = Modifier,
 ) {
     val menuState = rememberEtaMenuState()
-    val progress = usage.progress
+    val selectorState = rememberEtaMenuState()
+    val telemetry = LocalAgentContextTelemetry.current
+    var localSelectedTaskId by remember { mutableStateOf<String?>(null) }
+    val selectedTaskId = if (telemetry.onTaskSelected != null) telemetry.selectedTaskId else localSelectedTaskId
+    fun selectTask(id: String?) {
+        if (telemetry.onTaskSelected != null) telemetry.onTaskSelected.invoke(id) else localSelectedTaskId = id
+    }
+    val child = telemetry.children.firstOrNull { it.taskId == selectedTaskId }
+    LaunchedEffect(telemetry.children) {
+        if (selectedTaskId != null && child == null) selectTask(null)
+    }
+    val displayedUsage = child?.let { AgentContextUsageUi(it.contextTokens, it.contextWindow) } ?: usage
+    val selectedLabel = child?.contextLabel() ?: telemetry.mainModelName.ifBlank { "主代理" }
+    val progress = displayedUsage.progress
     val progressColor = when {
         progress == null -> MiuixTheme.colorScheme.onSurfaceVariantActions
         progress >= 0.95f -> StatusError
@@ -262,13 +293,16 @@ internal fun AgentContextUsageButton(
     }
     val locale = LocalConfiguration.current.locales[0]
     val summary = formatContextUsage(
-        usage = usage,
+        usage = displayedUsage,
         noUsageText = stringResource(R.string.context_no_previous_usage),
         noLimitText = stringResource(R.string.context_no_model_limit),
         locale = locale,
     )
     val detail = when {
-        sendBlocked -> "$summary\n${stringResource(R.string.context_window_send_blocked)}"
+        sendBlocked && child == null -> "$summary\n${stringResource(R.string.context_window_send_blocked)}"
+        child?.role == "video_generation" -> "${child.contextStatusLabel()}\n视频生成任务不提供对话上下文统计。"
+        child?.role == "image_generation" -> "${child.contextStatusLabel()}\n图片生成任务不提供对话上下文统计。"
+        child != null -> "$summary\n${child.contextStatusLabel()} · 独立任务上下文"
         else -> summary
     }
     val usageDescription = stringResource(
@@ -280,7 +314,14 @@ internal fun AgentContextUsageButton(
         ChatInputNonFocusableIconButton(
             onClick = {
                 keepIme()
+                selectorState.dismiss()
                 menuState.onAnchorClick()
+            },
+            longClickLabel = "选择上下文统计对象",
+            onLongClick = {
+                keepIme()
+                menuState.dismiss()
+                selectorState.onAnchorClick()
             },
         ) {
             CircularProgressIndicator(
@@ -293,7 +334,7 @@ internal fun AgentContextUsageButton(
                 strokeWidth = 2.5.dp,
                 size = ChatInputActionIconSize,
                 modifier = Modifier.semantics {
-                    contentDescription = usageDescription
+                    contentDescription = "$selectedLabel · $usageDescription"
                 },
             )
         }
@@ -307,7 +348,7 @@ internal fun AgentContextUsageButton(
             maxWidth = 220.dp,
         ) {
             Text(
-                text = stringResource(R.string.ui_contextual_usage_d12810),
+                text = selectedLabel,
                 style = MiuixTheme.textStyles.body1,
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             )
@@ -317,6 +358,23 @@ internal fun AgentContextUsageButton(
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
             )
+        }
+        EtaDropdownMenu(
+            expanded = selectorState.expanded,
+            onDismissRequest = selectorState::dismiss,
+            alignEnd = true, preferAbove = true, focusable = false,
+            minWidth = 220.dp, maxWidth = 260.dp, maxHeight = popupMaxHeight,
+        ) {
+            Text("上下文统计", style = MiuixTheme.textStyles.footnote1,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+            ContextTargetRow("${telemetry.mainModelName.ifBlank { "主代理" }}（主代理）", child == null) {
+                selectTask(null); selectorState.dismiss()
+            }
+            telemetry.children.forEach { target ->
+                ContextTargetRow("${target.contextLabel()} · ${target.contextStatusLabel()}", selectedTaskId == target.taskId) {
+                    selectTask(target.taskId); selectorState.dismiss()
+                }
+            }
         }
     }
 }
@@ -352,5 +410,18 @@ private fun ModelBrandMark(
                 tint = MiuixTheme.colorScheme.primary,
             )
         }
+    }
+}
+
+@Composable
+private fun ContextTargetRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    val view = LocalView.current
+    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)
+        .squircleSurface(color = if (selected) MiuixTheme.colorScheme.surfaceContainerHigh else Color.Transparent, cornerRadius = 12.dp)
+        .clickable { TouchHaptics.click(view); onClick() }
+        .padding(horizontal = 10.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MiuixTheme.textStyles.body2, maxLines = 2,
+            overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        if (selected) Icon(Icons.Rounded.Check, contentDescription = "当前统计对象", modifier = Modifier.size(18.dp))
     }
 }

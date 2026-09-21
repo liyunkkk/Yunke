@@ -133,6 +133,9 @@ internal class AgentLocalTools(
         processSupervisor = io.github.mangi.eta.agent.terminal.ShellProcessSupervisor(skillsDirectoryProvider = { runSkillsRoot }),
         logger = logger,
         rootAvailable = rootAvailable,
+        resolveReadPath = { path ->
+            io.github.mangi.eta.agent.terminal.LinuxGuestPathResolver.resolveForApp(context, path)
+        },
         linuxRootfsPath = AlpineEnvironmentPaths.rootfsDir(context).absolutePath,
         linuxRootfsPathProvider = { environment ->
             environment.linuxDistribution?.let { distribution ->

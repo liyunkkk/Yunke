@@ -17,6 +17,8 @@ internal enum class SpeechEngine {
     GEMINI,
     ELEVENLABS,
     FISH,
+    COSYVOICE,
+    MOSS,
 }
 
 internal object SpeechEngineResolver {
@@ -50,6 +52,9 @@ internal object SpeechEngineResolver {
                 (id.contains("gemini") && id.contains("tts")) -> SpeechEngine.GEMINI
             host.contains("elevenlabs") -> SpeechEngine.ELEVENLABS
             host.contains("fish.audio") || id.contains("fish-speech") -> SpeechEngine.FISH
+            "cosyvoice" in id -> SpeechEngine.COSYVOICE
+            ("moss-ttsd" in id || "moss_ttsd" in id) ->
+                SpeechEngine.MOSS
             else -> SpeechEngine.OPENAI
         }
     }

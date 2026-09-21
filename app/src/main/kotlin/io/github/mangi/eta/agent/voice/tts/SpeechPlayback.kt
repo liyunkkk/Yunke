@@ -134,7 +134,7 @@ internal object SpeechPlayback {
                                     ?: throw SpeechPlaybackFailure("该提供商不支持此朗读接入方式")
                                 if (voiceId.startsWith("mimo-local-")) io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.load(app)
                                 val model = SpeechSynthesisModels.mergeCatalog(provider).firstOrNull {
-                                    (if (overrideVoice != null) it.modelId == "mimo-v2.5-tts" else it.id == modelId) && it.isEnabled && SpeechSynthesisModels.isReadAloudModel(it)
+                                    (if (overrideVoice != null) it.modelId == "mimo-v2.5-tts" else it.id == modelId) && it.isEnabled && SpeechSynthesisModels.isReadAloudModel(it, provider)
                                 } ?: throw SpeechPlaybackFailure("朗读模型已不可用，请重新配置或选择系统朗读")
                                 RuntimeConfigRepository.buildRuntimeConfig(provider, model)
                             }
@@ -153,6 +153,8 @@ internal object SpeechPlayback {
                                 SpeechEngine.GEMINI -> "Gemini"
                                 SpeechEngine.ELEVENLABS -> "ElevenLabs"
                                 SpeechEngine.FISH -> "Fish Audio"
+                                SpeechEngine.COSYVOICE -> "CosyVoice"
+                                SpeechEngine.MOSS -> "MOSS-TTSD"
                                 SpeechEngine.OPENAI -> "云端 Speech"
                             }
                             supervisorScope {

@@ -106,7 +106,7 @@ internal object AgentModelPickerProjector {
         val seen = HashSet<String>()
         return SpeechSynthesisModels.mergeCatalog(provider).filter { model ->
             if (!model.isEnabled) return@filter false
-            if (speechOnly && !SpeechSynthesisModels.isReadAloudModel(model)) return@filter false
+            if (speechOnly && !SpeechSynthesisModels.isReadAloudModel(model, provider)) return@filter false
             if (!includeSpeechModels && model.supportsSpeechSynthesis) return@filter false
             seen.add(model.modelId.lowercase())
         }

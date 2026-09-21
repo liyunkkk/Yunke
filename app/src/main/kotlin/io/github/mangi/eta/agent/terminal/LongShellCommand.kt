@@ -5,6 +5,7 @@ import java.io.File
 /** Script transport avoids execve's per-argument limit; this is not an input cap. */
 internal object LongShellCommand {
     const val INLINE_BYTES = 8_192
+    const val CHROOT_SCRIPTS_DIR = "/tmp/eta-command-scripts"
     data class Prepared(val command: String?, val file: File? = null)
     fun prepare(command: String?, environment: TerminalEnvironment, rootfs: String?): Prepared {
         if (command == null || command.toByteArray(Charsets.UTF_8).size <= INLINE_BYTES) return Prepared(command)
@@ -16,7 +17,7 @@ internal object LongShellCommand {
             val path = when {
                 !environment.isLinux -> file.absolutePath
                 LinuxEnvironmentPaths.backendOf(rootfs) == LinuxExecutionBackend.PROOT -> "/dev/shm/${file.name}"
-                else -> "/proc/${android.os.Process.myPid()}/root${file.absolutePath}"
+                else -> "$CHROOT_SCRIPTS_DIR/${file.name}"
             }
             // The interpreter opens the file before unlinking; no credential-bearing script remains after start.
             file.writeText("rm -f ${shellQuote(path)}\n" + command + "\n")

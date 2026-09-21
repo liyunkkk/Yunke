@@ -91,14 +91,19 @@ internal class AgentRuntimeSession(
         return controller.steer(text)
     }
 
+    @Volatile var childCompactor: ((String, Int?, io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig?) -> Boolean)? = null
+
+    /** A captured task ID targets exactly one child; rejection never falls back to main. */
     fun requestCompact(
         keepRecentMessages: Int? = null,
         compressModelConfig: io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig? = null,
+        childTaskId: String? = null,
     ): Boolean {
         lock.withLock {
             if (state != State.RUNNING) return false
         }
-        return controller.requestCompact(keepRecentMessages, compressModelConfig)
+        return if (childTaskId == null) controller.requestCompact(keepRecentMessages, compressModelConfig)
+        else childCompactor?.invoke(childTaskId, keepRecentMessages, compressModelConfig) ?: false
     }
 
     fun <T : AgentEvent> steer(

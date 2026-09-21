@@ -48,6 +48,9 @@ sealed interface AppRoute : NavKey {
     data object TitleModel : AppRoute
 
     @Serializable
+    data object SubAgents : AppRoute
+
+    @Serializable
     data object VoiceModeSettings : AppRoute
 
     @Serializable
@@ -109,4 +112,4 @@ sealed interface AppRoute : NavKey {
 }
 
 @Serializable
-enum class NewProviderType { OpenAiCompatible, Anthropic, DoubaoSpeech }
+enum class NewProviderType { OpenAiCompatible, Anthropic, DoubaoSpeech, CompatibleSpeech }

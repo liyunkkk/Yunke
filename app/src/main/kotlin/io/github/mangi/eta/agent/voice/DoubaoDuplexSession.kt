@@ -106,7 +106,7 @@ internal class DoubaoDuplexSession(
                             flushOutput()
                         }
                         if (recognized != null) {
-                            transcript = recognized
+                            transcript = DuplexAsrHypothesis.display(transcript, recognized, completed)
                             onState(state(if (completed) VoiceModePhase.Thinking else VoiceModePhase.Listening))
                         } else {
                             diagnostic.mark("interruption.unconfirmed", "completed" to if (completed) 1 else 0)

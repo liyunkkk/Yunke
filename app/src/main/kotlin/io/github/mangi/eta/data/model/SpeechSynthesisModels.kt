@@ -12,20 +12,29 @@ internal object SpeechSynthesisModels {
 
     fun isReadAloudProvider(provider: ProviderSetting): Boolean =
         allowsSpeechEndpoint(provider) && provider.apiKey.isNotBlank() &&
-            mergeCatalog(provider).any { it.isEnabled && isReadAloudModel(it) }
+            mergeCatalog(provider).any { it.isEnabled && isReadAloudModel(it, provider) }
 
     /** Read-aloud needs plain text + a selectable voice; creation-only models stay in the full catalog. */
-    fun isReadAloudModel(model: Model): Boolean {
+    fun isReadAloudModel(model: Model, provider: ProviderSetting? = null): Boolean {
         val id = model.modelId.lowercase()
         return model.supportsSpeechSynthesis &&
             listOf("seed-audio", "voiceclone", "voice-clone", "voice_clone",
                 "voicedesign", "voice-design", "voice_design").none { it in id }
     }
 
+    fun isCompatibleSpeechProvider(provider: ProviderSetting): Boolean =
+        provider.sourceType.equals(ProviderSourceTypes.COMPATIBLE_SPEECH, ignoreCase = true)
+
+    fun isCompatibleSpeechModel(modelId: String): Boolean {
+        val id = modelId.lowercase()
+        return "cosyvoice" in id || "moss-ttsd" in id || "moss_ttsd" in id
+    }
+
     fun isRealtimeVoiceProvider(provider: ProviderSetting): Boolean =
         allowsSpeechEndpoint(provider) && provider.apiKey.isNotBlank() && isDoubaoSpeechHost(provider.baseUrl)
 
     fun isSpeechOnlyProvider(provider: ProviderSetting): Boolean {
+        if (isCompatibleSpeechProvider(provider)) return true
         if (provider.sourceType.equals(ProviderSourceTypes.DOUBAO_SPEECH, ignoreCase = true)) return true
         return provider.baseUrl.trim().toHttpUrlOrNull()?.host.equals("openspeech.bytedance.com", ignoreCase = true)
     }
@@ -37,7 +46,12 @@ internal object SpeechSynthesisModels {
         val host = provider.baseUrl.trim().toHttpUrlOrNull()?.host.orEmpty().lowercase()
         val source = provider.sourceType.trim().lowercase()
         return when {
-            isSpeechOnlyProvider(provider) -> listOf(
+            isCompatibleSpeechProvider(provider) -> listOf(
+                catalogModel("CosyVoice2", "CosyVoice2"),
+                catalogModel("MOSS-TTSD", "MOSS-TTSD"),
+            )
+            provider.sourceType.equals(ProviderSourceTypes.DOUBAO_SPEECH, ignoreCase = true) ||
+                isDoubaoSpeechHost(provider.baseUrl) -> listOf(
                 catalogModel("seed-tts-2.0", "豆包语音合成 2.0"),
                 catalogModel("seed-audio-1.0", "豆包音频生成 1.0"),
             )

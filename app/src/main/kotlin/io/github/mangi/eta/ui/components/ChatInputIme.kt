@@ -27,6 +27,7 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import androidx.compose.ui.platform.SoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -74,6 +75,8 @@ internal fun ChatInputNonFocusableIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
+    onLongClick: (() -> Unit)? = null,
+    longClickLabel: String = "协作设置",
     content: @Composable () -> Unit,
 ) {
     val view = LocalView.current
@@ -86,17 +89,23 @@ internal fun ChatInputNonFocusableIconButton(
                 if (contentDescription != null) {
                     this.contentDescription = contentDescription
                 }
+                if (onLongClick != null) {
+                    this.onLongClick(label = longClickLabel) { TouchHaptics.longPress(view); onLongClick(); true }
+                }
                 onClick {
                     TouchHaptics.click(view)
                     onClick()
                     true
                 }
             }
-            .pointerInput(onClick) {
-                detectTapGestures {
-                    TouchHaptics.click(view)
-                    onClick()
-                }
+            .pointerInput(onClick, onLongClick) {
+                detectTapGestures(
+                    onLongPress = onLongClick?.let { action -> { _: androidx.compose.ui.geometry.Offset ->
+                        TouchHaptics.longPress(view)
+                        action()
+                    } },
+                    onTap = { TouchHaptics.click(view); onClick() },
+                )
             },
         contentAlignment = Alignment.Center,
         content = { content() },

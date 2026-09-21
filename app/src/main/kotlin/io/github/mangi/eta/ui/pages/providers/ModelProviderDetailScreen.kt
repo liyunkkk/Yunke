@@ -141,6 +141,10 @@ internal fun ModelProviderDetailScreen(
                     ),
                 ),
             )
+            // Restore old navigation state through the ordinary provider form.
+            NewProviderType.CompatibleSpeech -> CustomProviderSetting(
+                id = "", name = "语音合成", baseUrl = "",
+            )
             null -> null
         }
     }
@@ -656,7 +660,8 @@ private suspend fun testConnection(
     provider: ProviderSetting,
 ): String {
     io.github.mangi.eta.data.model.RemovedProviderPolicy.requireSupported(provider)
-    if (SpeechSynthesisModels.isSpeechOnlyProvider(provider)) {
+    if (SpeechSynthesisModels.isSpeechOnlyProvider(provider) &&
+        !SpeechSynthesisModels.isCompatibleSpeechProvider(provider)) {
         return runCatching { CloudSpeechSynthesizer().test(provider.apiKey) }.getOrElse { throwable ->
             context.getString(
                 R.string.provider_error,

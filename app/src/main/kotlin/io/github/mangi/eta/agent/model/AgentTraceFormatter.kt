@@ -44,6 +44,10 @@ internal class AgentTraceFormatter(
             "wait_for_package" -> "等待应用就绪"
             "open_system_panel" -> "打开系统面板"
             "read_image" -> "查看图片或视频"
+            "delegate_task" -> "委派子代理任务"
+            "manage_agent_workspace" -> "管理任务工作区"
+            "get_task_result" -> "查询子代理结果"
+            "cancel_task" -> "取消子代理任务"
             "memory_get" -> summarizeMemoryGetArguments(toolCall.argumentsJson)
             "memory_write" -> summarizeMemoryWriteArguments(toolCall.argumentsJson)
             "skills_list" -> "查看技能列表"
@@ -265,6 +269,14 @@ internal class AgentTraceFormatter(
             BROWSER_TOOL_NAME -> json?.let(::summarizeBrowserResult) ?: "浏览器操作完成"
             "memory_get", "memory_write" ->
                 json?.let { summarizeMemoryResult(toolName, it) } ?: "完成"
+            "delegate_task", "get_task_result", "cancel_task" -> when (json?.optString("status")) {
+                "running" -> "子代理执行中"
+                "completed" -> "子代理已返回 · 等待主代理审核"
+                "cancelled" -> "子代理已取消"
+                "timed_out" -> "子代理超时 · 主代理接手"
+                "failed" -> "子代理失败 · 主代理接手"
+                else -> "子代理状态未知"
+            }
             "search_apps" -> json?.let(::summarizeSearchAppsResult) ?: "完成"
             "launch_app" -> json?.let(::summarizeLaunchAppResult) ?: "已打开"
             else -> json?.let { summarizeGenericResult(it, result) } ?: "完成"

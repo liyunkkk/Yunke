@@ -20,6 +20,8 @@ internal class AgentToolCallValidator(tools: JSONArray) {
         }
     }
 
+    fun declares(name: String): Boolean = name in schemasByName
+
     fun validate(call: AgentModelClient.ToolCall): String? {
         val toolSchema = schemasByName[call.name]
             ?: return "工具未在本次运行的能力目录中声明"

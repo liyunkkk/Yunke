@@ -239,11 +239,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
                 AgentRuntimeWire.MSG_COMPACT_RUN -> {
                     val data = msg.data ?: return
-                    requestCompactRun(
+                    val accepted = requestCompactRun(
                         runId = AgentRuntimeWire.runIdFromBundle(data),
                         keepRecent = AgentRuntimeWire.compactKeepRecentFromBundle(data),
                         compressModelConfig = AgentRuntimeWire.compactModelConfigFromBundle(data),
+                        childTaskId = AgentRuntimeWire.compactChildTaskFromBundle(data),
                     )
+                    msg.replyTo?.let { reply -> runCatching {
+                        reply.send(Message.obtain(null, AgentRuntimeWire.MSG_COMPACT_RUN).apply {
+                            this.data = android.os.Bundle().apply { putBoolean("compact_accepted", accepted) }
+                        })
+                    } }
                 }
             }
         }
@@ -761,9 +767,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         runId: String,
         keepRecent: Int? = null,
         compressModelConfig: AgentModelClient.ModelConfig? = null,
-    ) {
-        if (runId.isBlank()) return
-        sessions.get(runId)?.requestCompact(keepRecent, compressModelConfig)
+        childTaskId: String? = null,
+    ): Boolean {
+        if (runId.isBlank()) return false
+        return sessions.get(runId)?.requestCompact(keepRecent, compressModelConfig, childTaskId) ?: false
     }
 
     private fun requestResume(runId: String) {

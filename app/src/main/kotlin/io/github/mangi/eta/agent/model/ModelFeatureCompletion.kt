@@ -13,11 +13,11 @@ internal object ModelFeatureCompletion {
         timeoutMs: Long = 60_000,
         outputLimit: Int = 2048,
         providerOverride: AgentProviderClient? = null,
+        usageConversationId: String = sessionId,
     ): String {
         val owner = Thread.currentThread()
         val child = AgentRunController()
         val binding = controller.register(interruptible = true) { child.cancel() }
-        var usage: io.github.mangi.eta.agent.runtime.AgentTokenUsage? = null
         val deadline = System.nanoTime() + timeoutMs * 1_000_000
         val watchdog = Thread({
             try {
@@ -43,8 +43,8 @@ internal object ModelFeatureCompletion {
                 summaryOutputLimit = outputLimit,
             )
             val response = (providerOverride ?: ProviderClientFactory.getClient(requestConfig)).complete(
-                ProviderRequest(requestConfig, messages, JSONArray(), sessionId), child,
-            ) { event -> if (event is ProviderEvent.Usage) usage = event.usage }
+                ProviderRequest(requestConfig, messages, JSONArray(), sessionId, usageConversationId), child,
+            ) {}
             controller.throwIfCancelled()
             check(!child.isCancelled && !owner.isInterrupted) { "辅助模型请求已取消或超时" }
             require(response.stopReason == AssistantStopReason.END_TURN) { "辅助模型未完整返回正文" }
@@ -55,18 +55,6 @@ internal object ModelFeatureCompletion {
             watchdog.interrupt()
             child.cancel()
             binding.close()
-            usage?.let { value ->
-                runCatching { kotlinx.coroutines.runBlocking {
-                    io.github.mangi.eta.data.repository.UsageStatsRepository.recordModelUsage(
-                        io.github.mangi.eta.data.repository.ModelUsageDelta(
-                            providerId = config.providerId, providerName = config.providerName,
-                            modelId = config.model, modelDisplayName = config.modelDisplayName.ifBlank { config.model },
-                            inputTokens = (value.inputTokens ?: 0).toLong(),
-                            outputTokens = (value.outputTokens ?: 0).toLong(),
-                            cachedTokens = (value.cachedTokens ?: 0).toLong(),
-                        ))
-                } }
-            }
         }
     }
 }

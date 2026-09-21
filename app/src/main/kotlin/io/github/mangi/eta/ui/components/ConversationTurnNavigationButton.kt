@@ -40,7 +40,7 @@ internal fun ConversationTurnNavigationButton(
     modifier: Modifier = Modifier,
 ) {
     val down = direction == ConversationNavigationDirection.Down
-    val stepLabel = stringResource(if (down) R.string.chat_next_turn else R.string.chat_previous_turn)
+    val stepLabel = stringResource(if (down) R.string.chat_next_user_message else R.string.chat_previous_user_message)
     val edgeLabel = stringResource(if (down) R.string.chat_go_to_bottom else R.string.chat_go_to_top)
     val view = LocalView.current
     AnimatedVisibility(

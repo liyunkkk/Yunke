@@ -29,6 +29,15 @@ class ModelFeatureCompletionTest {
         assertEquals("猫", result)
     }
 
+    @Test fun auxiliaryRequestKeepsExplicitConversationOwner() {
+        ModelFeatureCompletion.complete(config, JSONArray(), AgentRunController(), "private-vision-session",
+            usageConversationId = "conversation-owner", providerOverride = provider { request, _ ->
+                assertEquals("private-vision-session", request.sessionId)
+                assertEquals("conversation-owner", request.usageConversationId)
+                response("description")
+            })
+    }
+
     @Test fun truncatedAndToolCallingResponsesAreRejected() {
         assertThrows(IllegalArgumentException::class.java) {
             ModelFeatureCompletion.complete(config, JSONArray(), AgentRunController(), "test",

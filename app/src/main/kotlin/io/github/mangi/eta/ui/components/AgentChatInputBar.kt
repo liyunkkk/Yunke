@@ -172,6 +172,7 @@ internal fun AgentChatInputBar(
     pendingFileReferences: List<PendingFileReferenceUi>,
     conversationMentions: ConversationMentionInputUi = ConversationMentionInputUi(),
     isEditingMessage: Boolean,
+    collaborationConversationId: String? = null,
     assistantId: String = "",
     voiceState: VoiceModeState = VoiceModeState(),
     onStartVoiceMode: (VoiceEntryMode) -> Unit = {},
@@ -485,12 +486,15 @@ internal fun AgentChatInputBar(
                         if (showContextUsage) {
                             AgentContextUsageButton(
                                 usage = liveUsage,
+                                popupMaxHeight = thinkingPopupMaxHeight,
                                 sendBlocked = contextSendBlocked,
                             )
                             Spacer(modifier = Modifier.width(2.dp))
                         }
 
                         AgentModelPickerButton(
+                            conversationId = collaborationConversationId,
+                            collaborationTaskRunning = isStreaming || isPaused || isCompressingContext,
                             state = modelPickerState,
                             isStreaming = isStreaming,
                             isPaused = isPaused,
@@ -702,12 +706,13 @@ private fun ThinkingEffortChip(
 }
 
 @Composable
-private fun ThinkingEffortPickerDialog(
+internal fun ThinkingEffortPickerDialog(
     show: Boolean,
     effort: ReasoningEffort,
     options: List<ReasoningEffort>,
     onDismiss: () -> Unit,
     onEffortChange: (ReasoningEffort) -> Unit,
+    description: String? = null,
 ) {
     if (options.isEmpty()) return
     val view = LocalView.current
@@ -736,6 +741,14 @@ private fun ThinkingEffortPickerDialog(
             modifier = Modifier.fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            if (description != null) {
+                Text(
+                    text = description,
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
             Icon(
                 imageVector = ImageVector.vectorResource(R.drawable.ic_atom),
                 contentDescription = null,

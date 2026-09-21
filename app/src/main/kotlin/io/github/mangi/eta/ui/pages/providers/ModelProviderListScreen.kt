@@ -199,6 +199,7 @@ internal fun ModelProviderListScreen(
                             },
                             onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.DoubaoSpeech)) },
                         )
+
                     }
                 }
 

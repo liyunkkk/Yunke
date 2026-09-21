@@ -1,9 +1,11 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
+import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.agent.delegation.*
+import io.github.mangi.eta.agent.model.AgentToolCatalog
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeper
 import io.github.mangi.eta.agent.model.AgentContextCompactor
-import io.github.mangi.eta.agent.model.AgentCompressionEndpoint
 import io.github.mangi.eta.agent.model.AgentLoop
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
@@ -25,13 +27,11 @@ import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.tool.PendingSkillConflictCapabilityParser
 import io.github.mangi.eta.agent.tool.ToolExecutionDecision
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
-import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
-import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.agent.terminal.LinuxDistribution
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -72,6 +72,8 @@ internal class AgentRuntimeRunExecutor(
         var entrySurfaceGuard: EntrySurfaceGuard? = null
         var toolExecutor: AutoCloseable? = null
         var toolsBinding: AgentRunController.ResourceBinding? = null
+        var children: SubAgentCoordinator? = null
+        var childBinding: AgentRunController.ResourceBinding? = null
         var response: AgentModelClient.ModelResponse.Text? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
@@ -204,13 +206,89 @@ internal class AgentRuntimeRunExecutor(
             toolExecutor = routingExecutor
             toolsBinding = runController.register { routingExecutor.close() }
             timing.preparationFinished(skillContext.installedSkills.size)
-            val compactPolicy = runBlocking { compactPolicyFor(request.config) }
+            val childProfiles = SubAgentPreferences.profiles().filter { it.enabled }
+            val configuredChildren = if (SubAgentPreferences.enabled(request.effectiveModelSessionId)) runBlocking {
+                childProfiles.mapNotNull { profile ->
+                    runCatching { profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })?.let { SubAgentPreferences.applyReasoning(profile, it) } }.getOrNull()
+                        ?.takeIf { it.apiKey.isNotBlank() && it.baseUrl.isNotBlank() }
+                        ?.let { profile to it }
+                }
+            } else emptyList()
+            val childModels = configuredChildren.map { it.second }
+            if (childModels.isNotEmpty()) {
+                val workspace = if (request.config.terminalTools && currentPermissions().terminalTools) SubAgentWorkspace(appContext, executor) else null
+                children = SubAgentCoordinator(childModels,
+                    roles = configuredChildren.map { it.first.role },
+                    workerIds = configuredChildren.map { it.first.id },
+                    workerNames = configuredChildren.map { it.first.name },
+                    workerModelIds = configuredChildren.map { it.first.modelId },
+                    workspace = workspace,
+                    prepareManualCompactor = { config ->
+                        io.github.mangi.eta.agent.model.AgentCompressionEndpoint.apply(
+                            AgentRuntimePolicy.forCompression(config),
+                            Prefs.localAgentPreferences()?.getString(Prefs.Keys.AGENT_MANUAL_COMPRESS_ENDPOINT_MODE, null))
+                    },
+                    executeImageChild = { config, prompt, controller, imageOptions ->
+                        io.github.mangi.eta.agent.delegation.SubAgentMediaRunner.run(
+                            appContext, request.effectiveModelSessionId, config, prompt, controller, video = false, imageOptions = imageOptions)
+                    },
+                    executeVideoChild = { config, prompt, controller ->
+                        io.github.mangi.eta.agent.delegation.SubAgentMediaRunner.run(
+                            appContext, request.effectiveModelSessionId, config, prompt, controller, video = true)
+                    },
+                    onContext = { stats -> acceptEvent(session, AgentEvent.ChildContextUpdated(stats), archivedEvents, entrySurfaceGuard, checkpointRecorder) },
+                    executeObservedChild = { config, prompt, controller, project, id, writable, progress ->
+                        if (id != null) {
+                            val backend = requireNotNull(workspace)
+                            SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
+                                backend.childExecutor(project, id, writable, controller), controller,
+                                workspaceMode = true, writable = writable, sessionId = request.effectiveModelSessionId, onProgress = progress)
+                        } else {
+                            val readTools = SubAgentTools.filter(AgentToolCatalog.build(
+                                terminalTools = request.config.terminalTools && currentPermissions().terminalTools,
+                                browserTools = false,
+                                deviceDirectTools = request.config.deviceDirectTools && currentPermissions().deviceDirectTools,
+                                deviceSensitiveReadTools = request.config.deviceSensitiveReadTools && currentPermissions().deviceSensitiveReadTools,
+                                memoryTools = memoryEnabled, capabilities = AgentToolCapabilities.capture(appContext)))
+                            SubAgentRunner.run(config, prompt, readTools, executor, controller,
+                                sessionId = request.effectiveModelSessionId, onProgress = progress)
+                        }
+                    },
+                    executeWorkspaceChild = { config, prompt, controller, project, id, writable ->
+                        val backend = requireNotNull(workspace)
+                        SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
+                            backend.childExecutor(project, id, writable, controller), controller,
+                            workspaceMode = true, writable = writable, sessionId = request.effectiveModelSessionId)
+                    },
+                ) { config, prompt, controller ->
+                    val readTools = SubAgentTools.filter(AgentToolCatalog.build(
+                        terminalTools = request.config.terminalTools && currentPermissions().terminalTools,
+                        browserTools = false,
+                        deviceDirectTools = request.config.deviceDirectTools && currentPermissions().deviceDirectTools,
+                        deviceSensitiveReadTools = request.config.deviceSensitiveReadTools && currentPermissions().deviceSensitiveReadTools,
+                        memoryTools = memoryEnabled,
+                        capabilities = AgentToolCapabilities.capture(appContext),
+                    ))
+                    SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = request.effectiveModelSessionId)
+                }
+                session.childCompactor = { taskId, keep, model -> children?.requestCompact(taskId, keep, model) ?: false }
+                childBinding = runController.register { children?.close() }
+                SubAgentTools.appendTo(mcpTools, configuredChildren.mapIndexed { i, (slot, model) ->
+                    SubAgentPreferences.workerDescription(slot, i + 1, model)
+                }, workspaceEnabled = workspace != null)
+            }
+            val delegatedExecutor = AgentModelClient.ToolExecutor { call ->
+                val coordinator = children
+                if (coordinator != null && call.name in SubAgentTools.names) coordinator.execute(call)
+                else routingExecutor.execute(call)
+            }
+            val compactPolicy = runBlocking { AgentCompressionPolicy.resolve(request.config) }
             val completedResponse = AgentModelClient.complete(
                 config = request.config,
                 sessionId = request.effectiveModelSessionId,
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 prompt = request.prompt,
-                toolExecutor = routingExecutor,
+                toolExecutor = delegatedExecutor,
                 images = request.images,
                 history = request.history,
                 // Runtime owns all request-budget decisions; never silently trim protected history here.
@@ -312,6 +390,9 @@ internal class AgentRuntimeRunExecutor(
                     ?: (throwable as? AgentRunCancelledException)?.transcript.orEmpty(),
             )
         } finally {
+            session.childCompactor = null
+            runCatching { childBinding?.close() }
+            runCatching { children?.close() }
             runCatching { toolsBinding?.close() }
             runCatching { toolExecutor?.close() }
             unownedSkillRoot?.let { root -> runCatching { SkillRuntime.releaseRunSkills(appContext, root) } }
@@ -348,7 +429,7 @@ internal class AgentRuntimeRunExecutor(
         )
     }
 
-    private fun acceptEvent(
+    @Synchronized private fun acceptEvent(
         session: AgentRuntimeSession,
         event: AgentEvent,
         archivedEvents: MutableList<AgentEvent>,
@@ -371,47 +452,4 @@ internal class AgentRuntimeRunExecutor(
             }
     }
 
-    private suspend fun compactPolicyFor(config: AgentModelClient.ModelConfig): AgentLoop.CompactPolicy {
-        val compressModelConfig = (resolveCompressModelConfig(config) ?: config).let { model ->
-            val window = model.contextWindow?.takeIf { it > 0 } ?: config.contextWindow?.takeIf { it > 0 }
-            if (window == null || window == model.contextWindow) model else model.copy(contextWindow = window)
-        }
-        val configuredWindow = AgentContextCompactor.configuredContextWindow(config.contextWindow)
-        return AgentLoop.CompactPolicy(
-            enabled = AgentContextCompactor.autoCompressEnabled(
-                Prefs.isEnabled(Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED),
-                config.contextWindow,
-            ),
-            contextWindow = configuredWindow ?: AgentLoop.CompactPolicy.Disabled.contextWindow,
-            keepRecentMessages = 0,
-            compressModelConfig = compressModelConfig,
-        )
-    }
-
-    private suspend fun resolveCompressModelConfig(
-        fallback: AgentModelClient.ModelConfig,
-    ): AgentModelClient.ModelConfig? {
-        val prefs = Prefs.localAgentPreferences()
-        val customEnabled = Prefs.isCustomCompressModelEnabled(prefs)
-        val providerId = prefs?.takeIf { customEnabled }
-            ?.getString(Prefs.Keys.AGENT_COMPRESS_MODEL_PROVIDER_ID, null)
-        val modelId = prefs?.takeIf { customEnabled }
-            ?.getString(Prefs.Keys.AGENT_COMPRESS_MODEL_ID, null)
-        val resolved = if (providerId.isNullOrBlank() || modelId.isNullOrBlank()) {
-            fallback
-        } else {
-            val assistant = fallback.assistantId.takeIf { it.isNotBlank() }?.let {
-                runCatching { AssistantRepository.currentProfile(it) }.getOrNull()
-            }
-            runCatching {
-                RuntimeConfigRepository.configForProviderAndModel(providerId, modelId, assistant)
-            }.getOrNull()?.copy(assistantId = fallback.assistantId, systemPrompt = fallback.systemPrompt)
-                ?: fallback
-        }
-        val compressed = AgentRuntimePolicy.forCompression(resolved)
-        return AgentCompressionEndpoint.apply(
-            compressed,
-            prefs?.getString(Prefs.Keys.AGENT_COMPRESS_ENDPOINT_MODE, null),
-        )
-    }
 }

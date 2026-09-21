@@ -70,7 +70,7 @@ class ConversationTurnNavigationButtonTest {
         TouchHaptics.setIntensity(originalIntensity)
     }
     @Test fun downClickHasExactlyOneHapticAndOneStep() {
-        button(R.string.chat_next_turn).performTouchInput { click() }
+        button(R.string.chat_next_user_message).performTouchInput { click() }
         compose.runOnIdle {
             assertEquals(listOf(ConversationNavigationDirection.Down), steps)
             assertEquals(emptyList<ConversationNavigationDirection>(), edges)
@@ -79,7 +79,7 @@ class ConversationTurnNavigationButtonTest {
         }
     }
     @Test fun downLongPressHasExactlyOneHapticAndNoClickOnRelease() {
-        button(R.string.chat_next_turn).performTouchInput { longClick() }
+        button(R.string.chat_next_user_message).performTouchInput { longClick() }
         compose.runOnIdle {
             assertEquals(emptyList<ConversationNavigationDirection>(), steps)
             assertEquals(listOf(ConversationNavigationDirection.Down), edges)
@@ -89,8 +89,8 @@ class ConversationTurnNavigationButtonTest {
     }
     @Test fun upClickAndLongPressEachHaveOneHaptic() {
         compose.runOnIdle { direction.value = ConversationNavigationDirection.Up }
-        button(R.string.chat_previous_turn).performTouchInput { click() }
-        button(R.string.chat_previous_turn).performTouchInput { longClick() }
+        button(R.string.chat_previous_user_message).performTouchInput { click() }
+        button(R.string.chat_previous_user_message).performTouchInput { longClick() }
         compose.runOnIdle {
             assertEquals(listOf(ConversationNavigationDirection.Up), steps)
             assertEquals(listOf(ConversationNavigationDirection.Up), edges)

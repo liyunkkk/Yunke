@@ -49,7 +49,6 @@ import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.repository.ModelUsageModelUi
 import io.github.mangi.eta.data.repository.ModelUsageSnapshot
-import io.github.mangi.eta.data.repository.alignedToConversationTotals
 import io.github.mangi.eta.data.repository.UsageStatsRepository
 import io.github.mangi.eta.data.repository.UsageStatsSnapshot
 import io.github.mangi.eta.data.repository.formatStatCount
@@ -115,9 +114,6 @@ internal fun UsageStatsScreen(onBack: () -> Unit) {
             item(key = "model-usage") {
                 ModelUsagePane(
                     usage = stats.modelUsage,
-                    conversationInputTokens = stats.currentInputTokens,
-                    conversationOutputTokens = stats.currentOutputTokens,
-                    conversationCachedTokens = stats.currentCachedTokens,
                     modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp),
                 )
             }
@@ -229,35 +225,13 @@ private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
 @Composable
 private fun ModelUsagePane(
     usage: ModelUsageSnapshot,
-    conversationInputTokens: Long,
-    conversationOutputTokens: Long,
-    conversationCachedTokens: Long,
     modifier: Modifier = Modifier,
 ) {
     var expandedModels by remember { mutableStateOf(emptySet<String>()) }
     var startBound by remember { mutableStateOf(UsageTimeBound()) }
     var endBound by remember { mutableStateOf(UsageTimeBound()) }
-    val filtered = remember(
-        usage,
-        startBound,
-        endBound,
-        conversationInputTokens,
-        conversationOutputTokens,
-        conversationCachedTokens,
-    ) {
-        val ranged = usage.filtered(
-            startBound.toMillis(endOfBound = false),
-            endBound.toMillis(endOfBound = true),
-        )
-        if (startBound.isSet || endBound.isSet) {
-            ranged
-        } else {
-            ranged.alignedToConversationTotals(
-                conversationInputTokens,
-                conversationOutputTokens,
-                conversationCachedTokens,
-            )
-        }
+    val filtered = remember(usage, startBound, endBound) {
+        usage.filtered(startBound.toMillis(endOfBound = false), endBound.toMillis(endOfBound = true))
     }
     Column(
         modifier = modifier,

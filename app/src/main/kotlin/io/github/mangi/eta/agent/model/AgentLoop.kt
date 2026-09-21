@@ -67,6 +67,8 @@ internal class AgentLoop(
     private val auxiliaryVision = AuxiliaryVision.create(config, runController, sessionId)
 
     private var toolCallValidator = AgentToolCallValidator(tools)
+    private val delegationArgumentRepair = AgentDelegationArgumentRepair()
+    private var delegationRepairNotifiedRound: Int? = null
     private val accumulatedReasoning = StringBuilder()
     private val sensitiveToolCallIds = linkedSetOf<String>()
     private var pendingToolImageMessage: JSONObject? = null
@@ -124,7 +126,7 @@ internal class AgentLoop(
         roundLoop@ while (true) {
             runController.throwIfCancelled()
             appendPendingSteeringMessage()
-            currentRoundTools = toolsForRound?.invoke() ?: tools
+            currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
             try {
                 auxiliaryVision.prepare(messages)
             } catch (failure: Exception) {
@@ -150,7 +152,7 @@ internal class AgentLoop(
                 runController.throwIfCancelled()
                 reductions = 0
                 appendPendingSteeringMessage()
-                currentRoundTools = toolsForRound?.invoke() ?: tools
+                currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
                 try {
                     auxiliaryVision.prepare(messages)
                 } catch (failure: Exception) {
@@ -439,7 +441,7 @@ internal class AgentLoop(
                 reason = "当前保留范围内没有可压缩的完整历史单元。"))
             return
         }
-        if (forced) onEvent(AgentEvent.ContextCompactionStarted(round))
+        if (forced) onEvent(AgentEvent.ContextCompactionStarted(round, config.modelDisplayName.ifBlank { config.model }))
         val pruned = pruneOversizedToolResults(round, systemCount + cut)
         if (pruned) {
             // Both the DTO and same-model JSON replay must come from this new snapshot.
@@ -524,6 +526,7 @@ internal class AgentLoop(
         onEvent(AgentEvent.ContextCompacted(round, true, messages.length(), messages.length(),
             history = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds),
             compressorLabel = "工具输出预算修剪（原文可回读）"))
+        emitProjectedPrompt(round)
         checkpoints.forEach { runCatching { archive.record(it, "committed") } }
         return true
     }
@@ -538,7 +541,7 @@ internal class AgentLoop(
         val original = messages.toString()
         val originalCount = messages.length()
         if (lastFailedCompaction == (original to cut)) return false
-        onEvent(AgentEvent.ContextCompactionStarted(round))
+        onEvent(AgentEvent.ContextCompactionStarted(round, config.modelDisplayName.ifBlank { config.model }))
         var savedCheckpoint: String? = null
         var compactionStage = "archive"
         runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
@@ -559,6 +562,7 @@ internal class AgentLoop(
                     budgetKeepRecent,
                     compressConfig,
                     compactionArchive = compactionArchive,
+                    usageConversationId = sessionId,
                 ),
                 keepStartOverride = cut, controller = runController,
                 replay = if (compressConfig.providerType == config.providerType && compressConfig.baseUrl == config.baseUrl &&
@@ -609,6 +613,7 @@ internal class AgentLoop(
         onEvent(AgentEvent.ContextCompacted(round, true, originalCount, messages.length(),
             history = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds),
             compressorLabel = compressorLabel(compressConfig)))
+        emitProjectedPrompt(round)
         savedCheckpoint?.let { runCatching { compactionArchive?.record(it, "committed") } }
         runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
             "运行中压缩已提交：checkpoint=$savedCheckpoint，round=$round，消息=$originalCount->${messages.length()}") }
@@ -664,7 +669,30 @@ internal class AgentLoop(
         toolCall: AgentModelClient.ToolCall,
     ): ToolOutcome {
         runController.throwIfCancelled()
+        if (toolCall.name == AgentDelegationArgumentRepair.TOOL && delegationArgumentRepair.disabled) {
+            // Exhaustion was already reported. Complete protocol pairing without another failed card.
+            return ToolOutcome(toolCall, delegationArgumentRepair.reject("本轮委派已停用", round))
+        }
         toolCallValidator.validate(toolCall)?.let { validationError ->
+            if (toolCall.name == AgentDelegationArgumentRepair.TOOL && toolCallValidator.declares(toolCall.name)) {
+                val repair = delegationArgumentRepair.reject(validationError, round)
+                sensitiveToolCallIds += toolCall.id
+                if (!delegationArgumentRepair.disabled) {
+                    if (delegationRepairNotifiedRound != round) {
+                        delegationRepairNotifiedRound = round
+                        onEvent(AgentEvent.ModelRetryScheduled(
+                            round = round, attempt = delegationArgumentRepair.attempts,
+                            maxAttempts = AgentDelegationArgumentRepair.MAX_REPAIRS, delayMs = 0,
+                            reasonCode = AgentDelegationArgumentRepair.REPAIR_CODE,
+                            reasonDetail = validationError,
+                        ))
+                    }
+                    // The next regular model round receives this tool result and regenerates ONLY the rejected call.
+                    return ToolOutcome(toolCall, repair)
+                }
+                return rejectedToolOutcome(round, toolCall, "DELEGATION_ARGUMENT_REPAIR_EXHAUSTED",
+                    "委派参数补全失败，本轮已停用新委派；未创建子任务，已有子任务不受影响。请主代理接手。")
+            }
             return rejectedToolOutcome(
                 round = round,
                 toolCall = toolCall,
@@ -763,7 +791,8 @@ internal class AgentLoop(
     }
 
     private fun emitProjectedPrompt(round: Int) {
-        val projected = projectedPromptTokens() ?: return
+        val projected = projectedPromptTokens() ?: (AgentContextBudget.estimate(messages) +
+            AgentContextBudget.countTokens(currentRoundTools.toString()))
         if (projected <= 0) return
         onEvent(
             AgentEvent.UsageReceived(

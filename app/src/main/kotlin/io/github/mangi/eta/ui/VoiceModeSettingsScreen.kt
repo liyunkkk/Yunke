@@ -1,18 +1,9 @@
 package io.github.mangi.eta.ui
 
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import io.github.mangi.eta.agent.voice.DoubaoRealtimeVoices
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Row
-import androidx.compose.ui.Alignment
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.ui.semantics.Role
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -37,7 +28,6 @@ import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.window.WindowDialog
 
 @Composable
 internal fun VoiceModeSettingsScreen(onBack: () -> Unit, onOpenReadAloud: () -> Unit) {
@@ -75,7 +65,7 @@ internal fun VoiceModeSettingsScreen(onBack: () -> Unit, onOpenReadAloud: () -> 
     androidx.compose.runtime.LaunchedEffect(Unit) { DoubaoVoiceConfig.load(context); io.github.mangi.eta.agent.voice.doubao.PersonalVoices.load(context) }
     val availableVoices = voices + personal.filter { it.tts && it.accepted && it.account ==
         io.github.mangi.eta.agent.voice.doubao.PersonalVoices.account(provider?.apiKey.orEmpty()) }
-        .map { io.github.mangi.eta.agent.voice.tts.SpeechVoice(it.id, "个人 · ${it.name}") }
+        .map { io.github.mangi.eta.agent.voice.tts.SpeechVoice(it.id, it.name, personal = true) }
 
     MiuixScaffoldPage(title = stringResource(R.string.voice_mode_title), onBack = onBack) {
         item(key = "universal") {
@@ -154,60 +144,29 @@ internal fun VoiceModeSettingsScreen(onBack: () -> Unit, onOpenReadAloud: () -> 
         }
     }
 
-    VoiceModeListDialog(
+    TtsVoicePickerDialog(
         show = voicePicker,
+        voices = availableVoices,
+        selectedId = voice,
         title = stringResource(R.string.realtime_choose_voice),
-        rows = availableVoices.map { it.id to it.name },
-        selected = voice,
         onDismiss = { voicePicker = false },
-        onSelect = { value ->
+        onSelected = { value ->
             voice = value
             Prefs.putString(Prefs.Keys.AGENT_VOICE_DOUBAO_VOICE, value)
             voicePicker = false
         },
     )
-    VoiceModeListDialog(
+    SpeechRadioPickerDialog(
         show = providerPicker,
         title = stringResource(R.string.voice_mode_doubao_provider),
         rows = speechProviders.map { it.id to it.name },
-        selected = providerId,
+        selectedId = providerId,
         emptyText = stringResource(R.string.voice_mode_doubao_provider_missing),
         onDismiss = { providerPicker = false },
-        onSelect = { value ->
+        onSelected = { value ->
             providerId = value
             Prefs.putString(Prefs.Keys.AGENT_VOICE_DOUBAO_PROVIDER_ID, value)
             providerPicker = false
         },
     )
-}
-
-@Composable
-private fun VoiceModeListDialog(
-    show: Boolean,
-    title: String,
-    rows: List<Pair<String, String>>,
-    selected: String,
-    emptyText: String = "",
-    onDismiss: () -> Unit,
-    onSelect: (String) -> Unit,
-) {
-    WindowDialog(show = show, title = title, onDismissRequest = onDismiss) {
-        Column(Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())) {
-            if (rows.isEmpty()) {
-                Text(emptyText, modifier = Modifier.padding(18.dp))
-            }
-            rows.forEach { (value, label) ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .selectable(selected = value == selected, role = Role.RadioButton, onClick = { onSelect(value) })
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(text = label, modifier = Modifier.weight(1f))
-                    if (value == selected) Text(text = "✓", modifier = Modifier.padding(start = 16.dp))
-                }
-            }
-        }
-    }
 }

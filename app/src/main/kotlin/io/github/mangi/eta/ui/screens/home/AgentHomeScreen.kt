@@ -39,6 +39,7 @@ internal fun AgentHomeScreen(
     }
     key(chatConversationCompositionKey(conversationKey)) {
         AgentChatBody(
+            collaborationConversationId = conversationKey,
             voiceController = voiceController,
             messages = state.messages,
             history = AgentConversationRevisionReducer.outboundHistory(state),
@@ -47,6 +48,10 @@ internal fun AgentHomeScreen(
             requestOverheadTokens = requestOverheadTokens,
             billedOverheadTokens = billedOverheadTokens,
             livePromptTokens = state.livePromptTokens,
+            childContexts = state.childContexts,
+            selectedContextTaskId = state.selectedContextTaskId,
+            onContextTaskSelected = { onAction(AgentHomeAction.ContextTaskSelected(it)) },
+            compactingModelName = state.compactingModelName,
             input = state.input,
             draftField = draftField,
             isStreaming = state.isStreaming,

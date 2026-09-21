@@ -91,6 +91,14 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         var terminal: JSONObject? = null
         var terminalType: String? = null
         var sawEvent = false
+        var reportedUsage: AgentTokenUsage? = null
+        fun reportUsage(json: JSONObject?) {
+            val usage = parseUsage(json) ?: return
+            if (usage != reportedUsage) {
+                reportedUsage = usage
+                onEvent(ProviderEvent.Usage(usage))
+            }
+        }
 
         fun finishContentBlock(
             block: StreamingContentBlock,
@@ -191,6 +199,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 if (payload.isBlank() || payload == "[DONE]") return
                 sawEvent = true
                 val event = JSONObject(payload)
+                reportUsage(event.optJSONObject("response")?.optJSONObject("usage"))
                 throwEventError(event)
                 when (val type = event.optString("type")) {
                     "response.output_text.delta" -> {
@@ -480,7 +489,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             onEvent(ProviderEvent.HostedToolFinished(id, "网页搜索", success = true))
         }
 
-        parseUsage(finalResponse.optJSONObject("usage"))?.let { onEvent(ProviderEvent.Usage(it)) }
+        reportUsage(finalResponse.optJSONObject("usage"))
         val finishReason = finishReason(terminalType, finalResponse, finalResult.toolCalls.isNotEmpty())
         val assistant = JSONObject()
             .put("role", "assistant")

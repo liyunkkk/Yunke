@@ -54,4 +54,26 @@ class SpeechModelIsolationTest {
         val picker = AgentModelPickerProjector.project(listOf(speech), "s", "seed-tts-2.0", includeSpeechModels = true)
         assertEquals(listOf("seed-audio-1.0", "seed-tts-2.0"), picker.providerGroups.single().models.map { it.modelId })
     }
+
+    @Test fun chatProviderCosyVoiceAppearsOnlyInReadAloudPicker() {
+        val chat = OpenAiCompatibleProviderSetting(
+            id = "fish", name = "鱼", baseUrl = "https://api.example.com/v1", apiKey = "key",
+            models = listOf(Model("chat", "gpt-chat", "chat"), Model("voice", "CosyVoice2", "CosyVoice2")),
+        )
+        val tts = AgentModelPickerProjector.project(listOf(chat), "fish", "voice", includeSpeechModels = true, speechOnly = true)
+        assertEquals(listOf("CosyVoice2"), tts.providerGroups.single().models.map { it.modelId })
+        val chatPicker = AgentModelPickerProjector.project(listOf(chat), "fish", "chat")
+        assertEquals(listOf("gpt-chat"), chatPicker.providerGroups.single().models.map { it.modelId })
+    }
+
+    @Test fun dedicatedSpeechProviderListsCosyVoiceAndMoss() {
+        val speech = OpenAiCompatibleProviderSetting(
+            id = "s", name = "语音合成", baseUrl = "https://api.example.com/v1", apiKey = "key",
+            sourceType = io.github.mangi.eta.data.model.ProviderSourceTypes.COMPATIBLE_SPEECH,
+        )
+        val chat = AgentModelPickerProjector.project(listOf(speech), "s", "CosyVoice2")
+        assertTrue(chat.providerGroups.isEmpty())
+        val picker = AgentModelPickerProjector.project(listOf(speech), "s", "CosyVoice2", includeSpeechModels = true, speechOnly = true)
+        assertEquals(listOf("CosyVoice2", "MOSS-TTSD"), picker.providerGroups.single().models.map { it.modelId })
+    }
 }

@@ -59,6 +59,37 @@ class RootlessTerminalAccessTest {
         } finally { file.delete() }
     }
 
+    @Test fun guestAliasesReadAndListThroughMappedHostWithPaging() {
+        val folder = File(TerminalRuntime.userWorkspacePath, "guest-read-${System.nanoTime()}").apply { mkdirs() }
+        File(folder, "guide.txt").writeText("0123456789")
+        File(folder, ".hidden").writeText("hidden")
+        val controller = RootShellTerminalController(NoopLogger, rootAvailable = { false },
+            resolveReadPath = { LinuxGuestPathResolver.resolveAndroidPath(it, folder.path) })
+        try {
+            for (alias in listOf("/workspace", "/var/minis/workspace", "minis://workspace")) {
+                val result = JSONObject(controller.readFile("$alias/guide.txt", 2, 3))
+                assertTrue(result.toString(), result.getBoolean("ok"))
+                assertEquals("234", result.getString("content"))
+                assertEquals(3, result.getInt("bytes_read"))
+                assertEquals(2, result.getInt("offset_bytes"))
+                val listing = JSONObject(controller.listDirectory(alias, false, 1))
+                assertTrue(listing.toString(), listing.getBoolean("ok"))
+                assertTrue(listing.getString("entries_text").contains("guide.txt"))
+                assertFalse(listing.getString("entries_text").contains(".hidden"))
+            }
+            assertEquals("0123456789", JSONObject(controller.readFile(File(folder, "guide.txt").path, 0, 100)).getString("content"))
+        } finally { controller.closeAll(); folder.deleteRecursively() }
+    }
+
+    @Test fun mappedGuestPathDoesNotBypassUserFileRestrictions() {
+        val outside = temporary.newFile("mapped-outside").apply { writeText("private") }
+        val controller = RootShellTerminalController(NoopLogger, rootAvailable = { false }, resolveReadPath = { outside.path })
+        try {
+            assertFalse(JSONObject(controller.readFile("/workspace/private", 0, 100)).getBoolean("ok"))
+            assertFalse(JSONObject(controller.listDirectory("/workspace", false, 10)).getBoolean("ok"))
+        } finally { controller.closeAll() }
+    }
+
     private object NoopLogger : AgentLogger {
         override fun debug(message: () -> String) = Unit
         override fun info(message: String) = Unit

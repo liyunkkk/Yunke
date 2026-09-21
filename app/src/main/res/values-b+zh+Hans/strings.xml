@@ -1437,8 +1437,11 @@
   <string name="revision_history_unavailable">无法定位这条消息对应的原始上下文，已取消操作并保留现有历史；这不代表会话已压缩。</string>
   <string name="appearance_message_timestamps">消息时间戳</string>
   <string name="appearance_message_timestamps_summary">在回复操作栏右侧显示本轮回复生成完成的时间。</string>
-  <string name="chat_next_turn">下一轮消息</string>
-  <string name="chat_previous_turn">上一轮消息</string>
+  <string name="chat_next_user_message">下一条用户消息</string>
+  <string name="chat_previous_user_message">上一条用户消息</string>
   <string name="chat_go_to_bottom">回到底部</string>
   <string name="chat_go_to_top">回到顶部</string>
+  <string name="tool_delegate_task">委派子代理</string>
+  <string name="tool_get_task_result">查询子代理结果</string>
+  <string name="tool_cancel_task">取消子代理</string>
 </resources>

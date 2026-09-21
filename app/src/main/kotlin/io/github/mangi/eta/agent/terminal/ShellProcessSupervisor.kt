@@ -314,7 +314,10 @@ internal class ShellProcessSupervisor(
             ?: "/data/local/tmp/eta/offloads"
         val browserDir = TerminalRuntime.minisBrowserDirectory()?.absolutePath
             ?: "/data/local/tmp/eta/browser"
+        val commandDirectory = TerminalRuntime.temporaryDirectory.apply { mkdirs() }
         val mountsBlock = buildList {
+            // Long commands are staged outside rootfs; bind explicitly rather than relying on /proc/PID/root.
+            add("eta_mount_required ${shellQuote(commandDirectory.absolutePath)} \"\$eta_rootfs${LongShellCommand.CHROOT_SCRIPTS_DIR}\" bind")
             sharedMounts.forEach { mount ->
                 add(
                     "eta_mount_optional ${shellQuote(mount.sourcePath)} " +

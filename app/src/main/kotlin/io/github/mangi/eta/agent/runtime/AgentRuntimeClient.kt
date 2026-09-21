@@ -171,13 +171,24 @@ internal class AgentRuntimeClient(
         runId: String,
         keepRecent: Int,
         compressModelConfig: AgentModelClient.ModelConfig? = null,
+        childTaskId: String? = null,
     ): Boolean {
         if (runId.isBlank()) return false
         return withRuntimeMessenger(false) { serviceMessenger ->
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_COMPACT_RUN)
-            msg.data = AgentRuntimeWire.compactBundle(runId, keepRecent, compressModelConfig)
+            msg.data = AgentRuntimeWire.compactBundle(runId, keepRecent, compressModelConfig, childTaskId)
+            // Child requests must be acknowledged: it may finish while the UI resolves the compressor.
+            val reply = AtomicReference<Boolean?>(null)
+            val latch = CountDownLatch(1)
+            if (childTaskId != null) msg.replyTo = Messenger(Handler(Looper.getMainLooper()) { response ->
+                if (response.what == AgentRuntimeWire.MSG_COMPACT_RUN) {
+                    reply.set(response.data.getBoolean("compact_accepted", false))
+                    latch.countDown()
+                }
+                true
+            })
             serviceMessenger.send(msg)
-            true
+            if (childTaskId == null) true else latch.await(5, TimeUnit.SECONDS) && reply.get() == true
         }
     }
 

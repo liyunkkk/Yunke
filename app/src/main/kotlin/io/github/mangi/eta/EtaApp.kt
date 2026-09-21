@@ -78,6 +78,10 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
                 )
             }
         }
+        // Complete legacy accounting migration before any UI/runtime can issue a new request.
+        runBlocking(Dispatchers.IO) {
+            io.github.mangi.eta.data.repository.UsageStatsRepository.initializeConversationUsage(this@EtaApp)
+        }
         XposedServiceHelper.registerListener(this)
         applicationScope.launch {
             LinuxEnvironmentSettingsRepository.initialize(this@EtaApp)

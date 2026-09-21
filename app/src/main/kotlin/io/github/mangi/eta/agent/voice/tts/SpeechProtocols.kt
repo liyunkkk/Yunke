@@ -15,7 +15,8 @@ import org.json.JSONObject
 internal object SpeechProtocols {
     fun request(engine: SpeechEngine, config: AgentModelClient.ModelConfig, text: String, voice: String): Request =
         when (engine) {
-            SpeechEngine.OPENAI, SpeechEngine.GROQ -> openAi(config, text, voice, wav = engine == SpeechEngine.GROQ)
+            SpeechEngine.OPENAI, SpeechEngine.GROQ, SpeechEngine.COSYVOICE, SpeechEngine.MOSS ->
+                openAi(config, text, voice, wav = engine == SpeechEngine.GROQ)
             SpeechEngine.STEP -> step(config, text, voice)
             SpeechEngine.MIMO -> mimo(config, text, voice)
             SpeechEngine.MINIMAX -> minimax(config, text, voice)

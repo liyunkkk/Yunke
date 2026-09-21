@@ -33,6 +33,16 @@ class AgentRuntimeWireTest {
         return pipe[0]
     }
 
+    @Test fun childContextAndCompactingModelSurviveIpcAndReplay() {
+        val stats = io.github.mangi.eta.agent.delegation.SubAgentContextStats(
+            "child-task", 4, "implementation", "model-id", "Model name", "Provider", 128000,
+            contextTokens = 64000, isCompacting = true)
+        listOf(AgentEvent.ChildContextUpdated(stats), AgentEvent.ContextCompactionStarted(2, "Main model")).forEach { event ->
+            assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+            assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+        }
+    }
+
     @Test
     fun completionTimestampSurvivesWireAndDurableEventReplay() {
         val event = AgentEvent.RunFinished(3, 100, 1_800_000_000_000L)

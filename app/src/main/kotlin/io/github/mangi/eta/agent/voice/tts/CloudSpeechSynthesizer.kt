@@ -67,7 +67,7 @@ internal class CloudSpeechSynthesizer(
         } else {
             httpClient
         }
-        return executeAudio(client, request, rawMp3 = engine == SpeechEngine.OPENAI) { type, bytes ->
+        return executeAudio(client, request, rawMp3 = engine == SpeechEngine.OPENAI || engine == SpeechEngine.COSYVOICE || engine == SpeechEngine.MOSS) { type, bytes ->
             SpeechProtocols.decode(engine, type, bytes)
         }
     }

@@ -13,6 +13,7 @@ internal data class AgentChatUiState(
     val isStreaming: Boolean,
     val isPaused: Boolean = false,
     val isCompressingContext: Boolean = false,
+    val compactingModelName: String = "",
     val isWaitingForCompression: Boolean = false,
     val thinkingEnabled: Boolean,
     val reasoningEffort: ReasoningEffort = ReasoningEffort.fromLegacy(thinkingEnabled),
@@ -27,6 +28,9 @@ internal data class AgentChatUiState(
     val messageEdit: MessageEditUiState? = null,
     /** 当前请求的 prompt 占用；工具循环里由 Runtime 按账单+增量投影，对齐 ST 输入。 */
     val livePromptTokens: Int? = null,
+    val childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
+    val childContextRunId: String = "",
+    val selectedContextTaskId: String? = null,
 )
 
 @Immutable

@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccessibilityNew
 import androidx.compose.material.icons.rounded.AccountTree
+import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material.icons.rounded.RemoveRedEye
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.BugReport
@@ -41,6 +43,8 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Psychology
+import io.github.mangi.eta.ui.icons.SubAgents
+import androidx.compose.material.icons.rounded.Restaurant
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Smartphone
@@ -309,9 +313,12 @@ internal fun SettingsScreen(
                     )
                     ArrowPreference(
                         title = stringResource(R.string.auxiliary_vision_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.Psychology) },
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.RemoveRedEye) },
                         onClick = { onNavigate(AppRoute.AuxiliaryVision) },
                     )
+                    ArrowPreference(title = "子代理",
+                        startAction = { PreferenceIcon(icon = SubAgents) },
+                        onClick = { onNavigate(AppRoute.SubAgents) })
                     ArrowPreference(
                         title = stringResource(R.string.title_model_title),
                         startAction = { PreferenceIcon(icon = Icons.Rounded.AutoAwesome) },
@@ -328,7 +335,7 @@ internal fun SettingsScreen(
                         title = stringResource(R.string.settings_assistants),
                         startAction = {
                             PreferenceIcon(
-                                icon = Icons.Rounded.AutoAwesome,
+                                icon = Icons.Rounded.SmartToy,
                             )
                         },
                         onClick = { onNavigate(AppRoute.Assistants()) },

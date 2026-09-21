@@ -344,4 +344,19 @@ class AgentRuntimeSessionTest {
         assertEquals(1, results.size)
         assertFalse(session.cancel("late"))
     }
+    @Test fun explicitChildCompactionRejectionNeverFallsBackToMainController() {
+        val session = AgentRuntimeSession("main")
+        val seen = mutableListOf<String>()
+        session.childCompactor = { id, _, _ -> seen += id; id == "running-child" }
+        assertTrue(session.requestCompact(childTaskId = "running-child"))
+        assertFalse(session.requestCompact(childTaskId = "finished-child"))
+        assertEquals(listOf("running-child", "finished-child"), seen)
+        assertFalse(session.controller.hasPendingCompact)
+        session.childCompactor = null
+        assertFalse(session.requestCompact(childTaskId = "running-child"))
+        assertFalse(session.controller.hasPendingCompact)
+        assertTrue(session.requestCompact())
+        assertTrue(session.controller.hasPendingCompact)
+    }
+
 }

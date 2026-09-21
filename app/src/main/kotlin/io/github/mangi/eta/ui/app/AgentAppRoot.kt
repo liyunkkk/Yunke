@@ -106,6 +106,7 @@ import io.github.mangi.eta.ui.screens.tools.AgentToolsScreen
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -137,6 +138,16 @@ fun AgentAppRoot(
     val navigator = remember(backStack) { AgentNavigator(backStack) }
     val appViewModel = viewModel<AgentAppViewModel>()
     val agentState = appViewModel.state
+    val usageConversationId = agentState.conversationPaneState.selectedConversationId
+    val recordedUsageState by remember(usageConversationId) {
+        io.github.mangi.eta.data.repository.UsageStatsRepository.conversationUsageFlow(usageConversationId)
+            .map { usageConversationId to it }
+    }.collectAsState(initial = null)
+    val recordedUsage = recordedUsageState?.takeIf { it.first == usageConversationId }?.second
+    val cumulativeUsage = recordedUsage?.let {
+        io.github.mangi.eta.ui.model.ConversationTokenUsageUi(it.input, it.output, it.cached)
+    } ?: conversationTokenUsage(agentState.homeState.messages)
+
     DisposableEffect(backStack.lastOrNull(), agentState.conversationPaneState.selectedConversationId) {
         onDispose { io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop() }
     }
@@ -392,8 +403,10 @@ fun AgentAppRoot(
             onOpenBrowser = { pushRoute(AppRoute.Browser) },
             onOpenWorkspace = { pushRoute(AppRoute.Workspace) },
             autoCompressEnabled = agentState.autoCompressEnabled,
-            isCompressingContext = agentState.homeState.isCompressingContext ||
-                agentState.homeState.isWaitingForCompression,
+            isCompressingContext = if (agentState.homeState.selectedContextTaskId == null)
+                agentState.homeState.isCompressingContext || agentState.homeState.isWaitingForCompression
+            else agentState.homeState.childContexts.any { it.taskId == agentState.homeState.selectedContextTaskId &&
+                (it.isCompacting || it.manualCompactionState == "pending") },
             onToggleAutoCompress = { agentState.updateAutoCompressEnabled(it) },
             onCompressConversation = { providerId, modelId, onFinished ->
                 agentState.compressCurrentConversation(
@@ -409,7 +422,7 @@ fun AgentAppRoot(
                 conversationPaneOpen = false
                 agentState.openHistorySearchHit(hit)
             },
-            tokenUsage = conversationTokenUsage(agentState.homeState.messages),
+            tokenUsage = cumulativeUsage,
             selectedProviderId = agentState.modelPickerState.selectedModel?.providerId,
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
             onConversationRename = { conversation ->
@@ -497,6 +510,7 @@ fun AgentAppRoot(
                             when (action) {
                                 is AgentHomeAction.ReasoningEffortChanged ->
                                     agentState.updateReasoningEffort(action.effort)
+                                is AgentHomeAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId)
                                 is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId, action.providerId)
                                 is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
                                 AgentHomeAction.StopRun -> agentState.pauseCurrentRun()
@@ -565,6 +579,7 @@ fun AgentAppRoot(
                                 AgentChatAction.NavigateBack -> popRoute()
                                 is AgentChatAction.ReasoningEffortChanged ->
                                     agentState.updateReasoningEffort(action.effort)
+                                is AgentChatAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId)
                                 is AgentChatAction.ModelSelected -> agentState.selectModel(action.modelId, action.providerId)
                                 is AgentChatAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
                                 AgentChatAction.StopRun -> agentState.pauseCurrentRun()
@@ -812,6 +827,9 @@ fun AgentAppRoot(
             entry<AppRoute.AuxiliaryVision>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
                     feature = io.github.mangi.eta.agent.model.ModelFeature.VISION, onBack = ::popRoute)
+            }
+            entry<AppRoute.SubAgents>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.ui.SubAgentSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.ModelFeatureSettingsScreen(

@@ -8,6 +8,7 @@ import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.model.ReasoningEffort
 import java.time.LocalDate
 import java.time.ZoneId
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -123,6 +124,33 @@ class UsageStatsRepositoryTest {
         assertEquals(27L, stats.totalOutputTokens)
         assertEquals(3L, stats.totalCachedTokens)
         assertEquals(2, stats.conversationsPerDay[day])
+    }
+
+    @Test
+    fun conversationMigrationUsesRoomOwnerAndRequestUpdatesFlow() = runBlocking {
+        val dao = EtaDatabase.get(context).conversationDao()
+        SettingsDataStore.addModelUsage("{}")
+        dao.insertConversations(listOf(ConversationEntity(
+            id = "usage-owner", title = "usage", thinkingEnabled = false,
+            reasoningEffort = ReasoningEffort.DEFAULT.wireValue, createdAt = 1, updatedAt = 1,
+        )))
+        dao.insertMessages(listOf(ConversationMessageEntity(
+            id = "legacy-usage", conversationId = "usage-owner", sortIndex = 0,
+            type = "assistant", content = "answer", inputTokens = 1000, outputTokens = 100, cachedTokens = 800,
+        )))
+        UsageStatsRepository.initializeConversationUsage(context)
+        assertEquals(ConversationUsageTotals(1000, 100, 800),
+            UsageStatsRepository.conversationUsageFlow("usage-owner").first())
+        UsageStatsRepository.recordModelUsage(ModelUsageDelta(
+            providerId = "provider", providerName = "Provider", modelId = "summary", modelDisplayName = "Summary",
+            inputTokens = 200, outputTokens = 20, cachedTokens = 100,
+            conversationId = "usage-owner", requestId = "one-request",
+        ))
+        UsageStatsRepository.initializeConversationUsage(context)
+        assertEquals(ConversationUsageTotals(1200, 120, 900),
+            UsageStatsRepository.conversationUsageFlow("usage-owner").first())
+        assertEquals(null, UsageStatsRepository.conversationUsageFlow("other-owner").first())
+        SettingsDataStore.addModelUsage("{}")
     }
 
     @Test
@@ -379,94 +407,6 @@ class UsageStatsRepositoryTest {
         assertEquals(80L, model.outputTokens)
         assertEquals(9_000L, model.cachedTokens)
         assertEquals(1, model.events.size)
-    }
-
-    @Test
-    fun unfilteredModelUsageAlignsToConversationTotals() {
-        val snapshot = decodeModelUsageSnapshot(
-            applyModelUsageDelta(
-                raw = null,
-                delta = ModelUsageDelta(
-                    providerId = "fish",
-                    providerName = "魚",
-                    modelId = "grok-4.6",
-                    modelDisplayName = "grok-4.6",
-                    inputTokens = 29_530_000,
-                    outputTokens = 190_500,
-                    conversationId = "conv-1",
-                ),
-            ),
-        )
-        val aligned = snapshot.alignedToConversationTotals(
-            inputTokens = 26_530_000,
-            outputTokens = 166_000,
-            cachedTokens = 23_850_000,
-        )
-        val model = aligned.providers.single().models.single()
-        assertEquals(26_530_000L, aligned.totalInputTokens)
-        assertEquals(166_000L, aligned.totalOutputTokens)
-        assertEquals(23_850_000L, aligned.totalCachedTokens)
-        assertEquals(26_530_000L, model.inputTokens)
-        assertEquals(166_000L, model.outputTokens)
-        assertEquals(23_850_000L, model.cachedTokens)
-    }
-
-    @Test
-    fun distributeTotalsKeepsRemainderOnLastBucket() {
-        assertEquals(listOf(3L, 3L, 4L), distributeTotals(10, listOf(1, 1, 1)))
-        assertEquals(listOf(0L, 10L), distributeTotals(10, listOf(0, 0)))
-    }
-
-    @Test
-    fun filteredModelUsageScalesConversationTotalsByEventShare() {
-        val zone = java.time.ZoneId.systemDefault()
-        val earlier = java.time.LocalDateTime.of(2026, 9, 12, 20, 0)
-            .atZone(zone).toInstant().toEpochMilli()
-        val later = java.time.LocalDateTime.of(2026, 9, 13, 12, 0)
-            .atZone(zone).toInstant().toEpochMilli()
-        val snapshot = decodeModelUsageSnapshot(
-            applyModelUsageDelta(
-                raw = applyModelUsageDelta(
-                    raw = null,
-                    delta = ModelUsageDelta(
-                        providerId = "fish",
-                        providerName = "魚",
-                        modelId = "grok-4.6",
-                        modelDisplayName = "grok-4.6",
-                        inputTokens = 20_000_000,
-                        outputTokens = 100_000,
-                        conversationId = "conv-1",
-                        atMillis = earlier,
-                    ),
-                ),
-                delta = ModelUsageDelta(
-                    providerId = "fish",
-                    providerName = "魚",
-                    modelId = "grok-4.6",
-                    modelDisplayName = "grok-4.6",
-                    inputTokens = 10_000_000,
-                    outputTokens = 50_000,
-                    conversationId = "conv-1",
-                    atMillis = later,
-                ),
-            ),
-        )
-        val start = java.time.LocalDateTime.of(2026, 9, 13, 0, 0)
-            .atZone(zone).toInstant().toEpochMilli()
-        val end = java.time.LocalDateTime.of(2026, 9, 13, 23, 59, 59, 999_000_000)
-            .atZone(zone).toInstant().toEpochMilli()
-        val ranged = snapshot.filtered(start, end)
-        val aligned = ranged.alignedToConversationTotals(
-            scaledUsageTotal(26_530_000, ranged.totalInputTokens, snapshot.totalInputTokens),
-            scaledUsageTotal(166_000, ranged.totalOutputTokens, snapshot.totalOutputTokens),
-            scaledUsageTotal(23_850_000, ranged.totalInputTokens, snapshot.totalInputTokens),
-        )
-        assertEquals(10_000_000L, ranged.totalInputTokens)
-        assertEquals(8_843_333L, aligned.totalInputTokens)
-        assertEquals(55_333L, aligned.totalOutputTokens)
-        assertEquals(7_950_000L, aligned.totalCachedTokens)
-        assertEquals(0L, scaledUsageTotal(26_530_000, 0, snapshot.totalInputTokens))
-        assertEquals(26_530_000L, scaledUsageTotal(26_530_000, snapshot.totalInputTokens, snapshot.totalInputTokens))
     }
 
     @Test

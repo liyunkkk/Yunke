@@ -41,30 +41,45 @@ class ConversationTurnNavigationTest {
         assertEquals(down, tracker.onScroll(0f, true))
         assertEquals(up, tracker.onScroll(12f, true))
     }
-    @Test fun clickMovesOneLogicalTurnInEitherDirection() {
+    @Test fun clickMovesToAdjacentUserMessageRatherThanPreviousTurn() {
         val starts = listOf(0, 4, 9, 13)
-        assertEquals(9, conversationTurnTarget(starts, 4, 18, down, false))
-        assertEquals(9, conversationTurnTarget(starts, 7, 18, down, false))
-        assertEquals(0, conversationTurnTarget(starts, 4, 18, up, false))
-        assertEquals(0, conversationTurnTarget(starts, 7, 18, up, false))
-        assertEquals(4, conversationTurnTarget(starts, 9, 18, up, false))
+        assertEquals(9, conversationUserMessageTarget(starts, 4, 18, down, false))
+        assertEquals(9, conversationUserMessageTarget(starts, 7, 18, down, false))
+        assertEquals(0, conversationUserMessageTarget(starts, 4, 18, up, false))
+        assertEquals(4, conversationUserMessageTarget(starts, 7, 18, up, false))
+        assertEquals(4, conversationUserMessageTarget(starts, 9, 18, up, false))
     }
     @Test fun longPressAlwaysGoesToDirectionalEdge() {
-        assertEquals(18, conversationTurnTarget(listOf(0, 4, 9), 4, 18, down, true))
-        assertEquals(0, conversationTurnTarget(listOf(0, 4, 9), 4, 18, up, true))
+        assertEquals(18, conversationUserMessageTarget(listOf(0, 4, 9), 4, 18, down, true))
+        assertEquals(0, conversationUserMessageTarget(listOf(0, 4, 9), 4, 18, up, true))
     }
     @Test fun boundaryClicksFallBackToTopOrBottom() {
-        assertEquals(18, conversationTurnTarget(listOf(0, 4, 9), 15, 18, down, false))
-        assertEquals(0, conversationTurnTarget(listOf(0, 4, 9), 0, 18, up, false))
+        assertEquals(18, conversationUserMessageTarget(listOf(0, 4, 9), 15, 18, down, false))
+        assertEquals(0, conversationUserMessageTarget(listOf(0, 4, 9), 0, 18, up, false))
     }
     @Test fun emptyAndSingleTurnConversationsAreSafe() {
-        assertEquals(0, conversationTurnTarget(emptyList(), 0, 0, down, false))
-        assertEquals(0, conversationTurnTarget(emptyList(), 0, 0, up, false))
-        assertEquals(5, conversationTurnTarget(listOf(0), 2, 5, down, false))
-        assertEquals(0, conversationTurnTarget(listOf(0), 2, 5, up, false))
+        assertEquals(0, conversationUserMessageTarget(emptyList(), 0, 0, down, false))
+        assertEquals(0, conversationUserMessageTarget(emptyList(), 0, 0, up, false))
+        assertEquals(5, conversationUserMessageTarget(listOf(0), 2, 5, down, false))
+        assertEquals(0, conversationUserMessageTarget(listOf(0), 2, 5, up, false))
     }
     @Test fun contentBeforeFirstQuestionNavigatesToFirstQuestion() {
-        assertEquals(2, conversationTurnTarget(listOf(2, 6), 0, 9, down, false))
-        assertEquals(0, conversationTurnTarget(listOf(2, 6), 0, 9, up, false))
+        assertEquals(2, conversationUserMessageTarget(listOf(2, 6), 0, 9, down, false))
+        assertEquals(0, conversationUserMessageTarget(listOf(2, 6), 0, 9, up, false))
     }
+    @Test fun upwardClickFirstRevealsPartiallyScrolledUserMessage() {
+        val users = listOf(0, 4, 9)
+        assertEquals(4, conversationUserMessageTarget(users, 4, 14, up, false, firstVisibleScrollOffset = 80))
+        assertEquals(0, conversationUserMessageTarget(users, 4, 14, up, false, firstVisibleScrollOffset = 0))
+        assertEquals(9, conversationUserMessageTarget(users, 4, 14, down, false, firstVisibleScrollOffset = 80))
+    }
+
+    @Test fun consecutiveSupplementMessagesAreEachReachableInBothDirections() {
+        val users = listOf(0, 2, 3, 5)
+        assertEquals(2, conversationUserMessageTarget(users, 0, 7, down, false))
+        assertEquals(3, conversationUserMessageTarget(users, 2, 7, down, false))
+        assertEquals(2, conversationUserMessageTarget(users, 3, 7, up, false))
+        assertEquals(3, conversationUserMessageTarget(users, 4, 7, up, false))
+    }
+
 }

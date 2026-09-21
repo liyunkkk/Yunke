@@ -21,6 +21,7 @@ internal class RootShellTerminalController(
         TerminalEnvironment.ALPINE
     },
     private val rootAvailable: () -> Boolean = { TerminalRuntime.rootAvailable },
+    private val resolveReadPath: (String) -> String = { it },
 ) : AutoCloseable {
     private companion object {
         const val DEFAULT_CWD = "/data/local/tmp/eta"
@@ -783,8 +784,9 @@ internal class RootShellTerminalController(
     }
 
     fun readFile(path: String, offsetBytes: Int, maxBytes: Int): String {
-        if (!rootAvailable()) return UserFileAccess.read(path, offsetBytes, maxBytes)
-        val safePath = normalizePath(path)
+        val mappedPath = resolveReadPath(path)
+        if (!rootAvailable()) return UserFileAccess.read(mappedPath, offsetBytes, maxBytes)
+        val safePath = normalizePath(mappedPath)
         val offset = offsetBytes.coerceAtLeast(0)
         val limit = maxBytes.coerceIn(1, MAX_READ_BYTES)
         val command = "dd if=${shellQuote(safePath)} bs=1 skip=$offset count=$limit 2>/dev/null"
@@ -844,8 +846,9 @@ internal class RootShellTerminalController(
     }
 
     fun listDirectory(path: String, showHidden: Boolean, limit: Int): String {
-        if (!rootAvailable()) return UserFileAccess.list(path, showHidden, limit)
-        val safePath = normalizePath(path.ifBlank { DEFAULT_CWD })
+        val mappedPath = resolveReadPath(path)
+        if (!rootAvailable()) return UserFileAccess.list(mappedPath, showHidden, limit)
+        val safePath = normalizePath(mappedPath.ifBlank { DEFAULT_CWD })
         val maxEntries = limit.coerceIn(1, MAX_LIST_ENTRIES)
         val flags = if (showHidden) "-la" else "-l"
         val command = "cd ${shellQuote(safePath)} && ls $flags | head -n $maxEntries"
