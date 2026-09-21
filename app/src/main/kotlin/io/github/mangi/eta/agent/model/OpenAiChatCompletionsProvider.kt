@@ -95,6 +95,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 mergeExtraBody(request, config.extraBodyJson)
                 RequestBodyMerge.mergeCustomBody(request, config.customBody)
+                request.remove(ImageRequestParameters.CONFIG_KEY) // Local image settings never enter text protocols.
                 ProviderReasoning.applyOpenAiCompatibleRequest(request, config)
                 config.summaryOutputLimit?.let {
                     request.put("max_tokens", it)

@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.mutableStateOf
@@ -28,11 +30,11 @@ import org.robolectric.annotation.GraphicsMode
 class SubAgentMaterialControlsTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun selectedMenuRowUsesTonalBackgroundInsteadOfCheckIcon() {
-        val selectedColor = Color(0xFFB5D8F3)
+    @Test fun selectedMenuRowUsesGrayBackgroundInsteadOfCheckIcon() {
+        val selectedColor = Color(0xFFE7E5E6)
         var clicked = false
         compose.setContent {
-            MaterialTheme(colorScheme = lightColorScheme(secondaryContainer = selectedColor)) {
+            MaterialTheme(colorScheme = lightColorScheme(surfaceVariant = selectedColor)) {
                 Column(Modifier.width(220.dp)) {
                     SubAgentSelectionItem("复杂任务", true) { clicked = true }
                     SubAgentSelectionItem("简单任务", false) { }
@@ -98,7 +100,7 @@ class SubAgentMaterialControlsTest {
             providerGroups = listOf(io.github.mangi.eta.ui.model.AgentModelProviderGroupUi("p", "测试提供商", "openai", listOf(model))),
             selectedModel = model)
         compose.setContent {
-            MaterialTheme(colorScheme = lightColorScheme(secondaryContainer = selectedColor)) {
+            MaterialTheme(colorScheme = lightColorScheme(surfaceVariant = selectedColor)) {
                 io.github.mangi.eta.ui.TtsModelPickerDialog(picker, true, {}, { _, _ -> }, "选择模型",
                     onClearSelection = {}, highlightSelection = true)
             }
@@ -139,11 +141,63 @@ class SubAgentMaterialControlsTest {
         compose.onNode(isSelectable() and hasText("复杂任务")).assertIsSelected()
     }
 
+    @Test fun iconsAndLabelsUseOnSurfaceLikeTheApprovedSettingsShot() {
+        val ink = Color(0xFF202124)
+        compose.setContent {
+            MaterialTheme(colorScheme = lightColorScheme(onSurface = ink, onSurfaceVariant = Color.Red, primary = Color.Blue)) {
+                SubAgentSettingRow("模型", "grok-4.6", Icons.Rounded.AccountTree,
+                    "测试代理模型", badge = "与", onClick = {})
+            }
+        }
+        val pixels = compose.onNodeWithContentDescription("测试代理模型").captureToImage().toPixelMap()
+        var inkCount = 0
+        var faded = 0
+        for (y in 0 until pixels.height) for (x in 0 until pixels.width) {
+            when (pixels[x, y]) {
+                ink -> inkCount++
+                Color.Red, Color.Blue -> faded++
+            }
+        }
+        assertTrue(inkCount > 40)
+        assertEquals(0, faded)
+    }
+
+    @Test fun providerBadgeSitsToTheLeftOfTheModelName() {
+        compose.setContent {
+            MaterialTheme {
+                SubAgentSettingRow("模型", "grok-4.6", Icons.Rounded.AccountTree,
+                    "测试代理模型", badge = "与", onClick = {})
+            }
+        }
+        val badge = compose.onNodeWithText("与", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val model = compose.onNodeWithText("grok-4.6", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val label = compose.onNodeWithText("模型", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertTrue(badge.left > label.right)
+        assertTrue(model.left > badge.right)
+        assertTrue(kotlin.math.abs((badge.top + badge.bottom) / 2 - (model.top + model.bottom) / 2) < 8f)
+    }
+
+    @Test fun compactMenuWrapsToLongestLabelInsteadOfFixedWidth() {
+        compose.setContent {
+            MaterialTheme {
+                SubAgentTaskTierButton("执行", SubAgentTaskTier.COMPLEX, true, {}, compact = true)
+            }
+        }
+        compose.onNodeWithContentDescription("设置执行任务分工").performClick()
+        val selected = compose.onNode(isSelectable() and hasText("复杂任务")).fetchSemanticsNode().boundsInRoot
+        val other = compose.onNode(isSelectable() and hasText("简单任务")).fetchSemanticsNode().boundsInRoot
+        assertTrue("menu stayed oversized: ${selected.width}", selected.width < 200f)
+        assertTrue(kotlin.math.abs(selected.width - other.width) < 2f)
+    }
+
     @Test
     @Config(qualifiers = "w320dp-h480dp")
     fun settingsAddActionStaysVisibleWhileAgentListScrolls() {
         compose.setContent { MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}) } }
-        compose.onNodeWithText("添加子代理").assertIsDisplayed()
+        val add = compose.onNodeWithText("添加子代理").assertIsDisplayed()
+        val parent = add.fetchSemanticsNode().boundsInRoot
+        val screen = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        assertTrue(kotlin.math.abs((parent.left + parent.right) / 2 - (screen.left + screen.right) / 2) < 24f)
         compose.onNode(hasScrollToIndexAction()).performScrollToIndex(3)
         compose.onNodeWithText("添加子代理").assertIsDisplayed()
     }

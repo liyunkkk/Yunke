@@ -114,6 +114,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 if (system.isNotBlank()) request.put("system", system)
                 convertTools(tools)?.let { request.put("tools", it) }
                 RequestBodyMerge.mergeCustomBody(request, config.customBody)
+                request.remove(ImageRequestParameters.CONFIG_KEY) // Local image settings never enter text protocols.
                 ProviderReasoning.applyAnthropicRequest(request, config)
                 config.summaryOutputLimit?.let { request.put("max_tokens", it) }
             }

@@ -544,7 +544,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 prepared = AgentRuntimeTranscriptTransfer.prepare(this, event.history)
             }
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_EVENT)
-            msg.data = AgentRuntimeWire.eventToBundle(event, prepared?.descriptor)
+            msg.data = AgentRuntimeWire.eventToBundle(event, prepared?.descriptor).apply {
+                if (event is AgentEvent.AssistantBlockDelta) {
+                    putLong(StreamDeliveryTiming.KEY, android.os.SystemClock.elapsedRealtimeNanos())
+                }
+            }
             target.send(msg)
             prepared?.let { transfer ->
                 val pending = pendingCompactionTransfers.computeIfAbsent(runId) { mutableListOf() }

@@ -44,20 +44,21 @@ internal fun SubAgentSettingRow(
             onClick = onClick, onLongClick = onLongClick)
         .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, Modifier.size(22.dp), tint = colors.primary.copy(alpha = alpha * 0.65f))
+        Icon(icon, null, Modifier.size(22.dp), tint = colors.onSurface.copy(alpha = alpha))
         Text(label, Modifier.widthIn(min = 72.dp, max = 100.dp), style = MaterialTheme.typography.bodyMedium,
-            color = colors.onSurfaceVariant.copy(alpha = alpha))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(value, style = MaterialTheme.typography.bodyMedium, maxLines = 3,
-                overflow = TextOverflow.Ellipsis, color = colors.onSurface.copy(alpha = alpha))
+            color = colors.onSurface.copy(alpha = alpha))
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!badge.isNullOrBlank()) Surface(shape = RoundedCornerShape(6.dp),
-                color = colors.secondaryContainer.copy(alpha = 0.45f)) {
+                color = colors.surfaceVariant) {
                 Text(badge, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                     style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = colors.onSecondaryContainer.copy(alpha = alpha))
+                    color = colors.onSurface.copy(alpha = alpha))
             }
+            Text(value, Modifier.weight(1f, fill = false), style = MaterialTheme.typography.bodyMedium, maxLines = 3,
+                overflow = TextOverflow.Ellipsis, color = colors.onSurface.copy(alpha = alpha))
         }
         Icon(if (dropdown) Icons.Rounded.ExpandMore else Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-            null, Modifier.size(18.dp), tint = colors.onSurfaceVariant.copy(alpha = alpha * 0.65f))
+            null, Modifier.size(18.dp), tint = colors.onSurface.copy(alpha = alpha))
     }
 }

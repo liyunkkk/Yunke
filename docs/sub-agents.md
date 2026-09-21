@@ -141,3 +141,9 @@ UI 通过运行时事件直接接收统计，主代理压缩或等待时仍可�
 - 返回文件保留原尺寸，使用图片解码器读取实际宽高；比例、精确尺寸或明显低于 2k 档位时返回 `IMAGE_DIMENSIONS_MISMATCH`，无法读取时返回 `IMAGE_DIMENSIONS_UNVERIFIED`，数量不符返回 `IMAGE_COUNT_MISMATCH`。主代理必须报告不符合要求的结果，不得默默裁切、缩放或重新付费生成。分辨率档位不等同于精确像素承诺。
 - Grok 单图编辑使用 JSON image 对象，OpenAI 兼容编辑使用 multipart 并携带参数。当前 Grok 编辑仅适配单张参考图，多图明确报错，不丢弃参考图；委派工具本轮未新增参考图输入或 storage_options。
 - 测试分为纯 JVM 参数/任务传递测试和 Robolectric + 拦截器请求体/真实尺寸测试，均不访问付费生图接口。
+
+
+### 设置页对比与菜单
+
+- 设置行图标和文字使用 `onSurface`，提供商标签在模型名左侧。底部「添加子代理」为居中文本按钮，无加号。
+- 职责、任务分工、更多操作和会话协作中的分工菜单共用 `SubAgentDropdownMenu`：按最长选项自适应宽度并保留少量左右内边距，描边无投影，选中行为 `surfaceVariant` 淡灰背景而非勾选。打开/选择/开关/添加/完成补齐 `TouchHaptics.click`。

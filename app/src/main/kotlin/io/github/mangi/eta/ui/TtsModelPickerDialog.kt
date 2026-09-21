@@ -56,7 +56,7 @@ internal fun TtsModelPickerDialog(
                 if (onClearSelection != null) {
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
-                            .background(if (highlightSelection && state.selectedModel == null) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                            .background(if (highlightSelection && state.selectedModel == null) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
                             .selectable(selected = state.selectedModel == null, role = Role.RadioButton,
                                 interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {
                                 TouchHaptics.click(view)
@@ -66,7 +66,7 @@ internal fun TtsModelPickerDialog(
                     ) {
                         if (!highlightSelection) RadioButton(selected = state.selectedModel == null, onClick = null)
                         Text("无", modifier = Modifier.weight(1f).padding(start = 12.dp),
-                            color = if (highlightSelection && state.selectedModel == null) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface)
+                            color = if (highlightSelection && state.selectedModel == null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface)
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -91,7 +91,7 @@ internal fun TtsModelPickerDialog(
                             val selected = state.selectedModel?.providerId == model.providerId && state.selectedModel?.id == model.id
                             Row(
                                 Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
-                                    .background(if (highlightSelection && selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                                    .background(if (highlightSelection && selected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
                                     .selectable(selected = selected, role = Role.RadioButton,
                                         interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {
                                         TouchHaptics.click(view)
@@ -101,7 +101,7 @@ internal fun TtsModelPickerDialog(
                             ) {
                                 if (!highlightSelection) RadioButton(selected = selected, onClick = null)
                                 Text(model.displayName, style = MaterialTheme.typography.bodyMedium,
-                                    color = if (highlightSelection && selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+                                    color = if (highlightSelection && selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.weight(1f).padding(start = 12.dp))
                             }
                         }

@@ -20,6 +20,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiResponsesProviderTest {
+    @Test fun localImageConfigurationNeverLeaksIntoResponses() {
+        val configured = config("https://example.invalid/v1").copy(extraBodyJson = """{"eta_image_config":{"endpoint":"novelai_native"},"temperature":0.5}""")
+        val request = OpenAiResponsesProvider.buildRequestJson(configured, JSONArray(), JSONArray())
+        assertFalse(request.has("eta_image_config"))
+        assertEquals(0.5, request.getDouble("temperature"), 0.0)
+    }
+
     @Test
     fun terminalMessageIdentityRewriteDoesNotRepeatStreamedAnswer() {
         assertSingleReconciledText(

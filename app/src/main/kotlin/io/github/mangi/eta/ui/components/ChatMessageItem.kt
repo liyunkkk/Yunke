@@ -1096,8 +1096,13 @@ private fun StreamingMarkdown(
     val view = LocalView.current
 
     LifecycleResumeEffect(state) {
-        revealCoordinator.restoreHistoryThrough(currentContent.length)
-        state.restoreState.begin(currentContent)
+        if (state.restoreState.begin(currentContent, live = currentIsStreaming && !currentPaused)) {
+            // A new message may already contain a whole network batch when first composed.
+            // Do not classify that first batch as restored history and reveal it all at once.
+            revealCoordinator.resumeAnimationsWithoutCatchingUp()
+        } else {
+            revealCoordinator.restoreHistoryThrough(currentContent.length)
+        }
         onPauseOrDispose {
             state.restoreState.pause()
             revealCoordinator.pauseAnimationsAndCatchUp()

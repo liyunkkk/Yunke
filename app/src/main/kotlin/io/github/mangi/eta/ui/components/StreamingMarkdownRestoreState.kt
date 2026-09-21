@@ -11,13 +11,18 @@ internal class StreamingMarkdownRestoreState {
         private set
     private var baseline by mutableStateOf<String?>(null)
     private var foreground by mutableStateOf(false)
+    private var entered = false
 
     fun animationsAllowed(paused: Boolean): Boolean = foreground && baseline == null && !paused
 
-    fun begin(content: String) {
+    /** Only an actual re-entry restores history. The first live delta is not history. */
+    fun begin(content: String, live: Boolean = false): Boolean {
+        val firstLiveEntry = !entered && live
+        entered = true
         generation += 1
-        baseline = content
+        baseline = if (firstLiveEntry) null else content
         foreground = true
+        return firstLiveEntry
     }
 
     fun pause() {

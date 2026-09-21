@@ -19,6 +19,7 @@ internal object ResponsesRequestBuilder {
         val request = JSONObject()
         mergeExtraBody(request, config.extraBodyJson)
         RequestBodyMerge.mergeCustomBody(request, config.customBody)
+        request.remove(ImageRequestParameters.CONFIG_KEY) // Local image settings never enter text protocols.
 
         // 这些字段决定协议正确性、隐私边界和 Eta 本轮行为，必须由运行时最终写入。
         request.put("model", config.model)

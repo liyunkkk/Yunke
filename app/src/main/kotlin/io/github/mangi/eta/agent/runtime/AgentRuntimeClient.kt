@@ -338,7 +338,9 @@ internal class AgentRuntimeClient(
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
-                    AgentRuntimeWire.eventFromBundle(msg.data ?: return)?.let(onEvent)
+                    val data = msg.data ?: return
+                    recordDeliveryTiming(data, live = true)
+                    AgentRuntimeWire.eventFromBundle(data)?.let(onEvent)
                 }
 
                 AgentRuntimeWire.MSG_RESULT -> {
@@ -396,8 +398,11 @@ internal class AgentRuntimeClient(
 
         override fun handleMessage(msg: Message) {
             when (msg.what) {
-                AgentRuntimeWire.MSG_EVENT ->
-                    AgentRuntimeWire.eventFromBundle(msg.data ?: return)?.let(delivery::event)
+                AgentRuntimeWire.MSG_EVENT -> {
+                    val data = msg.data ?: return
+                    recordDeliveryTiming(data, live = delivery.isLive)
+                    AgentRuntimeWire.eventFromBundle(data)?.let(delivery::event)
+                }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return
                     val result = runCatching {
@@ -419,6 +424,13 @@ internal class AgentRuntimeClient(
     }
 
     private companion object {
+        fun recordDeliveryTiming(data: android.os.Bundle, live: Boolean) {
+            StreamDeliveryTiming.delayNs(
+                data.getLong(StreamDeliveryTiming.KEY, 0L),
+                android.os.SystemClock.elapsedRealtimeNanos(), live,
+            )?.let { io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics.record("ipc.delta.delay", ns = it) }
+        }
+
         const val RESPONSE_TIMEOUT_SECONDS = 8L
     }
 }

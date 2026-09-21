@@ -14,12 +14,14 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.github.mangi.eta.agent.delegation.SubAgentPreferences
 import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,6 +37,7 @@ internal fun ConversationCollaborationDialog(
     val profiles by remember { SubAgentPreferences.profilesFlow() }.collectAsState(initial = SubAgentPreferences.profiles())
     val currentRunning by rememberUpdatedState(taskRunning)
     val maximumHeight = (LocalConfiguration.current.screenHeightDp - 64).coerceAtLeast(240).dp
+    val view = LocalView.current
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
     WithoutPressRipple {
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -53,12 +56,12 @@ internal fun ConversationCollaborationDialog(
                         Row(Modifier.fillMaxWidth().heightIn(min = 64.dp)
                             .toggleable(value = enabled, enabled = !taskRunning, role = Role.Switch,
                                 interactionSource = remember { MutableInteractionSource() }, indication = null,
-                                onValueChange = { if (!currentRunning) onEnabledChange(it) }),
+                                onValueChange = { if (!currentRunning) { TouchHaptics.click(view); onEnabledChange(it) } }),
                             verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("自动委派", style = MaterialTheme.typography.bodyLarge)
                                 Text("按职责自动分配任务", style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    color = MaterialTheme.colorScheme.onSurface)
                             }
                             Switch(checked = enabled, enabled = !taskRunning, onCheckedChange = null)
                         }
@@ -70,10 +73,10 @@ internal fun ConversationCollaborationDialog(
                             }
                         }
                         Text("点按模型切换 · 长按调整思考", style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
+                            color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
                     }
                     Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
-                        TextButton(enabled = !taskRunning, onClick = { if (!currentRunning) onDismiss() }) { Text("完成") }
+                        TextButton(enabled = !taskRunning, onClick = { if (!currentRunning) { TouchHaptics.click(view); onDismiss() } }) { Text("完成") }
                     }
                 }
             }

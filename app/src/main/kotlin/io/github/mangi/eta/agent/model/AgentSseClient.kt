@@ -28,6 +28,14 @@ internal object AgentSseClient {
         onEvent: SseStream.(id: String?, type: String?, data: String) -> Unit,
         shouldIgnoreFailure: () -> Boolean = { false },
     ) {
+        val timingId = java.util.UUID.randomUUID().toString().take(8)
+        val timings = StreamArrivalStats(System.nanoTime())
+        fun reportTimings(final: Boolean = false) {
+            timings.report(System.nanoTime(), final)?.let {
+                // Diagnostics must never fail or replace the actual network outcome.
+                runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info("SseDiag id=$timingId $it") }
+            }
+        }
         val done = CountDownLatch(1)
         val failure = AtomicReference<Throwable?>(null)
         val opened = AtomicBoolean(false)
@@ -89,7 +97,14 @@ internal object AgentSseClient {
                         stream.finish()
                         return
                     }
-                    emitEvent(stream, id, type, data)
+                    val arrivalNs = System.nanoTime()
+                    timings.arrival(arrivalNs, data.length)
+                    try {
+                        emitEvent(stream, id, type, data)
+                    } finally {
+                        timings.callback(System.nanoTime() - arrivalNs)
+                        reportTimings()
+                    }
                 } catch (error: Throwable) {
                     failure.compareAndSet(null, error)
                     stream.finish()
@@ -176,6 +191,7 @@ internal object AgentSseClient {
             completed.set(true)
             binding.close()
             runCatching { eventSource.cancel() }
+            reportTimings(final = true)
         }
     }
 

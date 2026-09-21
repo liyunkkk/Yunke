@@ -5,6 +5,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamingMarkdownRestoreStateTest {
+    @Test fun firstLiveBatchDoesNotWaitForHistoryLayoutOrCatchUp() {
+        val state = StreamingMarkdownRestoreState()
+        assertTrue(state.begin("first batch".repeat(50), live = true))
+        assertTrue(state.animationsAllowed(false))
+        assertFalse(state.completeLayout(state.generation, "first batch", "first batch"))
+    }
+
+    @Test fun reentryStillRestoresEvenWhileNetworkIsStreaming() {
+        val state = StreamingMarkdownRestoreState()
+        state.begin("first", live = true)
+        state.pause()
+        assertFalse(state.begin("first and background", live = true))
+        assertFalse(state.animationsAllowed(false))
+        assertTrue(state.completeLayout(state.generation, "first and background", "first and background"))
+        assertTrue(state.animationsAllowed(false))
+    }
+
+    @Test fun initiallyPausedMessageIsHistoryNotANewLiveBatch() {
+        val state = StreamingMarkdownRestoreState()
+        assertFalse(state.begin("paused history"))
+        assertFalse(state.animationsAllowed(true))
+    }
+
     @Test fun userResumeCannotOpenGateBeforeRestoredLayout() {
         val state = StreamingMarkdownRestoreState()
         assertFalse(state.animationsAllowed(false))

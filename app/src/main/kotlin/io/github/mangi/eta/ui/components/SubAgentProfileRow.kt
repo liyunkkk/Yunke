@@ -4,7 +4,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ViewInAr
@@ -69,9 +68,8 @@ internal fun SubAgentProfileRow(
                 SubAgentSettingRow("职责", profile.roleLabel, Icons.Rounded.Assignment,
                     "选择${profile.name}职责", enabled = enabled, dropdown = true,
                     onClick = { if (currentEnabled) { TouchHaptics.click(view); rolePicker = !rolePicker } })
-                if (enabled) DropdownMenu(rolePicker, { rolePicker = false },
-                    modifier = Modifier.width(220.dp).selectableGroup(), shape = RoundedCornerShape(12.dp),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 0.dp, shadowElevation = 3.dp) {
+                Box(Modifier.align(Alignment.CenterEnd).size(40.dp)) {
+                if (enabled) SubAgentDropdownMenu(rolePicker, { rolePicker = false }, Modifier.selectableGroup()) {
                     listOf("implementation" to "执行", "review" to "审查／总结", "image_generation" to "图片生成", "video_generation" to "视频生成").forEach { (role, label) ->
                         SubAgentSelectionItem(label, profile.role == role) {
                             if (currentEnabled) SubAgentPreferences.update(profile.id) { it.withRole(role) }
@@ -79,23 +77,23 @@ internal fun SubAgentProfileRow(
                         }
                     }
                 }
+                }
             }
             if (profile.supportsTaskTier) Box(Modifier.fillMaxWidth()) {
                 SubAgentSettingRow("任务分工", profile.tier?.label ?: "未设置分工", Icons.Rounded.AccountTree,
                     "设置${profile.name}任务分工", enabled = enabled, dropdown = true,
                     onClick = { if (currentEnabled) { TouchHaptics.click(view); tierPicker = !tierPicker } })
-                if (enabled) DropdownMenu(tierPicker, { tierPicker = false },
-                    modifier = Modifier.width(200.dp).selectableGroup(), shape = RoundedCornerShape(12.dp),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 0.dp, shadowElevation = 3.dp) {
+                Box(Modifier.align(Alignment.CenterEnd).size(40.dp)) {
+                if (enabled) SubAgentDropdownMenu(tierPicker, { tierPicker = false }, Modifier.selectableGroup()) {
                     SubAgentTaskTier.entries.forEach { tier ->
                         SubAgentSelectionItem(tier.label, profile.tier == tier) {
-                            if (currentEnabled) TouchHaptics.click(view)
                             if (currentEnabled) SubAgentPreferences.update(profile.id) { latest ->
                                 if (latest.supportsTaskTier) latest.copy(tier = tier) else latest
                             }
                             tierPicker = false
                         }
                     }
+                }
                 }
             }
             if (!profile.isMedia) SubAgentSettingRow("思考深度", effective?.displayName ?: "未启用",
@@ -114,10 +112,10 @@ internal fun SubAgentProfileRow(
                     verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically)) {
                     Text(profile.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(config?.let { it.modelDisplayName.ifBlank { it.model } } ?: if (profile.modelId.isBlank()) "无" else "模型不可用",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     if (config != null) Text(config.providerName + if (canThink) " · 思考 ${effective?.displayName}" else "",
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (profile.supportsTaskTier) SubAgentTaskTierButton(profile.name, profile.tier, enabled,
@@ -125,7 +123,7 @@ internal fun SubAgentProfileRow(
                 else androidx.compose.material3.IconButton(enabled = enabled,
                     onClick = { if (currentEnabled) { TouchHaptics.click(view); modelPicker = true } }) {
                     Icon(androidx.compose.material.icons.Icons.AutoMirrored.Rounded.KeyboardArrowRight, "选择${profile.name}模型",
-                        Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface)
                 }
             }
         }

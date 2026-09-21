@@ -14,6 +14,7 @@ internal class AgentRuntimeAttachDelivery(
     }
 
     private var state = State.REPLAYING
+    val isLive: Boolean get() = state == State.LIVE
     private val replayEvents = mutableListOf<AgentEvent>()
 
     fun event(event: AgentEvent) {

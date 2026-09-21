@@ -367,7 +367,7 @@ class SubAgentCoordinatorTest {
     }
 
     @Test fun explicitImageOptionsReachOnlySelectedImageRunnerAndNeverMutateModel() {
-        val grok = model.copy(model = "grok-imagine-image-2.0")
+        val grok = model.copy(model = "agnes-image-2.5-flash")
         var received: io.github.mangi.eta.agent.model.AgentImageGenerationOptions? = null
         var called = 0
         SubAgentCoordinator(listOf(grok), roles = listOf("image_generation"),
@@ -382,7 +382,7 @@ class SubAgentCoordinatorTest {
             assertEquals("completed", get(c, id).getString("status"))
             assertEquals("9:16", received!!.aspectRatio)
             assertEquals("2k", received!!.resolution)
-            args.put("image_options", JSONObject().put("size", "1080x1920"))
+            args.put("image_options", JSONObject().put("aspect_ratio", "9:16").put("size", "1024x1024"))
             val rejected = JSONObject(c.execute(call("delegate_task", args)).content)
             assertEquals("IMAGE_GENERATION_INVALID_OPTIONS", rejected.getString("code"))
             assertFalse(rejected.has("task_id"))

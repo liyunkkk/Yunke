@@ -20,63 +20,30 @@ internal data class AgentImageGenerationOptions(
         quality?.let { json.put("quality", it) }; responseFormat?.let { json.put("response_format", it) }
     }
 
-    /** Apply AFTER model extras. Explicit shape settings replace conflicting configured defaults. */
-    fun applyTo(body: JSONObject, model: String) {
+    /** Apply after configured defaults. Compatibility belongs to the endpoint, not model names. */
+    @Suppress("UNUSED_PARAMETER")
+    fun applyTo(body: JSONObject, model: String = "") {
         val normalized = fromJson(toJson())
-        if (normalized != this) { normalized.applyTo(body, model); return }
-        val id = model.lowercase().substringAfterLast('/')
-        val grok = id.startsWith("grok-imagine-image")
-        val gpt = id.startsWith("gpt-image")
-        val dalle = id.startsWith("dall-e-")
-        if (grok && size != null) invalid("Grok 生图不支持精确 size；请使用 aspect_ratio 和 resolution，不能保证指定像素尺寸。")
-        if (!grok && resolution != null) invalid("当前模型未适配 resolution 档位；请使用该模型支持的 size。")
-        if (aspectRatio != null && aspectRatio != "auto" && size == "auto") invalid("指定比例不能与自动尺寸同时使用；请省略 size 或指定一致的像素尺寸。")
+        if (normalized != this) { normalized.applyTo(body); return }
+        validateShape()
+        // A per-call shape replaces conflicting configured shape defaults, never other extras.
+        if (size != null) {
+            body.remove("aspect_ratio")
+            body.remove("resolution")
+        } else if (aspectRatio != null || resolution != null) {
+            body.remove("size")
+        }
+        val values = toJson()
+        values.keys().forEach { key -> body.put(key, values.get(key)) }
+    }
+
+    fun validateShape() {
+        if (aspectRatio != null && aspectRatio != "auto" && size == "auto")
+            invalid("指定比例不能与自动尺寸同时使用。")
         if (aspectRatio != null && size != null && aspectRatio != "auto" && size != "auto") {
             val (w, h) = dimensions(size)
             if (!matchesRatio(w, h, aspectRatio)) invalid("aspect_ratio 与 size 冲突。")
         }
-        if (grok) {
-            if (aspectRatio != null || resolution != null) body.remove("size")
-            aspectRatio?.let { body.put("aspect_ratio", it) }
-            resolution?.let { body.put("resolution", it) }
-            if (quality != null && id != "grok-imagine-image-2.0") invalid("当前 Grok 型号未适配 quality 参数。")
-            if (quality != null && quality !in setOf("auto", "low", "medium")) invalid("Grok quality 仅支持 auto、low、medium。")
-        } else {
-            if (aspectRatio != null && !gpt && !dalle) invalid("当前模型未适配 aspect_ratio；请明确指定接口支持的 size，不会退回默认方图。")
-            var outputSize = size
-            if (outputSize == null && aspectRatio != null) {
-                outputSize = when {
-                    aspectRatio == "auto" && gpt -> "auto"
-                    aspectRatio == "1:1" -> "1024x1024"
-                    gpt && id.startsWith("gpt-image-2") && aspectRatio == "9:16" -> "864x1536"
-                    gpt && id.startsWith("gpt-image-2") && aspectRatio == "16:9" -> "1536x864"
-                    gpt && aspectRatio == "2:3" -> "1024x1536"
-                    gpt && aspectRatio == "3:2" -> "1536x1024"
-                    else -> invalid("该模型无法直接映射此比例；请使用支持该比例的模型或指定其支持的精确 size，不会用近似比例替代。")
-                }
-            }
-            if (outputSize != null) {
-                when {
-                    id == "dall-e-2" && outputSize !in setOf("256x256", "512x512", "1024x1024") -> invalid("DALL-E 2 不支持此 size。")
-                    id == "dall-e-3" && outputSize !in setOf("1024x1024", "1792x1024", "1024x1792") -> invalid("DALL-E 3 不支持此 size。")
-                    gpt && !id.startsWith("gpt-image-2") && outputSize !in setOf("auto", "1024x1024", "1024x1536", "1536x1024") -> invalid("当前 GPT Image 型号不支持此 size。")
-                    gpt && id.startsWith("gpt-image-2") && outputSize != "auto" -> {
-                        val (w, h) = dimensions(outputSize)
-                        if (w % 16 != 0 || h % 16 != 0 || w.toDouble() / h !in (1.0 / 3.0)..3.0 ||
-                            w.toLong() * h > 3840L * 2160 || maxOf(w, h) > 3840) invalid("此 GPT Image size 超出已适配的 16 像素倍数、比例或分辨率限制。")
-                    }
-                }
-                body.remove("aspect_ratio"); body.remove("resolution")
-                body.put("size", outputSize)
-            }
-            if (gpt && quality != null && quality !in setOf("auto", "low", "medium", "high")) invalid("GPT Image quality 不支持此值。")
-            if (dalle && quality != null && quality !in setOf("standard", "hd")) invalid("DALL-E quality 不支持此值。")
-            if (gpt && responseFormat != null) invalid("GPT Image 固定返回 base64，不接受 response_format 参数。")
-            if (id == "dall-e-3" && count != null && count != 1) invalid("DALL-E 3 单次仅支持一张。")
-        }
-        count?.let { body.put("n", it) }
-        quality?.let { body.put("quality", it) }
-        responseFormat?.let { body.put("response_format", it) }
     }
 
     /** Validate actual decoded dimensions, not a provider's claimed metadata. Never resize or retry. */
@@ -87,11 +54,13 @@ internal data class AgentImageGenerationOptions(
         if (aspectRatio != null && aspectRatio != "auto" && !matchesRatio(width, height, aspectRatio)) problems += "宽高比不符合 $aspectRatio"
         if (size != null && size != "auto" && dimensions(size) != (width to height)) problems += "像素尺寸不符合 $size"
         // A tier is provider-defined; flag clearly undersized output without claiming an exact edge length.
-        if (resolution == "2k" && maxOf(width, height) <= 1024) problems += "实际长边不超过 1024，与请求的 2k 档位明显不符"
+        val tier = resolution?.takeIf { Regex("[1-9][0-9]?k").matches(it) }?.dropLast(1)?.toInt()
+        if (tier != null && maxOf(width, height) <= tier * 512)
+            problems += "实际长边不超过 ${tier * 512}，与请求的 $resolution 档位明显不符"
         return (if (problems.isEmpty()) "实际尺寸" else "IMAGE_DIMENSIONS_MISMATCH") + "：${width}x$height" +
             (if (requested.isBlank()) "" else "；请求 $requested") +
             (if (problems.isEmpty()) "。" else "；${problems.joinToString("，")}，不能作为符合要求的结果交付。") +
-            (if (resolution == null) "" else "分辨率档位已传给接口，不等同于精确像素承诺。")
+            (if (resolution == null) "" else "分辨率档位是请求意图，不等同于精确像素承诺；发送字段见参数摘要。")
     }
 
     companion object {
@@ -106,9 +75,9 @@ internal data class AgentImageGenerationOptions(
                 return value.trim().lowercase()
             }
             val ratio = text("aspect_ratio")?.replace('：', ':')?.replace(" ", "")
-            if (ratio != null && ratio !in aspectRatios) invalid("不支持此 aspect_ratio。")
+            if (ratio != null && ratio != "auto" && !Regex("[1-9][0-9]{0,3}(?:\\.[0-9]{1,2})?:[1-9][0-9]{0,3}(?:\\.[0-9]{1,2})?").matches(ratio)) invalid("aspect_ratio 必须是正数比例或 auto。")
             val resolution = text("resolution")
-            if (resolution != null && resolution !in setOf("1k", "2k")) invalid("resolution 仅支持已确认的 1k、2k 档位。")
+            if (resolution != null && !Regex("[a-z0-9][a-z0-9_.-]{0,19}").matches(resolution)) invalid("resolution 格式无效。")
             val size = text("size")?.replace('×', 'x')?.replace(" ", "")
             if (size != null && size != "auto") dimensions(size)
             val count = if (!json.has("n")) null else {
@@ -118,7 +87,7 @@ internal data class AgentImageGenerationOptions(
                 n.toInt()
             }
             val quality = text("quality")
-            if (quality != null && quality !in setOf("auto", "low", "medium", "high", "standard", "hd")) invalid("quality 无效。")
+            if (quality != null && !Regex("[a-z0-9][a-z0-9_.-]{0,19}").matches(quality)) invalid("quality 格式无效。")
             val format = text("response_format")
             if (format != null && format !in setOf("url", "b64_json")) invalid("response_format 仅支持 url、b64_json。")
             return AgentImageGenerationOptions(ratio, resolution, size, count, quality, format)
