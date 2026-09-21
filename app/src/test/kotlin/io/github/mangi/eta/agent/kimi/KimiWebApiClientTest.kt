@@ -339,6 +339,69 @@ class KimiWebApiClientTest {
             server.requests().map { it.path },
         )
     }
+
+    @Test
+    fun defaultModelReadsTopLevelConfigField() {
+        // 容器内 config.toml 的 default_model 就是靠这条 REST 通路取到的：
+        // rootfs 里的文件是 600 root:root，App 进程直读会失败。
+        server.enqueueEnvelope("""{"default_model":"eta-wb2/cn:deepseek-v4.1-flash","providers":{}}""")
+
+        assertEquals("eta-wb2/cn:deepseek-v4.1-flash", client().defaultModel())
+        assertEquals("/api/v1/config", server.request(0).path)
+    }
+
+    @Test
+    fun defaultModelIsNullWhenConfigHasNoModel() {
+        server.enqueueEnvelope("""{"providers":{}}""")
+
+        assertNull(client().defaultModel())
+    }
+
+    @Test
+    fun defaultModelIsNullWhenConfigEndpointFails() {
+        // 读不到配置不能让委派直接崩：上层会退化为「不带模型提交」，
+        // 失败原因由 turn 结果如实上报。
+        server.enqueue(500, """{"code":500,"msg":"boom","data":{}}""")
+
+        assertNull(client().defaultModel())
+    }
+
+    @Test
+    fun sessionSummaryReadsLastTurnReasonAndModel() {
+        server.enqueueEnvelope(
+            """{"id":"s-1","workspace_id":"w","last_turn_reason":"failed",""" +
+                """"agent_config":{"model":"kimi-k2"}}"""
+        )
+
+        val summary = client().sessionSummary("s-1")
+
+        assertEquals("s-1", summary.id)
+        assertEquals("failed", summary.lastTurnReason)
+        assertEquals("kimi-k2", summary.model)
+        assertTrue(summary.failed)
+        assertEquals("/api/v1/sessions/s-1", server.request(0).path)
+    }
+
+    @Test
+    fun sessionSummaryCompletedTurnIsNotFailure() {
+        server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","last_turn_reason":"completed"}""")
+
+        val summary = client().sessionSummary("s-1")
+
+        assertEquals("completed", summary.lastTurnReason)
+        assertFalse(summary.failed)
+        assertNull(summary.model)
+    }
+
+    @Test
+    fun sessionSummaryWithoutReasonIsNotFailure() {
+        // 从未执行过的会话没有 last_turn_reason：不能当成失败。
+        server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w"}""")
+
+        assertNull(client().sessionSummary("s-1").lastTurnReason)
+        assertFalse(client().sessionSummary("s-1").failed)
+    }
+
 }
 
 /**
@@ -525,67 +588,5 @@ class KimiSubagentOutcomeTest {
         val json = JSONObject(outcome.toJson())
         assertEquals(outcome.task, json.getString("task"))
         assertEquals(outcome.content, json.getString("output"))
-    }
-
-    @Test
-    fun defaultModelReadsTopLevelConfigField() {
-        // 容器内 config.toml 的 default_model 就是靠这条 REST 通路取到的：
-        // rootfs 里的文件是 600 root:root，App 进程直读会失败。
-        server.enqueueEnvelope("""{"default_model":"eta-wb2/cn:deepseek-v4.1-flash","providers":{}}""")
-
-        assertEquals("eta-wb2/cn:deepseek-v4.1-flash", client().defaultModel())
-        assertEquals("/api/v1/config", server.request(0).path)
-    }
-
-    @Test
-    fun defaultModelIsNullWhenConfigHasNoModel() {
-        server.enqueueEnvelope("""{"providers":{}}""")
-
-        assertNull(client().defaultModel())
-    }
-
-    @Test
-    fun defaultModelIsNullWhenConfigEndpointFails() {
-        // 读不到配置不能让委派直接崩：上层会退化为「不带模型提交」，
-        // 失败原因由 turn 结果如实上报。
-        server.enqueue(500, """{"code":500,"msg":"boom","data":{}}""")
-
-        assertNull(client().defaultModel())
-    }
-
-    @Test
-    fun sessionSummaryReadsLastTurnReasonAndModel() {
-        server.enqueueEnvelope(
-            """{"id":"s-1","workspace_id":"w","last_turn_reason":"failed",""" +
-                """"agent_config":{"model":"kimi-k2"}}"""
-        )
-
-        val summary = client().sessionSummary("s-1")
-
-        assertEquals("s-1", summary.id)
-        assertEquals("failed", summary.lastTurnReason)
-        assertEquals("kimi-k2", summary.model)
-        assertTrue(summary.failed)
-        assertEquals("/api/v1/sessions/s-1", server.request(0).path)
-    }
-
-    @Test
-    fun sessionSummaryCompletedTurnIsNotFailure() {
-        server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w","last_turn_reason":"completed"}""")
-
-        val summary = client().sessionSummary("s-1")
-
-        assertEquals("completed", summary.lastTurnReason)
-        assertFalse(summary.failed)
-        assertNull(summary.model)
-    }
-
-    @Test
-    fun sessionSummaryWithoutReasonIsNotFailure() {
-        // 从未执行过的会话没有 last_turn_reason：不能当成失败。
-        server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w"}""")
-
-        assertNull(client().sessionSummary("s-1").lastTurnReason)
-        assertFalse(client().sessionSummary("s-1").failed)
     }
 }
