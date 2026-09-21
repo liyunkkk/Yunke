@@ -27,7 +27,7 @@ internal object AgentConversationCodec {
     private const val SENSITIVE_TOOL_OMITTED_TEXT =
         "[敏感工具参数与原始结果仅供当前回合使用，未写入持久会话]"
     private const val COMPACTION_NOTICE =
-        "[芸珂 上下文提示：此前部分 assistant/tool 记录因跨进程或持久化容量上限已压缩，请勿假定缺失步骤未执行。]"
+        "[YUNKe 上下文提示：此前部分 assistant/tool 记录因跨进程或持久化容量上限已压缩，请勿假定缺失步骤未执行。]"
 
     private val json = Json {
         ignoreUnknownKeys = true

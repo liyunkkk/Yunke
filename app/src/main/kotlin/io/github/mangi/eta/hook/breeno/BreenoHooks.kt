@@ -635,7 +635,7 @@ internal object BreenoHooks {
                         error(injected(
                             context,
                             R.string.injected_breeno_custom_model_disabled,
-                            "Enable Breeno custom models in Yunke settings first",
+                            "Enable Breeno custom models in YUNKe settings first",
                         ))
                     }
                     context ?: error(injected(

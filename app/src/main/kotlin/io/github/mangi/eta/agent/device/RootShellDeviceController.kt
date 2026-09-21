@@ -350,7 +350,7 @@ internal class RootShellDeviceController(
             }
             return nodeActionJson("replace_text", result)
         }
-        return errorJson("ACCESSIBILITY_UNAVAILABLE", "replace_text 需要先启用 芸珂 Agent 无障碍服务")
+        return errorJson("ACCESSIBILITY_UNAVAILABLE", "replace_text 需要先启用 YUNKe Agent 无障碍服务")
     }
 
     fun clearText(index: Int?, observation: ElementObservation?): String =
@@ -1211,7 +1211,7 @@ internal class RootShellDeviceController(
 
     private fun accessibilityUnavailable(): String = errorJson(
         "ACCESSIBILITY_UNAVAILABLE",
-        "芸珂 无障碍服务未连接；请开启服务后重新观察屏幕",
+        "YUNKe 无障碍服务未连接；请开启服务后重新观察屏幕",
     )
 
     private fun rootRequired(): String = errorJson("ROOT_REQUIRED", "此操作需要设备 Root 权限")

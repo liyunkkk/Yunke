@@ -45,7 +45,7 @@ internal class AgentImageTools(
             val staged = copyAsApp(source, sourceKind, temporaryFile, maxBytes)
             if (!staged) {
                 if (!rootAvailable()) {
-                    return sensitive(error("IMAGE_ACCESS_DENIED", "芸珂 无法读取此文件；请先通过文件选择器导入或授予读取权限"))
+                    return sensitive(error("IMAGE_ACCESS_DENIED", "YUNKe 无法读取此文件；请先通过文件选择器导入或授予读取权限"))
                 }
                 val copyResult = root.execute(
                     imageCopyCommand(source, sourceKind, temporaryFile, maxBytes),
@@ -169,7 +169,7 @@ internal class AgentImageTools(
     private fun copyFailure(result: BoundedRootCommandExecutor.Result): String = when (result.exitCode) {
         21 -> error("IMAGE_SOURCE_UNAVAILABLE", "图片源文件不存在或当前不可读")
         22 -> error("IMAGE_TOO_LARGE", "文件超过大小限制")
-        23 -> error("IMAGE_STAGE_FAILED", "Root 无法将文件复制到 芸珂 临时缓存")
+        23 -> error("IMAGE_STAGE_FAILED", "Root 无法将文件复制到 YUNKe 临时缓存")
         else -> error("IMAGE_UNAVAILABLE", "图片或视频读取失败")
     }
 

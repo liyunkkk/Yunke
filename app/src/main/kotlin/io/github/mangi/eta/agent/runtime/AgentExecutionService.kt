@@ -133,7 +133,7 @@ internal class AgentExecutionService : Service() {
             )
         }
 
-        // 小米 HyperOS / MIUI 焦点通知胶囊扩展：左侧为应用名 ContentTitle (✨ 芸珂)，右侧为动作 subTitle
+        // 小米 HyperOS / MIUI 焦点通知胶囊扩展：左侧为应用名 ContentTitle (✨ YUNKe)，右侧为动作 subTitle
         builder.extras.putBoolean("miui.focusNotification", true)
         builder.extras.putBoolean("miui.enableFloat", false)
         builder.extras.putString("miui.focusNotification.subTitle", actionText)

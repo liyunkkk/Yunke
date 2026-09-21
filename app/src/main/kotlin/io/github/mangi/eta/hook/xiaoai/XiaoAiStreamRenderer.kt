@@ -37,7 +37,7 @@ internal class XiaoAiStreamRenderer(
             is AgentEvent.RunStarted,
             is AgentEvent.ProviderRequestStarted,
             is AgentEvent.ProviderResponseStarted -> render(
-                text(R.string.injected_reasoning, "Yunke is reasoning…"),
+                text(R.string.injected_reasoning, "YUNKe is reasoning…"),
             )
 
             is AgentEvent.AssistantBlockStart -> {
@@ -57,7 +57,7 @@ internal class XiaoAiStreamRenderer(
 
             is AgentEvent.ToolStarted -> {
                 if (synchronized(streamedText) { streamedText.isEmpty() }) {
-                    render(text(R.string.injected_executing, "Yunke is working…"))
+                    render(text(R.string.injected_executing, "YUNKe is working…"))
                 }
             }
 
@@ -68,7 +68,7 @@ internal class XiaoAiStreamRenderer(
     fun complete(content: String) {
         if (cancelled.get()) return
         val finalText = content.trim().ifBlank {
-            text(R.string.injected_completed, "Yunke completed this task")
+            text(R.string.injected_completed, "YUNKe completed this task")
         }
         render(finalText, immediate = true)
         mainHandler.post {
@@ -81,7 +81,7 @@ internal class XiaoAiStreamRenderer(
         render(
             text(
                 R.string.injected_failed,
-                "Yunke could not complete the task. Try again later",
+                "YUNKe could not complete the task. Try again later",
             ),
             immediate = true,
         )
@@ -166,7 +166,7 @@ internal class XiaoAiStreamRenderer(
                 ?.invoke(player, text)
         } catch (exception: Exception) {
             logger.warnThrottled("xiaoai_tts_failed") {
-                "超级小爱 芸珂 结果朗读失败: type=${exception.safeLogType()}"
+                "超级小爱 YUNKe 结果朗读失败: type=${exception.safeLogType()}"
             }
         }
     }

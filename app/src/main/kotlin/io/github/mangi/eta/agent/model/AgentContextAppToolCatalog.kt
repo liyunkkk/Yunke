@@ -175,7 +175,7 @@ internal object AgentContextAppToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "get_assistant_config",
-                    description = "获取芸珂自身当前的运行状态、模型配置与功能开关（已自动进行脱敏保护）。当用户询问当前使用的是什么模型、中转站/服务商、思考模式开关或自身设置时调用此工具直接静默读取，严禁操控屏幕去设置界面翻找。",
+                    description = "获取YUNKe自身当前的运行状态、模型配置与功能开关（已自动进行脱敏保护）。当用户询问当前使用的是什么模型、中转站/服务商、思考模式开关或自身设置时调用此工具直接静默读取，严禁操控屏幕去设置界面翻找。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put("properties", JSONObject())
@@ -184,7 +184,7 @@ internal object AgentContextAppToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "update_assistant_config",
-                    description = "安全修改芸珂自身的部分运行设置或切换已配置的模型/服务商。仅支持白名单受控项，严禁传入敏感 API Key/Token 明文。",
+                    description = "安全修改YUNKe自身的部分运行设置或切换已配置的模型/服务商。仅支持白名单受控项，严禁传入敏感 API Key/Token 明文。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(

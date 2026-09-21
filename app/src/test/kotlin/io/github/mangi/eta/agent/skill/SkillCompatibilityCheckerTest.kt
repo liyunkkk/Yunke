@@ -14,7 +14,7 @@ class SkillCompatibilityCheckerTest {
             compatibility = "requires android-a11y-cli / android-open",
         )
         assertFalse(result.available)
-        assertEquals("依赖 MiniS 专属 Android CLI，芸珂 无法运行", result.reason)
+        assertEquals("依赖 MiniS 专属 Android CLI，YUNKe 无法运行", result.reason)
     }
 
     @Test

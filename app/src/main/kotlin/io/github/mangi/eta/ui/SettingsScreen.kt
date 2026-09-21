@@ -1138,7 +1138,7 @@ private fun PowerAssistantTarget.displayName(context: Context): String =
     when (this) {
         PowerAssistantTarget.OEM -> context.getString(R.string.power_assistant_system_default)
         PowerAssistantTarget.GEMINI -> "Gemini"
-        PowerAssistantTarget.ETA -> "芸珂"
+        PowerAssistantTarget.ETA -> "YUNKe"
     }
 
 private fun isAgentAccessibilityEnabled(context: Context): Boolean {
@@ -1154,7 +1154,7 @@ private fun isAgentAccessibilityEnabled(context: Context): Boolean {
 }
 
 private fun defaultDiagnosticLogFileName(): String =
-    "芸珂-诊断日志-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.zip"
+    "YUNKe-诊断日志-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.zip"
 
 private fun isEtaAssistantActive(context: Context): Boolean =
     VoiceInteractionService.isActiveService(

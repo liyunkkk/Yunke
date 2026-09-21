@@ -266,4 +266,4 @@ private fun BackupIcon(icon: ImageVector, loading: Boolean) {
 }
 
 private fun defaultBackupFileName(): String =
-    "芸珂-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}-备份.zip"
+    "YUNKe-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}-备份.zip"
