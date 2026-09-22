@@ -12,6 +12,53 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunControllerTest {
+    @Test fun budgetPauseWaitsOnlyAtWorkerCheckpoints() {
+        val controller = AgentRunController()
+        val interrupted = AtomicInteger()
+        controller.register(interruptible = true) { interrupted.incrementAndGet() }
+        controller.pauseAtCheckpoint()
+        assertFalse(controller.isPaused)
+        assertFalse(controller.hasPausedInterrupt)
+        controller.withTransportCallback {
+            controller.throwIfCancelled()
+            controller.withTransportCallback { controller.throwIfCancelled() }
+        }
+        assertEquals(0, interrupted.get())
+        val finished = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val worker = thread(isDaemon = true) {
+            try { controller.throwIfCancelled() } catch (t: Throwable) { failure.set(t) }
+            finally { finished.countDown() }
+        }
+        try {
+            assertFalse(finished.await(100, TimeUnit.MILLISECONDS))
+            controller.resume()
+            assertTrue(finished.await(2, TimeUnit.SECONDS))
+            assertNull(failure.get())
+        } finally { controller.cancel(); worker.join(2_000) }
+    }
+
+    @Test fun callbackScopeIsRestoredOnFailureAndCancellationStillWorks() {
+        val controller = AgentRunController()
+        controller.pauseAtCheckpoint()
+        runCatching { controller.withTransportCallback<Unit> { error("test callback failure") } }
+        val finished = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val worker = thread(isDaemon = true) {
+            try { controller.throwIfCancelled() } catch (t: Throwable) { failure.set(t) }
+            finally { finished.countDown() }
+        }
+        try {
+            assertFalse(finished.await(100, TimeUnit.MILLISECONDS))
+            controller.cancel()
+            assertTrue(finished.await(2, TimeUnit.SECONDS))
+            assertTrue(failure.get() is AgentRunCancelledException)
+            assertTrue(runCatching {
+                controller.withTransportCallback { controller.throwIfCancelled() }
+            }.exceptionOrNull() is AgentRunCancelledException)
+        } finally { controller.cancel(); worker.join(2_000) }
+    }
+
     @Test fun stoppedQueuedSupplementsAreRetainedOnceWithoutResuming() {
         val controller = AgentRunController()
         controller.steer("accepted but not consumed")

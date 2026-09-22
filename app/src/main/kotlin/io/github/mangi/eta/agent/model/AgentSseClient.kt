@@ -28,6 +28,7 @@ internal object AgentSseClient {
         onEvent: SseStream.(id: String?, type: String?, data: String) -> Unit,
         shouldIgnoreFailure: () -> Boolean = { false },
     ) {
+        runController.throwIfCancelled()
         val timingId = java.util.UUID.randomUUID().toString().take(8)
         val timings = StreamArrivalStats(System.nanoTime())
         fun reportTimings(final: Boolean = false) {
@@ -67,7 +68,7 @@ internal object AgentSseClient {
             override fun onOpen(eventSource: EventSource, response: Response) {
                 opened.set(true)
                 try {
-                    emitOpen(response.code)
+                    runController.withTransportCallback { emitOpen(response.code) }
                     if (!response.isSuccessful) {
                         failure.compareAndSet(
                             null,
@@ -92,7 +93,7 @@ internal object AgentSseClient {
                     return
                 }
                 try {
-                    runController.throwIfCancelled()
+                    runController.withTransportCallback { runController.throwIfCancelled() }
                     if (runController.hasPendingSteering || runController.isPaused) {
                         stream.finish()
                         return
@@ -100,7 +101,7 @@ internal object AgentSseClient {
                     val arrivalNs = System.nanoTime()
                     timings.arrival(arrivalNs, data.length)
                     try {
-                        emitEvent(stream, id, type, data)
+                        runController.withTransportCallback { emitEvent(stream, id, type, data) }
                     } finally {
                         timings.callback(System.nanoTime() - arrivalNs)
                         reportTimings()
@@ -132,7 +133,7 @@ internal object AgentSseClient {
                         runController.hasPendingSteering || runController.isPaused || runController.hasPausedInterrupt -> Unit
                         response != null && !response.isSuccessful -> {
                             if (!opened.get()) {
-                                runCatching { emitOpen(response.code) }
+                                runCatching { runController.withTransportCallback { emitOpen(response.code) } }
                             }
                             failure.compareAndSet(
                                 null,

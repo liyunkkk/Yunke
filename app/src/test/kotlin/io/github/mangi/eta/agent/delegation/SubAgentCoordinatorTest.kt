@@ -1,6 +1,8 @@
 package io.github.mangi.eta.agent.delegation
 
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentModelExecutionException
+import io.github.mangi.eta.agent.model.AgentModelFailure
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -422,6 +424,7 @@ class SubAgentCoordinatorTest {
         SubAgentCoordinator(
             listOf(model),
             roles = listOf("implementation"),
+            workerIds = listOf("exec-agent"),
             workspace = workspace,
             executeWorkspaceChild = { _, _, _, _, _, _ -> "edited" },
             executeChild = { _, _, _ -> error("research runner must not own an implementation task") },
@@ -429,6 +432,7 @@ class SubAgentCoordinatorTest {
             val started = JSONObject(coordinator.execute(call("delegate_task", JSONObject()
                 .put("task", "edit the project")
                 .put("role", "implementation")
+                .put("agent_id", "exec-agent")
                 .put("project", "/workspace/Eta"))).content)
             assertEquals(true, started.getBoolean("ok"))
             assertEquals("0123456789abcdef0123456789abcdef", started.getString("workspace_id"))
@@ -436,6 +440,71 @@ class SubAgentCoordinatorTest {
             val finished = get(coordinator, started.getString("task_id"))
             assertEquals("completed", finished.getString("status"))
             assertEquals("edited", finished.getString("result"))
+        }
+    }
+
+    @Test fun providerOutageIsNotReportedAsATaskFailure() {
+        val failure = AgentModelFailure("HTTP_503", true, "模型接口返回 HTTP 503")
+        val named = model.copy(providerName = "示例供应商", model = "demo-model")
+        SubAgentCoordinator(listOf(named), workerNames = listOf("执行")) { _, _, _ ->
+            throw AgentModelExecutionException(failure, "", emptyList())
+        }.use { coordinator ->
+            val result = get(coordinator, start(coordinator).getString("task_id"))
+            assertEquals("failed", result.getString("status"))
+            assertEquals("SUB_AGENT_PROVIDER_UNAVAILABLE", result.getString("error_code"))
+            val message = result.getString("result")
+            assertTrue(message.contains("供应商不可用"))
+            assertTrue(message.contains("示例供应商"))
+            assertTrue(message.contains("HTTP 503"))
+            assertFalse(message.contains("apiKey"))
+        }
+    }
+
+    @Test fun ordinaryChildFailureDoesNotClaimTheProviderIsDown() {
+        assertFalse(SubAgentProviderFailure.isUnavailable("CONTEXT_WINDOW_EXCEEDED"))
+        assertFalse(SubAgentProviderFailure.isUnavailable("HTTP_400"))
+        assertTrue(SubAgentProviderFailure.isUnavailable("HTTP_401"))
+        assertTrue(SubAgentProviderFailure.isUnavailable("MODEL_CONNECTION_FAILED"))
+    }
+
+    @Test fun omittedRoleRemainsResearchForBothAgentIdAndWorkerSelectors() {
+        SubAgentCoordinator(listOf(model), roles = listOf("implementation"), workerIds = listOf("exec-agent")) { _, _, _ ->
+            "read-only"
+        }.use { coordinator ->
+            for (selector in listOf(JSONObject().put("agent_id", "exec-agent"), JSONObject().put("worker", 1))) {
+                val started = JSONObject(coordinator.execute(call("delegate_task", selector.put("task", "inspect"))).content)
+                assertEquals("research", started.getString("role"))
+                assertTrue(started.isNull("workspace_id"))
+                assertEquals("completed", get(coordinator, started.getString("task_id")).getString("status"))
+            }
+        }
+    }
+
+    @Test fun explicitInvalidOrMismatchedRoleIsNotSilentlyChanged() {
+        SubAgentCoordinator(listOf(model), roles = listOf("implementation"), workerIds = listOf("exec-agent")) { _, _, _ ->
+            error("invalid requests must not execute")
+        }.use { coordinator ->
+            for (role in listOf<Any>("", " ", JSONObject.NULL, "unknown")) {
+                val result = JSONObject(coordinator.execute(call("delegate_task", JSONObject()
+                    .put("task", "inspect").put("agent_id", "exec-agent").put("role", role))).content)
+                assertFalse(result.getBoolean("ok"))
+            }
+            val mismatch = JSONObject(coordinator.execute(call("delegate_task", JSONObject()
+                .put("task", "inspect").put("agent_id", "exec-agent").put("role", "review"))).content)
+            assertEquals("WORKER_ROLE_MISMATCH", mismatch.getString("code"))
+        }
+    }
+
+    @Test fun explicitResearchRoleStaysReadOnlyOnAnImplementationWorker() {
+        SubAgentCoordinator(listOf(model), roles = listOf("implementation"), workerIds = listOf("exec-agent")) { _, _, _ ->
+            "read"
+        }.use { coordinator ->
+            val started = JSONObject(coordinator.execute(call("delegate_task", JSONObject()
+                .put("task", "inspect")
+                .put("role", "research")
+                .put("agent_id", "exec-agent"))).content)
+            assertEquals("research", started.getString("role"))
+            assertTrue(started.isNull("workspace_id"))
         }
     }
 

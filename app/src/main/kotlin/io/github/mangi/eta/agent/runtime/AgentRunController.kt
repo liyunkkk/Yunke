@@ -33,6 +33,9 @@ internal class AgentRunController {
     @Volatile
     private var paused = false
     @Volatile
+    private var checkpointPaused = false
+    private val transportCallbackDepth = ThreadLocal<Int>()
+    @Volatile
     private var pausedInterrupt = false
     private var pendingCompact: CompactRequest? = null
 
@@ -45,6 +48,7 @@ internal class AgentRunController {
         lock.withLock {
             if (!cancelled) stoppedSteering = steeringMessages.toList()
             cancelled = true
+            checkpointPaused = false
             acceptingSteering = false
             steeringMessages.clear()
             pendingCompact = null
@@ -168,7 +172,7 @@ internal class AgentRunController {
     }
 
     /** Stop at the next cooperative boundary without replaying an in-flight request or tool. */
-    fun pauseAtCheckpoint() { lock.withLock { if (!cancelled) paused = true } }
+    fun pauseAtCheckpoint() { lock.withLock { if (!cancelled) checkpointPaused = true } }
 
     fun pause() {
         lock.withLock { paused = true }
@@ -180,6 +184,7 @@ internal class AgentRunController {
      */
     fun resume() {
         lock.withLock {
+            checkpointPaused = false
             paused = false
             pauseCondition.signalAll()
         }
@@ -190,8 +195,14 @@ internal class AgentRunController {
      * 在 agent 循环的每轮/每步调用，实现暂停可恢复、取消即终止。
      */
     fun throwIfCancelled() {
+        // Network callbacks must finish the in-flight response, not wait for its owner.
+        // Cancellation remains effective, including checks nested in provider callbacks.
+        if ((transportCallbackDepth.get() ?: 0) > 0) {
+            if (cancelled) throw AgentRunCancelledException()
+            return
+        }
         lock.withLock {
-            while (paused && !cancelled) {
+            while ((paused || checkpointPaused) && !cancelled) {
                 try {
                     pauseCondition.await()
                 } catch (_: InterruptedException) {
@@ -201,6 +212,17 @@ internal class AgentRunController {
             }
         }
         if (cancelled) throw AgentRunCancelledException()
+    }
+
+    /** Keep transport callbacks nonblocking; only the collecting worker waits at a checkpoint. */
+    internal fun <T> withTransportCallback(block: () -> T): T {
+        val depth = transportCallbackDepth.get() ?: 0
+        transportCallbackDepth.set(depth + 1)
+        try {
+            return block()
+        } finally {
+            if (depth == 0) transportCallbackDepth.remove() else transportCallbackDepth.set(depth)
+        }
     }
 
     fun awaitRetryDelay(delayMs: Long) {

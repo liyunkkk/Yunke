@@ -56,4 +56,21 @@ class ExecutionLeaseRegistryTest {
         registry.release("user:daemon")
         assertEquals(1, registry.count())
     }
+
+    @Test
+    fun notificationCountsDistinctExecutingSessions() {
+        val registry = ExecutionLeaseRegistry()
+        registry.acquire("prepare:chat") {}
+        registry.acquire("run:chat") {}
+        registry.acquire("terminal-ui:idle", countsAsExecutingSession = false) {}
+        registry.acquire("user:daemon") {}
+        assertEquals(4, registry.count())
+        assertEquals(2, registry.executingSessionCount())
+        registry.release("prepare:chat")
+        assertEquals(2, registry.executingSessionCount())
+        registry.release("run:chat")
+        registry.release("user:daemon")
+        assertEquals(0, registry.executingSessionCount())
+        assertEquals(1, registry.count())
+    }
 }

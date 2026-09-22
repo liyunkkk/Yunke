@@ -98,12 +98,14 @@ internal class AgentExecutionService : Service() {
             this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-
         val state = executionState
         val appTitle = state.subtitle ?: getString(R.string.app_name)
         val actionText = state.title ?: getString(R.string.execution_phase_thinking)
-        val detailText = state.detail ?: getString(R.string.execution_summary, leases.count())
-
+        val detailText = state.detail ?: if (leases.executingSessionCount() == 0) {
+            getString(R.string.execution_summary_idle)
+        } else {
+            getString(R.string.execution_summary, leases.executingSessionCount())
+        }
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(appTitle)
@@ -238,11 +240,12 @@ internal class AgentExecutionService : Service() {
             id: String,
             allowBoundFallback: Boolean = false,
             source: String = AgentNotificationTrampolineActivity.SOURCE_MAIN,
+            countsAsExecutingSession: Boolean = true,
             onStop: () -> Unit,
         ): Boolean {
             currentSource = source
             if (backupMaintenance || instance?.startRejected == true) return false
-            if (!leases.acquire(id, allowBoundFallback, onStop)) return true
+            if (!leases.acquire(id, allowBoundFallback, countsAsExecutingSession, onStop)) return true
             return try {
                 context.applicationContext.startForegroundService(Intent(context, AgentExecutionService::class.java))
                 true

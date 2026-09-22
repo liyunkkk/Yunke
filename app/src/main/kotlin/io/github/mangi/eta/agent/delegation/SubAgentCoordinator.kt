@@ -14,8 +14,8 @@ import java.util.concurrent.TimeoutException
 /** Owned by a single parent run. Terminal state cannot be overwritten by a late worker. */
 internal class SubAgentCoordinator(
     private val workers: List<AgentModelClient.ModelConfig>,
-    private val timeoutMs: Long = 180_000,
-    private val compressionTimeoutMs: Long = 180_000,
+    private val timeoutMs: Long = 360_000,
+    private val compressionTimeoutMs: Long = 360_000,
     private val videoTimeoutMs: Long = 600_000,
     private val roles: List<String> = List(workers.size) { "research" },
     private val workspace: SubAgentWorkspace? = null,
@@ -119,18 +119,21 @@ internal class SubAgentCoordinator(
             val instruction = args.getString("task")
             val context = args.optString("context")
             require(instruction.isNotBlank() && instruction.length <= 12000 && context.length <= 20000)
-            val role = args.optString("role", "research")
-            require(role in setOf("research", "implementation", "review", "summary", "image_generation", "video_generation"))
+            val suppliedRole = if (args.has("role")) args.getString("role") else null
+            require(suppliedRole == null || suppliedRole in setOf("research", "implementation", "review", "summary", "image_generation", "video_generation"))
             val workerById = args.optString("agent_id").takeIf { it.isNotBlank() }?.let { workerIds.indexOf(it) }
             if (workerById != null && workerById < 0) return errorResult("AGENT_NOT_CONFIGURED")
             if (workerById != null && args.has("worker") && workerById != args.getInt("worker") - 1) return errorResult("WORKER_ID_MISMATCH")
             val worker = workerById ?: if (args.has("worker")) args.getInt("worker") - 1 else {
-                val desired = if (role == "summary") "review" else role
-                val candidates = if (role == "research") roles.indices.filter { roles[it] !in setOf("image_generation", "video_generation") } else roles.indices.filter { roles[it] == desired }
+                val roleForSelection = suppliedRole ?: "research"
+                val desired = if (roleForSelection == "summary") "review" else roleForSelection
+                val candidates = if (roleForSelection == "research") roles.indices.filter { roles[it] !in setOf("image_generation", "video_generation") } else roles.indices.filter { roles[it] == desired }
                 candidates.minByOrNull { candidate -> tasks.values.count { it.worker == candidate && (it.state in setOf("queued", "running") || it.executing) } }
                     ?: return errorResult("ROLE_NOT_CONFIGURED")
             }
             require(worker in workers.indices)
+            val role = suppliedRole ?: "research"
+            require(role in setOf("research", "implementation", "review", "summary", "image_generation", "video_generation"))
             if (role == "research" && roles[worker] in setOf("image_generation", "video_generation")) return errorResult("WORKER_ROLE_MISMATCH")
             if (role != "research" && roles[worker] != (if (role == "summary") "review" else role)) return errorResult("WORKER_ROLE_MISMATCH")
             val imageOptions = if (args.has("image_options")) {
@@ -162,7 +165,12 @@ internal class SubAgentCoordinator(
                     task.executing = true
                     task.startedAt = System.nanoTime() / 1_000_000
                     task.state = "running"
-                    task.clock = SubAgentExecutionClock(if (role == "video_generation") videoTimeoutMs else timeoutMs, compressionTimeoutMs)
+                    val executionBudget = when (role) {
+                        "video_generation" -> videoTimeoutMs
+                        "image_generation" -> minOf(timeoutMs, IMAGE_TIMEOUT_MS)
+                        else -> timeoutMs
+                    }
+                    task.clock = SubAgentExecutionClock(executionBudget, compressionTimeoutMs)
                     publishContext(task.context.start())
                     diagnostic(task,"started")
                 }
@@ -278,20 +286,28 @@ internal class SubAgentCoordinator(
                             task.context.finish(task.state)
                             return@synchronized
                         }
-                        task.errorCode = when (error) {
-                            is ImageGenerationParameterException -> "IMAGE_GENERATION_INVALID_OPTIONS"
-                            is SubAgentContextLimitException -> "SUB_AGENT_CONTEXT_LIMIT"
-                            is WorkspaceOperationException -> error.code
-                            else -> when (role) {
-                                "image_generation" -> "IMAGE_GENERATION_FAILED"
-                                "video_generation" -> "VIDEO_GENERATION_FAILED"
-                                else -> "SUB_AGENT_FAILED"
-                            }
+                        val providerFailure = SubAgentProviderFailure.find(error)
+                        task.errorCode = when {
+                            error is ImageGenerationParameterException -> "IMAGE_GENERATION_INVALID_OPTIONS"
+                            error is SubAgentContextLimitException -> "SUB_AGENT_CONTEXT_LIMIT"
+                            error is WorkspaceOperationException -> error.code
+                            providerFailure != null -> "SUB_AGENT_PROVIDER_UNAVAILABLE"
+                            role == "image_generation" -> "IMAGE_GENERATION_FAILED"
+                            role == "video_generation" -> "VIDEO_GENERATION_FAILED"
+                            else -> "SUB_AGENT_FAILED"
                         }
-                        task.result = if (error is ImageGenerationParameterException) error.message.orEmpty()
-                        else if (error is SubAgentContextLimitException)
-                            "子代理上下文不足，自动压缩不可用或未能释放足够空间。请拆分任务或调整模型窗口后重新委派；已有工作树改动保留。"
-                        else "子代理未完成，请主代理接手或重新委派。（${error.javaClass.simpleName}）"
+                        val providerName = workers[task.worker].providerName.ifBlank { "未命名供应商" }
+                        val modelName = workers[task.worker].model
+                        task.result = when {
+                            error is ImageGenerationParameterException -> error.message.orEmpty()
+                            error is SubAgentContextLimitException ->
+                                "子代理上下文不足，自动压缩不可用或未能释放足够空间。请拆分任务或调整模型窗口后重新委派；已有工作树改动保留。"
+                            providerFailure != null ->
+                                "子代理供应商不可用：${workerNames[task.worker]}（$providerName / $modelName）。" +
+                                    providerFailure.message.orEmpty() +
+                                    " 这不是任务结论。不要采用该子代理的部分输出，也不要立刻用同一供应商重试；可以更换子代理，或告诉用户该供应商当前不可用。"
+                            else -> "子代理未完成，请主代理接手或重新委派。（${error.javaClass.simpleName}）"
+                        }
                         task.state = "failed"
                         task.context.finish(task.state)
                     }
@@ -432,6 +448,10 @@ internal class SubAgentCoordinator(
         return backend.operation(project, action, id)
     }
     private fun errorResult(code: String) = JSONObject().put("ok", false).put("code", code)
+
+    private companion object {
+        const val IMAGE_TIMEOUT_MS = 180_000L
+    }
     override fun close() {
         val owned = synchronized(this) {
             if (closed) return

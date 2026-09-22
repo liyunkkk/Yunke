@@ -3,6 +3,7 @@
     <string name="execution_channel">任務執行</string>
     <string name="execution_title">YUNKe 正在執行</string>
     <string name="execution_summary">%1$d 項任務正在運行，可返回 YUNKe 查看進度</string>
+    <string name="execution_summary_idle">沒有正在執行的會話，可返回 YUNKe</string>
     <string name="execution_stop">停止運行任務</string>
     <string name="execution_phase_preparing">🚀 正在準備…</string>
     <string name="execution_phase_preparing_detail">正在初始化執行環境</string>

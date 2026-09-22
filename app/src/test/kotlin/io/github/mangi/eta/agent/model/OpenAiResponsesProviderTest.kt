@@ -588,6 +588,51 @@ class OpenAiResponsesProviderTest {
         }
     }
 
+    @Test fun terminalToolArgumentsAreAuthoritativeWithoutRevivingStreamedFields() {
+        for (terminal in listOf(
+            """{"task":"inspect"}""",
+            """{"task":"inspect","role":null,"project":null}""",
+            "{invalid-json",
+            "{}",
+        )) {
+            assertEquals(terminal, toolArgumentsFromStream(terminal, terminalOutput = true))
+        }
+        assertEquals("{}", toolArgumentsFromStream(null, terminalOutput = true))
+        assertEquals("null", toolArgumentsFromStream(JSONObject.NULL, terminalOutput = true))
+    }
+
+    @Test fun emptyTerminalOutputUsesDoneArgumentsWithoutFieldLevelMerging() {
+        val done = """{"task":"inspect"}"""
+        assertEquals(done, toolArgumentsFromStream(done, terminalOutput = false))
+        assertEquals("null", toolArgumentsFromStream(JSONObject.NULL, terminalOutput = false))
+        val completeStream = """{"task":"edit","role":"implementation","agent_id":"exec-agent","project":"/workspace/Eta"}"""
+        assertEquals(completeStream, toolArgumentsFromStream(null, terminalOutput = false))
+    }
+
+    private fun toolArgumentsFromStream(arguments: Any?, terminalOutput: Boolean): String {
+        val streamed = """{"task":"edit","role":"implementation","agent_id":"exec-agent","project":"/workspace/Eta"}"""
+        fun item(): JSONObject = JSONObject().put("id", "fc_role").put("type", "function_call")
+            .put("call_id", "call_role").put("name", "delegate_task")
+        val doneItem = item().also { if (arguments != null) it.put("arguments", arguments) }
+        val body = buildString {
+            append(event("response.output_item.added", JSONObject().put("output_index", 0).put("item", item())))
+            append(event("response.function_call_arguments.delta", JSONObject().put("item_id", "fc_role").put("delta", streamed)))
+            if (arguments != null) append(event("response.function_call_arguments.done", JSONObject()
+                .put("item_id", "fc_role").put("arguments", arguments)))
+            append(event("response.output_item.done", JSONObject().put("output_index", 0).put("item", doneItem)))
+            append(event("response.completed", JSONObject().put("response", JSONObject().put("status", "completed")
+                .put("output", if (terminalOutput) JSONArray().put(doneItem) else JSONArray()))))
+        }
+        var actual = ""
+        withSseServer(body) { baseUrl ->
+            val result = OpenAiResponsesProvider.complete(ProviderRequest(config(baseUrl),
+                JSONArray().put(JSONObject().put("role", "user").put("content", "inspect")), JSONArray()), AgentRunController())
+            actual = result.assistantMessage.getJSONArray("tool_calls").getJSONObject(0)
+                .getJSONObject("function").getString("arguments")
+        }
+        return actual
+    }
+
     private fun config(baseUrl: String) = AgentModelClient.ModelConfig(
         providerSourceType = "custom",
         baseUrl = baseUrl,

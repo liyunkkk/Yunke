@@ -2,19 +2,33 @@ package io.github.mangi.eta.agent.runtime
 
 /** 用户任务的运行引用；通知停止只消费这里登记的任务，不接管 Root daemon。 */
 internal class ExecutionLeaseRegistry {
-    private data class Lease(val owner: Long?, val allowBoundFallback: Boolean, val onStop: () -> Unit)
+    private data class Lease(val owner: Long?, val allowBoundFallback: Boolean, val countsAsExecutingSession: Boolean, val onStop: () -> Unit)
     private val leases = linkedMapOf<String, Lease>()
     private var activeOwner: Long? = null
 
-    @Synchronized fun acquire(id: String, allowBoundFallback: Boolean = false, onStop: () -> Unit): Boolean {
+    @Synchronized fun acquire(id: String, allowBoundFallback: Boolean = false, countsAsExecutingSession: Boolean = true, onStop: () -> Unit): Boolean {
         require(id.isNotBlank())
         if (id in leases) return false
-        leases[id] = Lease(activeOwner, allowBoundFallback, onStop)
+        leases[id] = Lease(activeOwner, allowBoundFallback, countsAsExecutingSession, onStop)
         return true
     }
 
     @Synchronized fun release(id: String) { leases.remove(id) }
     @Synchronized fun count(): Int = leases.size
+
+    /** prepare 与 run 属于同一次代理会话；闲置终端保活不计入正在执行。 */
+    @Synchronized fun executingSessionCount(): Int {
+        val sessions = HashSet<String>()
+        for ((id, lease) in leases) {
+            if (!lease.countsAsExecutingSession) continue
+            sessions += when {
+                id.startsWith("prepare:") -> "agent:" + id.removePrefix("prepare:")
+                id.startsWith("run:") -> "agent:" + id.removePrefix("run:")
+                else -> id
+            }
+        }
+        return sessions.size
+    }
 
     @Synchronized fun attachOwner(owner: Long) {
         activeOwner = owner

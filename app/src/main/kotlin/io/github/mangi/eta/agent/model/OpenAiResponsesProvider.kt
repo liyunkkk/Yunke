@@ -288,8 +288,9 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                     "response.function_call_arguments.done" -> {
                         val call = toolCalls[event.optString("item_id")] ?: return
                         if (event.has("arguments")) {
+                            val merged = ToolArguments.merge(call.arguments.toString(), event.opt("arguments"))
                             call.arguments.clear()
-                            call.arguments.append(event.optString("arguments"))
+                            call.arguments.append(merged)
                         }
                     }
                     "response.output_item.done" -> {
@@ -303,8 +304,9 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                                 call.callId = item.optString("call_id").ifBlank { call.callId }
                                 call.name = item.optString("name").ifBlank { call.name }
                                 if (item.has("arguments")) {
+                                    val merged = ToolArguments.merge(call.arguments.toString(), item.opt("arguments"))
                                     call.arguments.clear()
-                                    call.arguments.append(item.optString("arguments"))
+                                    call.arguments.append(merged)
                                 }
                                 if (!call.ended) {
                                     call.ended = true
@@ -645,7 +647,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                     itemId = item.optString("id").ifBlank { "item_$index" },
                     callId = item.optString("call_id").ifBlank { "tool_call_$index" },
                     name = item.optString("name").ifBlank { "unknown_tool" },
-                    arguments = item.optString("arguments").ifBlank { "{}" },
+                    arguments = ToolArguments.merge("", item.opt("arguments")).ifBlank { "{}" },
                 )
             }
         }
