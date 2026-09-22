@@ -184,6 +184,18 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             stopSelf()
             return
         }
+        if (activeRunId != null) {
+            // 任务仍在后台执行：重新唤起浮窗只把窗口加回来，不取消任务、不重置会话状态，
+            // 也不走 showKeyboard，避免把运行中的界面状态覆盖成可输入。
+            entryCaptureJob?.cancel()
+            entryCaptureJob = null
+            entryGeneration++
+            if (windowView == null) {
+                hiddenForForegroundOperation = false
+                showWindow()
+            }
+            return
+        }
         cancelCurrentRun()
         entryCaptureJob?.cancel()
         removeWindow()
@@ -316,7 +328,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                             submitInput()
                         },
                         onStop = ::stopCurrentRun,
-                        onClose = ::dismissAndStop,
+                        onClose = ::dismissOrContinueInBackground,
                         canOpenConversation = activeRunId == null &&
                             uiState.messages.any { message ->
                                 message is AgentMessageUi && message.content.isNotBlank()
@@ -398,7 +410,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             AndroidAgentLogger.warn("Eta assistant overlay back dispatcher unavailable")
             return
         }
-        val callback = OnBackInvokedCallback(::dismissAndStop)
+        val callback = OnBackInvokedCallback(::dismissOrContinueInBackground)
         dispatcher.registerOnBackInvokedCallback(
             OnBackInvokedDispatcher.PRIORITY_OVERLAY,
             callback,
@@ -1385,6 +1397,20 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         val callbacks = windowDetachCallbacks.toList()
         windowDetachCallbacks.clear()
         callbacks.forEach { callback -> callback(success) }
+    }
+
+    /**
+     * 关闭浮窗入口（关闭按钮 / 返回键 / 下拉手势 / 点击遮罩）。
+     *
+     * 任务仍在执行时只隐藏窗口，运行在后台继续，完成后由灵动岛与通知提示；
+     * 没有在执行的任务时才真正关闭服务。要中止任务请用面板上的停止按钮。
+     */
+    private fun dismissOrContinueInBackground() {
+        if (activeRunId != null) {
+            hideForForegroundOperation()
+            return
+        }
+        dismissAndStop()
     }
 
     private fun dismissAndStop() {

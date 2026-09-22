@@ -43,7 +43,7 @@ android {
         minSdk = 34
         targetSdk = 36
         // versionCode 规则：yyyyMMdd + 两位当日序号（01 起），发版时随 versionName 一起手动递增。
-        versionCode = 2026092201
+        versionCode = 2026092202
         versionName = "5.3.3"
         ndk {
             abiFilters += listOf("arm64-v8a")
