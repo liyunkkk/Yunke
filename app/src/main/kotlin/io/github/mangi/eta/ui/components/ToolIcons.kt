@@ -88,7 +88,7 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "computer", "computer_call", "计算机操作" -> Icons.Rounded.Computer
     "image_generation", "image_generation_call", "图像生成" -> Icons.Rounded.Image
     "mcp_call", "MCP 工具" -> Icons.Rounded.Extension
-    "delegate_task", "get_task_result", "cancel_task", "manage_agent_workspace" -> SubAgents
+    "delegate_task", "get_task_result", "cancel_task", "continue_task", "manage_agent_workspace" -> SubAgents
     "memory_get", "memory_write" -> Icons.Rounded.Psychology
     "press_key" -> Icons.Rounded.KeyboardCommandKey
     "open_system_panel" -> Icons.Rounded.WebAsset

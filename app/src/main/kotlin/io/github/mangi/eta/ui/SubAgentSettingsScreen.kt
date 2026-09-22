@@ -15,6 +15,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.Modifier
@@ -41,6 +42,8 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
     var rename by remember { mutableStateOf<SubAgentProfile?>(null) }
     var delete by remember { mutableStateOf<SubAgentProfile?>(null) }
     var name by remember { mutableStateOf("") }
+    val logging by remember { io.github.mangi.eta.data.datastore.SettingsDataStore.fileLoggingEnabledFlow() }.collectAsState(initial = io.github.mangi.eta.core.AppFileLogger.isEnabled())
+    val settingsScope = rememberCoroutineScope()
     val view = LocalView.current
     // Material widgets use their own ripple provider, separate from foundation LocalIndication.
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
@@ -77,6 +80,17 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                         Text("配置代理职责与模型，更改下次运行生效。", style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.padding(bottom = 4.dp))
+                    }
+                    item {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("子代理诊断日志", style = MaterialTheme.typography.bodyLarge)
+                                Text("使用应用统一日志开关。记录排队、模型请求、工具阶段、压缩、超时和续作；不记录任务正文、密钥或工具内容。可在设置的诊断区导出日志。", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(checked = logging, onCheckedChange = { value -> settingsScope.launch {
+                                io.github.mangi.eta.data.datastore.SettingsDataStore.setFileLoggingEnabled(value)
+                            } })
+                        }
                     }
                     items(profiles, key = { it.id }) { profile ->
                         Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp)) {

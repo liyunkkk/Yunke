@@ -209,7 +209,7 @@ internal class AgentRuntimeRunExecutor(
             val childProfiles = SubAgentPreferences.profiles().filter { it.enabled }
             val configuredChildren = if (SubAgentPreferences.enabled(request.effectiveModelSessionId)) runBlocking {
                 childProfiles.mapNotNull { profile ->
-                    runCatching { profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })?.let { SubAgentPreferences.applyReasoning(profile, it) } }.getOrNull()
+                    runCatching { profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })?.let { SubAgentPreferences.applyImageResolution(profile, SubAgentPreferences.applyReasoning(profile, it)) } }.getOrNull()
                         ?.takeIf { it.apiKey.isNotBlank() && it.baseUrl.isNotBlank() }
                         ?.let { profile to it }
                 }
@@ -222,6 +222,9 @@ internal class AgentRuntimeRunExecutor(
                     workerIds = configuredChildren.map { it.first.id },
                     workerNames = configuredChildren.map { it.first.name },
                     workerModelIds = configuredChildren.map { it.first.modelId },
+                    modelParallelLimits = childModels.map { SubAgentPreferences.parallelLimit(it.providerId, it.model) },
+                    allowTimeoutContinuation = true,
+                    diagnostics = io.github.mangi.eta.agent.delegation.SubAgentDiagnostics(request.runId, AndroidAgentLogger::info),
                     workspace = workspace,
                     prepareManualCompactor = { config ->
                         io.github.mangi.eta.agent.model.AgentCompressionEndpoint.apply(

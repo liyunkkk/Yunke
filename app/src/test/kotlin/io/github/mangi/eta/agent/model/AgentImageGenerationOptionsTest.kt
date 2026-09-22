@@ -8,9 +8,9 @@ class AgentImageGenerationOptionsTest {
     @Test fun allModelNamesUseSameForwardingPolicy() {
         listOf("agnes-image-2.5-flash", "grok-imagine-image-2.0", "gpt-image-1", "custom-alias").forEach { model ->
             val body = JSONObject("""{"size":"1024x1024","vendor_extra":true}""")
-            AgentImageGenerationOptions(aspectRatio = "9:16", resolution = "2k", quality = "ultra").applyTo(body, model)
+            AgentImageGenerationOptions(aspectRatio = "9:16", resolution = "high", quality = "ultra").applyTo(body, model)
             assertEquals("9:16", body.getString("aspect_ratio"))
-            assertEquals("2k", body.getString("resolution"))
+            assertEquals("high", body.getString("resolution"))
             assertFalse(body.has("size"))
             assertTrue(body.getBoolean("vendor_extra"))
         }
@@ -18,7 +18,7 @@ class AgentImageGenerationOptionsTest {
     @Test fun customPositiveRatioAndTierAreNotAClosedModelList() {
         val options = AgentImageGenerationOptions.fromJson(JSONObject("""{"aspect_ratio":"7:5","resolution":"4K"}"""))
         assertEquals("7:5", options.aspectRatio)
-        assertEquals("4k", options.resolution)
+        assertEquals("ultra", options.resolution)
     }
     @Test fun invalidFormatsStillFailBeforeNetwork() {
         listOf("""{"n":1.5}""", """{"n":11}""", """{"aspect_ratio":"0:0"}""",
@@ -35,7 +35,7 @@ class AgentImageGenerationOptionsTest {
         }
     }
     @Test fun actualDimensionsExposeIgnoredAspectAndResolution() {
-        val options = AgentImageGenerationOptions(aspectRatio = "9:16", resolution = "2k")
+        val options = AgentImageGenerationOptions(aspectRatio = "9:16", resolution = "high")
         assertTrue(options.dimensionReport(1024, 1024).contains("IMAGE_DIMENSIONS_MISMATCH"))
         assertFalse(options.dimensionReport(1152, 2048).contains("MISMATCH"))
         assertTrue(options.dimensionReport(-1, -1).contains("IMAGE_DIMENSIONS_UNVERIFIED"))

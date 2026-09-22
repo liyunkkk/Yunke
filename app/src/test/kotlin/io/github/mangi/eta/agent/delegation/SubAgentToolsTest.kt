@@ -43,5 +43,9 @@ class SubAgentToolsTest {
             assertNotNull(validator.validate(AgentModelClient.ToolCall("id", "delegate_task", args)))
         }
         assertNotNull(validator.validate(AgentModelClient.ToolCall("id", "delegate_task", "{\"task\":\"review\",\"worker\":3}")))
+        val description = tools.getJSONObject(0).getJSONObject("function").getString("description")
+        assertTrue(description.contains("missing shell is not a reason for the parent to read that source itself"))
+        assertTrue(description.contains("A multi-file investigation is not a trivial task"))
+        assertFalse(description.contains("handle it yourself"))
     }
 }

@@ -128,8 +128,6 @@ import com.mikepenz.markdown.compose.components.MarkdownComponents
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
 import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
-import com.mikepenz.markdown.compose.elements.MarkdownHeader
-import com.mikepenz.markdown.compose.elements.MarkdownParagraph
 import com.mikepenz.markdown.compose.elements.MarkdownTableBasicText
 import com.mikepenz.markdown.compose.elements.MarkdownText
 import com.mikepenz.markdown.compose.elements.listDepth
@@ -1609,7 +1607,7 @@ private fun chatMarkdownComponents(
     },
     paragraph = { model ->
         if (model.node.containsMarkdownImage()) {
-            MarkdownParagraph(
+            ChatMarkdownImageParagraph(
                 content = model.content,
                 node = model.node,
                 style = model.typography.paragraph,
@@ -1987,11 +1985,11 @@ private fun ChatHeadingBlock(
         MarkdownTokenTypes.ATX_CONTENT
     }
     if (model.node.containsMarkdownImage()) {
-        MarkdownHeader(
+        ChatMarkdownImageParagraph(
             content = model.content,
-            node = model.node,
+            node = model.node.findChildOfType(contentChildType) ?: model.node,
             style = style,
-            contentChildType = contentChildType,
+            modifier = Modifier.semantics { heading() },
         )
     } else {
         ChatRevealMarkdownText(

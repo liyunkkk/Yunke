@@ -94,6 +94,15 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual('failed',self.op('inspect',record)['state'])
         self.assertTrue(Path(record['path']).exists())
         self.op('discard',record)
+    def test_renew_keeps_workspace_and_cannot_revive_finished_lease(self):
+        record=self.op('prepare')
+        self.op('write',record,path='main.txt',content='preserved')
+        saved=w.load(self.root,record['id']); before=saved['lease_until']
+        self.op('renew',record)
+        self.assertGreaterEqual(w.load(self.root,record['id'])['lease_until'], before)
+        self.assertEqual('preserved', self.op('read',record,path='main.txt')['content'])
+        self.op('seal',record)
+        with self.assertRaisesRegex(ValueError,'WORKSPACE_LEASE_LOST'): self.op('renew',record)
     def test_pagination_and_utf8_budget(self):
         record=self.op('prepare')
         self.op('write',record,path='text.txt',content='中文'*30)

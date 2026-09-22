@@ -159,6 +159,11 @@ def locked(root, args):
             require(p.is_file(), 'FILE_NOT_FOUND')
             p.unlink()
         return {'changed': args['path']}
+    if action == 'renew':
+        require(record['state'] in ('editing', 'reviewing'), 'WORKSPACE_LEASE_LOST')
+        record['lease_until'] = time.time() + 420
+        save(root, record)
+        return {'ok': True, 'id': record['id']}
     if action == 'seal':
         require(record['state'] == 'editing' and time.time() <= record.get('lease_until', 0), 'WORKSPACE_NOT_EDITING')
         git(tree, 'add', '-A', '--', '.', ':(exclude).agent')

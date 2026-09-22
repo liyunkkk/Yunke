@@ -63,13 +63,18 @@ internal class SubAgentContextTracker(initial: SubAgentContextStats) {
         return value
     }
 
+    @Synchronized fun awaitDecision(): SubAgentContextStats {
+        value = value.copy(status = "awaiting_decision")
+        return value
+    }
+
     @Synchronized fun manualRequest(state: String): SubAgentContextStats {
         value = value.copy(manualCompactionState = state)
         return value
     }
 
     @Synchronized fun accept(event: AgentEvent): SubAgentContextStats? {
-        if (value.status != "running") return null
+        if (value.status !in setOf("running", "awaiting_decision")) return null
         value = when (event) {
             is AgentEvent.UsageReceived -> {
                 if (!event.projected) billedRounds[event.round] = event.usage

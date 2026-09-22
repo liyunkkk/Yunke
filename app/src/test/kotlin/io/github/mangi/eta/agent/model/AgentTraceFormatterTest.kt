@@ -488,4 +488,18 @@ class AgentTraceFormatterTest {
         val expectedParts: List<String>,
         val sensitiveParts: List<String>,
     )
+    @Test fun queuedChildAndTaskListingsNeverBecomeUnknownStatus() {
+        assertEquals("子代理已提交 · 排队中",formatter.summarizeResult("delegate_task",
+            AgentModelClient.ToolResult("""{"ok":true,"task_id":"a","status":"queued"}""")))
+        val summary=formatter.summarizeResult("get_task_result",AgentModelClient.ToolResult(
+            """{"ok":true,"total":3,"tasks":[{"status":"running"},{"status":"running"},{"status":"completed"}]}"""))
+        assertTrue(summary.contains("执行中 2"));assertTrue(summary.contains("已完成 1"));assertFalse(summary.contains("未知"))
+        assertEquals("暂无子代理任务",formatter.summarizeResult("get_task_result",AgentModelClient.ToolResult("""{"ok":true,"total":0,"tasks":[]}""")))
+    }
+    @Test fun delegationFailureKeepsActualReasonAndDoesNotClaimRunning() {
+        val summary=formatter.summarizeResult("delegate_task",AgentModelClient.ToolResult(
+            """{"ok":false,"code":"PROJECT_HAS_UNCOMMITTED_CHANGES","message":"工作区有未提交改动"}"""))
+        assertTrue(summary.contains("PROJECT_HAS_UNCOMMITTED_CHANGES"));assertTrue(summary.contains("未提交"));assertFalse(summary.contains("执行中"))
+    }
+
 }

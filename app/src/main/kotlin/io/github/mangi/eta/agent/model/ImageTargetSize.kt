@@ -9,16 +9,19 @@ internal object ImageTargetSize {
     fun resolve(ratio: String?, resolution: String?): String {
         if (ratio == null || ratio == "auto" || resolution == null)
             AgentImageGenerationOptions.invalid("像素尺寸协议需要明确比例和分辨率档位，或直接指定 size。")
-        val edge = edges[resolution] ?: AgentImageGenerationOptions.invalid("未配置该分辨率档位的像素映射，请指定 size 或 sizes。")
+        val edge = edges[ImageResolutionTier.legacy(resolution)] ?: AgentImageGenerationOptions.invalid("未配置该分辨率档位的像素映射，请指定 size 或 sizes。")
         val parts = ratio.split(':').map(::BigDecimal)
-        val w = parts[0]; val h = parts[1]
-        fun shortSide(small: BigDecimal, large: BigDecimal): Int = try {
-            small.multiply(BigDecimal(edge)).divide(large).intValueExact()
-        } catch (_: ArithmeticException) {
-            AgentImageGenerationOptions.invalid("该比例无法在长边 $edge 下得到整数像素；请配置精确 sizes 映射，不会换用近似比例。")
-        }
-        val width = if (w >= h) edge else shortSide(w, h)
-        val height = if (h >= w) edge else shortSide(h, w)
+        val scale = maxOf(parts[0].scale(), parts[1].scale(), 0)
+        val w = parts[0].movePointRight(scale).toBigIntegerExact()
+        val h = parts[1].movePointRight(scale).toBigIntegerExact()
+        val gcd = w.gcd(h)
+        val unitWidth = (w / gcd).intValueExact(); val unitHeight = (h / gcd).intValueExact()
+        // A K tier is a long-edge budget, not a promise of exactly that many pixels.
+        // 21:9 + 2k => 2044x876, keeping 21:9 exactly instead of snapping the ratio.
+        val multiplier = edge / maxOf(unitWidth, unitHeight)
+        if (multiplier < 1) AgentImageGenerationOptions.invalid("该比例在当前档位下无法得到整数像素尺寸，请指定 size 或 sizes。")
+        val width = unitWidth * multiplier
+        val height = unitHeight * multiplier
         if (minOf(width, height) < 64) AgentImageGenerationOptions.invalid("计算后的短边不足 64 像素，请指定明确 size。")
         return "${width}x$height"
     }

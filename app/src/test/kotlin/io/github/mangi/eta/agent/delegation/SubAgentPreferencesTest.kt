@@ -7,6 +7,8 @@ import io.github.mangi.eta.agent.model.ModelFeatureSelection
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import org.junit.Assert.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -202,6 +204,85 @@ class SubAgentPreferencesTest {
             assertFalse(description.contains("complex"))
             assertFalse(description.contains("suited tasks"))
         }
+    }
+
+    @Test fun mediaEffortIsProfileLocalAndNeverInheritsChatDefaults() {
+        val media=SubAgentProfile("media-test","图片","image_generation",reasoning=ReasoningEffort.HIGH)
+        val cfg=AgentModelClient.ModelConfig(baseUrl="https://example.invalid",apiKey="test",model="same-model",systemPrompt="",
+            thinkingEnabled=true,reasoningEffort=ReasoningEffort.XHIGH,
+            extraBodyJson="""{"eta_media_reasoning":{"image_generation":{"field":"reasoning_effort","values":{"low":"low","high":"high"},"default":"low"}}}""")
+        assertEquals(ReasoningEffort.HIGH,SubAgentPreferences.applyReasoning(media,cfg).reasoningEffort)
+        assertEquals(ReasoningEffort.LOW,SubAgentPreferences.applyReasoning(media.copy(reasoning=null),cfg).reasoningEffort)
+        assertEquals(ReasoningEffort.XHIGH,cfg.reasoningEffort)
+        val unsupported=cfg.copy(extraBodyJson="")
+        assertEquals(ReasoningEffort.OFF,SubAgentPreferences.applyReasoning(media.copy(reasoning=null),unsupported).reasoningEffort)
+        assertTrue(SubAgentPreferences.workerDescription(media,1,unsupported).contains("当前接口未适配"))
+        assertEquals(ReasoningEffort.HIGH,SubAgentPreferences.applyReasoning(media,unsupported).reasoningEffort)
+    }
+
+    @Test fun modelLimitsArePerProviderAndApiModelWithoutArtificialCeiling() {
+        Prefs.initLocal(RuntimeEnvironment.getApplication())
+        val provider="parallel-${java.util.UUID.randomUUID()}"
+        assertEquals(1,SubAgentPreferences.parallelLimit(provider,"same"))
+        SubAgentPreferences.saveParallelLimit(provider,"same",1000)
+        assertEquals(1000,SubAgentPreferences.parallelLimit(provider,"same"))
+        assertEquals(1,SubAgentPreferences.parallelLimit(provider,"other"))
+        assertEquals(1,SubAgentPreferences.parallelLimit(provider+"x","same"))
+        SubAgentPreferences.saveParallelLimit(provider,"same",0)
+        assertEquals(0,SubAgentPreferences.parallelLimit(provider,"same"))
+        assertThrows(IllegalArgumentException::class.java) { SubAgentPreferences.saveParallelLimit(provider,"same",-1) }
+    }
+    @Test fun imageResolutionIsChildDefaultAndNeverMutatesSharedModel() {
+        val profile=SubAgentProfile("image-default","image",role="image_generation",imageResolution="high")
+        assertEquals("high",SubAgentProfile.fromJson(profile.toJson()).imageResolution)
+        val shared=AgentModelClient.ModelConfig(baseUrl="https://example.invalid",apiKey="test",model="image",systemPrompt="",extraBodyJson="""{"size":"1024x1024","seed":1}""")
+        val next=SubAgentPreferences.applyImageResolution(profile,shared)
+        assertEquals("high",org.json.JSONObject(next.extraBodyJson).getString("resolution"))
+        assertFalse(org.json.JSONObject(next.extraBodyJson).has("size"))
+        assertTrue(shared.extraBodyJson.contains("1024x1024"))
+        assertEquals(1,org.json.JSONObject(next.extraBodyJson).getInt("seed"))
+    }
+
+    @Test fun parallelLimitFlowsUpdateAllObserversOfTheBoundModelOnly() = kotlinx.coroutines.runBlocking {
+        Prefs.initLocal(RuntimeEnvironment.getApplication())
+        val provider="flow-${java.util.UUID.randomUUID()}"
+        val first=mutableListOf<Int>(); val second=mutableListOf<Int>(); val other=mutableListOf<Int>()
+        val jobs=listOf(
+            launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                SubAgentPreferences.parallelLimitFlow(provider,"shared").collect { first.add(it) }
+            },
+            launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                SubAgentPreferences.parallelLimitFlow(provider,"shared").collect { second.add(it) }
+            },
+            launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                SubAgentPreferences.parallelLimitFlow(provider,"other").collect { other.add(it) }
+            })
+        try {
+            SubAgentPreferences.saveParallelLimit(provider,"shared",7)
+            kotlinx.coroutines.yield()
+            assertEquals(listOf(1,7),first); assertEquals(first,second)
+            assertEquals(listOf(1),other)
+            SubAgentPreferences.saveParallelLimit(provider,"shared",0)
+            kotlinx.coroutines.yield()
+            assertEquals(listOf(1,7,0),first); assertEquals(first,second)
+        } finally { jobs.forEach { it.cancel() } }
+    }
+
+    @Test fun parallelEditorCannotSaveForRemovedOrReboundProfile() {
+        Prefs.initLocal(RuntimeEnvironment.getApplication())
+        val added=SubAgentPreferences.add()
+        val provider="row-${java.util.UUID.randomUUID()}"
+        try {
+            SubAgentPreferences.saveModel(added.id,ModelFeatureSelection(true,provider,"record-a"))
+            assertTrue(SubAgentPreferences.saveProfileParallelLimit(added.id,provider,"record-a","api-name",6))
+            assertEquals(6,SubAgentPreferences.parallelLimit(provider,"api-name"))
+            assertEquals(1,SubAgentPreferences.parallelLimit(provider,"record-a"))
+            SubAgentPreferences.saveModel(added.id,ModelFeatureSelection(true,provider,"record-b"))
+            assertFalse(SubAgentPreferences.saveProfileParallelLimit(added.id,provider,"record-a","api-name",9))
+            SubAgentPreferences.remove(added.id)
+            assertFalse(SubAgentPreferences.saveProfileParallelLimit(added.id,provider,"record-b","api-name",9))
+            assertEquals(6,SubAgentPreferences.parallelLimit(provider,"api-name"))
+        } finally { SubAgentPreferences.remove(added.id) }
     }
 
 }

@@ -6,7 +6,7 @@ import org.json.JSONObject
 /** Transport is selected by protocol, never by model name or gateway brand. */
 internal object ImageEndpointPlan {
     enum class Kind { GENERATIONS, EDITS_MULTIPART, EDITS_JSON, GENERATIONS_IMAGE, NOVELAI }
-    data class Plan(val kind: Kind, val body: JSONObject, val options: AgentImageGenerationOptions) {
+    data class Plan(val kind: Kind, val body: JSONObject, val options: AgentImageGenerationOptions, val expectedSize: String? = null) {
         fun url(baseUrl: String): String {
             val base = baseUrl.trim().toHttpUrl()
             require(base.query == null && base.fragment == null && base.username.isEmpty() && base.password.isEmpty()) {
@@ -46,6 +46,6 @@ internal object ImageEndpointPlan {
             AgentImageGenerationOptions.invalid("json_image_url 未定义遮罩协议；请选择 multipart 或 generations_image。")
         if (listOf("image", "images", "mask").any(prepared.body::has))
             AgentImageGenerationOptions.invalid("参考图和遮罩应通过图片输入传入，不能由额外请求体覆盖。")
-        return Plan(kind, JSONObject(prepared.body.toString()), prepared.options)
+        return Plan(kind, JSONObject(prepared.body.toString()), prepared.options, prepared.expectedSize)
     }
 }

@@ -175,6 +175,8 @@ internal class AgentAppState(
     private val runEventFlushJobs = mutableMapOf<String, Job>()
     private val runJobs = mutableMapOf<String, Job>()
     private val imageGenerationRunIds = mutableSetOf<String>()
+    private val directMediaRuns = DirectMediaRunControl()
+    private val timedOutChildVisibility = TimedOutChildVisibility()
     private data class PendingSteerDraft(
         val conversationId: String?, val imageIds: Set<String>, val fileIds: Set<String>,
         val mentionIds: Set<String> = emptySet(),
@@ -2010,9 +2012,10 @@ internal class AgentAppState(
         runOverheadTokens[runId] = requestOverheadTokens
         val generateVideo = runModel.supportsVideoGeneration
         val generateImage = !generateVideo && runModel.supportsImageGeneration
-        if (generateImage || generateVideo) {
+        val mediaController = if (generateImage || generateVideo) {
             imageGenerationRunIds += runId
-        }
+            directMediaRuns.start(runId)
+        } else null
 
         val willCompress = !generateImage && !generateVideo && !skipAutoCompress && shouldAutoCompress(
             history = history,
@@ -2093,24 +2096,11 @@ internal class AgentAppState(
                 thinkingEnabled = permittedReasoningEffort.enablesReasoning,
                 reasoningEffort = permittedReasoningEffort,
             )
-            if (generateVideo) {
-                executeVideoGeneration(
-                    runId = runId,
-                    conversationId = conversationId,
-                    config = config,
-                    prompt = prompt,
-                    images = images,
-                )
-                return@launch
-            }
-            if (generateImage) {
-                executeImageGeneration(
-                    runId = runId,
-                    conversationId = conversationId,
-                    config = config,
-                    prompt = prompt,
-                    images = images,
-                )
+            if (mediaController != null) {
+                directMediaRuns.execute(mediaController) {
+                    if (generateVideo) executeVideoGeneration(runId, conversationId, config, prompt, images, mediaController)
+                    else executeImageGeneration(runId, conversationId, config, prompt, images, mediaController)
+                }
                 return@launch
             }
             val supportsVideo = config.supportsVideo
@@ -2227,6 +2217,7 @@ internal class AgentAppState(
             }
             preparationJob.invokeOnCompletion { AgentExecutionService.release(leaseId) }
         }
+        if (mediaController != null) preparationJob.invokeOnCompletion { directMediaRuns.cancel(runId) }
         preparationJob.start()
         if (history.isEmpty() && !generateImage && !generateVideo) {
             requestConversationTitle(conversationId, state, prompt, messages.lastOrNull()?.id,
@@ -2287,8 +2278,10 @@ internal class AgentAppState(
         config: AgentModelClient.ModelConfig,
         prompt: String,
         images: List<PendingImageUi>,
+        controller: io.github.mangi.eta.agent.runtime.AgentRunController,
     ) {
         try {
+            controller.throwIfCancelled()
             val apiPrompt = AgentFileReferencePromptCodec.parse(prompt).request.trim()
             if (apiPrompt.isBlank()) {
                 error(appContext.getString(R.string.chat_image_prompt_required))
@@ -2305,7 +2298,7 @@ internal class AgentAppState(
                     mimeType = image.mimeType.ifBlank { "image/jpeg" },
                 )
             }
-            val generated = AgentImageGenerationClient().generate(
+            val generated = AgentImageGenerationClient(runController = controller).generate(
                 config = config,
                 prompt = apiPrompt,
                 images = inputImages,
@@ -2313,7 +2306,9 @@ internal class AgentAppState(
             if (generated.images.isEmpty()) {
                 error(appContext.getString(R.string.chat_image_generation_empty))
             }
+            controller.throwIfCancelled()
             val staged = generated.images.mapIndexedNotNull { index, image ->
+                controller.throwIfCancelled()
                 val ext = AgentImageGenerationParser.extensionForMime(image.mimeType)
                 chatImageCache.stage(conversationId, image.bytes, "generated-${index + 1}.$ext")
             }
@@ -2325,16 +2320,17 @@ internal class AgentAppState(
                 text = generated.text,
             )
             withContext(Dispatchers.Main) {
-                finishImageGenerationRun(runId, markdown)
+                if (!controller.isCancelled) finishImageGenerationRun(runId, markdown)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Throwable) {
+            if (controller.isCancelled) return
             val message = failure.message?.trim().orEmpty().ifBlank {
                 appContext.getString(R.string.chat_image_generation_empty)
             }
             withContext(Dispatchers.Main) {
-                failImageGenerationRun(runId, message)
+                if (!controller.isCancelled) failImageGenerationRun(runId, message)
             }
         }
     }
@@ -2345,8 +2341,10 @@ internal class AgentAppState(
         config: AgentModelClient.ModelConfig,
         prompt: String,
         images: List<PendingImageUi>,
+        controller: io.github.mangi.eta.agent.runtime.AgentRunController,
     ) {
         try {
+            controller.throwIfCancelled()
             val apiPrompt = AgentFileReferencePromptCodec.parse(prompt).request.trim()
             if (apiPrompt.isBlank()) {
                 error(appContext.getString(R.string.chat_video_prompt_required))
@@ -2363,7 +2361,7 @@ internal class AgentAppState(
                     mimeType = image.mimeType.ifBlank { "image/jpeg" },
                 )
             }
-            val generated = AgentVideoGenerationClient().generate(
+            val generated = AgentVideoGenerationClient(runController = controller).generate(
                 config = config,
                 prompt = apiPrompt,
                 images = inputImages,
@@ -2371,7 +2369,9 @@ internal class AgentAppState(
             if (generated.videos.isEmpty()) {
                 error(appContext.getString(R.string.chat_video_generation_empty))
             }
+            controller.throwIfCancelled()
             val staged = generated.videos.mapIndexedNotNull { index, video ->
+                controller.throwIfCancelled()
                 val ext = AgentVideoGenerationParser.extensionForMime(video.mimeType)
                 chatImageCache.stage(
                     conversationId,
@@ -2388,16 +2388,17 @@ internal class AgentAppState(
                 text = generated.text,
             )
             withContext(Dispatchers.Main) {
-                finishImageGenerationRun(runId, markdown)
+                if (!controller.isCancelled) finishImageGenerationRun(runId, markdown)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Throwable) {
+            if (controller.isCancelled) return
             val message = failure.message?.trim().orEmpty().ifBlank {
                 appContext.getString(R.string.chat_video_generation_empty)
             }
             withContext(Dispatchers.Main) {
-                failImageGenerationRun(runId, message)
+                if (!controller.isCancelled) failImageGenerationRun(runId, message)
             }
         }
     }
@@ -2405,6 +2406,7 @@ internal class AgentAppState(
     private fun finishImageGenerationRun(runId: String, content: String) {
         if (runId !in imageGenerationRunIds) return
         runJobs.remove(runId)
+        directMediaRuns.cancel(runId)
         imageGenerationRunIds.remove(runId)
         completeLatestAssistantMessage(runId, content, generatedAtMillis = System.currentTimeMillis())
         snapshotPartialAssistantToHistory(runId)
@@ -2424,6 +2426,7 @@ internal class AgentAppState(
     private fun failImageGenerationRun(runId: String, error: String) {
         if (runId !in imageGenerationRunIds) return
         runJobs.remove(runId)
+        directMediaRuns.cancel(runId)
         imageGenerationRunIds.remove(runId)
         replaceLatestAssistantWithNotice(runId, SystemNoticeCode.RuntimeFailed, error)
         setConversationStreaming(runId, false)
@@ -2885,6 +2888,7 @@ internal class AgentAppState(
         if (activeRunIdForSelectedConversation() == runId) io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop()
         if (stoppingRuns.containsKey(runId)) return
         val imageGen = imageGenerationRunIds.remove(runId)
+        if (imageGen) directMediaRuns.cancel(runId)
         flushPendingRunDelta(runId)
         val retrying = modelRetryState.isWaiting(runId)
         if (!imageGen) {
@@ -2904,7 +2908,11 @@ internal class AgentAppState(
         replaceLatestAssistantWithNotice(
             runId,
             if (retrying) SystemNoticeCode.RuntimeFailed else SystemNoticeCode.Stopped,
-            detail = if (retrying) "已停止等待接口重试" else null,
+            detail = when {
+                imageGen -> "已停止本地生成等待并取消网络请求；服务端任务可能仍在处理或计费，不会自动重发。"
+                retrying -> "已停止等待接口重试"
+                else -> null
+            },
         )
         // Immediate UI feedback, without cancelling the result subscriber or losing history.
         setConversationStreaming(runId, false)
@@ -2922,7 +2930,11 @@ internal class AgentAppState(
     fun pauseCurrentRun() {
         val runId = activeRunIdForSelectedConversation() ?: return
         if (stoppingRuns.containsKey(runId)) return
-        if (runId in imageGenerationRunIds) return
+        if (runId in imageGenerationRunIds) {
+            // Media APIs have no resumable pause contract. Stop local I/O instead of ignoring the button.
+            stopRun(runId)
+            return
+        }
         if (homeState.isPaused) return
         scope.launch(Dispatchers.IO) {
             AgentRuntimeClient(appContext, AndroidAgentLogger).pauseRun(runId)
@@ -2978,6 +2990,7 @@ internal class AgentAppState(
         if (contextBudgetPrompt?.conversationId == conversationId) contextBudgetPrompt = null
         val runId = runIdForConversation(conversationId)
         if (runId != null) {
+            directMediaRuns.cancel(runId)
             imageGenerationRunIds.remove(runId)
             runJobs.remove(runId)?.cancel()
             scope.launch(Dispatchers.IO) {
@@ -3686,6 +3699,7 @@ internal class AgentAppState(
                 conversationIdForRun(runId)?.let { id ->
                     conversationsById[id]?.let conversation@ { current ->
                         if (current.childContextRunId.isNotBlank() && current.childContextRunId != runId) return@conversation
+                        if (!timedOutChildVisibility.observe(runId, event.stats.taskId, event.stats.status)) return@conversation
                         val existing = if (current.childContextRunId == runId) current.childContexts else emptyList()
                         val updated = existing.toMutableList()
                         val index = updated.indexOfFirst { it.taskId == event.stats.taskId }
@@ -3695,6 +3709,20 @@ internal class AgentAppState(
                         }
                         if (index < 0) updated += event.stats else updated[index] = event.stats
                         updateConversation(id, current.copy(childContextRunId = runId, childContexts = updated), updateTimestamp = false)
+                        val hideStatus = event.stats.status
+                        if (timedOutChildVisibility.schedulesHide(hideStatus) && existing.getOrNull(index)?.status != hideStatus) {
+                            scope.launch {
+                                delay(timedOutChildVisibility.remaining(runId, event.stats.taskId))
+                                val latest = conversationsById[id] ?: return@launch
+                                if (latest.childContextRunId != runId) return@launch
+                                val taskId = event.stats.taskId
+                                if (latest.childContexts.none { it.taskId == taskId && it.status == hideStatus }) return@launch
+                                updateConversation(id, latest.copy(
+                                    childContexts = latest.childContexts.filterNot { it.taskId == taskId },
+                                    selectedContextTaskId = latest.selectedContextTaskId.takeUnless { it == taskId },
+                                ), updateTimestamp = false)
+                            }
+                        }
                     }
                 }
             }
@@ -3983,6 +4011,7 @@ internal class AgentAppState(
         if (contextBudgetPrompt?.runId == runId) contextBudgetPrompt = null
         flushPendingRunDelta(runId)
         runJobs.remove(runId)
+        directMediaRuns.cancel(runId)
         imageGenerationRunIds.remove(runId)
         updateRunTrace(runId) { messages -> runMessageProjector.finalizeRun(runId, messages) }
         applyConversationHistoryResult(runId, result.transcript)

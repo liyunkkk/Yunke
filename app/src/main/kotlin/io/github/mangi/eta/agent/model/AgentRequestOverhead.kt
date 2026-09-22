@@ -23,6 +23,7 @@ internal object AgentRequestOverhead {
             skillContext = skillContext,
             memoryContext = memoryContext,
             rootAvailable = capabilities.rootAvailable,
+            delegationAvailable = AgentPromptBuilder.delegationToolsAvailable(additionalTools),
         )
         var tokens = 0
         for (index in 0 until systemMessages.length()) {

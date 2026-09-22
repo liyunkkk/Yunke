@@ -11,6 +11,7 @@ internal object AgentSensitiveToolPolicy {
         "workspace_file",
         "get_task_result",
         "cancel_task",
+        "continue_task",
         "get_setting",
         "wifi_credentials",
         "recent_notifications",

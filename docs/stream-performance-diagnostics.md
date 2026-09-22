@@ -17,6 +17,8 @@
 - Reveal frame intervals, backlog and height remeasurement requests.
 - User-scroll state changes, follow decisions, actual scroll work/cancellation.
 - Window FrameMetrics total, deadline, layout/measure, draw, synchronization, GPU and input-handling durations. All window content is included, not just chat.
+- The remaining non-overlapping parts: `frame.unknown` (UI thread busy before the frame), `frame.animation`, `frame.command`, `frame.swap`. `frame.unaccounted` is total minus those eight parts. GPU is recorded separately because it overlaps command issue and buffer swap; a negative remainder is `frame.overlap`.
+- `frame.vsyncLate` is actual VSYNC minus intended VSYNC. valueSum counts frames later than 8.3 ms, the 120 Hz budget. `frame.deadline` is the device budget, not time spent; its histogram is not a jank count.
 - Sampled Java heap usage; this is not native allocation or GC pause profiling.
 
 `Eta.<stage>` trace sections accompany measured synchronous stages for Perfetto attribution. Aggregates establish correlations, not automatic root-cause claims. Runtime logs remain separate; a UI delta gap alone cannot distinguish network latency from runtime delivery/main-thread scheduling. A sample with no drops does not establish that the entire interaction was smooth.

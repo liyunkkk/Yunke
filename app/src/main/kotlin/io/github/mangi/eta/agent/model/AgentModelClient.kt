@@ -119,6 +119,7 @@ internal object AgentModelClient {
             supportsVision = imageInput,
             supportsVideo = config.supportsVideo,
         )
+        val delegationAvailable = AgentPromptBuilder.delegationToolsAvailable(additionalTools)
         val messages = AgentPromptBuilder.buildInitialMessages(
             config,
             prompt,
@@ -127,12 +128,14 @@ internal object AgentModelClient {
             skillContext,
             memoryContext,
             rootAvailable = initialCapabilities.rootAvailable,
+            delegationAvailable = delegationAvailable,
         )
         val systemCount = AgentPromptBuilder.buildSystemMessages(
             config,
             skillContext,
             memoryContext,
             rootAvailable = initialCapabilities.rootAvailable,
+            delegationAvailable = delegationAvailable,
         ).length()
         var transcriptStartIndex = messages.length()
         fun toolsFor(
@@ -191,7 +194,7 @@ internal object AgentModelClient {
                 val nextSkillContext = skillContextProvider()
                 val nextMemoryContext = memoryContextProvider()
                 val systemMessages = AgentPromptBuilder.buildSystemMessages(
-                    config, nextSkillContext, nextMemoryContext, capabilities.rootAvailable,
+                    config, nextSkillContext, nextMemoryContext, capabilities.rootAvailable, delegationAvailable,
                 )
                 for (index in 0 until systemMessages.length()) {
                     messages.put(index, systemMessages.getJSONObject(index))

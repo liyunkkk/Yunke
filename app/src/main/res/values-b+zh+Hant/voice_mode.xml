@@ -11,8 +11,8 @@
     <string name="voice_mode_connecting">正在連線…</string>
     <string name="voice_mode_listening">正在聽你說…</string>
     <string name="voice_mode_transcribing">正在完成識別…</string>
-    <string name="voice_mode_thinking">代魚正在思考…</string>
-    <string name="voice_mode_speaking">代魚正在說話</string>
+    <string name="voice_mode_thinking">YUNKe正在思考…</string>
+    <string name="voice_mode_speaking">YUNKe正在說話</string>
     <string name="voice_mode_universal_settings_summary">離線識別 · 目前聊天模型 · 已設定朗讀音色</string>
     <string name="voice_mode_universal_settings_hint">語音識別和朗讀繼續在原有設定頁配置。語音對話會把識別文字傳給目前聊天模型，朗讀後繼續聆聽。</string>
     <string name="voice_mode_doubao_provider">即時通話提供商</string>

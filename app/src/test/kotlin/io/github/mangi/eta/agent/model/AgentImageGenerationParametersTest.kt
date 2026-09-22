@@ -24,7 +24,7 @@ import org.robolectric.annotation.GraphicsMode
 class AgentImageGenerationParametersTest {
     private fun config(model: String = "grok-imagine-image-2.0") = AgentModelClient.ModelConfig(
         baseUrl = "https://example.invalid/v1", apiKey = "test", model = model, systemPrompt = "",
-        extraBodyJson = """{"eta_image_config":{"protocol":"passthrough"}}""")
+        extraBodyJson = """{"eta_image_config":{"protocol":"passthrough","values":{"resolution":{"low":"1k","medium":"1.5k","high":"2k","ultra":"4k"}}}}""")
     private fun png(w: Int = 90, h: Int = 160): ByteArray {
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         return ByteArrayOutputStream().use { out ->
@@ -43,7 +43,7 @@ class AgentImageGenerationParametersTest {
 
     @Test fun realGenerationBodyCarriesGrokRatioResolutionAndPerCallOverrides() {
         val requests = mutableListOf<Request>()
-        val configured = config().copy(extraBodyJson = """{"size":"1024x1024","aspect_ratio":"1:1","resolution":"1k","eta_image_config":{"protocol":"passthrough"}}""")
+        val configured = config().copy(extraBodyJson = """{"size":"1024x1024","aspect_ratio":"1:1","resolution":"1k","eta_image_config":{"protocol":"passthrough","values":{"resolution":{"low":"1k","medium":"1.5k","high":"2k","ultra":"4k"}}}}""")
         val result = AgentImageGenerationClient(client(requests, response(png()))).generate(configured, "portrait",
             options = AgentImageGenerationOptions(aspectRatio = "9:16", resolution = "2k"))
         val json = JSONObject(body(requests.single()))
@@ -52,7 +52,7 @@ class AgentImageGenerationParametersTest {
         assertFalse(json.has("size")); assertEquals("portrait", json.getString("prompt"))
         assertTrue(configured.extraBodyJson.contains("1:1"))
         assertEquals(90, result.images.single().width); assertEquals(160, result.images.single().height)
-        assertTrue(result.text.contains("IMAGE_DIMENSIONS_MISMATCH")) // tiny output cannot satisfy 2k
+        assertTrue(result.text.contains("IMAGE_RESOLUTION_UNVERIFIED")) // No declared pixel mapping: cannot claim this native tier is verified.
     }
     @Test fun squareResultIsReportedNotRetriedOrResized() {
         val requests = mutableListOf<Request>()
@@ -77,7 +77,7 @@ class AgentImageGenerationParametersTest {
     }
     @Test fun grokEditIsJsonAndCarriesOptionsAndReferenceImage() {
         val requests = mutableListOf<Request>()
-        AgentImageGenerationClient(client(requests, response(png()))).generate(config().copy(extraBodyJson = """{"eta_image_config":{"protocol":"passthrough","edit_protocol":"json_image_url"}}"""), "edit portrait",
+        AgentImageGenerationClient(client(requests, response(png()))).generate(config().copy(extraBodyJson = """{"eta_image_config":{"protocol":"passthrough","values":{"resolution":{"low":"1k","medium":"1.5k","high":"2k","ultra":"4k"}},"edit_protocol":"json_image_url"}}"""), "edit portrait",
             images = listOf(AgentImageGenerationClient.InputImage(png(), "image/png")),
             options = AgentImageGenerationOptions(aspectRatio = "9:16", resolution = "2k"))
         assertTrue(requests.single().url.encodedPath.endsWith("/images/edits"))
@@ -104,7 +104,7 @@ class AgentImageGenerationParametersTest {
         val body1 = JSONObject(body(requests.single()))
         assertEquals("864x1536", body1.getString("size")); assertFalse(body1.has("aspect_ratio"))
         requests.clear()
-        gen.generate(config().copy(extraBodyJson = """{"aspect_ratio":"9:16","resolution":"2k","eta_image_config":{"protocol":"passthrough"}}"""), "portrait")
+        gen.generate(config().copy(extraBodyJson = """{"aspect_ratio":"9:16","resolution":"2k","eta_image_config":{"protocol":"passthrough","values":{"resolution":{"low":"1k","medium":"1.5k","high":"2k","ultra":"4k"}}}}"""), "portrait")
         assertEquals("9:16", JSONObject(body(requests.single())).getString("aspect_ratio"))
     }
     @Test fun ambiguousFailureOrSuccessfulEmptyResponseDoesNotGenerateAgain() {
@@ -162,8 +162,11 @@ class AgentImageGenerationParametersTest {
         assertEquals("2k", actual.getString("resolution"))
         assertEquals("portrait", actual.getString("prompt"))
         assertFalse(actual.has("eta_image_config"))
-        assertTrue(output.text.contains("发送参数"))
+        assertTrue(output.text.contains("分辨率:100x100"))
+        assertTrue(output.text.contains("比例:9:16"))
         assertTrue(output.text.contains("IMAGE_DIMENSIONS_MISMATCH"))
+        assertFalse(output.text.contains("发送参数"))
+        assertFalse(output.text.contains("端点协议"))
         assertEquals(1, requests.size)
     }
 
@@ -258,4 +261,102 @@ class AgentImageGenerationParametersTest {
         }
         assertTrue(requests.isEmpty())
     }
+    @Test fun directNaturalPromptsReachTheActualRequestBuilder() {
+        val requests=mutableListOf<Request>()
+        val gen=AgentImageGenerationClient(client(requests,response(png())))
+        val defaultConfig=config().copy(extraBodyJson="{}")
+        gen.generate(defaultConfig,"生成一张2k、9:16的动漫美少女")
+        assertEquals("1152x2048",JSONObject(body(requests.single())).getString("size"))
+        requests.clear()
+        gen.generate(defaultConfig,"生成一张动漫美少女1312×736")
+        assertEquals("1312x736",JSONObject(body(requests.single())).getString("size"))
+    }
+    @Test fun concurrentNaturalRequestsUseMappedOneImageCountsAndNoSchedulerFields() {
+        val requests=java.util.Collections.synchronizedList(mutableListOf<Request>())
+        val config=config().copy(extraBodyJson="""{"eta_image_config":{"protocol":"size_long_edge","fields":{"n":"sample_count"}}}""")
+        val gen=AgentImageGenerationClient(client(requests,response(png())))
+        val result=gen.generate(config,"生成三张2k、9:16的插画，并发2")
+        assertEquals(3,requests.size);assertEquals(3,result.images.size)
+        requests.forEach {
+            val json=JSONObject(body(it))
+            assertEquals(1,json.getInt("sample_count"));assertFalse(json.has("n"));assertFalse(json.has("concurrency"))
+            assertEquals("1152x2048",json.getString("size"))
+        }
+        assertTrue(result.text.contains("每次发送 n=1"));assertFalse(result.text.contains("\"sample_count\":3"))
+    }
+    @Test fun batchRetainsPartialResultsAndNeverRetriesFailures() {
+        val calls=java.util.concurrent.atomic.AtomicInteger()
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            val code=if(calls.incrementAndGet()==2) 500 else 200
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(code).message("test")
+                .body((if(code==200) response(png()) else "server failure").toResponseBody()).build()
+        }.build()
+        val result=AgentImageGenerationClient(http).generate(config(),"画三张插画，并发2")
+        assertEquals(3,calls.get());assertEquals(2,result.images.size)
+        assertTrue(result.text.contains("IMAGE_BATCH_PARTIAL"));assertTrue(result.text.contains("IMAGE_COUNT_MISMATCH"))
+    }
+    @Test fun invalidNaturalValuesNeverIssueRequests() {
+        val requests=mutableListOf<Request>()
+        val gen=AgentImageGenerationClient(client(requests,response(png())))
+        for(prompt in listOf("画三张插画，并发9","生成1.5张插画","画三张2k、9:16插画，并发2.5","生成三张2k和4k的插画")) {
+            assertThrows(ImageGenerationParameterException::class.java) { gen.generate(config(),prompt) }
+        }
+        assertTrue(requests.isEmpty())
+    }
+    @Test fun nativeBatchGetsIndependentRandomSeedsAndOneSamplePerRequest() {
+        val requests=java.util.Collections.synchronizedList(mutableListOf<Request>())
+        val bytes=png(512,512)
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            requests += chain.request()
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("test")
+                .body(bytes.toResponseBody()).build()
+        }.build()
+        val config=config().copy(extraBodyJson="""{"eta_image_config":{"endpoint":"novelai_native","native_parameters":{"params_version":3,"steps":28,"scale":5,"sampler":"k_euler"}}}""")
+        val result=AgentImageGenerationClient(http).generate(config,"猫",options=AgentImageGenerationOptions(size="512x512",count=2,concurrency=2))
+        assertEquals(2,requests.size);assertEquals(2,result.images.size)
+        val seeds=requests.map {
+            val json=JSONObject(body(it));assertFalse(json.has("concurrency"))
+            val native=json.getJSONObject("parameters");assertEquals(1,native.getInt("n_samples"));native.getLong("seed")
+        }
+        assertEquals(2,seeds.distinct().size)
+    }
+
+    @Test fun mappedDefaultCountIsNotShadowedByClientDefault() {
+        val requests=java.util.Collections.synchronizedList(mutableListOf<Request>())
+        val cfg=config().copy(extraBodyJson="""{"params":{"samples":3},"concurrency":2,"eta_image_config":{"fields":{"n":"params.samples"}}}""")
+        val result=AgentImageGenerationClient(client(requests,response(png()))).generate(cfg,"画一只猫")
+        assertEquals(3,requests.size);assertEquals(3,result.images.size)
+        requests.forEach { assertEquals(1,JSONObject(body(it)).getJSONObject("params").getInt("samples")) }
+    }
+    @Test fun oneResponseKeepsSuccessfulDownloadsWhenAnotherDownloadFails() {
+        val posts=java.util.concurrent.atomic.AtomicInteger();val gets=java.util.concurrent.atomic.AtomicInteger()
+        val http=OkHttpClient.Builder().addInterceptor { chain ->
+            val request=chain.request()
+            val bytes=if(request.method=="POST") {
+                posts.incrementAndGet()
+                """{"data":[{"url":"https://example.invalid/one.png"},{"url":"https://example.invalid/two.png"}]}""".toByteArray()
+            } else {
+                gets.incrementAndGet();assertNull(request.header("Authorization"))
+                if(request.url.encodedPath=="/two.png") throw java.io.IOException("test download failure")
+                png()
+            }
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("test").body(bytes.toResponseBody()).build()
+        }.build()
+        val result=AgentImageGenerationClient(http).generate(config(),"画两张插画")
+        assertEquals(1,posts.get());assertEquals(2,gets.get());assertEquals(1,result.images.size)
+        assertTrue(result.text.contains("IMAGE_DOWNLOAD_PARTIAL"));assertTrue(result.text.contains("IMAGE_COUNT_MISMATCH"))
+    }
+
+    @Test fun rejectionIncludesStatusAndShapeWithoutSendingAgain() {
+        val requests=mutableListOf<Request>()
+        val gen=AgentImageGenerationClient(client(requests,"""{"error":{"message":"The request could not be processed."}}""",400))
+        val error=assertThrows(IllegalStateException::class.java) {
+            gen.generate(config().copy(extraBodyJson="{}"),"private artwork description",options=AgentImageGenerationOptions(aspectRatio="9:16",resolution="2k"))
+        }
+        assertEquals(1,requests.size)
+        assertTrue(error.message!!.contains("HTTP 400"));assertTrue(error.message!!.contains("1152x2048"))
+        assertTrue(error.message!!.contains("未自动重试"));assertFalse(error.message!!.contains("private artwork description"))
+        assertFalse(error.message!!.contains("test-key"))
+    }
+
 }

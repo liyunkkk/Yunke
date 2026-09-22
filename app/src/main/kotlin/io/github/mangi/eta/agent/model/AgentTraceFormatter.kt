@@ -47,6 +47,7 @@ internal class AgentTraceFormatter(
             "delegate_task" -> "委派子代理任务"
             "manage_agent_workspace" -> "管理任务工作区"
             "get_task_result" -> "查询子代理结果"
+            "continue_task" -> "继续子代理任务"
             "cancel_task" -> "取消子代理任务"
             "memory_get" -> summarizeMemoryGetArguments(toolCall.argumentsJson)
             "memory_write" -> summarizeMemoryWriteArguments(toolCall.argumentsJson)
@@ -269,17 +270,45 @@ internal class AgentTraceFormatter(
             BROWSER_TOOL_NAME -> json?.let(::summarizeBrowserResult) ?: "浏览器操作完成"
             "memory_get", "memory_write" ->
                 json?.let { summarizeMemoryResult(toolName, it) } ?: "完成"
-            "delegate_task", "get_task_result", "cancel_task" -> when (json?.optString("status")) {
-                "running" -> "子代理执行中"
-                "completed" -> "子代理已返回 · 等待主代理审核"
-                "cancelled" -> "子代理已取消"
-                "timed_out" -> "子代理超时 · 主代理接手"
-                "failed" -> "子代理失败 · 主代理接手"
-                else -> "子代理状态未知"
-            }
+            "delegate_task", "get_task_result", "continue_task", "cancel_task" -> summarizeSubAgentResult(json)
             "search_apps" -> json?.let(::summarizeSearchAppsResult) ?: "完成"
             "launch_app" -> json?.let(::summarizeLaunchAppResult) ?: "已打开"
             else -> json?.let { summarizeGenericResult(it, result) } ?: "完成"
+        }
+    }
+
+    /** A delegate reply records submission; it is not a live task-status subscription. */
+    private fun summarizeSubAgentResult(json: JSONObject?): String {
+        if (json == null) return "未取得子代理状态"
+        val tasks = json.optJSONArray("tasks")
+        if (tasks != null) {
+            if (tasks.length() == 0) return if (json.optInt("total", 0) == 0) "暂无子代理任务" else "本页无子代理任务"
+            val counts = linkedMapOf<String, Int>()
+            for (i in 0 until tasks.length()) {
+                val status = tasks.optJSONObject(i)?.optString("status").orEmpty()
+                val label = when (status) {
+                    "awaiting_decision" -> "超时待主代理决定"
+                    "queued" -> "排队中"
+                    "running" -> "执行中"
+                    "completed" -> "已完成"
+                    "cancelled" -> "已取消"
+                    "timed_out" -> "已超时"
+                    "failed" -> "失败"
+                    else -> "未提供状态"
+                }
+                counts[label] = (counts[label] ?: 0) + 1
+            }
+            return "子代理任务 · " + counts.entries.joinToString(" · ") { "${it.key} ${it.value}" }
+        }
+        return when (json.optString("status")) {
+            "awaiting_decision" -> "子代理超时 · 等待主代理继续或取消"
+            "queued" -> "子代理已提交 · 排队中"
+            "running" -> "子代理执行中"
+            "completed" -> "子代理已返回 · 等待主代理审核"
+            "cancelled" -> "子代理已取消"
+            "timed_out" -> "子代理超时 · 主代理接手"
+            "failed" -> "子代理失败 · 主代理接手"
+            else -> "未取得子代理状态"
         }
     }
 

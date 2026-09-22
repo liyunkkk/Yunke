@@ -15,6 +15,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -44,6 +45,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
@@ -164,7 +166,7 @@ internal fun ChatMarkdownImage(
         resolveChatImageSource(content, node, sourceOverride)
     } ?: return
     val imageModifier = if (fillPlaceholder) {
-        modifier.fillMaxSize()
+        modifier.fillMaxSize().clipToBounds()
     } else {
         modifier
             .fillMaxWidth()
@@ -175,7 +177,7 @@ internal fun ChatMarkdownImage(
         ChatRemoteClickableImage(
             source = source,
             modifier = imageModifier,
-            contentScale = if (fillPlaceholder) ContentScale.Crop else ContentScale.FillWidth,
+            contentScale = ContentScale.Fit,
             compactLoading = fillPlaceholder,
         )
     }
@@ -208,25 +210,38 @@ private fun ChatRemoteClickableImage(
     }
     val image = bitmap
     when {
-        image != null -> Box(modifier = modifier) {
-            ChatClickableImage(
-                source = source,
-                bitmap = image,
-                contentDescription = stringResource(
-                    if (isVideo) R.string.chat_video_preview else R.string.chat_image_preview,
-                ),
-                modifier = Modifier.fillMaxSize(),
-                contentScale = contentScale,
-            )
-            if (isVideo) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayArrow,
-                    contentDescription = stringResource(R.string.chat_video_preview),
-                    tint = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .size(36.dp),
+        image != null -> {
+            @Composable fun imageContent() {
+                ChatClickableImage(
+                    source = source,
+                    bitmap = image,
+                    contentDescription = stringResource(
+                        if (isVideo) R.string.chat_video_preview else R.string.chat_image_preview,
+                    ),
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = contentScale,
                 )
+                if (isVideo) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = stringResource(R.string.chat_video_preview),
+                        tint = Color.White,
+                        modifier = Modifier.size(36.dp),
+                    )
+                }
+            }
+            if (compactLoading) {
+                Box(modifier.clipToBounds(), contentAlignment = Alignment.Center) { imageContent() }
+            } else {
+                // Bound the measured height explicitly. A fillMaxSize child in an unbounded
+                // paragraph used to depend on the text placeholder's height rather than media.
+                BoxWithConstraints(modifier.clipToBounds()) {
+                    val ratio = image.width.toFloat() / image.height.coerceAtLeast(1)
+                    val displayHeight = (maxWidth / ratio).coerceAtMost(320.dp).coerceAtMost(maxHeight)
+                    Box(Modifier.fillMaxWidth().height(displayHeight), contentAlignment = Alignment.Center) {
+                        imageContent()
+                    }
+                }
             }
         }
         isVideo && failed -> Box(

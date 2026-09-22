@@ -13,6 +13,19 @@ class SubAgentCoordinatorTest {
     private fun start(c: SubAgentCoordinator) = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "check evidence"))).content)
     private fun get(c: SubAgentCoordinator, id: String, wait: Int = 1000) = JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", id).put("wait_ms", wait))).content)
 
+    @Test fun callerCancellationIsNotReportedAsWorkerFailure() {
+        SubAgentCoordinator(listOf(model)) { _, _, controller ->
+            controller.cancel()
+            throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
+        }.use { c ->
+            val id = start(c).getString("task_id")
+            val done = get(c, id)
+            assertEquals("cancelled", done.getString("status"))
+            assertEquals("", done.getString("error_code"))
+            assertFalse(done.getString("result").contains("SUB_AGENT_FAILED"))
+        }
+    }
+
     @Test fun dynamicWorkersRunInParallelAndBusyWorkerQueues() {
         val started = CountDownLatch(6)
         val release = CountDownLatch(1)
@@ -377,16 +390,52 @@ class SubAgentCoordinatorTest {
                 received = options; called++; "file"
             }, executeChild = { _, _, _ -> error("text runner must not be used") }).use { c ->
             val args = JSONObject().put("task", "portrait").put("role", "image_generation")
-                .put("image_options", JSONObject().put("aspect_ratio", "9:16").put("resolution", "2k"))
+                .put("image_options", JSONObject().put("aspect_ratio", "9:16").put("resolution", "2k").put("n", 3).put("concurrency", 2))
             val id = JSONObject(c.execute(call("delegate_task", args)).content).getString("task_id")
             assertEquals("completed", get(c, id).getString("status"))
-            assertEquals("9:16", received!!.aspectRatio)
-            assertEquals("2k", received!!.resolution)
+            val receivedOptions = requireNotNull(received)
+            assertEquals("9:16", receivedOptions.aspectRatio)
+            assertEquals("high", receivedOptions.resolution)
+            assertEquals(3, receivedOptions.count)
+            assertEquals(2, receivedOptions.concurrency)
             args.put("image_options", JSONObject().put("aspect_ratio", "9:16").put("size", "1024x1024"))
             val rejected = JSONObject(c.execute(call("delegate_task", args)).content)
             assertEquals("IMAGE_GENERATION_INVALID_OPTIONS", rejected.getString("code"))
             assertFalse(rejected.has("task_id"))
             assertEquals(1, called)
+        }
+    }
+
+    @Test fun implementationWorkspaceIsReadyBeforeTheCallerReturns() {
+        val workspace = SubAgentWorkspace("unused", AgentModelClient.ToolExecutor {
+            AgentModelClient.ToolResult(JSONObject()
+                .put("ok", true)
+                .put("exit_code", 0)
+                .put("stdout", JSONObject()
+                    .put("ok", true)
+                    .put("id", "0123456789abcdef0123456789abcdef")
+                    .put("path", "/workspace/Eta/.agent/worktrees/0123456789abcdef0123456789abcdef")
+                    .put("state", "editing")
+                    .toString())
+                .toString())
+        })
+        SubAgentCoordinator(
+            listOf(model),
+            roles = listOf("implementation"),
+            workspace = workspace,
+            executeWorkspaceChild = { _, _, _, _, _, _ -> "edited" },
+            executeChild = { _, _, _ -> error("research runner must not own an implementation task") },
+        ).use { coordinator ->
+            val started = JSONObject(coordinator.execute(call("delegate_task", JSONObject()
+                .put("task", "edit the project")
+                .put("role", "implementation")
+                .put("project", "/workspace/Eta"))).content)
+            assertEquals(true, started.getBoolean("ok"))
+            assertEquals("0123456789abcdef0123456789abcdef", started.getString("workspace_id"))
+            assertTrue(started.getString("workspace_path").contains("worktrees"))
+            val finished = get(coordinator, started.getString("task_id"))
+            assertEquals("completed", finished.getString("status"))
+            assertEquals("edited", finished.getString("result"))
         }
     }
 

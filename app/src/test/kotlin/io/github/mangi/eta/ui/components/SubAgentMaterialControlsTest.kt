@@ -63,6 +63,7 @@ class SubAgentMaterialControlsTest {
             compose.onNodeWithText("任务分工").assertDoesNotExist()
             compose.onNodeWithText("未设置分工").assertDoesNotExist()
             compose.onNodeWithContentDescription("选择测试代理职责").assertExists()
+            compose.onNodeWithContentDescription("设置测试代理并行上限").assertExists().assertIsNotEnabled()
         }
     }
 
@@ -137,6 +138,10 @@ class SubAgentMaterialControlsTest {
         val tier = compose.onNodeWithContentDescription("设置测试代理任务分工").fetchSemanticsNode().boundsInRoot
         assertTrue(role.top >= model.bottom)
         assertTrue(tier.top >= role.bottom)
+        val thinking = compose.onNodeWithContentDescription("调整测试代理思考深度").fetchSemanticsNode().boundsInRoot
+        val parallel = compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsNotEnabled().fetchSemanticsNode().boundsInRoot
+        assertTrue(parallel.top >= thinking.bottom)
+        compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
         compose.onNodeWithContentDescription("设置测试代理任务分工").performClick()
         compose.onNode(isSelectable() and hasText("复杂任务")).assertIsSelected()
     }
@@ -194,12 +199,54 @@ class SubAgentMaterialControlsTest {
     @Config(qualifiers = "w320dp-h480dp")
     fun settingsAddActionStaysVisibleWhileAgentListScrolls() {
         compose.setContent { MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}) } }
+        compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
         val add = compose.onNodeWithText("添加子代理").assertIsDisplayed()
         val parent = add.fetchSemanticsNode().boundsInRoot
         val screen = compose.onRoot().fetchSemanticsNode().boundsInRoot
         assertTrue(kotlin.math.abs((parent.left + parent.right) / 2 - (screen.left + screen.right) / 2) < 24f)
         compose.onNode(hasScrollToIndexAction()).performScrollToIndex(3)
         compose.onNodeWithText("添加子代理").assertIsDisplayed()
+    }
+
+    @Test fun boundParallelRowsObserveTheSharedModelLimit() {
+        val prefs = io.github.mangi.eta.agent.delegation.SubAgentPreferences
+        val provider = "parallel-ui-${java.util.UUID.randomUUID()}"
+        val first = prefs.add()
+        val second = prefs.add()
+        try {
+            prefs.saveModel(first.id, io.github.mangi.eta.agent.model.ModelFeatureSelection(true, provider, "record-a"))
+            prefs.saveModel(second.id, io.github.mangi.eta.agent.model.ModelFeatureSelection(true, provider, "record-b"))
+            val a = prefs.profiles().first { it.id == first.id }.copy(name = "并发甲")
+            val b = prefs.profiles().first { it.id == second.id }.copy(name = "并发乙")
+            val config = io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig(
+                providerId = provider, providerName = "已用提供商", baseUrl = "https://example.invalid", apiKey = "test",
+                model = "bound-api", systemPrompt = "")
+            compose.setContent { MaterialTheme { Column {
+                SubAgentParallelLimitRow(a, config)
+                SubAgentParallelLimitRow(b, config)
+            } } }
+            compose.onAllNodesWithText("不限", useUnmergedTree = true).assertCountEquals(0)
+            prefs.saveParallelLimit(provider, "bound-api", 0)
+            compose.onAllNodesWithText("不限", useUnmergedTree = true).assertCountEquals(2)
+            compose.runOnIdle {
+                assertEquals(0, prefs.parallelLimit(provider, "bound-api"))
+                assertEquals(1, prefs.parallelLimit(provider, "record-a"))
+                assertEquals(1, prefs.parallelLimit(provider, "unused-api"))
+            }
+        } finally { prefs.remove(first.id); prefs.remove(second.id) }
+    }
+
+    @Test fun parallelRowDisablesWithoutOpeningADialog() {
+        val profile = SubAgentProfile("dialog-test", "测试代理", providerId = "provider", modelId = "record")
+        val config = mutableStateOf(io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig(
+            providerId = "provider", baseUrl = "https://example.invalid", apiKey = "test", model = "first-api", systemPrompt = ""))
+        val enabled = mutableStateOf(true)
+        compose.setContent { MaterialTheme { SubAgentParallelLimitRow(profile, config.value, enabled.value) } }
+        compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsEnabled()
+        compose.runOnIdle { config.value = config.value.copy(model = "second-api") }
+        compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsEnabled()
+        compose.runOnIdle { enabled.value = false }
+        compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsNotEnabled()
     }
 
 }

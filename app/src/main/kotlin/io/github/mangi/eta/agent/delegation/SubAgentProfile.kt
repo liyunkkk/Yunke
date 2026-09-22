@@ -13,6 +13,7 @@ internal data class SubAgentProfile(
     val modelId: String = "",
     val tier: SubAgentTaskTier? = null,
     val reasoning: ReasoningEffort? = null,
+    val imageResolution: String? = null,
 ) {
     init {
         require(id.isNotBlank() && name.isNotBlank() && name.length <= 80)
@@ -28,7 +29,7 @@ internal data class SubAgentProfile(
     }
     fun withRole(next: String): SubAgentProfile = (if (role == next ||
         (!isMedia && next in setOf("implementation", "review"))) copy(role = next)
-        else copy(role = next, providerId = "", modelId = "", reasoning = null)).normalizedTaskTier()
+        else copy(role = next, providerId = "", modelId = "", reasoning = null, imageResolution = null)).normalizedTaskTier()
     val selection get() = ModelFeatureSelection(true, providerId, modelId)
     val roleLabel get() = when (role) {
         "implementation" -> "执行"
@@ -39,10 +40,12 @@ internal data class SubAgentProfile(
     fun toJson() = JSONObject().put("id", id).put("name", name).put("role", role).put("enabled", enabled)
         .put("provider", providerId).put("model", modelId).put("tier", tier?.takeIf { supportsTaskTier }?.wireValue.orEmpty())
         .put("reasoning", reasoning?.wireValue.orEmpty())
+        .put("image_resolution", imageResolution.orEmpty())
 
     companion object {
         fun fromJson(j: JSONObject) = SubAgentProfile(j.getString("id"), j.getString("name"),
             j.getString("role"), j.optBoolean("enabled", true), j.optString("provider"), j.optString("model"),
-            SubAgentTaskTier.fromWireValue(j.optString("tier")), ReasoningEffort.fromWireValue(j.optString("reasoning"))).normalizedTaskTier()
+            SubAgentTaskTier.fromWireValue(j.optString("tier")), ReasoningEffort.fromWireValue(j.optString("reasoning")),
+            j.optString("image_resolution").takeIf { it in io.github.mangi.eta.agent.model.ImageResolutionTier.values }).normalizedTaskTier()
     }
 }

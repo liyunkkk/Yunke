@@ -167,6 +167,9 @@ internal class AgentRunController {
         value
     }
 
+    /** Stop at the next cooperative boundary without replaying an in-flight request or tool. */
+    fun pauseAtCheckpoint() { lock.withLock { if (!cancelled) paused = true } }
+
     fun pause() {
         lock.withLock { paused = true }
         interruptCurrentRequest()

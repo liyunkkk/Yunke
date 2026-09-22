@@ -108,19 +108,38 @@ internal object StreamPerformanceDiagnostics {
             if (frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) != 1L) {
                 val total = frame.getMetric(FrameMetrics.TOTAL_DURATION)
                 val deadline = frame.getMetric(FrameMetrics.DEADLINE)
+                val unknown = frame.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION)
+                val input = frame.getMetric(FrameMetrics.INPUT_HANDLING_DURATION)
+                val animation = frame.getMetric(FrameMetrics.ANIMATION_DURATION)
+                val layout = frame.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION)
+                val draw = frame.getMetric(FrameMetrics.DRAW_DURATION)
+                val sync = frame.getMetric(FrameMetrics.SYNC_DURATION)
+                val command = frame.getMetric(FrameMetrics.COMMAND_ISSUE_DURATION)
+                val swap = frame.getMetric(FrameMetrics.SWAP_BUFFERS_DURATION)
+                val gpu = frame.getMetric(FrameMetrics.GPU_DURATION)
                 session.record("frame.total", total, if (deadline > 0 && total > deadline) 1 else 0)
-                session.record("frame.layout", frame.getMetric(FrameMetrics.LAYOUT_MEASURE_DURATION), 0)
-                session.record("frame.draw", frame.getMetric(FrameMetrics.DRAW_DURATION), 0)
-                session.record("frame.sync", frame.getMetric(FrameMetrics.SYNC_DURATION), 0)
-                session.record("frame.gpu", frame.getMetric(FrameMetrics.GPU_DURATION), 0)
-                session.record("frame.input", frame.getMetric(FrameMetrics.INPUT_HANDLING_DURATION), 0)
+                session.record("frame.layout", layout, 0)
+                session.record("frame.draw", draw, 0)
+                session.record("frame.sync", sync, 0)
+                session.record("frame.gpu", gpu, 0)
+                session.record("frame.input", input, 0)
+                session.record("frame.unknown", unknown, 0)
+                session.record("frame.animation", animation, 0)
+                session.record("frame.command", command, 0)
+                session.record("frame.swap", swap, 0)
+                val gap = frameUnaccountedNs(total, unknown, input, animation, layout, draw, sync, command, swap)
+                if (gap >= 0) session.record("frame.unaccounted", gap, 0)
+                else session.record("frame.overlap", -gap, 1)
+                val late = frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP) -
+                    frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
+                session.record("frame.vsyncLate", late.coerceAtLeast(0), if (late > 8_333_333L) 1 else 0)
                 session.record("frame.metricsDropped", 0, dropped.toLong())
                 session.record("frame.deadline", deadline, 0)
             }
         }
         window.addOnFrameMetricsAvailableListener(listener, handler)
         handler.post {
-            AndroidAgentLogger.info("StreamDiag id=${session.id} start=1 intervalMs=5000 frameValue=deadlineMiss histogramMs=16,32,50,100")
+            AndroidAgentLogger.info("StreamDiag id=${session.id} start=1 intervalMs=5000 frameValue=deadlineMiss histogramMs=16,32,50,100 parts=unknown,animation,command,swap,unaccounted,vsyncLate")
             handler.postDelayed(periodic, 5000)
         }
         return {
@@ -131,6 +150,19 @@ internal object StreamPerformanceDiagnostics {
         }
     }
 }
+
+/** TOTAL_DURATION minus the eight non-overlapping FrameMetrics parts. GPU is excluded; it overlaps command/swap. */
+internal fun frameUnaccountedNs(
+    total: Long,
+    unknown: Long,
+    input: Long,
+    animation: Long,
+    layout: Long,
+    draw: Long,
+    sync: Long,
+    command: Long,
+    swap: Long,
+): Long = total - (unknown + input + animation + layout + draw + sync + command + swap)
 
 @Composable
 internal fun StreamPerformanceMonitor(isStreaming: Boolean) {

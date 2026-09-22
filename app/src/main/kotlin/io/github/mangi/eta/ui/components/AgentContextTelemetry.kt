@@ -29,6 +29,7 @@ internal fun SubAgentContextStats.contextStatusLabel(): String = when {
     status == "queued" -> "排队中"
     status == "running" -> "执行中"
     status == "completed" -> "已完成"
+    status == "awaiting_decision" -> "超时待主代理决定"
     status == "timed_out" -> "已超时"
     status == "cancelled" -> "已取消"
     else -> "失败"

@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.delegation
 
 import android.content.Context
 import io.github.mangi.eta.agent.media.AgentChatImageCache
+import io.github.mangi.eta.agent.model.MediaReasoningSettings
 import io.github.mangi.eta.agent.model.AgentImageGenerationOptions
 import io.github.mangi.eta.agent.model.AgentImageGenerationClient
 import io.github.mangi.eta.agent.model.AgentImageGenerationParser
@@ -17,9 +18,12 @@ internal object SubAgentMediaRunner {
         prompt: String, controller: AgentRunController, video: Boolean,
         imageOptions: AgentImageGenerationOptions = AgentImageGenerationOptions()): String {
         controller.throwIfCancelled()
+        val mediaConfig = MediaReasoningSettings.apply(config,
+            if (video) "video_generation" else "image_generation", config.reasoningEffort)
         val cache = AgentChatImageCache(context)
         val markdown = if (video) {
-            val generated = runBlocking { AgentVideoGenerationClient(runController = controller).generate(config, prompt) }
+            val generated = runBlocking { AgentVideoGenerationClient(runController = controller).generate(mediaConfig, prompt,
+                transport = MediaReasoningSettings.resolve(config, "video_generation").transport) }
             controller.throwIfCancelled()
             val paths = generated.videos.mapIndexedNotNull { index, item ->
                 controller.throwIfCancelled()
@@ -31,7 +35,7 @@ internal object SubAgentMediaRunner {
             // Put artifacts before optional provider prose so bounded task results cannot truncate the files away.
             AgentVideoGenerationParser.markdown(paths) + generated.text.takeIf { it.isNotBlank() }?.let { "\n\n${it.take(4000)}" }.orEmpty()
         } else {
-            val generated = AgentImageGenerationClient(runController = controller).generate(config, prompt, options = imageOptions)
+            val generated = AgentImageGenerationClient(runController = controller).generate(mediaConfig, prompt, options = imageOptions)
             controller.throwIfCancelled()
             val paths = generated.images.mapIndexedNotNull { index, item ->
                 controller.throwIfCancelled()

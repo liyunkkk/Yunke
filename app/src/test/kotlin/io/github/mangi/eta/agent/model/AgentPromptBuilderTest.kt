@@ -87,6 +87,9 @@ class AgentPromptBuilderTest {
         assertTrue(messages.systemContents().any { it.contains("立即调用工具") })
         assertTrue(messages.systemContents().any { it.contains("不要先输出计划、解释或中间进度") })
         assertTrue(messages.systemContents().any { it.contains("不要为了展示思考而拆成多个回合") })
+        assertFalse(messages.systemContents().any { it.contains("默认优先并行委派多个") })
+        assertFalse(messages.systemContents().any { it.contains("本轮已公开子代理") })
+        assertFalse(messages.systemContents().any { it.contains("同文件写冲突") })
         assertTrue(messages.systemContents().any { it.contains("不要例行调用 observe_screen") })
         assertTrue(messages.systemContents().any { it.contains("读取或汇总屏幕信息") })
         assertTrue(messages.systemContents().any { it.contains("确认最终结果") })
@@ -123,6 +126,38 @@ class AgentPromptBuilderTest {
             image.reference,
             currentContent.getJSONObject(1).getJSONObject("image_url").getString("url"),
         )
+    }
+
+    @Test
+    fun delegationRuleIsASeparateMessageAheadOfOperationalGuidance() {
+        val without = AgentPromptBuilder.buildSystemMessages(
+            config = modelConfig("", terminalTools = true, browserTools = false),
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED,
+            rootAvailable = false,
+            delegationAvailable = false,
+        )
+        assertFalse(without.systemContents().any { it.contains("本轮已公开子代理") })
+
+        val messages = AgentPromptBuilder.buildSystemMessages(
+            config = modelConfig("", terminalTools = true, browserTools = false),
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED,
+            rootAvailable = false,
+            delegationAvailable = true,
+        )
+        val contents = messages.systemContents()
+        val delegationAt = contents.indexOfFirst { it.contains("本轮已公开子代理") }
+        val screenAt = contents.indexOfFirst { it.contains("需要看屏幕时") }
+        assertTrue(delegationAt >= 0 && screenAt > delegationAt)
+        val rule = contents[delegationAt]
+        assertTrue(rule.contains("不能据此把源码阅读也留在主代理"))
+        assertTrue(rule.contains("多文件调查不是琐碎任务"))
+        assertTrue(rule.contains("必须在同一轮并行调用 delegate_task"))
+        assertFalse(rule.contains("需要看屏幕时"))
+        assertEquals(without.length() + 1, messages.length())
+        assertTrue(contents.any { it.contains("不要用本条终端要求") })
+        assertFalse(contents.any { it.contains("默认优先并行委派多个") })
     }
 
     @Test

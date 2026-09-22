@@ -50,14 +50,23 @@ internal class AgentImageGenerationClient(
         runController?.throwIfCancelled()
         require(config.baseUrl.isNotBlank()) { "请先配置 API 地址" }
         require(prompt.isNotBlank()) { "请输入图片描述" }
-        val parsedPrompt = ImagePromptOptions.parse(prompt)
+        val parsedPrompt = ImagePromptOptions.parse(prompt, options)
         require(parsedPrompt.prompt.isNotBlank()) { "请输入图片描述" }
-        val prepared = ImageRequestParameters.prepare(
-            generationsBody(config, parsedPrompt.prompt), parsedPrompt.options, options,
-        )
+        val inputBody = generationsBody(config, parsedPrompt.prompt)
+        val grok = GrokImageProfile.applies(config.baseUrl, config.model, inputBody)
+        fun prepare(inline: AgentImageGenerationOptions, overrides: AgentImageGenerationOptions) =
+            if (grok) GrokImageProfile.prepare(inputBody, inline, overrides, images.size, mask != null)
+            else ImageRequestParameters.prepare(inputBody, inline, overrides, defaultCount = 1)
+        val prepared = prepare(parsedPrompt.options, options)
         if (config.providerType == ProviderTypes.ANTHROPIC && !prepared.explicitEndpoint)
             AgentImageGenerationOptions.invalid("Anthropic 原生消息协议不是生图接口；若该中转另有 Images 端点，请显式配置 eta_image_config.endpoint。")
-        val plan = ImageEndpointPlan.create(prepared, images.size, mask != null)
+        val batchCount = prepared.options.count ?: 1
+        val parallelism = prepared.options.concurrency
+        val single = if (parallelism == null) prepared else prepare(
+            parsedPrompt.options.copy(count = 1, concurrency = null),
+            options.copy(count = 1, concurrency = null),
+        )
+        val plan = ImageEndpointPlan.create(single, images.size, mask != null)
         (images + listOfNotNull(mask)).forEach {
             require(it.bytes.isNotEmpty() && it.bytes.size <= MAX_AGENT_IMAGE_BYTES && it.bytes.hasSupportedImageMagic()) {
                 "参考图或遮罩为空、过大或不是支持的图片；不会丢弃后继续生成。"
@@ -73,29 +82,93 @@ internal class AgentImageGenerationClient(
             val size = bounds(images.single().bytes)
             require(size.first > 0 && size.second > 0 && bounds(mask.bytes) == size) { "遮罩尺寸必须与参考图一致；不会缩放。" }
         }
-        val request = buildRequest(config, plan, images, mask)
+        val request = buildRequest(config, plan, images, mask) // validate the full plan before any billable call
+        if (parallelism == null) return executePlan(plan, request, prepared.summary, runController)
+        val batchController = AgentRunController()
+        val cancellation = runController?.register { batchController.cancel() }
+        try {
+            val results = ImageBatchRunner.run(batchCount, parallelism, {
+                runController?.throwIfCancelled(); batchController.throwIfCancelled()
+            }) {
+                // Re-plan each native request so an unspecified random seed is not reused
+                // across the whole batch. Explicit configured seeds remain unchanged.
+                val itemPlan = ImageEndpointPlan.create(single, images.size, mask != null)
+                executePlan(itemPlan, buildRequest(config, itemPlan, images, mask), single.summary, batchController)
+            }
+            val completed = results.mapNotNull { it.getOrNull() }
+            check(completed.isNotEmpty()) {
+                "IMAGE_BATCH_FAILED：$batchCount 张均未获得结果；未重试。" + results.mapNotNull { it.exceptionOrNull()?.message?.take(120) }.distinct().joinToString("；")
+            }
+            val allImages = completed.flatMap { it.images }
+            val report = buildString {
+                append("本地分批生成：总张数 $batchCount，并发 ${minOf(batchCount,parallelism)}；每次发送 n=1，失败不重试。\n")
+                if (results.any { it.isFailure }) append("IMAGE_BATCH_PARTIAL：${results.count { it.isFailure }} 个请求失败，保留已返回图片。\n")
+                if (allImages.size != batchCount) append("IMAGE_COUNT_MISMATCH：请求 $batchCount 张，实际 ${allImages.size} 张。\n")
+                results.forEachIndexed { index, result ->
+                    append("任务 ${index + 1}：")
+                    append(result.getOrNull()?.text ?: "失败：${result.exceptionOrNull()?.message?.take(180)}")
+                    append('\n')
+                }
+            }
+            return Result(allImages, report)
+        } finally {
+            batchController.cancel()
+            cancellation?.close()
+        }
+    }
+
+
+    private fun imageOutputLine(plan: ImageEndpointPlan.Plan, width: Int, height: Int): String {
+        val report = plan.options.dimensionReport(width, height, plan.expectedSize)
+        val ratio = plan.options.aspectRatio?.takeUnless { it.isBlank() || it == "auto" }
+            ?: reducedRatio(width, height)
+        val size = if (width > 0 && height > 0) "${width}x$height" else "未知"
+        val problem = when {
+            "IMAGE_DIMENSIONS_UNVERIFIED" in report -> " IMAGE_DIMENSIONS_UNVERIFIED"
+            "IMAGE_DIMENSIONS_MISMATCH" in report -> " IMAGE_DIMENSIONS_MISMATCH"
+            "IMAGE_RESOLUTION_UNVERIFIED" in report -> " IMAGE_RESOLUTION_UNVERIFIED"
+            else -> ""
+        }
+        return "分辨率:$size 比例:$ratio$problem"
+    }
+
+    private fun reducedRatio(width: Int, height: Int): String {
+        if (width <= 0 || height <= 0) return "未知"
+        fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
+        val divisor = gcd(width, height)
+        return "${width / divisor}:${height / divisor}"
+    }
+
+    private fun executePlan(
+        plan: ImageEndpointPlan.Plan,
+        request: Request,
+        @Suppress("UNUSED_PARAMETER") parameterSummary: String,
+        controller: AgentRunController?,
+    ): Result {
         // One selected endpoint, one billable POST. No chat fallback or parameter-changing retries.
-        val parsed = executeGenerationRequest(generationHttpClient, request, runController) { response ->
+        val parsed = executeGenerationRequest(generationHttpClient, request, controller) { response ->
             val limit = if (plan.kind == ImageEndpointPlan.Kind.NOVELAI) NovelAiImageProtocol.MAX_RESPONSE_BYTES
                 else MAX_AGENT_IMAGE_BYTES / 3 * 4 + 1024 * 1024
             val bytes = response.body.byteStream().readGenerationBytes(limit)
-            check(response.isSuccessful) { AgentImageGenerationParser.errorMessage(bytes.toString(Charsets.UTF_8), response.code) }
+            check(response.isSuccessful) {
+                val requested = plan.options.toJson().toString()
+                "生图请求失败（HTTP ${response.code}，协议 ${plan.kind.name.lowercase()}）\n" +
+                    AgentImageGenerationParser.errorMessage(bytes.toString(Charsets.UTF_8), response.code) +
+                    "\n本次输出参数：$requested\n未自动重试。服务端未明确原因时，不能断言是尺寸、模型限制或内容审核。"
+            }
             if (plan.kind == ImageEndpointPlan.Kind.NOVELAI)
-                NovelAiImageProtocol.parse(bytes) { runController?.throwIfCancelled() }
+                NovelAiImageProtocol.parse(bytes) { controller?.throwIfCancelled() }
             else AgentImageGenerationParser.parse(bytes.toString(Charsets.UTF_8))
         }
-        val generated = materialize(parsed)
+        val generated = materialize(parsed, controller)
         check(generated.images.isNotEmpty()) { "响应里没有图片；不会自动重发可能已计费的请求。" }
-        val reports = generated.images.mapIndexed { index, image ->
-            "图片 ${index + 1}：" + plan.options.dimensionReport(image.width, image.height)
+        val reports = generated.images.map { image ->
+            imageOutputLine(plan, image.width, image.height)
         }.toMutableList()
         val expectedCount = plan.options.count ?: 1
         if (generated.images.size != expectedCount)
             reports += "IMAGE_COUNT_MISMATCH：请求 $expectedCount 张，实际 ${generated.images.size} 张。"
-        val summary = if (plan.kind == ImageEndpointPlan.Kind.NOVELAI)
-            "端点协议：novelai_native；发送尺寸：${plan.options.size}；n_samples：$expectedCount"
-        else "端点协议：${plan.kind.name.lowercase()}；${prepared.summary}"
-        return generated.copy(text = summary + "\n" + reports.joinToString("\n") +
+        return generated.copy(text = reports.joinToString("\n") +
             generated.text.takeIf { it.isNotBlank() }?.let { "\n\n$it" }.orEmpty())
     }
 
@@ -132,7 +205,7 @@ internal class AgentImageGenerationClient(
     }
 
     private fun generationsBody(config: AgentModelClient.ModelConfig, prompt: String): JSONObject =
-        JSONObject().put("model", config.model).put("prompt", prompt).put("n", 1)
+        JSONObject().put("model", config.model).put("prompt", prompt)
             .also { mergeRequestExtras(it, config, keepMessages = false) }
 
     private fun mergeRequestExtras(
@@ -158,7 +231,6 @@ internal class AgentImageGenerationClient(
             target.remove("stream")
             target.remove("messages")
             if (prompt != null) target.put("prompt", prompt)
-            if (!target.has("n")) target.put("n", 1)
         }
         target.put("model", config.model)
     }
@@ -174,29 +246,42 @@ internal class AgentImageGenerationClient(
             .also { ProviderRequestHeaders.mergeInto(it, config.baseUrl, config.customHeaders) }
             .build()
 
-    private fun materialize(parsed: AgentImageGenerationParser.Parsed): Result {
-        val images = parsed.images.mapNotNull { ref ->
-            val bytes = when {
-                ref.bytes != null -> ref.bytes
-                !ref.url.isNullOrBlank() -> download(ref.url)
-                else -> null
-            } ?: return@mapNotNull null
-            if (bytes.isEmpty() || bytes.size > MAX_AGENT_IMAGE_BYTES) return@mapNotNull null
-            val mime = when {
-                bytes.hasSupportedImageMagic() -> bytes.sniffAgentImageMimeType()
-                ref.mimeType.startsWith("image/") -> ref.mimeType
-                else -> return@mapNotNull null
+    private fun materialize(parsed: AgentImageGenerationParser.Parsed, controller: AgentRunController?): Result {
+        val failures = mutableListOf<Int>()
+        val images = parsed.images.mapIndexedNotNull { index, ref ->
+            try {
+                val bytes = when {
+                    ref.bytes != null -> ref.bytes
+                    !ref.url.isNullOrBlank() -> download(ref.url, controller)
+                    else -> null
+                }
+                if (bytes == null || bytes.isEmpty() || bytes.size > MAX_AGENT_IMAGE_BYTES) {
+                    failures += index + 1
+                    return@mapIndexedNotNull null
+                }
+                val mime = when {
+                    bytes.hasSupportedImageMagic() -> bytes.sniffAgentImageMimeType()
+                    ref.mimeType.startsWith("image/") -> ref.mimeType
+                    else -> { failures += index + 1; return@mapIndexedNotNull null }
+                }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                GeneratedImage(bytes = bytes, mimeType = mime, width = bounds.outWidth, height = bounds.outHeight)
+            } catch (failure: Exception) {
+                controller?.throwIfCancelled()
+                if (failure is java.util.concurrent.CancellationException) throw failure
+                failures += index + 1
+                null
             }
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            GeneratedImage(bytes = bytes, mimeType = mime, width = bounds.outWidth, height = bounds.outHeight)
         }
-        return Result(images = images, text = parsed.text)
+        val report = if (failures.isEmpty()) "" else
+            "IMAGE_DOWNLOAD_PARTIAL：第 ${failures.joinToString()} 张读取失败；已保留其他成功图片，不重试。"
+        return Result(images = images, text = listOf(parsed.text, report).filter { it.isNotBlank() }.joinToString("\n"))
     }
 
-    private fun download(url: String): ByteArray? {
+    private fun download(url: String, controller: AgentRunController?): ByteArray? {
         val request = Request.Builder().url(url).get().build()
-        return executeGenerationRequest(downloadClient, request, runController) { response ->
+        return executeGenerationRequest(downloadClient, request, controller) { response ->
             if (!response.isSuccessful) return@executeGenerationRequest null
             val declared = response.body.contentLength()
             if (declared > MAX_AGENT_IMAGE_BYTES) return@executeGenerationRequest null
@@ -205,12 +290,11 @@ internal class AgentImageGenerationClient(
         }
     }
 
+    private val downloadClient by lazy {
+        httpClient.newBuilder().retryOnConnectionFailure(false).readTimeout(60_000, TimeUnit.MILLISECONDS).build()
+    }
+
     companion object {
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
-        private val downloadClient by lazy {
-            AgentHttpClient.modelClient.newBuilder()
-                .readTimeout(60_000, TimeUnit.MILLISECONDS)
-                .build()
-        }
     }
 }

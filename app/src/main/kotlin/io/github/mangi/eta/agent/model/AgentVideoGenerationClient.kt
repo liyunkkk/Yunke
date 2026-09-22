@@ -20,6 +20,9 @@ internal class AgentVideoGenerationClient(
     private val httpClient: OkHttpClient = AgentHttpClient.modelClient,
     private val runController: AgentRunController? = null,
 ) {
+    private val generationHttpClient = httpClient.newBuilder().retryOnConnectionFailure(false)
+        .followRedirects(false).followSslRedirects(false).build()
+
     data class InputImage(
         val bytes: ByteArray,
         val mimeType: String,
@@ -39,6 +42,7 @@ internal class AgentVideoGenerationClient(
         config: AgentModelClient.ModelConfig,
         prompt: String,
         images: List<InputImage> = emptyList(),
+        transport: String? = null,
     ): Result {
         runController?.throwIfCancelled()
         require(config.baseUrl.isNotBlank()) { "请先配置 API 地址" }
@@ -48,7 +52,14 @@ internal class AgentVideoGenerationClient(
         }
         val headers = requestHeaders(config)
         val inputImages = images.filter { it.bytes.isNotEmpty() }
-        val attempts = buildList {
+        val attempts = if (transport != null) listOf(when (transport) {
+            "videos_json" -> Attempt.VideosJson
+            "videos_multipart" -> Attempt.VideosMultipart
+            "videos_generations" -> Attempt.VideosGenerations
+            "video_generations" -> Attempt.VideoGenerations
+            "ark_contents" -> Attempt.ArkContents
+            else -> error("未识别的媒体思考传输协议")
+        }) else buildList {
             if (ArkContentsGenerations.matches(config.baseUrl)) add(Attempt.ArkContents)
             add(Attempt.VideosMultipart)
             add(Attempt.VideosJson)
@@ -192,7 +203,7 @@ internal class AgentVideoGenerationClient(
             Attempt.ArkContents -> Request.Builder()
                 .url(ArkContentsGenerations.tasksUrl(config.baseUrl) ?: error("当前地址不是火山方舟内容生成接口"))
                 .headers(headers)
-                .post(ArkContentsGenerations.createBody(config.model, prompt, images).toRequestBody(JSON_MEDIA_TYPE))
+                .post(arkBody(config, prompt, images).toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
             Attempt.VideosMultipart -> Request.Builder()
                 .url(ProviderUrls.openAiVideosUrl(config.baseUrl))
@@ -220,7 +231,7 @@ internal class AgentVideoGenerationClient(
                 .post(chatBody(config, prompt, images).toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
         }
-        return executeGenerationRequest(httpClient, request, runController) { toRawResponse(it) }
+        return executeGenerationRequest(generationHttpClient, request, runController) { toRawResponse(it) }
     }
 
     private fun get(url: String, headers: Headers): RawResponse {
@@ -242,6 +253,15 @@ internal class AgentVideoGenerationClient(
         )
     }
 
+    private fun arkBody(config: AgentModelClient.ModelConfig, prompt: String, images: List<InputImage>): JSONObject {
+        val body = JSONObject(ArkContentsGenerations.createBody(config.model, prompt, images))
+        val content = body.getJSONArray("content")
+        mergeRequestExtras(body, config, keepMessages = false)
+        body.remove("n")
+        body.put("content", content)
+        return body
+    }
+
     private fun videosMultipart(
         config: AgentModelClient.ModelConfig,
         prompt: String,
@@ -251,6 +271,11 @@ internal class AgentVideoGenerationClient(
             .setType(MultipartBody.FORM)
             .addFormDataPart("model", config.model)
             .addFormDataPart("prompt", prompt)
+        val extras = JSONObject().also { mergeRequestExtras(it, config, keepMessages = false) }
+        extras.keys().forEach { key ->
+            if (key !in setOf("model", "prompt", "input_reference", "image", "image_url", "n"))
+                builder.addFormDataPart(key, extras.get(key).toString())
+        }
         images.firstOrNull()?.let { image ->
             val mime = image.mimeType.ifBlank { "image/png" }
             val filename = "image.${AgentImageGenerationParser.extensionForMime(mime)}"
@@ -329,6 +354,8 @@ internal class AgentVideoGenerationClient(
             }
         }
         RequestBodyMerge.mergeCustomBody(target, config.customBody)
+        target.remove("eta_media_reasoning")
+        target.remove("eta_image_config")
         target.remove("tools")
         target.remove("tool_choice")
         if (keepMessages) {
