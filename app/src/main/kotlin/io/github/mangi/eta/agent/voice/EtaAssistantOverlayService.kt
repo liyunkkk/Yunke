@@ -41,7 +41,9 @@ import io.github.mangi.eta.agent.media.AgentVideoCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
+import io.github.mangi.eta.agent.runtime.AgentNotificationTrampolineActivity
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.config.Prefs
@@ -709,7 +711,31 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     )
                     refreshHistoryConversations(saveConvId)
                 }
-                hiddenForForegroundOperation
+                // 浮窗退到后台（关闭浮窗但任务继续）时，主界面状态机不参与本次运行，
+                // 不会代发完成通知，需要在这里补发，否则用户收不到任何完成提示。
+                val hideAfterResult = hiddenForForegroundOperation
+                if (hideAfterResult) {
+                    val stopped = result.error == LEGACY_STOPPED_ERROR ||
+                        result.error == SYNTHETIC_STOPPED
+                    if (!stopped) {
+                        val notifyTitle = runtimePrompt
+                            .lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
+                        val notifyContent = if (result.ok) {
+                            result.content.trim().take(200)
+                        } else {
+                            result.error.orEmpty()
+                        }
+                        AgentExecutionService.postCompletionNotification(
+                            context = applicationContext,
+                            runId = runId,
+                            title = notifyTitle,
+                            content = notifyContent,
+                            isError = !result.ok,
+                            source = AgentNotificationTrampolineActivity.SOURCE_OVERLAY,
+                        )
+                    }
+                }
+                hideAfterResult
             }
             runtimeClient.ackResult(runId)
             if (shouldStopAfterResult) {
