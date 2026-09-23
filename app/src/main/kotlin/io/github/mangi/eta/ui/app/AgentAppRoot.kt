@@ -166,6 +166,11 @@ fun AgentAppRoot(
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     var updateOffer by remember { mutableStateOf<AppUpdateOffer?>(null) }
+    // 浮窗删除会话后立刻对齐本体内存快照，避免本体把已删会话又写回库。
+    val externalConversationRevision = io.github.mangi.eta.ui.app.AgentConversationStore.externalRevision
+    LaunchedEffect(externalConversationRevision) {
+        if (externalConversationRevision > 0) agentState.syncExternalConversationChanges()
+    }
     val currentVersion = remember { AppUpdateRepository.currentVersionName(context) }
     DisposableEffect(lifecycleOwner, focusManager, keyboard) {
         val observer = LifecycleEventObserver { _, event ->
@@ -181,6 +186,7 @@ fun AgentAppRoot(
                     agentState.refreshPermissionHealth()
                     agentState.refreshRuntimeResults()
                     agentState.refreshRequestOverhead()
+                    uiScope.launch { agentState.syncExternalConversationChanges() }
                     uiScope.launch {
                         AppUpdateRepository.checkForUpdate(context, force = false)
                             .getOrNull()

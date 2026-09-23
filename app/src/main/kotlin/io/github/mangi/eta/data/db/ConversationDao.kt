@@ -130,6 +130,20 @@ internal interface ConversationDao {
     @Query("DELETE FROM conversations WHERE id = :id")
     suspend fun deleteImportedConversation(id: String)
 
+    @Query("SELECT id FROM conversations")
+    suspend fun conversationIds(): List<String>
+
+    @Query("DELETE FROM conversations WHERE id = :id")
+    suspend fun deleteConversationRow(id: String)
+
+    /** 删除单个会话及其消息与上下文检查点，其余会话保持原样。 */
+    @Transaction
+    suspend fun deleteConversationCascade(conversationId: String) {
+        deleteMessagesForConversation(conversationId)
+        deleteContextCheckpoint(conversationId)
+        deleteConversationRow(conversationId)
+    }
+
     @Transaction
     suspend fun importAsNewConversation(
         conversation: ConversationEntity,

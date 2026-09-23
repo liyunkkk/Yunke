@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -51,10 +52,12 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.CancelPresentation
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Translate
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
@@ -81,6 +84,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,13 +95,16 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.components.AgentChatInputBar
+import io.github.mangi.eta.ui.components.EtaDropdownMenu
 import io.github.mangi.eta.ui.components.AgentConversationMessages
+import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
 import io.github.mangi.eta.ui.components.rememberDataUrlBitmap
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
+import io.github.mangi.eta.ui.model.MessageEditUiState
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
@@ -114,6 +121,7 @@ import top.yukonga.miuix.kmp.squircle.squircleBackground
 import top.yukonga.miuix.kmp.squircle.squircleClip
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal enum class EtaVoicePhase {
     READY,
@@ -142,6 +150,13 @@ internal data class EtaVoiceUiState(
     val modelPickerState: AgentModelPickerUiState = AgentModelPickerUiState(),
     val reasoningEffort: ReasoningEffort = ReasoningEffort.OFF,
     val availableReasoningEfforts: List<ReasoningEffort> = emptyList(),
+    val messageEdit: MessageEditUiState? = null,
+)
+
+/** 浮窗内的消息改写目标：删除/重新生成前先弹同款下拉确认。 */
+internal data class OverlayMessageMutationTarget(
+    val messageId: String,
+    val laterTurnCount: Int,
 )
 
 internal sealed interface EtaVoiceStatus {
@@ -248,6 +263,7 @@ internal fun EtaVoicePanel(
     onToggleHistoryMenu: () -> Unit,
     onSelectConversation: (String) -> Unit,
     onNewConversation: () -> Unit,
+    onDeleteConversation: (String) -> Unit,
     onModelSelected: (String, String) -> Unit,
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
@@ -263,6 +279,11 @@ internal fun EtaVoicePanel(
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onAssistantSelected: (String) -> Unit,
     onEditAssistant: (String) -> Unit,
+    messageLaterTurnCount: (String) -> Int?,
+    onEditMessage: (String) -> Unit,
+    onDeleteMessage: (String) -> Unit,
+    onRegenerateMessage: (String) -> Unit,
+    onCancelMessageEdit: () -> Unit,
     history: List<AgentModelClient.ConversationMessage>,
     autoCompressEnabled: Boolean,
     assistantId: String,
@@ -342,6 +363,7 @@ internal fun EtaVoicePanel(
                 onToggleHistoryMenu = onToggleHistoryMenu,
                 onSelectConversation = onSelectConversation,
                 onNewConversation = onNewConversation,
+                onDeleteConversation = onDeleteConversation,
                 onModelSelected = onModelSelected,
                 onSubmit = { text ->
                     keyboard?.hide()
@@ -360,6 +382,11 @@ internal fun EtaVoicePanel(
                 onReasoningEffortChange = onReasoningEffortChange,
                 onAssistantSelected = onAssistantSelected,
                 onEditAssistant = onEditAssistant,
+                messageLaterTurnCount = messageLaterTurnCount,
+                onEditMessage = onEditMessage,
+                onDeleteMessage = onDeleteMessage,
+                onRegenerateMessage = onRegenerateMessage,
+                onCancelMessageEdit = onCancelMessageEdit,
                 history = history,
                 autoCompressEnabled = autoCompressEnabled,
                 assistantId = assistantId,
@@ -385,6 +412,7 @@ private fun BoxScope.AssistantPanel(
     onToggleHistoryMenu: () -> Unit,
     onSelectConversation: (String) -> Unit,
     onNewConversation: () -> Unit,
+    onDeleteConversation: (String) -> Unit,
     onModelSelected: (String, String) -> Unit,
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
@@ -400,6 +428,11 @@ private fun BoxScope.AssistantPanel(
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onAssistantSelected: (String) -> Unit,
     onEditAssistant: (String) -> Unit,
+    messageLaterTurnCount: (String) -> Int?,
+    onEditMessage: (String) -> Unit,
+    onDeleteMessage: (String) -> Unit,
+    onRegenerateMessage: (String) -> Unit,
+    onCancelMessageEdit: () -> Unit,
     history: List<AgentModelClient.ConversationMessage>,
     autoCompressEnabled: Boolean,
     assistantId: String,
@@ -416,6 +449,8 @@ private fun BoxScope.AssistantPanel(
     var thresholdHapticSent by remember { mutableStateOf(false) }
     var handoffRunning by remember { mutableStateOf(false) }
     var keepBottomAnchored by remember { mutableStateOf(true) }
+    var messageDeleteTarget by remember { mutableStateOf<OverlayMessageMutationTarget?>(null) }
+    var messageRegenerateTarget by remember { mutableStateOf<OverlayMessageMutationTarget?>(null) }
     val handoffThresholdPx = with(density) { 72.dp.toPx() }
     val directHandoffThresholdPx = with(density) { 48.dp.toPx() }
     val dismissThresholdPx = with(density) { 92.dp.toPx() }
@@ -606,14 +641,141 @@ private fun BoxScope.AssistantPanel(
             ) {
                 if (hasMessages) {
                     AgentConversationMessages(
-                        visibleMessages = state.messages,
+                        // 编辑某条消息时只显示到它为止，与本体 AgentChatBody 同一口径。
+                        visibleMessages = AgentConversationRevisionReducer.visibleMessagesForEdit(
+                            state.messages,
+                            state.messageEdit?.targetMessageId,
+                        ),
                         scrollState = listState,
                         isStreaming = state.phase == EtaVoicePhase.PROCESSING,
                         bottomInset = 8.dp,
                         keepBottomAnchored = keepBottomAnchored,
                         onBottomAnchorChanged = { keepBottomAnchored = it },
+                        onEditMessage = onEditMessage,
+                        onDeleteMessage = { id ->
+                            messageLaterTurnCount(id)?.let { count ->
+                                messageDeleteTarget = OverlayMessageMutationTarget(id, count)
+                            }
+                        },
+                        onRegenerateMessage = { id ->
+                            when (val count = messageLaterTurnCount(id)) {
+                                null -> Unit
+                                0 -> onRegenerateMessage(id)
+                                else -> messageRegenerateTarget =
+                                    OverlayMessageMutationTarget(id, count)
+                            }
+                        },
+                        // 浮窗沿用本体同一套操作栏；分支按钮按裁决不接（branchEnabled 保持 false）。
+                        messageActionsEnabled = state.phase != EtaVoicePhase.PROCESSING,
+                        editTargetMessageId = state.messageEdit?.targetMessageId,
                         modifier = Modifier.fillMaxSize(),
                     )
+                }
+                // 浮窗没有 Activity token，本体那套 WindowDialog 会抛 BadTokenException；
+                // 这里用与浮窗其它菜单同款的下拉弹层做二次确认。
+                val mutationTarget = messageDeleteTarget ?: messageRegenerateTarget
+                if (mutationTarget != null) {
+                    val isDelete = messageDeleteTarget != null
+                    Box(modifier = Modifier.align(Alignment.Center)) {
+                        EtaDropdownMenu(
+                            expanded = true,
+                            onDismissRequest = {
+                                messageDeleteTarget = null
+                                messageRegenerateTarget = null
+                            },
+                            alignEnd = true,
+                            preferAbove = true,
+                            minWidth = 0.dp,
+                            focusable = false,
+                        ) {
+                            Text(
+                                text = stringResource(
+                                    if (isDelete) {
+                                        R.string.conversation_delete_message_title
+                                    } else {
+                                        R.string.conversation_regenerate_title
+                                    },
+                                ),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.inputPrimary,
+                                modifier = Modifier.padding(
+                                    start = 12.dp,
+                                    end = 12.dp,
+                                    top = 4.dp,
+                                    bottom = 2.dp,
+                                ),
+                            )
+                            Text(
+                                text = if (isDelete) {
+                                    if (mutationTarget.laterTurnCount == 0) {
+                                        stringResource(R.string.conversation_delete_message_body)
+                                    } else {
+                                        pluralStringResource(
+                                            R.plurals.conversation_delete_later_turns,
+                                            mutationTarget.laterTurnCount,
+                                            mutationTarget.laterTurnCount,
+                                        )
+                                    }
+                                } else {
+                                    if (mutationTarget.laterTurnCount == 0) {
+                                        stringResource(R.string.conversation_regenerate_current_turn)
+                                    } else {
+                                        pluralStringResource(
+                                            R.plurals.conversation_regenerate_later_turns,
+                                            mutationTarget.laterTurnCount,
+                                            mutationTarget.laterTurnCount,
+                                        )
+                                    }
+                                },
+                                fontSize = 12.sp,
+                                color = colors.inputSecondary,
+                                modifier = Modifier.padding(
+                                    start = 12.dp,
+                                    end = 12.dp,
+                                    bottom = 4.dp,
+                                ),
+                            )
+                            DropdownMenuItem(
+                                modifier = Modifier.height(40.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                text = {
+                                    Text(
+                                        text = stringResource(R.string.action_cancel),
+                                        fontSize = 14.sp,
+                                        color = colors.inputPrimary,
+                                    )
+                                },
+                                onClick = {
+                                    messageDeleteTarget = null
+                                    messageRegenerateTarget = null
+                                },
+                            )
+                            DropdownMenuItem(
+                                modifier = Modifier.height(40.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                text = {
+                                    Text(
+                                        text = stringResource(
+                                            if (isDelete) {
+                                                R.string.action_delete
+                                            } else {
+                                                R.string.action_regenerate
+                                            },
+                                        ),
+                                        fontSize = 14.sp,
+                                        color = MiuixTheme.colorScheme.error,
+                                    )
+                                },
+                                onClick = {
+                                    val id = mutationTarget.messageId
+                                    messageDeleteTarget = null
+                                    messageRegenerateTarget = null
+                                    if (isDelete) onDeleteMessage(id) else onRegenerateMessage(id)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -629,6 +791,7 @@ private fun BoxScope.AssistantPanel(
                 colors = colors,
                 onSelectConversation = onSelectConversation,
                 onNewConversation = onNewConversation,
+                onDeleteConversation = onDeleteConversation,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 6.dp),
@@ -647,6 +810,7 @@ private fun BoxScope.AssistantPanel(
             onModelSelected = onModelSelected,
             onSubmit = onSubmit,
             onStop = onStop,
+            onCancelMessageEdit = onCancelMessageEdit,
             onAttachImage = onAttachImage,
             onAttachVideo = onAttachVideo,
             onRemoveImage = onRemoveImage,
@@ -686,6 +850,7 @@ private fun AssistantComposer(
     onModelSelected: (String, String) -> Unit,
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
+    onCancelMessageEdit: () -> Unit,
     onAttachImage: (String) -> Unit,
     onAttachVideo: (String) -> Unit,
     onRemoveImage: (String) -> Unit,
@@ -755,9 +920,9 @@ private fun AssistantComposer(
                 availableReasoningEfforts = state.availableReasoningEfforts,
                 pendingImages = state.pendingImages,
                 pendingFileReferences = state.pendingFileReferences,
-                isEditingMessage = false,
+                isEditingMessage = state.messageEdit != null,
                 assistantId = assistantId,
-                editHasLaterTurns = false,
+                editHasLaterTurns = state.messageEdit?.hasLaterTurns == true,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onModelSelected = onModelSelected,
                 onSubmit = onSubmit,
@@ -769,7 +934,7 @@ private fun AssistantComposer(
                 onAttachFolder = onAttachFolder,
                 onAttachFilePath = onAttachFilePath,
                 onRemoveFileReference = onRemoveFileReference,
-                onCancelMessageEdit = {},
+                onCancelMessageEdit = onCancelMessageEdit,
                 onEditAssistant = onEditAssistant,
                 onAssistantSelected = onAssistantSelected,
                 focusRequester = focusRequester,
@@ -1059,6 +1224,7 @@ private fun AssistantHistorySheet(
     colors: EtaVoicePanelColors,
     onSelectConversation: (String) -> Unit,
     onNewConversation: () -> Unit,
+    onDeleteConversation: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -1134,6 +1300,7 @@ private fun AssistantHistorySheet(
                         item = item,
                         colors = colors,
                         onSelect = { onSelectConversation(item.id) },
+                        onDelete = { onDeleteConversation(item.id) },
                     )
                 }
             }
@@ -1146,8 +1313,10 @@ private fun HistoryConversationItemRow(
     item: AssistantConversationItem,
     colors: EtaVoicePanelColors,
     onSelect: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val isSelected = item.isCurrent
+    var confirmDelete by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1175,8 +1344,80 @@ private fun HistoryConversationItemRow(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        Box {
+            IconButton(
+                onClick = { confirmDelete = true },
+                modifier = Modifier.size(28.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Delete,
+                    contentDescription = stringResource(R.string.action_delete),
+                    modifier = Modifier.size(16.dp),
+                    tint = colors.inputSecondary,
+                )
+            }
+            // 与浮窗其它弹层同款：二次确认后再真正删除，避免误触。
+            EtaDropdownMenu(
+                expanded = confirmDelete,
+                onDismissRequest = { confirmDelete = false },
+                alignEnd = true,
+                preferAbove = true,
+                minWidth = 0.dp,
+                focusable = false,
+            ) {
+                Text(
+                    text = stringResource(R.string.conversation_delete_title),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.inputPrimary,
+                    modifier = Modifier.padding(
+                        start = 12.dp,
+                        end = 12.dp,
+                        top = 4.dp,
+                        bottom = 2.dp,
+                    ),
+                )
+                Text(
+                    text = stringResource(R.string.conversation_delete_message),
+                    fontSize = 12.sp,
+                    color = colors.inputSecondary,
+                    modifier = Modifier.padding(
+                        start = 12.dp,
+                        end = 12.dp,
+                        bottom = 4.dp,
+                    ),
+                )
+                DropdownMenuItem(
+                    modifier = Modifier.height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    text = {
+                        Text(
+                            text = stringResource(R.string.action_cancel),
+                            fontSize = 14.sp,
+                            color = colors.inputPrimary,
+                        )
+                    },
+                    onClick = { confirmDelete = false },
+                )
+                DropdownMenuItem(
+                    modifier = Modifier.height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    text = {
+                        Text(
+                            text = stringResource(R.string.action_delete),
+                            fontSize = 14.sp,
+                            color = MiuixTheme.colorScheme.error,
+                        )
+                    },
+                    onClick = {
+                        confirmDelete = false
+                        onDelete()
+                    },
+                )
+            }
+        }
         if (isSelected) {
-            Spacer(Modifier.size(8.dp))
+            Spacer(Modifier.size(4.dp))
             Icon(
                 imageVector = Icons.Rounded.Check,
                 contentDescription = null,

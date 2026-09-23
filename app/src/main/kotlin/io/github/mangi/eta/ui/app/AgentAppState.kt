@@ -692,6 +692,30 @@ internal class AgentAppState(
         }
     }
 
+    /**
+     * 浮窗（独立 Service，直写同一个库）删掉会话后，本体回到前台要跟着对齐：
+     * 只在「库里的会话集合和内存快照不一致」时才全量重载，避免本体内存快照
+     * 在下一次持久化时把刚删掉的会话又写回库里。
+     */
+    suspend fun syncExternalConversationChanges() {
+        if (conversationArchiveBusy) return
+        if (io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance) return
+        if (runJobs.isNotEmpty()) return
+        persistenceJob?.join()
+        val storedIds = withContext(Dispatchers.IO) {
+            AgentConversationStore.conversationIds(appContext)
+        }.toSet()
+        val removed = conversationsById.keys - storedIds
+        val added = storedIds - conversationsById.keys
+        if (removed.isEmpty() && added.isEmpty()) return
+        if (removed.isNotEmpty()) {
+            withContext(Dispatchers.Main.immediate) {
+                removed.forEach { conversationDrafts.remove(it) }
+            }
+        }
+        reloadConversationsAfterBackup()
+    }
+
     /** 用 checkpoint、终态 outbox 与 active session 一次性对账，避免用进程存活推断 run 状态。 */
     private suspend fun recoverRuntimeRuns() {
         val client = AgentRuntimeClient(appContext, AndroidAgentLogger)

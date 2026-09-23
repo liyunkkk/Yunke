@@ -1,6 +1,9 @@
 package io.github.mangi.eta.ui.app
 
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.datastore.SettingsDataStore
@@ -147,6 +150,31 @@ internal object AgentConversationStore {
             EtaDatabase.get(context.applicationContext).conversationDao()
                 .conversationsPage(limit = limit, offset = 0)
         }
+
+    /**
+     * 浮窗与本体同进程但不同状态所有者（Service vs Activity ViewModel）。
+     * 浮窗改库后自增它，本体在组合里读这个快照值即可立刻对齐，
+     * 不必依赖 ON_RESUME —— 浮窗是 overlay，不改变 Activity 生命周期。
+     */
+    var externalRevision by mutableStateOf(0)
+        internal set
+
+    /** 库里现存会话 id：本体用它和内存快照做差集，判断浮窗是否在外部改过库。 */
+    suspend fun conversationIds(context: Context): List<String> =
+        withContext(Dispatchers.IO) {
+            EtaDatabase.get(context.applicationContext).conversationDao().conversationIds()
+        }
+
+    /** 删除单个会话：只摘掉这一条，不做全量重写，避免与本体内存快照互相覆盖。 */
+    suspend fun deleteConversation(context: Context, conversationId: String) {
+        val appContext = context.applicationContext
+        saveMutex.withLock {
+            withContext(Dispatchers.IO) {
+                EtaDatabase.get(appContext).conversationDao()
+                    .deleteConversationCascade(conversationId)
+            }
+        }
+    }
 
     suspend fun save(
         context: Context,

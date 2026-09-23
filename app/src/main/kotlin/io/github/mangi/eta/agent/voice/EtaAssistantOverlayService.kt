@@ -36,8 +36,10 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
+import io.github.mangi.eta.agent.media.AgentChatImageCache
 import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.media.AgentVideoCodec
+import io.github.mangi.eta.agent.model.AgentCompactionArchive
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.runtime.AgentEvent
@@ -62,7 +64,9 @@ import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.app.AgentRunMessageProjector
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
+import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.AgentChatUiState
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
@@ -70,6 +74,9 @@ import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.durationMsAt
+import io.github.mangi.eta.ui.model.fullImageSourceAt
+import io.github.mangi.eta.ui.model.isVideoAt
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -92,6 +99,7 @@ import android.net.Uri
 import io.github.mangi.eta.agent.device.AgentFileReferenceGateway
 import io.github.mangi.eta.agent.model.AgentFileReferenceKind
 import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
+import io.github.mangi.eta.ui.model.MessageEditUiState
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
@@ -324,6 +332,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         onToggleHistoryMenu = ::toggleHistoryMenu,
                         onSelectConversation = ::selectConversation,
                         onNewConversation = ::newConversation,
+                        onDeleteConversation = ::deleteConversation,
                         onModelSelected = { _, modelId -> selectModel(modelId) },
                         onSubmit = { text ->
                             inputText = text
@@ -348,6 +357,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         onAssistantSelected = { id -> AssistantRepository.select(id) },
                         // 浮窗不承载助手编辑页，交给主界面处理。
                         onEditAssistant = {},
+                        messageLaterTurnCount = ::messageLaterTurnCount,
+                        onEditMessage = ::beginMessageEdit,
+                        onDeleteMessage = ::deleteMessage,
+                        onRegenerateMessage = ::regenerateMessage,
+                        onCancelMessageEdit = ::cancelMessageEdit,
                         history = conversationHistory,
                         autoCompressEnabled = Prefs.isEnabled(Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED),
                         assistantId = activeAssistantId,
@@ -602,6 +616,148 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         submitPrompt(prompt)
     }
 
+    /** 浮窗侧合成最小 AgentChatUiState，复用本体同一套轮次裁剪逻辑。 */
+    private fun revisionState(): AgentChatUiState = AgentChatUiState(
+        messages = uiState.messages,
+        history = conversationHistory,
+        input = inputText,
+        isStreaming = activeRunId != null,
+        thinkingEnabled = false,
+        messageEdit = uiState.messageEdit,
+    )
+
+    /** 删除/重新生成前问一句「后面还有几轮」，与本体同一口径。 */
+    private fun messageLaterTurnCount(messageId: String): Int? =
+        AgentConversationRevisionReducer.boundary(revisionState(), messageId)?.laterTurnCount
+
+    private fun String.overlayImageMimeType(): String =
+        takeIf { startsWith("data:") }
+            ?.substringAfter("data:")
+            ?.substringBefore(';')
+            ?.takeIf { it.startsWith("image/") }
+            ?: "image/jpeg"
+
+    private fun beginMessageEdit(messageId: String) {
+        if (activeRunId != null) return
+        if (uiState.messageEdit != null) return
+        val boundary = AgentConversationRevisionReducer.boundary(revisionState(), messageId) ?: return
+        val images = boundary.userMessage.images.mapIndexed { index, dataUrl ->
+            val video = boundary.userMessage.isVideoAt(index)
+            PendingImageUi(
+                id = "edit-${boundary.userMessage.id}-$index",
+                uri = boundary.userMessage.fullImageSourceAt(index),
+                dataUrl = dataUrl,
+                mimeType = if (video) "video/mp4" else dataUrl.overlayImageMimeType(),
+                isVideo = video,
+                durationMs = boundary.userMessage.durationMsAt(index),
+            )
+        }
+        val parsed = AgentFileReferencePromptCodec.parse(boundary.userMessage.content)
+        // 先记下编辑前的草稿与附件，再覆盖输入框；否则取消编辑还原不回去。
+        val previousInput = inputText
+        val previousImages = uiState.pendingImages
+        val previousFileReferences = uiState.pendingFileReferences
+        inputText = parsed.request
+        uiState = uiState.copy(
+            messageEdit = MessageEditUiState(
+                targetMessageId = boundary.userMessage.id,
+                previousInput = previousInput,
+                previousImages = previousImages,
+                previousFileReferences = previousFileReferences,
+                hasLaterTurns = boundary.laterTurnCount > 0,
+            ),
+            isHistoryMenuVisible = false,
+            pendingImages = images,
+            pendingFileReferences = parsed.references.mapIndexed { index, reference ->
+                PendingFileReferenceUi(
+                    id = "edit-${boundary.userMessage.id}-file-$index",
+                    reference = reference,
+                )
+            },
+        )
+        inputFocusRequestKey++
+    }
+
+    private fun cancelMessageEdit() {
+        val edit = uiState.messageEdit ?: return
+        inputText = edit.previousInput
+        uiState = uiState.copy(
+            messageEdit = null,
+            pendingImages = edit.previousImages,
+            pendingFileReferences = edit.previousFileReferences,
+        )
+    }
+
+    private fun deleteMessage(messageId: String) {
+        if (activeRunId != null) return
+        val revised = AgentConversationRevisionReducer.deleteFromTurn(revisionState(), messageId)
+            ?: return
+        val remaining = revised.messages
+        val remainingHistory = revised.history
+        val conversationId = currentConversationId ?: return
+        inputText = ""
+        if (remaining.isEmpty()) {
+            // 与本体一致：这一轮删完就只剩空壳，整条会话一起清掉并切到最近的一条。
+            deleteConversation(conversationId)
+            return
+        }
+        conversationHistory = remainingHistory
+        uiState = uiState.copy(
+            messages = remaining,
+            messageEdit = null,
+            isHistoryMenuVisible = false,
+        )
+        scope.launch {
+            AgentConversationStore.saveAssistantConversation(
+                context = this@EtaAssistantOverlayService,
+                conversationId = conversationId,
+                title = uiState.conversationTitle,
+                messages = remaining,
+                history = remainingHistory,
+            )
+            refreshHistoryConversations(conversationId)
+        }
+    }
+
+    private fun regenerateMessage(messageId: String) {
+        if (activeRunId != null) return
+        val boundary = AgentConversationRevisionReducer.boundary(revisionState(), messageId) ?: return
+        val user = boundary.userMessage
+        val parsed = AgentFileReferencePromptCodec.parse(user.content)
+        val runtimePrompt = AgentFileReferencePromptCodec.format(
+            parsed.request,
+            parsed.references,
+            parsed.conversations,
+        )
+        val runImages = user.images.mapIndexed { index, dataUrl ->
+            AgentModelClient.ModelImage(
+                reference = dataUrl,
+                mimeType = if (user.isVideoAt(index)) "video/mp4" else dataUrl.overlayImageMimeType(),
+                bytes = dataUrl.length,
+                source = user.fullImageSourceAt(index),
+            )
+        }
+        val conversationId = currentConversationId ?: return
+        // 重新生成不新增用户气泡，只把上下文截到该轮之前，再跑一次。
+        conversationHistory = boundary.historyPrefix
+        inputText = ""
+        uiState = uiState.copy(
+            messageEdit = null,
+            isHistoryMenuVisible = false,
+            pendingImages = emptyList(),
+            pendingFileReferences = emptyList(),
+        )
+        startOverlayRun(
+            normalized = parsed.request,
+            runtimePrompt = runtimePrompt,
+            runImages = runImages,
+            history = boundary.historyPrefix,
+            messages = uiState.messages.take(boundary.userMessageIndex + 1),
+            targetConversationId = conversationId,
+            titleSeed = parsed.request,
+        )
+    }
+
     private fun submitPrompt(prompt: String) {
         val normalized = prompt.trim()
         val pendingImages = uiState.pendingImages
@@ -632,11 +788,62 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             currentConversationId = "conv-${UUID.randomUUID()}"
         }
         val targetConvId = currentConversationId ?: return
-        val newTitle = uiState.conversationTitle.ifBlank { normalized.take(40) }
-        activeRunId = UUID.randomUUID().toString()
-        val runId = activeRunId ?: return
+        val runId = UUID.randomUUID().toString()
+        val edit = uiState.messageEdit
+        val editBoundary = edit?.let {
+            AgentConversationRevisionReducer.boundary(revisionState(), it.targetMessageId)
+        }
+        if (edit != null && editBoundary == null) {
+            uiState = uiState.copy(messageEdit = null)
+            return
+        }
+        val history = editBoundary?.historyPrefix ?: conversationHistory
+        if (editBoundary != null) conversationHistory = editBoundary.historyPrefix
+        val messages = if (editBoundary != null) {
+            // 编辑重发：替换该轮用户气泡，后面的轮次一并丢弃（与本体 sendCurrentMessage 一致）。
+            uiState.messages.take(editBoundary.userMessageIndex) + UserMessageUi(
+                id = editBoundary.userMessage.id,
+                content = runtimePrompt,
+                images = previewImages,
+                isEdited = true,
+                imageSources = pendingImages.map { it.uri },
+                imageIsVideo = pendingImages.map { it.isVideo },
+                imageDurationsMs = pendingImages.map { it.durationMs },
+            )
+        } else {
+            uiState.messages + UserMessageUi(
+                id = "user-$runId",
+                content = runtimePrompt,
+                images = previewImages,
+            )
+        }
+        startOverlayRun(
+            normalized = normalized,
+            runtimePrompt = runtimePrompt,
+            runImages = runImages,
+            history = history,
+            messages = messages,
+            targetConversationId = targetConvId,
+            titleSeed = normalized.ifBlank { runtimePrompt },
+            runId = runId,
+        )
+    }
+
+    private fun startOverlayRun(
+        normalized: String,
+        runtimePrompt: String,
+        runImages: List<AgentModelClient.ModelImage>,
+        history: List<AgentModelClient.ConversationMessage>,
+        messages: List<AgentChatMessageUi>,
+        targetConversationId: String,
+        titleSeed: String,
+        runId: String = UUID.randomUUID().toString(),
+    ) {
+        if (activeRunId != null) return
+        val newTitle = uiState.conversationTitle.ifBlank { titleSeed.take(40) }
+        activeRunId = runId
         uiState = uiState.copy(
-            conversationId = targetConvId,
+            conversationId = targetConversationId,
             conversationTitle = newTitle,
             isHistoryMenuVisible = false,
             phase = EtaVoicePhase.PROCESSING,
@@ -644,11 +851,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             screenContext = EtaScreenContextStateReducer.consume(),
             pendingImages = emptyList(),
             pendingFileReferences = emptyList(),
-            messages = uiState.messages + UserMessageUi(
-                id = "user-$runId",
-                content = runtimePrompt,
-                images = previewImages,
-            ),
+            messageEdit = null,
+            messages = messages,
         )
         updateSoftInput(visible = false)
         runJob = scope.launch {
@@ -664,7 +868,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     prompt = runtimePrompt,
                     config = config,
                     images = runImages,
-                    history = conversationHistory,
+                    history = history,
                     handoff = AgentRuntimeWire.EntryHandoff(
                         id = "$conversationKey:$runId",
                         source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
@@ -699,7 +903,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 }
                 val finalMessages = uiState.messages
                 val finalHistory = conversationHistory
-                val saveConvId = currentConversationId ?: targetConvId
+                val saveConvId = currentConversationId ?: targetConversationId
                 val saveTitle = uiState.conversationTitle.ifBlank { newTitle }
                 scope.launch {
                     AgentConversationStore.saveAssistantConversation(
@@ -1226,6 +1430,84 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         pendingFileReferences = emptyList(),
                     )
                 }
+            }
+        }
+    }
+
+    /** 浮窗删除会话：与本体同源，落库后本体回到前台按指纹自动同步。 */
+    private fun deleteConversation(conversationId: String) {
+        if (activeRunId != null) return
+        val deletingCurrent = conversationId == currentConversationId
+        uiState = uiState.copy(isHistoryMenuVisible = false)
+        scope.launch {
+            AgentConversationStore.deleteConversation(
+                this@EtaAssistantOverlayService,
+                conversationId,
+            )
+            runCatching { AgentChatImageCache(applicationContext).deleteConversation(conversationId) }
+                .onFailure {
+                    AndroidAgentLogger.warn("浮窗会话图片缓存清理失败：${it.javaClass.simpleName}")
+                }
+            runCatching { AgentCompactionArchive(filesDir, conversationId).delete() }
+                .onFailure {
+                    AndroidAgentLogger.warn("浮窗压缩原文清理失败：${it.javaClass.simpleName}")
+                }
+            AgentConversationStore.externalRevision += 1
+            val recent = AgentConversationStore.loadRecentConversations(
+                this@EtaAssistantOverlayService,
+            )
+            val nextId = recent.firstOrNull()?.id
+            val data = if (deletingCurrent && nextId != null) {
+                AgentConversationStore.loadAssistantConversation(
+                    this@EtaAssistantOverlayService,
+                    nextId,
+                )
+            } else {
+                null
+            }
+            if (deletingCurrent && nextId != null) {
+                AgentConversationStore.selectConversation(
+                    this@EtaAssistantOverlayService,
+                    nextId,
+                )
+            }
+            withContext(Dispatchers.Main.immediate) {
+                if (deletingCurrent) {
+                    if (data != null) {
+                        currentConversationId = data.conversationId
+                        conversationHistory = data.history
+                        inputText = ""
+                        uiState = uiState.copy(
+                            messages = data.messages.distinctBy { it.id },
+                            conversationId = data.conversationId,
+                            conversationTitle = data.title,
+                            pendingImages = emptyList(),
+                            pendingFileReferences = emptyList(),
+                            messageEdit = null,
+                        )
+                    } else {
+                        currentConversationId = null
+                        conversationHistory = emptyList()
+                        inputText = ""
+                        uiState = uiState.copy(
+                            messages = emptyList(),
+                            conversationId = null,
+                            conversationTitle = "",
+                            pendingImages = emptyList(),
+                            pendingFileReferences = emptyList(),
+                            messageEdit = null,
+                        )
+                    }
+                }
+                val items = recent.map { meta ->
+                    AssistantConversationItem(
+                        id = meta.id,
+                        title = meta.title,
+                        updatedAt = meta.updatedAt,
+                        isCurrent = meta.id == currentConversationId,
+                    )
+                }
+                uiState = uiState.copy(historyConversations = items)
             }
         }
     }
