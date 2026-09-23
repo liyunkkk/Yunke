@@ -15,14 +15,17 @@ internal class StreamingMarkdownRestoreState {
 
     fun animationsAllowed(paused: Boolean): Boolean = foreground && baseline == null && !paused
 
-    /** Only an actual re-entry restores history. The first live delta is not history. */
-    fun begin(content: String, live: Boolean = false): Boolean {
-        val firstLiveEntry = !entered && live
+    /** Only an actual re-entry restores history. The first live delta is not history.
+     * A block that is already complete on first composition is also new text: the
+     * network batch and its end event can land in the same snapshot, so isStreaming
+     * is already false. That first appearance still has to typewriter. */
+    fun begin(content: String, live: Boolean = false, animateExisting: Boolean = false): Boolean {
+        val firstUnseen = !entered && (live || (animateExisting && content.isNotEmpty()))
         entered = true
         generation += 1
-        baseline = if (firstLiveEntry) null else content
+        baseline = if (firstUnseen) null else content
         foreground = true
-        return firstLiveEntry
+        return firstUnseen
     }
 
     fun pause() {

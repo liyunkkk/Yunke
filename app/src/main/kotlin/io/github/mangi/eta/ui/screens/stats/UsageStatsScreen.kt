@@ -258,7 +258,7 @@ private fun ModelUsagePane(
                 )
                 ModelMetricRow(
                     label = stringResource(R.string.stats_page_input_tokens),
-                    value = formatTokenCount(filtered.totalInputTokens),
+                    value = formatTokenCount(filtered.totalFreshInputTokens),
                 )
                 ModelMetricRow(
                     label = stringResource(R.string.stats_page_output_tokens),
@@ -590,7 +590,7 @@ private fun ModelUsageRow(
             ) {
                 ModelMetricRow(
                     label = stringResource(R.string.stats_page_input_tokens),
-                    value = formatTokenCount(model.inputTokens),
+                    value = formatTokenCount(model.freshInputTokens),
                 )
                 ModelMetricRow(
                     label = stringResource(R.string.stats_page_output_tokens),
@@ -793,8 +793,8 @@ private fun StatsGrid(stats: UsageStatsSnapshot, modifier: Modifier = Modifier) 
                 icon = Icons.Rounded.Keyboard,
                 label = stringResource(R.string.stats_page_input_tokens),
                 value = formatCurrentLifetime(
-                    current = formatTokenCount(stats.currentInputTokens),
-                    lifetime = formatTokenCount(stats.lifetimeInputTokens),
+                    current = formatTokenCount(stats.currentFreshInputTokens),
+                    lifetime = formatTokenCount(stats.lifetimeFreshInputTokens),
                 ),
             )
             StatCard(

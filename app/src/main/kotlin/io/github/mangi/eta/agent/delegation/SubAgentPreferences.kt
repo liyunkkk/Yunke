@@ -56,10 +56,20 @@ internal object SubAgentPreferences {
     }
     @Synchronized fun remove(id: String) { persist(profiles().filterNot { it.id == id }) }
     fun saveModel(id: String, selection: ModelFeatureSelection) = update(id) { old ->
+        val sameModel = old.providerId == selection.providerId && old.modelId == selection.modelId
+        val memory = old.reasoningByModel.toMutableMap()
+        if (old.providerId.isNotBlank() && old.modelId.isNotBlank() && old.reasoning != null) {
+            memory[SubAgentProfile.modelReasoningKey(old.providerId, old.modelId)] = old.reasoning
+        }
+        val restored = when {
+            sameModel -> old.reasoning
+            selection.providerId.isBlank() || selection.modelId.isBlank() -> null
+            else -> memory[SubAgentProfile.modelReasoningKey(selection.providerId, selection.modelId)]
+        }
         old.copy(providerId = selection.providerId, modelId = selection.modelId,
-            imageResolution = if (old.providerId == selection.providerId && old.modelId == selection.modelId) old.imageResolution else null,
-            reasoning = if (selection.providerId.isBlank() || selection.modelId.isBlank() ||
-                old.providerId != selection.providerId || old.modelId != selection.modelId) null else old.reasoning)
+            imageResolution = if (sameModel) old.imageResolution else null,
+            reasoning = restored,
+            reasoningByModel = memory)
     }
     fun applyReasoning(profile: SubAgentProfile, config: AgentModelClient.ModelConfig): AgentModelClient.ModelConfig {
         if (profile.isMedia) {

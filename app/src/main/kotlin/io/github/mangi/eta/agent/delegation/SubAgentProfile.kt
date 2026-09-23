@@ -14,6 +14,7 @@ internal data class SubAgentProfile(
     val tier: SubAgentTaskTier? = null,
     val reasoning: ReasoningEffort? = null,
     val imageResolution: String? = null,
+    val reasoningByModel: Map<String, ReasoningEffort> = emptyMap(),
 ) {
     init {
         require(id.isNotBlank() && name.isNotBlank() && name.length <= 80)
@@ -41,11 +42,34 @@ internal data class SubAgentProfile(
         .put("provider", providerId).put("model", modelId).put("tier", tier?.takeIf { supportsTaskTier }?.wireValue.orEmpty())
         .put("reasoning", reasoning?.wireValue.orEmpty())
         .put("image_resolution", imageResolution.orEmpty())
+        .put("reasoning_memory", org.json.JSONArray().also { array ->
+            reasoningByModel.forEach { (key, effort) ->
+                val parts = key.split("\u0000", limit = 2)
+                if (parts.size == 2) array.put(JSONObject()
+                    .put("provider", parts[0]).put("model", parts[1]).put("reasoning", effort.wireValue))
+            }
+        })
 
     companion object {
         fun fromJson(j: JSONObject) = SubAgentProfile(j.getString("id"), j.getString("name"),
             j.getString("role"), j.optBoolean("enabled", true), j.optString("provider"), j.optString("model"),
             SubAgentTaskTier.fromWireValue(j.optString("tier")), ReasoningEffort.fromWireValue(j.optString("reasoning")),
-            j.optString("image_resolution").takeIf { it in io.github.mangi.eta.agent.model.ImageResolutionTier.values }).normalizedTaskTier()
+            j.optString("image_resolution").takeIf { it in io.github.mangi.eta.agent.model.ImageResolutionTier.values },
+            reasoningMemory(j)).normalizedTaskTier()
+
+        fun modelReasoningKey(providerId: String, modelId: String): String = providerId + "\u0000" + modelId
+
+        private fun reasoningMemory(j: JSONObject): Map<String, ReasoningEffort> {
+            val array = j.optJSONArray("reasoning_memory") ?: return emptyMap()
+            return buildMap {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val provider = item.optString("provider")
+                    val model = item.optString("model")
+                    val effort = ReasoningEffort.fromWireValue(item.optString("reasoning")) ?: continue
+                    if (provider.isNotBlank() && model.isNotBlank()) put(modelReasoningKey(provider, model), effort)
+                }
+            }
+        }
     }
 }

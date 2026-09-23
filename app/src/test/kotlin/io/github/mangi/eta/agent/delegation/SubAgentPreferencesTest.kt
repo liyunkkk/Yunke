@@ -68,7 +68,7 @@ class SubAgentPreferencesTest {
         } finally { saved.forEachIndexed(SubAgentPreferences::saveReasoning) }
     }
 
-    @Test fun changingModelClearsOnlyThatSlotsOverride() {
+    @Test fun changingModelRestoresEachModelsOverride() {
         Prefs.initLocal(RuntimeEnvironment.getApplication())
         val savedModel = SubAgentPreferences.selection(0)
         val saved = (0..1).map(SubAgentPreferences::reasoning)
@@ -82,9 +82,14 @@ class SubAgentPreferencesTest {
             SubAgentPreferences.save(0, selection.copy(modelId = "model-B"))
             assertNull(SubAgentPreferences.reasoning(0))
             assertEquals(ReasoningEffort.LOW, SubAgentPreferences.reasoning(1))
+            SubAgentPreferences.saveReasoning(0, ReasoningEffort.LOW)
+            SubAgentPreferences.save(0, selection)
+            assertEquals(ReasoningEffort.HIGH, SubAgentPreferences.reasoning(0))
             SubAgentPreferences.saveReasoning(0, ReasoningEffort.HIGH)
             SubAgentPreferences.save(0, selection.copy(providerId = "provider-B", modelId = "model-B"))
             assertNull(SubAgentPreferences.reasoning(0))
+            SubAgentPreferences.save(0, selection.copy(modelId = "model-B"))
+            assertEquals(ReasoningEffort.LOW, SubAgentPreferences.reasoning(0))
         } finally {
             SubAgentPreferences.save(0, savedModel)
             saved.forEachIndexed(SubAgentPreferences::saveReasoning)

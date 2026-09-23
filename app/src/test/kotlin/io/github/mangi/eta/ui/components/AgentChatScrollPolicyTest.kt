@@ -240,9 +240,9 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun largeAppendRequestsBottomOnlyWhenSentinelLeftTheViewport() {
+    fun missingBottomSentinelUsesBoundedSmoothFollow() {
         assertEquals(
-            BottomFollowDecision(requestIndex = 8),
+            BottomFollowDecision(scrollByPx = 1000),
             resolveBottomFollowDecision(
                 enabled = true,
                 bottomItemIndex = 8,
@@ -265,5 +265,63 @@ class AgentChatScrollPolicyTest {
                 lastVisibleIndex = 8,
             ),
         )
+    }
+
+    @Test fun hiddenSentinelUsesViewportBoundAndNeverRequestsAnIndex() {
+        val decision = resolveBottomFollowDecision(true, 20, null, 600, 4, viewportSizePx = 800)
+        assertEquals(BottomFollowDecision(scrollByPx = 800), decision)
+        assertEquals(null, decision.requestIndex)
+    }
+
+    @Test fun reachedPhysicalEndStopsEvenWithStaleOverflow() {
+        assertEquals(BottomFollowDecision(), resolveBottomFollowDecision(true, 20, 900, 600, 20, canScrollForward = false))
+    }
+
+    @Test fun emptyListDoesNotStartFollowing() {
+        assertEquals(BottomFollowDecision(), resolveBottomFollowDecision(true, 0, null, 600, null))
+    }
+
+    @Test fun initialPositionWaitsForContentButAbandonsOnUserNavigation() {
+        assertFalse(InitialBottomPosition(0, true, true, false).ready)
+        assertFalse(InitialBottomPosition(8, false, true, false).ready)
+        assertTrue(InitialBottomPosition(8, true, true, false).shouldPosition)
+        assertTrue(InitialBottomPosition(0, false, true, true).ready)
+        assertFalse(InitialBottomPosition(8, true, true, true).shouldPosition)
+        assertFalse(InitialBottomPosition(8, true, false, false).shouldPosition)
+    }
+
+    @Test fun tallSingleItemKeepsPublishingDistanceAfterEachViewport() {
+        // Emulate snapshotFlow's equality gate while a 4-screen item stays at
+        // the same index. No new network text arrives during the entire drain.
+        val motion = BottomFollowMotion()
+        var position = 0f
+        val end = 3200f
+        var pending = 0f
+        var previous: BottomFollowLayout? = null
+        var requests = 0
+        for (frame in 0..1800) {
+            val remaining = end - position
+            val layout = BottomFollowLayout(
+                enabled = true, bottomItemIndex = 8,
+                sentinelBottom = if (remaining <= 800f) (800f + remaining).toInt() else null,
+                viewportEnd = 800, lastVisibleIndex = if (remaining <= 800f) 8 else 7,
+                viewportSizePx = 800, canScrollForward = remaining > 0f,
+                lastVisibleOffset = -position.toInt(),
+            )
+            if (layout != previous) {
+                previous = layout
+                val decision = resolveBottomFollowDecision(layout.enabled, layout.bottomItemIndex,
+                    layout.sentinelBottom, layout.viewportEnd, layout.lastVisibleIndex,
+                    layout.viewportSizePx, layout.canScrollForward)
+                assertEquals(null, decision.requestIndex)
+                pending = decision.scrollByPx.toFloat()
+                requests++
+            }
+            val moved = motion.step(pending, frame * 16_666_667L, 1f)
+            position += moved
+            pending = (pending - moved).coerceAtLeast(0f)
+        }
+        assertTrue("fallback must remain live beyond the first viewport", position >= end - 1.1f)
+        assertTrue(requests > 10)
     }
 }

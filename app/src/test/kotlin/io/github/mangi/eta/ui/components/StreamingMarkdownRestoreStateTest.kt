@@ -5,6 +5,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamingMarkdownRestoreStateTest {
+    @Test fun completedFirstBatchStillTypewriters() {
+        val state = StreamingMarkdownRestoreState()
+        assertTrue(state.begin("整段一次性到达", live = false, animateExisting = true))
+        assertTrue(state.animationsAllowed(false))
+        assertFalse(state.completeLayout(state.generation, "整段一次性到达", "整段一次性到达"))
+    }
+
     @Test fun firstLiveBatchDoesNotWaitForHistoryLayoutOrCatchUp() {
         val state = StreamingMarkdownRestoreState()
         assertTrue(state.begin("first batch".repeat(50), live = true))

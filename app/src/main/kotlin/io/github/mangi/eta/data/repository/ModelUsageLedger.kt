@@ -10,6 +10,7 @@ internal data class ModelUsageSnapshot(
     val providers: List<ModelUsageProviderUi> = emptyList(),
 ) {
     val totalInputTokens: Long get() = providers.sumOf { it.inputTokens }
+    val totalFreshInputTokens: Long get() = providers.sumOf { it.freshInputTokens }
     val totalOutputTokens: Long get() = providers.sumOf { it.outputTokens }
     val totalCachedTokens: Long get() = providers.sumOf { it.cachedTokens }
 
@@ -30,6 +31,7 @@ internal data class ModelUsageProviderUi(
     val models: List<ModelUsageModelUi>,
 ) {
     val inputTokens: Long get() = models.sumOf { it.inputTokens }
+    val freshInputTokens: Long get() = models.sumOf { it.freshInputTokens }
     val outputTokens: Long get() = models.sumOf { it.outputTokens }
     val cachedTokens: Long get() = models.sumOf { it.cachedTokens }
 }
@@ -54,10 +56,13 @@ internal data class ModelUsageModelUi(
     val events: List<ModelUsageEvent> = emptyList(),
     val cachedTokens: Long = 0L,
 ) {
+    /** Provider dashboards report input without the cache subset. */
+    val freshInputTokens: Long
+        get() = (inputTokens - cachedTokens).coerceAtLeast(0L)
     val dailyAverageTokens: Long
-        get() = if (activeDays <= 0) 0L else inputTokens / activeDays
+        get() = if (activeDays <= 0) 0L else freshInputTokens / activeDays
     val conversationAverageTokens: Long
-        get() = if (conversationCount <= 0) 0L else inputTokens / conversationCount
+        get() = if (conversationCount <= 0) 0L else freshInputTokens / conversationCount
 
     fun filtered(startMillis: Long?, endMillis: Long?): ModelUsageModelUi? {
         if (startMillis == null && endMillis == null) return this

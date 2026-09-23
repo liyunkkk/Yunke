@@ -118,8 +118,6 @@ import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import io.github.mangi.eta.ui.model.isResumeAfterCompress
 import io.github.mangi.eta.ui.model.isSteerSupplement
-import kotlin.math.exp
-import kotlin.math.min
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -639,6 +637,20 @@ internal fun AgentConversationMessages(
     // 滑回时复用同一解析会话与打字机进度，避免整段内容重新解析并重放显现动画。
     val fallbackStreamingStates = remember { mutableStateMapOf<String, StreamingMarkdownState>() }
     val streamingMarkdownStates = LocalStreamingMarkdownStates.current ?: fallbackStreamingStates
+    // Messages already on screen before this live run must not replay. A text block that
+    // arrives and ends in one snapshot is absent from this set, so it still gets a typewriter.
+    val settledMessageIds = remember { mutableSetOf<String>() }
+    var seededSettledMessages by remember { mutableStateOf(false) }
+    if (!seededSettledMessages) {
+        seededSettledMessages = true
+        if (isStreaming || isPaused) visibleMessages.forEach { settledMessageIds.add(it.id) }
+    }
+    SideEffect {
+        if (!isStreaming && !isPaused) {
+            settledMessageIds.clear()
+            visibleMessages.forEach { settledMessageIds.add(it.id) }
+        }
+    }
     LaunchedEffect(visibleMessages, streamingMarkdownStates) {
         val activeIds = visibleMessages.mapTo(mutableSetOf()) { it.id }
         streamingMarkdownStates.keys.retainAll(activeIds)
@@ -747,11 +759,13 @@ internal fun AgentConversationMessages(
             }
     }
 
+    var initialBottomPositionPending by remember(scrollState) { mutableStateOf(true) }
+    val currentScrollTarget by rememberUpdatedState(scrollToMessageId)
     val shouldFollowBottom by rememberUpdatedState(
         resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
-            isUserDragging = isUserScrolling || messageNavigationJob != null,
+            isUserDragging = initialBottomPositionPending || isUserScrolling || messageNavigationJob != null,
             isBottomSettling = isBottomSettling,
         )
     )
@@ -760,32 +774,27 @@ internal fun AgentConversationMessages(
         Channel<BottomFollowDecision>(Channel.CONFLATED)
     }
 
-    LaunchedEffect(
-        bottomItemIndex,
-        keepBottomAnchored,
-        isUserScrolling,
-        messageNavigationJob,
-        isStreaming,
-        scrollToMessageId,
-    ) {
-        if (shouldSnapConversationToBottom(
-                isStreaming = isStreaming,
-                keepBottomAnchored = keepBottomAnchored,
-                isUserDragging = isUserScrolling || messageNavigationJob != null,
-                hasItems = bottomItemIndex > 0,
-                scrollToMessageId = scrollToMessageId,
-            )
-        ) {
-            snapListToBottom(scrollState, bottomItemIndex)
-            return@LaunchedEffect
-        }
-        if (shouldRequestInitialBottom(
-                isStreaming = isStreaming,
-                keepBottomAnchored = keepBottomAnchored,
-                isUserDragging = isUserScrolling || messageNavigationJob != null,
-            )
-        ) {
-            scrollState.requestScrollToItem(bottomItemIndex)
+    // Initial positioning owns the list only once. New timeline items and network
+    // completion must go through the continuous follow controller below.
+    LaunchedEffect(scrollState) {
+        try {
+            val initial = snapshotFlow {
+                InitialBottomPosition(
+                    bottomItemIndex = currentBottomItemIndex,
+                    hasLayout = scrollState.layoutInfo.visibleItemsInfo.isNotEmpty(),
+                    anchored = currentAnchor.value,
+                    interrupted = isUserScrolling || messageNavigationJob != null || currentScrollTarget != null,
+                )
+            }.first { it.ready }
+            if (initial.shouldPosition) {
+                StreamPerformanceDiagnostics.record("follow.initialSnap")
+                snapListToBottom(scrollState, initial.bottomItemIndex) {
+                    currentAnchor.value && !isUserScrolling &&
+                        messageNavigationJob == null && currentScrollTarget == null
+                }
+            }
+        } finally {
+            initialBottomPositionPending = false
         }
     }
 
@@ -805,6 +814,9 @@ internal fun AgentConversationMessages(
                 // 跟底目标应是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
                 lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index,
+                viewportSizePx = layoutInfo.viewportSize.height,
+                canScrollForward = scrollState.canScrollForward,
+                lastVisibleOffset = layoutInfo.visibleItemsInfo.lastOrNull()?.offset,
             )
         }
             .distinctUntilChanged()
@@ -815,84 +827,71 @@ internal fun AgentConversationMessages(
                     sentinelBottom = layout.sentinelBottom,
                     viewportEnd = layout.viewportEnd,
                     lastVisibleIndex = layout.lastVisibleIndex,
+                    viewportSizePx = layout.viewportSizePx,
+                    canScrollForward = layout.canScrollForward,
                 )
                 StreamPerformanceDiagnostics.record("follow.decision", value = decision.scrollByPx.toLong())
                 bottomFollowDecisions.trySend(decision)
             }
     }
 
-    // 一个持续存在的帧时钟从当前屏幕位置追向最新目标。新字符继续到达时只更新目标，
-    // 不取消并重启动画，因此速度连续；用户开始拖动后，enabled=false 会立即停止跟随。
-    LaunchedEffect(scrollState, bottomFollowDecisions) {
+    // One controller retains velocity across layout targets, including line-height
+    // steps. Neither a missing sentinel nor stream completion may bypass it.
+    LaunchedEffect(scrollState, bottomFollowDecisions, densityScale) {
+        val motion = BottomFollowMotion()
         var remainingDistancePx = 0f
-        var requestIndex: Int? = null
-        var previousFrameNanos = 0L
-
-        fun accept(decision: BottomFollowDecision) {
-            remainingDistancePx = decision.scrollByPx.toFloat()
-            requestIndex = decision.requestIndex
+        var previousFrameNanos: Long? = null
+        fun reset() {
+            remainingDistancePx = 0f
+            previousFrameNanos = null
+            motion.reset()
         }
-
+        fun accept(decision: BottomFollowDecision) {
+            remainingDistancePx = decision.scrollByPx.coerceAtLeast(0).toFloat()
+        }
         while (currentCoroutineContext().isActive) {
-            if (remainingDistancePx <= 0f && requestIndex == null) {
+            if (remainingDistancePx <= 0f) {
+                reset()
                 accept(bottomFollowDecisions.receive())
-                previousFrameNanos = 0L
             }
             while (true) {
-                val latest = bottomFollowDecisions.tryReceive().getOrNull() ?: break
-                accept(latest)
+                accept(bottomFollowDecisions.tryReceive().getOrNull() ?: break)
             }
-
             if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null) {
-                remainingDistancePx = 0f
-                requestIndex = null
+                reset()
                 continue
             }
-
-            requestIndex?.let { targetIndex ->
-                scrollState.requestScrollToItem(targetIndex)
-                requestIndex = null
-                remainingDistancePx = 0f
-                return@let
-            }
             if (remainingDistancePx <= 0f) continue
-
             val frameNanos = withFrameNanos { it }
-            val elapsedSeconds = if (previousFrameNanos == 0L) {
-                1f / 60f
-            } else {
-                ((frameNanos - previousFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.05f)
+            previousFrameNanos?.let {
+                StreamPerformanceDiagnostics.record("follow.frameGap", frameNanos - it)
             }
             previousFrameNanos = frameNanos
-
             while (true) {
-                val latest = bottomFollowDecisions.tryReceive().getOrNull() ?: break
-                accept(latest)
+                accept(bottomFollowDecisions.tryReceive().getOrNull() ?: break)
             }
-            if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null || requestIndex != null || remainingDistancePx <= 0f) continue
-
-            val step = smoothBottomFollowStep(
-                distancePx = remainingDistancePx,
-                elapsedSeconds = elapsedSeconds,
-                density = densityScale,
-            )
+            if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null) {
+                reset()
+                continue
+            }
+            val step = motion.step(remainingDistancePx, frameNanos, densityScale)
+            // First frame establishes real timing; zero movement is not a failed scroll.
+            if (step <= 0f) continue
             var consumedStep = 0f
             try {
                 scrollState.scroll {
-                    // scroll() may wait for another mutation; check ownership again.
                     if (!isUserScrolling && messageNavigationJob == null && shouldFollowBottom) {
                         consumedStep = StreamPerformanceDiagnostics.measure("follow.scroll") { scrollBy(step) }
+                        StreamPerformanceDiagnostics.record("follow.step", value = (consumedStep * 1000).toLong())
                     }
                 }
-                remainingDistancePx = if (consumedStep > 0f) {
-                    (remainingDistancePx - consumedStep).coerceAtLeast(0f)
-                } else {
-                    0f
-                }
+                if (consumedStep > 0f) {
+                    remainingDistancePx = (remainingDistancePx - consumedStep).coerceAtLeast(0f)
+                } else reset()
             } catch (cancelled: CancellationException) {
                 StreamPerformanceDiagnostics.record("follow.cancelled")
                 if (!currentCoroutineContext().isActive) throw cancelled
-                remainingDistancePx = 0f
+                reset()
             }
         }
     }
@@ -913,6 +912,16 @@ internal fun AgentConversationMessages(
         var streamFilledViewport by remember { mutableStateOf(false) }
         LaunchedEffect(isStreaming, isListScrollable) {
             streamFilledViewport = if (isStreaming) streamFilledViewport || isListScrollable else false
+        }
+        val messageActions = remember { ChatMessageActions() }
+        SideEffect {
+            messageActions.onSuggestionClick = onSuggestionClick
+            messageActions.onRunTraceClick = onRunTraceClick
+            messageActions.onOpenBrowser = onOpenBrowser
+            messageActions.onEditMessage = onEditMessage
+            messageActions.onDeleteMessage = onDeleteMessage
+            messageActions.onRegenerateMessage = onRegenerateMessage
+            messageActions.onBranchMessage = onBranchMessage
         }
         LazyColumn(
             state = scrollState,
@@ -945,15 +954,21 @@ internal fun AgentConversationMessages(
                             message = message,
                             speechPreface = (message as? AgentMessageUi)?.let { speechPrefaces[it.id] }.orEmpty(),
                             retainedStreamingState = (message as? AgentMessageUi)
-                                ?.takeIf { it.isStreaming || streamingMarkdownStates.containsKey(it.id) }
+                                ?.takeIf { agentMessage ->
+                                    agentMessage.isStreaming ||
+                                        streamingMarkdownStates.containsKey(agentMessage.id) ||
+                                        (
+                                            (isStreaming || isPaused) &&
+                                                agentMessage.id !in settledMessageIds &&
+                                                agentMessage.content.isNotEmpty()
+                                            )
+                                }
                                 ?.let { agentMessage ->
                                     streamingMarkdownStates.getOrPut(agentMessage.id) {
                                         StreamingMarkdownState()
                                     }
                                 },
-                            onSuggestionClick = onSuggestionClick,
-                            onRunTraceClick = onRunTraceClick,
-                            onOpenBrowser = onOpenBrowser,
+                            actions = messageActions,
                             showBrowserShortcut = message is ToolActivityMessageUi &&
                                 message.toolName == "browser_use" &&
                                 message.id == currentBrowserMessageId,
@@ -964,10 +979,6 @@ internal fun AgentConversationMessages(
                             messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                             branchEnabled = branchEnabled,
                             isEditing = message.id == editTargetMessageId,
-                            onEditMessage = onEditMessage,
-                            onDeleteMessage = onDeleteMessage,
-                            onRegenerateMessage = onRegenerateMessage,
-                            onBranchMessage = onBranchMessage,
                             isPaused = isPaused,
                             // Keep this modifier stable. Attaching fadeIn only after the run
                             // ends replays appearance on the already-visible answer.
@@ -1081,12 +1092,16 @@ internal fun AgentConversationMessages(
     }
 }
 
-private data class BottomFollowLayout(
+internal data class BottomFollowLayout(
     val enabled: Boolean,
     val bottomItemIndex: Int,
     val sentinelBottom: Int?,
     val viewportEnd: Int,
     val lastVisibleIndex: Int?,
+    val viewportSizePx: Int,
+    val canScrollForward: Boolean,
+    // Keep missing-sentinel targets live while scrolling inside one very tall item.
+    val lastVisibleOffset: Int?,
 )
 
 internal data class BottomFollowDecision(
@@ -1100,30 +1115,27 @@ internal fun resolveBottomFollowDecision(
     sentinelBottom: Int?,
     viewportEnd: Int,
     lastVisibleIndex: Int?,
+    viewportSizePx: Int = viewportEnd,
+    canScrollForward: Boolean = true,
 ): BottomFollowDecision {
-    if (!enabled) return BottomFollowDecision()
+    if (!enabled || !canScrollForward) return BottomFollowDecision()
     val overflow = sentinelBottom?.minus(viewportEnd)
     return when {
         overflow != null && overflow > 0 -> BottomFollowDecision(scrollByPx = overflow)
-        sentinelBottom == null &&
-            lastVisibleIndex != null &&
-            lastVisibleIndex < bottomItemIndex -> BottomFollowDecision(requestIndex = bottomItemIndex)
+        sentinelBottom == null && lastVisibleIndex != null && lastVisibleIndex < bottomItemIndex ->
+            BottomFollowDecision(scrollByPx = viewportSizePx.coerceAtLeast(1))
         else -> BottomFollowDecision()
     }
 }
 
-internal fun smoothBottomFollowStep(
-    distancePx: Float,
-    elapsedSeconds: Float,
-    density: Float,
-): Float {
-    if (distancePx <= 0f || elapsedSeconds <= 0f) return 0f
-    if (distancePx <= BOTTOM_FOLLOW_SNAP_DISTANCE_PX) return distancePx
-
-    val frameSeconds = elapsedSeconds.coerceAtMost(BOTTOM_FOLLOW_MAX_FRAME_SECONDS)
-    val easedStep = distancePx * (1f - exp(-frameSeconds / BOTTOM_FOLLOW_RESPONSE_SECONDS))
-    val speedLimitedStep = BOTTOM_FOLLOW_MAX_SPEED_DP_PER_SECOND * density * frameSeconds
-    return min(distancePx, min(easedStep.coerceAtLeast(BOTTOM_FOLLOW_MIN_STEP_PX), speedLimitedStep))
+internal data class InitialBottomPosition(
+    val bottomItemIndex: Int,
+    val hasLayout: Boolean,
+    val anchored: Boolean,
+    val interrupted: Boolean,
+) {
+    val ready: Boolean get() = !anchored || interrupted || (bottomItemIndex > 0 && hasLayout)
+    val shouldPosition: Boolean get() = ready && anchored && !interrupted
 }
 
 /**
@@ -1411,12 +1423,6 @@ private fun ContextCompressingIndicator(waiting: Boolean = false, modelName: Str
     }
 }
 
-private const val BOTTOM_FOLLOW_RESPONSE_SECONDS = 0.085f
-private const val BOTTOM_FOLLOW_MAX_FRAME_SECONDS = 0.05f
-private const val BOTTOM_FOLLOW_MAX_SPEED_DP_PER_SECOND = 720f
-private const val BOTTOM_FOLLOW_MIN_STEP_PX = 0.5f
-private const val BOTTOM_FOLLOW_SNAP_DISTANCE_PX = 0.75f
-
 internal fun resolveKeepBottomAnchored(
     current: Boolean,
     isUserDragging: Boolean,
@@ -1475,8 +1481,10 @@ internal fun resolveConversationBottomSnap(
 private suspend fun snapListToBottom(
     scrollState: LazyListState,
     bottomItemIndex: Int,
+    canPosition: () -> Boolean = { true },
 ) {
     repeat(3) {
+        if (!canPosition()) return
         val layout = scrollState.layoutInfo
         val lastVisible = layout.visibleItemsInfo.lastOrNull()
         val viewportEnd = layout.viewportEndOffset - layout.afterContentPadding
@@ -1488,7 +1496,7 @@ private suspend fun snapListToBottom(
         )
         decision.requestIndex?.let { scrollState.scrollToItem(it) }
         if (decision.scrollByPx != 0) {
-            scrollState.scroll { scrollBy(decision.scrollByPx.toFloat()) }
+            scrollState.scroll { if (canPosition()) scrollBy(decision.scrollByPx.toFloat()) }
         }
         if (decision.requestIndex == null && decision.scrollByPx == 0) return
         withFrameNanos { }

@@ -353,6 +353,8 @@ internal class SmoothTextRevealNode(
         cachedVisibleHeight = visibleHeight
         val measuredHeight = visibleHeight.coerceIn(constraints.minHeight, constraints.maxHeight)
         return layout(placeable.width, measuredHeight) {
+            // 逐帧裁剪不可引入独立子图层，否则未显现的文字会整段合成出来。
+            // 直接放置子内容，让 clip 和逐字淡入留在同一次绘制里。
             placeable.place(0, 0)
         }
     }

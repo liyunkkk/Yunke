@@ -32,6 +32,8 @@ internal data class UsageStatsSnapshot(
     val totalConversations: Int get() = currentConversations
     val totalMessages: Int get() = currentMessages
     val totalInputTokens: Long get() = lifetimeInputTokens
+    val currentFreshInputTokens: Long get() = (currentInputTokens - currentCachedTokens).coerceAtLeast(0L)
+    val lifetimeFreshInputTokens: Long get() = (lifetimeInputTokens - lifetimeCachedTokens).coerceAtLeast(0L)
     val totalOutputTokens: Long get() = lifetimeOutputTokens
     val totalCachedTokens: Long get() = lifetimeCachedTokens
 }

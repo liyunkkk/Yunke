@@ -151,6 +151,7 @@ data class ConversationTokenUsageUi(
     val cachedTokens: Long = 0,
 ) {
     val totalTokens: Long get() = inputTokens + outputTokens
+    val freshInputTokens: Long get() = (inputTokens - cachedTokens).coerceAtLeast(0L)
     val hasUsage: Boolean get() = inputTokens > 0 || outputTokens > 0 || cachedTokens > 0
     val cachePercent: Double?
         get() = if (inputTokens > 0) {

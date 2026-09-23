@@ -72,6 +72,7 @@ import io.github.mangi.eta.data.repository.ProviderBalanceStore
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.McpServerRepository
+import io.github.mangi.eta.data.repository.ModelRepository
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.data.repository.UsageStatsRepository
@@ -471,9 +472,34 @@ internal class AgentAppState(
         return true
     }
 
+    private val modelReasoningMemory = HashMap<String, ReasoningEffort>()
+
+    private fun modelReasoningKey(providerId: String, modelId: String): String =
+        providerId + "\u0000" + modelId
+
+    private fun rememberedModelReasoningEffort(
+        providerId: String,
+        modelId: String,
+        stored: ReasoningEffort?,
+    ): ReasoningEffort = modelReasoningMemory[modelReasoningKey(providerId, modelId)] ?: stored ?: ReasoningEffort.OFF
+
+    private fun rememberModelReasoningEffort(providerId: String, modelId: String, effort: ReasoningEffort) {
+        if (providerId.isBlank() || modelId.isBlank()) return
+        modelReasoningMemory[modelReasoningKey(providerId, modelId)] = effort
+        scope.launch(Dispatchers.IO) {
+            val model = ModelRepository.modelsByProvider(providerId).firstOrNull { it.id == modelId } ?: return@launch
+            if (model.preferredReasoningEffort == effort) return@launch
+            ModelRepository.saveModel(providerId, model.copy(preferredReasoningEffort = effort))
+        }
+    }
+
     private fun preferredReasoningEffortForCurrentModel(): ReasoningEffort {
-        val preferred = modelPickerState.selectedModel?.preferredReasoningEffort
-            ?: ReasoningEffort.OFF
+        val model = modelPickerState.selectedModel
+        val preferred = if (model == null) {
+            ReasoningEffort.OFF
+        } else {
+            rememberedModelReasoningEffort(model.providerId, model.id, model.preferredReasoningEffort)
+        }
         return ConversationReasoningPolicy.resolve(preferred, currentReasoningCapabilities)
     }
 
@@ -1036,6 +1062,7 @@ internal class AgentAppState(
                 reasoningEffort = normalized,
             )
         )
+        rememberModelReasoningEffort(homeState.providerId, homeState.modelId, normalized)
         if (selectedConversationId != null) persistConversations()
     }
 
@@ -1048,14 +1075,14 @@ internal class AgentAppState(
         if (homeState.isPaused) abandonPausedRun()
         modelBindingGeneration++
         val config = RuntimeConfigRepository.buildRuntimeConfig(provider, model, assistant = null)
-        val previousEffort = homeState.reasoningEffort
-        val nextEffort = ConversationReasoningPolicy.resolve(previousEffort, config.reasoningCapabilities)
+        val requestedEffort = rememberedModelReasoningEffort(provider.id, model.id, model.preferredReasoningEffort)
+        val nextEffort = ConversationReasoningPolicy.resolve(requestedEffort, config.reasoningCapabilities)
         updateCurrentConversation(homeState.copy(providerId = provider.id, modelId = model.id,
             reasoningEffort = nextEffort, thinkingEnabled = nextEffort.enablesReasoning,
             livePromptTokens = null))
         billedOverheadTokens = null
         refreshBoundModelPicker()
-        if (nextEffort != previousEffort) Toast.makeText(appContext,
+        if (nextEffort != requestedEffort) Toast.makeText(appContext,
             "已按新模型支持的档位调整当前对话的思考深度", Toast.LENGTH_SHORT).show()
         if (selectedConversationId != null) persistConversations()
     }
@@ -1139,6 +1166,7 @@ internal class AgentAppState(
         selectedConversationId = null
         pendingNewConversationFolderId = selectedFolderId
         homeState = newDraftChatState()
+        rememberModelReasoningEffort(homeState.providerId, homeState.modelId, homeState.reasoningEffort)
         billedOverheadConversationId = null
         billedOverheadTokens = null
         conversationPaneState = conversationPaneState.copy(

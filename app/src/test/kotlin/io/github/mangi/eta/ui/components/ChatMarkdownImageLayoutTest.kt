@@ -55,7 +55,7 @@ class ChatMarkdownImageLayoutTest {
                 CompositionLocalProvider(LocalOpenChatImagePreview provides open) {
                     Column(Modifier.width(360.dp).background(androidx.compose.ui.graphics.Color.White).testTag("message")
                         .verticalScroll(rememberScrollState())) {
-                        ChatMessageItem(content.value, {}, {}, {}, false, modifier=Modifier.fillMaxWidth(),
+                        ChatMessageItem(content.value, androidx.compose.runtime.remember { ChatMessageActions() }, false, modifier=Modifier.fillMaxWidth(),
                             showCopyAction=false, isPaused=true)
                     }
                 }

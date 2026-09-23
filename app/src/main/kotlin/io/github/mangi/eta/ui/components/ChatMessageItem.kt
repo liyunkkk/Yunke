@@ -63,6 +63,7 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -273,12 +274,21 @@ private fun rememberActivePulse(
     return alpha
 }
 
+@Stable
+internal class ChatMessageActions {
+    var onSuggestionClick: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
+    var onRunTraceClick: () -> Unit by mutableStateOf<() -> Unit>({})
+    var onOpenBrowser: () -> Unit by mutableStateOf<() -> Unit>({})
+    var onEditMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
+    var onDeleteMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
+    var onRegenerateMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
+    var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
+}
+
 @Composable
 internal fun ChatMessageItem(
     message: AgentChatMessageUi,
-    onSuggestionClick: (String) -> Unit,
-    onRunTraceClick: () -> Unit,
-    onOpenBrowser: () -> Unit,
+    actions: ChatMessageActions,
     showBrowserShortcut: Boolean,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
@@ -288,10 +298,6 @@ internal fun ChatMessageItem(
     messageActionsEnabled: Boolean = true,
     branchEnabled: Boolean = true,
     isEditing: Boolean = false,
-    onEditMessage: (String) -> Unit = {},
-    onDeleteMessage: (String) -> Unit = {},
-    onRegenerateMessage: (String) -> Unit = {},
-    onBranchMessage: (String) -> Unit = {},
     isPaused: Boolean = false,
     enableLivePreview: Boolean = true,
     speechPreface: String = "",
@@ -302,9 +308,9 @@ internal fun ChatMessageItem(
             actionsEnabled = messageActionsEnabled,
             branchEnabled = branchEnabled,
             isEditing = isEditing,
-            onEdit = { onEditMessage(message.id) },
-            onDelete = { onDeleteMessage(message.id) },
-            onBranch = { onBranchMessage(message.id) },
+            onEdit = { actions.onEditMessage(message.id) },
+            onDelete = { actions.onDeleteMessage(message.id) },
+            onBranch = { actions.onBranchMessage(message.id) },
             modifier = modifier,
         )
         is AgentMessageUi -> AgentMessageBlock(
@@ -317,9 +323,9 @@ internal fun ChatMessageItem(
             messageActionsEnabled = messageActionsEnabled,
             branchEnabled = branchEnabled,
             isPaused = isPaused,
-            onDelete = { onDeleteMessage(message.id) },
-            onRegenerate = { onRegenerateMessage(message.id) },
-            onBranch = { onBranchMessage(message.id) },
+            onDelete = { actions.onDeleteMessage(message.id) },
+            onRegenerate = { actions.onRegenerateMessage(message.id) },
+            onBranch = { actions.onBranchMessage(message.id) },
             modifier = modifier,
         )
         is SystemNoticeMessageUi -> AgentMessageBlock(
@@ -350,9 +356,9 @@ internal fun ChatMessageItem(
             messageActionsEnabled = messageActionsEnabled,
             branchEnabled = branchEnabled,
             isPaused = isPaused,
-            onDelete = { onDeleteMessage(message.id) },
-            onRegenerate = { onRegenerateMessage(message.id) },
-            onBranch = { onBranchMessage(message.id) },
+            onDelete = { actions.onDeleteMessage(message.id) },
+            onRegenerate = { actions.onRegenerateMessage(message.id) },
+            onBranch = { actions.onBranchMessage(message.id) },
             modifier = modifier,
         )
         is ThinkingMessageUi -> ThinkingRow(
@@ -362,10 +368,10 @@ internal fun ChatMessageItem(
             compact = compact,
             isPaused = isPaused,
         )
-        is RunTraceMessageUi -> RunTraceRow(message = message, onClick = onRunTraceClick, modifier = modifier)
+        is RunTraceMessageUi -> RunTraceRow(message = message, onClick = actions.onRunTraceClick, modifier = modifier)
         is ToolActivityMessageUi -> ToolActivityInline(
             message = message,
-            onOpenBrowser = onOpenBrowser,
+            onOpenBrowser = actions.onOpenBrowser,
             showBrowserShortcut = showBrowserShortcut,
             enableLivePreview = enableLivePreview,
             modifier = modifier,
@@ -373,7 +379,7 @@ internal fun ChatMessageItem(
         )
         is ToolSummaryMessageUi -> ToolSummaryInline(message = message, modifier = modifier, compact = compact)
         is ContextCompactedMessageUi -> ContextCompactedDivider(message = message, modifier = modifier)
-        is SuggestionChipsMessageUi -> SuggestionChipsRow(message = message, onSuggestionClick = onSuggestionClick, modifier = modifier)
+        is SuggestionChipsMessageUi -> SuggestionChipsRow(message = message, onSuggestionClick = actions.onSuggestionClick, modifier = modifier)
     }
 }
 
@@ -531,12 +537,12 @@ internal fun AgentWorkProcess(
                         .background(MiuixTheme.colorScheme.outline.copy(alpha = 0.45f)),
                 )
                 Column(modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)) {
+                    val nestedActions = remember { ChatMessageActions() }
+                    SideEffect { nestedActions.onOpenBrowser = onOpenBrowser }
                     messages.forEach { message ->
                         ChatMessageItem(
                             message = message,
-                            onSuggestionClick = {},
-                            onRunTraceClick = {},
-                            onOpenBrowser = onOpenBrowser,
+                            actions = nestedActions,
                             showBrowserShortcut = message.id == currentBrowserMessageId,
                             retainedStreamingState = retainedStreamingStates[message.id],
                             compact = true,
@@ -860,6 +866,10 @@ private fun AgentMessageBlock(
                             state = streamingState,
                             content = displayContent,
                             isStreaming = message.isStreaming,
+                            animateInitialContent = !message.isStreaming &&
+                                displayContent.isNotEmpty() &&
+                                streamingState.snapshot == null &&
+                                streamingState.revealedContent == null,
                             isPaused = isPaused,
                             onRevealCompleteChange = { streamingRevealComplete = it },
                             modifier = Modifier.fillMaxWidth(),
@@ -1052,6 +1062,7 @@ private fun StableMarkdown(
  * 快照全部丢失；滑回时整段已生成内容会重新全量解析，并从头重放显现动画。会话
  * 与组合解耦后，item 重建只是重新挂接效果，渲染进度原样保留。
  */
+@Stable
 internal class StreamingMarkdownState {
     var revealedContent by mutableStateOf<String?>(null)
     val parserSession = StreamingGfmParserSession()
@@ -1067,6 +1078,7 @@ private fun StreamingMarkdown(
     state: StreamingMarkdownState,
     content: String,
     isStreaming: Boolean,
+    animateInitialContent: Boolean = false,
     isPaused: Boolean = false,
     onRevealCompleteChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -1094,9 +1106,16 @@ private fun StreamingMarkdown(
     val view = LocalView.current
 
     LifecycleResumeEffect(state) {
-        if (state.restoreState.begin(currentContent, live = currentIsStreaming && !currentPaused)) {
-            // A new message may already contain a whole network batch when first composed.
-            // Do not classify that first batch as restored history and reveal it all at once.
+        val animateExisting = animateInitialContent && !currentPaused && currentContent.isNotEmpty()
+        if (state.restoreState.begin(
+                currentContent,
+                live = currentIsStreaming && !currentPaused,
+                animateExisting = animateExisting,
+            )
+        ) {
+            // A new message may already contain a whole network batch when first composed,
+            // including a batch whose block has already ended. Do not classify that first
+            // batch as restored history and reveal it all at once.
             revealCoordinator.resumeAnimationsWithoutCatchingUp()
         } else {
             revealCoordinator.restoreHistoryThrough(currentContent.length)
