@@ -98,6 +98,7 @@ internal fun EtaDropdownMenu(
     offset: DpOffset = DpOffset.Zero,
     alignEnd: Boolean = false,
     preferAbove: Boolean = false,
+    centerOnAnchor: Boolean = false,
     minWidth: Dp = MenuMinWidth,
     maxWidth: Dp = MenuMaxWidth,
     maxHeight: Dp? = null,
@@ -123,8 +124,8 @@ internal fun EtaDropdownMenu(
     val offsetXPx = with(density) { offset.x.roundToPx() }
     val offsetYPx = with(density) { offset.y.roundToPx() }
     val screenMarginPx = with(density) { MenuScreenMargin.roundToPx() }
-    val positionProvider = remember(offsetXPx, offsetYPx, alignEnd, preferAbove, screenMarginPx) {
-        EtaMenuPositionProvider(offsetXPx, offsetYPx, alignEnd, preferAbove, screenMarginPx)
+    val positionProvider = remember(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx) {
+        EtaMenuPositionProvider(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx)
     }
     val transition = rememberTransition(visibleState, label = "EtaDropdownMenu")
     val fraction = transition.animateFloat(
@@ -147,11 +148,15 @@ internal fun EtaDropdownMenu(
         },
         label = "etaMenuAlpha",
     ) { visible -> if (visible) 1f else 0f }
-    val transformOrigin = remember(alignEnd, preferAbove) {
-        TransformOrigin(
-            pivotFractionX = if (alignEnd) 1f else 0f,
-            pivotFractionY = if (preferAbove) 1f else 0f,
-        )
+    val transformOrigin = remember(alignEnd, preferAbove, centerOnAnchor) {
+        if (centerOnAnchor) {
+            TransformOrigin(0.5f, 0.5f)
+        } else {
+            TransformOrigin(
+                pivotFractionX = if (alignEnd) 1f else 0f,
+                pivotFractionY = if (preferAbove) 1f else 0f,
+            )
+        }
     }
     val squircleEnabled = isSquircleEnabled()
     val popupProperties = remember(focusable, expanded) {
@@ -267,6 +272,7 @@ private class EtaMenuPositionProvider(
     private val offsetYPx: Int,
     private val alignEnd: Boolean,
     private val preferAbove: Boolean,
+    private val centerOnAnchor: Boolean,
     private val screenMarginPx: Int,
 ) : PopupPositionProvider {
     override fun calculatePosition(
@@ -277,6 +283,13 @@ private class EtaMenuPositionProvider(
     ): IntOffset {
         val margin = screenMarginPx
         val maxX = (windowSize.width - popupContentSize.width - margin).coerceAtLeast(margin)
+        val maxY = (windowSize.height - popupContentSize.height - margin).coerceAtLeast(margin)
+        if (centerOnAnchor) {
+            // 固定居中：弹层以锚点中心为圆心。用于浮窗里「不跟随具体按钮」的二次确认弹层。
+            val centeredX = anchorBounds.left + anchorBounds.width / 2 - popupContentSize.width / 2 + offsetXPx
+            val centeredY = anchorBounds.top + anchorBounds.height / 2 - popupContentSize.height / 2 + offsetYPx
+            return IntOffset(centeredX.coerceIn(margin, maxX), centeredY.coerceIn(margin, maxY))
+        }
         val rawX = if (alignEnd) {
             anchorBounds.right - popupContentSize.width + offsetXPx
         } else {
@@ -293,7 +306,6 @@ private class EtaMenuPositionProvider(
             fitsAbove -> aboveY
             else -> belowY
         }
-        val maxY = (windowSize.height - popupContentSize.height - margin).coerceAtLeast(margin)
         return IntOffset(x, y.coerceIn(margin, maxY))
     }
 }

@@ -748,8 +748,8 @@ private fun BoxScope.AssistantPanel(
                                 messageDeleteTarget = null
                                 messageRegenerateTarget = null
                             },
-                            alignEnd = true,
-                            preferAbove = true,
+                            // 按裁决固定居中：不跟随具体按钮，始终落在消息区正中。
+                            centerOnAnchor = true,
                             minWidth = 0.dp,
                             focusable = false,
                         ) {
