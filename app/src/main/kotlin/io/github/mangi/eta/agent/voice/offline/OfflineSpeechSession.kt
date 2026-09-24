@@ -33,7 +33,7 @@ internal object OfflineSpeechSession {
         onText: suspend (String) -> Unit,
         mode: io.github.mangi.eta.agent.voice.VoiceEntryMode = io.github.mangi.eta.agent.voice.VoiceEntryMode.DICTATION,
         onLevel: (Float) -> Unit = {},
-        finishRequested: () -> Boolean = {},
+        finishRequested: () -> Boolean = { false },
     ): Boolean = withContext(native) {
         check(microphone.tryLock()) { "Speech input is already active" }
         var recognizer: SherpaNcnn? = null
