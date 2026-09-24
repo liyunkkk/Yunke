@@ -135,10 +135,20 @@ internal class AgentExecutionService : Service() {
             )
         }
 
-        // 小米 HyperOS / MIUI 焦点通知胶囊扩展：左侧为应用名 ContentTitle (✨ YUNKe)，右侧为动作 subTitle
+        // 小米焦点通知胶囊（灵动岛）扩展，两套协议同时写以保证新旧系统都能上岛。
+        // HyperOS 3 / MIUI 14-15：读 miui.focusNotification 与 miui.focusNotification.subTitle。
+        // HyperOS 4+：上述旧 key 已被系统整体移除；SystemUI 的
+        //   FocusUtils.isFocusNotification(Notification) 只认下面两条之一：
+        //     extras["miui.focus.isFocus"] 为 true，或 extras["miui.focus.rv"] 是 RemoteViews。
+        // 判定结果写入 ExpandedNotification.mIsFocusNotification，
+        // 由 FocusCoordinator 的 isInSection / shouldPromoteToTopLevel 决定是否进焦点分区（上岛）。
+        // miui.enableFloat 在 HyperOS 3/4 的 ExpandedNotification.canFloat() 中均被读取，
+        // 保持 false 以维持既有行为（不弹浮窗）。
         builder.extras.putBoolean("miui.focusNotification", true)
-        builder.extras.putBoolean("miui.enableFloat", false)
         builder.extras.putString("miui.focusNotification.subTitle", actionText)
+        builder.extras.putBoolean("miui.focus.isFocus", true)
+        builder.extras.putString("miui.focus.ticker", actionText)
+        builder.extras.putBoolean("miui.enableFloat", false)
 
         return builder.build()
     }
