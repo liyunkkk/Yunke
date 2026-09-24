@@ -210,6 +210,9 @@ fun AgentAppRoot(
     var conversationExportTitle by rememberSaveable { mutableStateOf("") }
     var conversationExportBusy by remember { mutableStateOf(false) }
     var conversationExportConfirmation by rememberSaveable { mutableStateOf(false) }
+    var conversationExportMarkdownId by rememberSaveable { mutableStateOf<String?>(null) }
+    var conversationExportMarkdownTitle by rememberSaveable { mutableStateOf("") }
+    var conversationExportMarkdownConfirmation by rememberSaveable { mutableStateOf(false) }
 
     val conversationExportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
@@ -264,6 +267,37 @@ fun AgentAppRoot(
                     validation.deleteRecursively()
                 }
                 conversationExportBusy = false
+            }
+        }
+    }
+
+    val conversationExportMarkdownLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/markdown"),
+    ) { uri ->
+        val id = conversationExportMarkdownId
+        conversationExportMarkdownId = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        if (id == null) {
+            Toast.makeText(context, "导出目标已丢失，未写入文件，请重新选择会话。", Toast.LENGTH_LONG).show()
+            return@rememberLauncherForActivityResult
+        }
+        val markdown = agentState.exportConversationMarkdown(id)
+        if (markdown == null) {
+            Toast.makeText(context, context.getString(R.string.conversation_export_markdown_failed), Toast.LENGTH_LONG).show()
+            return@rememberLauncherForActivityResult
+        }
+        val title = conversationExportMarkdownTitle
+        uiScope.launch {
+            try {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val output = context.contentResolver.openOutputStream(uri, "wt")
+                        ?: error(context.getString(R.string.data_backup_file_open_failed))
+                    output.use { sink -> sink.write(markdown.toByteArray(Charsets.UTF_8)) }
+                }
+                Toast.makeText(context, context.getString(R.string.conversation_export_markdown_done, title), Toast.LENGTH_SHORT).show()
+            } catch (failure: Throwable) {
+                if (failure is kotlinx.coroutines.CancellationException) throw failure
+                Toast.makeText(context, context.getString(R.string.conversation_export_markdown_failed), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -450,6 +484,15 @@ fun AgentAppRoot(
                     conversationExportId = conversation.id
                     conversationExportTitle = conversation.title.ifBlank { context.getString(R.string.conversation_unnamed) }
                     conversationExportConfirmation = true
+                }
+            },
+            onConversationExportMarkdown = { conversation ->
+                if (conversationExportMarkdownId != null) {
+                    Toast.makeText(context, "已有会话导出任务，请等待完成。", Toast.LENGTH_SHORT).show()
+                } else {
+                    conversationExportMarkdownId = conversation.id
+                    conversationExportMarkdownTitle = conversation.title.ifBlank { context.getString(R.string.conversation_unnamed) }
+                    conversationExportMarkdownConfirmation = true
                 }
             },
             onOpenManageChats = { pushFromDrawer(AppRoute.ManageChats) },
@@ -1037,6 +1080,35 @@ fun AgentAppRoot(
                     val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
                     val title = conversationExportTitle.replace(Regex("""[\\/:*?"<>|]"""), "_").take(40)
                     conversationExportLauncher.launch("YUNKe-$title-$stamp.zip")
+                },
+            )
+        }
+    }
+
+    if (conversationExportMarkdownConfirmation) {
+        WindowDialog(
+            show = true,
+            title = stringResource(R.string.conversation_export_markdown_title),
+            summary = stringResource(R.string.conversation_export_markdown_summary),
+            onDismissRequest = {
+                conversationExportMarkdownConfirmation = false
+                conversationExportMarkdownId = null
+            },
+        ) {
+            MiuixDialogActions(
+                confirmText = stringResource(R.string.conversation_export_markdown_choose_location),
+                onCancel = {
+                    conversationExportMarkdownConfirmation = false
+                    conversationExportMarkdownId = null
+                },
+                onConfirm = {
+                    conversationExportMarkdownConfirmation = false
+                    conversationExportMarkdownLauncher.launch(
+                        ConversationMarkdownExporter.defaultFileName(
+                            title = conversationExportMarkdownTitle,
+                            fallback = context.getString(R.string.conversation_export_default_name),
+                        )
+                    )
                 },
             )
         }

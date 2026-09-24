@@ -84,6 +84,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -91,6 +92,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.ui.components.rememberChatVoiceController
 import androidx.compose.ui.unit.sp
+import io.github.mangi.eta.agent.voice.VoiceEntryMode
+import io.github.mangi.eta.agent.voice.VoiceModeController
+import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.agent.model.AgentModelClient
@@ -268,6 +272,7 @@ internal fun EtaVoicePanel(
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
+    onKeyboard: () -> Unit,
     onOpenConversation: () -> Unit,
     onAttachImage: (String) -> Unit,
     onAttachVideo: (String) -> Unit,
@@ -293,6 +298,7 @@ internal fun EtaVoicePanel(
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
     val entryProgress = remember { Animatable(0f) }
+    val scrimProgress = remember { Animatable(0f) }
     val exitAlpha by animateFloatAsState(
         targetValue = if (exitRequested) 0f else 1f,
         animationSpec = tween(220, easing = FastOutSlowInEasing),
@@ -300,7 +306,9 @@ internal fun EtaVoicePanel(
     )
 
     LaunchedEffect(Unit) {
-        entryProgress.animateTo(1f, tween(260, easing = FastOutSlowInEasing))
+        launch { entryProgress.animateTo(1f, tween(160, easing = LinearOutSlowInEasing)) }
+        delay(180)
+        scrimProgress.animateTo(1f, tween(280, easing = LinearOutSlowInEasing))
     }
 
     LaunchedEffect(inputFocusRequestKey) {
@@ -315,7 +323,7 @@ internal fun EtaVoicePanel(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer { alpha = exitAlpha }
-            .background(colors.scrim.copy(alpha = colors.scrim.alpha * entryProgress.value)),
+            .drawBehind { drawRect(colors.scrim.copy(alpha = colors.scrim.alpha * scrimProgress.value)) },
     ) {
         Box(
             modifier = Modifier
@@ -371,6 +379,7 @@ internal fun EtaVoicePanel(
                 },
                 onStop = onStop,
                 onClose = onClose,
+                onKeyboard = onKeyboard,
                 onOpenConversation = onOpenConversation,
                 onAttachImage = onAttachImage,
                 onAttachVideo = onAttachVideo,
@@ -417,6 +426,7 @@ private fun BoxScope.AssistantPanel(
     onSubmit: (String) -> Unit,
     onStop: () -> Unit,
     onClose: () -> Unit,
+    onKeyboard: () -> Unit,
     onOpenConversation: () -> Unit,
     onAttachImage: (String) -> Unit,
     onAttachVideo: (String) -> Unit,
@@ -455,6 +465,10 @@ private fun BoxScope.AssistantPanel(
     val directHandoffThresholdPx = with(density) { 48.dp.toPx() }
     val dismissThresholdPx = with(density) { 92.dp.toPx() }
     val handoffVelocityPx = with(density) { 900.dp.toPx() }
+    // 面板态底栏与输入栏共用同一个语音控制器（浮窗为 Service，LocalContext/LocalLifecycleOwner 均可用）。
+    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
+    val voiceState by voiceController.state.collectAsState()
+
     val hasMessages = state.messages.isNotEmpty()
     val targetHeightPx = if (hasMessages) {
         settledHeightPx.coerceIn(baseContentHeightPx, maxContentHeightPx)
@@ -797,6 +811,17 @@ private fun BoxScope.AssistantPanel(
                     .padding(horizontal = 16.dp, vertical = 6.dp),
             )
         }
+        EtaAssistantSuggestions(
+            onSuggestionClick = onSubmit,
+            visible = !hasMessages,
+            keyboardVisible = imeOverlapPx > 0,
+        )
+        if (!hasMessages) {
+            AssistantPanelBar(
+                onKeyboard = onKeyboard,
+                onMicrophone = { voiceController.start(VoiceEntryMode.UNIVERSAL) },
+            )
+        }
         AssistantComposer(
             state = state,
             input = input,
@@ -824,6 +849,8 @@ private fun BoxScope.AssistantPanel(
             history = history,
             autoCompressEnabled = autoCompressEnabled,
             assistantId = assistantId,
+            voiceController = voiceController,
+            voiceState = voiceState,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
@@ -864,11 +891,10 @@ private fun AssistantComposer(
     history: List<AgentModelClient.ConversationMessage>,
     autoCompressEnabled: Boolean,
     assistantId: String,
+    voiceController: VoiceModeController,
+    voiceState: VoiceModeState,
     modifier: Modifier = Modifier,
 ) {
-    // 与主界面共用同一个语音控制器；浮窗为 Service，LocalContext/LocalLifecycleOwner 均可用。
-    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
-    val voiceState by voiceController.state.collectAsState()
     Column(
         modifier = modifier.animateContentSize(
             animationSpec = folmeSpring(damping = 0.92f, response = 0.34f),
@@ -1425,5 +1451,70 @@ private fun HistoryConversationItemRow(
                 tint = colors.inputPrimary,
             )
         }
+    }
+}
+
+@Composable
+private fun AssistantPanelBar(
+    onKeyboard: () -> Unit,
+    onMicrophone: () -> Unit,
+) {
+    val controls = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        delay(400)
+        controls.animateTo(1f, tween(180))
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AssistantRoundButton(
+            iconRes = R.drawable.ic_assistant_voice,
+            contentDescription = stringResource(R.string.voice_tap_to_speak),
+            progress = controls.value,
+            enabled = controls.value >= 0.5f,
+            onClick = onMicrophone,
+        )
+        Spacer(Modifier.size(12.dp))
+        AssistantRoundButton(
+            iconRes = R.drawable.ic_assistant_keyboard_float,
+            contentDescription = stringResource(R.string.voice_use_keyboard),
+            progress = controls.value,
+            enabled = controls.value >= 0.5f,
+            onClick = onKeyboard,
+        )
+    }
+}
+
+@Composable
+private fun AssistantRoundButton(
+    iconRes: Int,
+    contentDescription: String,
+    progress: Float,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .graphicsLayer {
+                alpha = progress
+                scaleX = 0.8f + progress * 0.2f
+                scaleY = 0.8f + progress * 0.2f
+            }
+            .clip(CircleShape)
+            .background(Color(0xFFF4F5F7))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = contentDescription,
+            tint = Color(0xE6000000),
+            modifier = Modifier.size(22.dp),
+        )
     }
 }

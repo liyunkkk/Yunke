@@ -672,6 +672,41 @@ internal class AgentAppState(
             EtaBackupRepository.exportConversation(appContext, conversationId, output)
         }
 
+    /**
+     * 导出为 Markdown 纯文本。
+     *
+     * 与 [exportConversation] 的 ZIP 备份导出并列：Markdown 只保留可读文本
+     * （不含附件二进制、不可再导入），用于把对话直接粘到笔记里。
+     */
+    fun exportConversationMarkdown(conversationId: String): String? {
+        val state = conversationsById[conversationId] ?: return null
+        val title = conversationTitles[conversationId]?.takeIf { it.isNotBlank() }
+            ?: appContext.getString(R.string.conversation_unnamed)
+        return ConversationMarkdownExporter.export(
+            title = title,
+            messages = state.messages,
+            labels = ConversationMarkdownExporter.Labels(
+                user = appContext.getString(R.string.conversation_export_user),
+                assistant = appContext.getString(R.string.conversation_export_assistant),
+                thinking = appContext.getString(R.string.conversation_export_thinking),
+                toolLineFormat = appContext.getString(R.string.conversation_export_tool_line),
+                toolsLineFormat = appContext.getString(R.string.conversation_export_tools_line),
+                argumentsFormat = appContext.getString(R.string.conversation_export_tool_arguments),
+                resultFormat = appContext.getString(R.string.conversation_export_tool_result),
+                imagesFormat = appContext.getString(R.string.conversation_export_images),
+                toolStatusRunning = appContext.getString(R.string.tool_status_running),
+                toolStatusSuccess = appContext.getString(R.string.tool_status_success),
+                toolStatusFailed = appContext.getString(R.string.tool_status_failed),
+                toolStatusUnknown = appContext.getString(R.string.tool_status_unknown),
+                noticeStopped = appContext.getString(R.string.system_notice_stopped),
+                noticeEmptyResult = appContext.getString(R.string.system_notice_empty_result),
+                noticeModelRetry = appContext.getString(R.string.system_notice_model_retry),
+                noticeRuntimeFailed = appContext.getString(R.string.system_notice_runtime_failed),
+                noticeInterrupted = appContext.getString(R.string.system_notice_interrupted),
+            ),
+        )
+    }
+
     suspend fun importBackup(input: InputStream): EtaBackupSummary = withConversationArchive {
         val activeRunQuery = withContext(Dispatchers.IO) {
             AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRun()

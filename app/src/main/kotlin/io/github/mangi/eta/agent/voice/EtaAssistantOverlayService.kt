@@ -305,7 +305,13 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             stopSelf()
             return
         }
-        showKeyboard()
+        // 面板态唤出：还没有消息时保持建议气泡 + 麦克风/键盘双按钮，不主动弹键盘；
+        // 已有消息时沿用原行为，直接聚焦输入框。
+        if (uiState.messages.isEmpty()) {
+            updateSoftInput(visible = false)
+        } else {
+            showKeyboard()
+        }
     }
 
     private fun showWindow() {
@@ -340,6 +346,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         },
                         onStop = ::stopCurrentRun,
                         onClose = ::dismissOrContinueInBackground,
+                        onKeyboard = { showKeyboard() },
                         canOpenConversation = activeRunId == null &&
                             uiState.messages.any { message ->
                                 message is AgentMessageUi && message.content.isNotBlank()
