@@ -368,6 +368,7 @@
   <string name="voice_finish_speech">結束錄音並傳送</string>
   <string name="voice_tap_to_speak">點按以說話</string>
   <string name="voice_speech_unavailable">無法使用語音辨識</string>
+  <string name="voice_audio_permission">請在系統設定中允許 YUNKe 使用麥克風，然後重新喚醒</string>
   <string name="voice_request_failed">請求失敗，請重試。</string>
   <string name="overlay_supplement">補充</string>
   <string name="overlay_supplement_hint">補充要求，YUNKe 會接續目前的任務</string>

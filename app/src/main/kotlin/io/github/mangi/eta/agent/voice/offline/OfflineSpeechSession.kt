@@ -31,6 +31,7 @@ internal object OfflineSpeechSession {
         onListening: suspend () -> Unit,
         onText: suspend (String) -> Unit,
         mode: io.github.mangi.eta.agent.voice.VoiceEntryMode = io.github.mangi.eta.agent.voice.VoiceEntryMode.DICTATION,
+        onLevel: (Float) -> Unit = {},
     ): Boolean = withContext(native) {
         check(microphone.tryLock()) { "Speech input is already active" }
         var recognizer: SherpaNcnn? = null
@@ -81,6 +82,7 @@ internal object OfflineSpeechSession {
                 if (SpeechInputPolicy.timedOut(elapsed, lastText.isNotEmpty())) break
                 val count = audio.read(samples, 0, samples.size, AudioRecord.READ_NON_BLOCKING)
                 check(count >= 0) { "Microphone read failed" }
+                if (count > 0) onLevel(pcmLevel(samples, count))
                 if (count == 0) { delay(10); continue }
                 engine.acceptSamples(FloatArray(count) { samples[it] / 32768f })
                 while (engine.isReady()) { ensureActive(); engine.decode() }

@@ -13,6 +13,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.SizeTransform
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,6 +40,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -75,9 +77,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -87,12 +91,14 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.ui.components.rememberChatVoiceController
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.agent.voice.VoiceEntryMode
+import io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig
 import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.R
@@ -292,11 +298,24 @@ internal fun EtaVoicePanel(
     history: List<AgentModelClient.ConversationMessage>,
     autoCompressEnabled: Boolean,
     assistantId: String,
+    voiceMode: Boolean = false,
+    voiceNotice: String? = null,
 ) {
     val colors = rememberEtaVoicePanelColors()
     val keyboard = LocalSoftwareKeyboardController.current
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
+    // 浮窗语音态：控制器提升到面板根部，供四周波纹与声波共用。
+    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
+    val voiceState by voiceController.state.collectAsState()
+    val voiceLevel by voiceController.level.collectAsState()
+    val voiceConfig by DoubaoVoiceConfig.state.collectAsState()
+    val voiceUsable = remember(voiceConfig) { SpeechInputSession.ready(VoiceEntryMode.UNIVERSAL) }
+    val voiceFeedback = voiceState.error ?: voiceNotice
+        ?: if (voiceMode && !voiceUsable) stringResource(R.string.voice_speech_unavailable) else null
+    LaunchedEffect(voiceMode) {
+        if (voiceMode) voiceController.start(VoiceEntryMode.UNIVERSAL) else voiceController.stop()
+    }
     val entryProgress = remember { Animatable(0f) }
     val scrimProgress = remember { Animatable(0f) }
     val exitAlpha by animateFloatAsState(
@@ -335,6 +354,14 @@ internal fun EtaVoicePanel(
                 ),
         )
 
+        EtaAssistantEdgeGlow(
+            active = voiceState.active && !exitRequested,
+        )
+        EtaAssistantWave(
+            active = voiceState.active && !exitRequested,
+            level = { voiceLevel },
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -352,6 +379,10 @@ internal fun EtaVoicePanel(
                 (maxHeight - 88.dp).toPx() - statusTop - navigationBottom
             }.coerceAtLeast(with(density) { 220.dp.toPx() })
             AssistantPanel(
+                voiceMode = voiceMode,
+                voiceController = voiceController,
+                voiceState = voiceState,
+                voiceFeedback = voiceFeedback,
                 state = state,
                 input = input,
                 colors = colors,
@@ -446,6 +477,10 @@ private fun BoxScope.AssistantPanel(
     history: List<AgentModelClient.ConversationMessage>,
     autoCompressEnabled: Boolean,
     assistantId: String,
+    voiceMode: Boolean = false,
+    voiceController: VoiceModeController,
+    voiceState: VoiceModeState,
+    voiceFeedback: String? = null,
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
@@ -466,10 +501,11 @@ private fun BoxScope.AssistantPanel(
     val dismissThresholdPx = with(density) { 92.dp.toPx() }
     val handoffVelocityPx = with(density) { 900.dp.toPx() }
     // 面板态底栏与输入栏共用同一个语音控制器（浮窗为 Service，LocalContext/LocalLifecycleOwner 均可用）。
-    val voiceController = rememberChatVoiceController(state.conversationId, onSubmit)
-    val voiceState by voiceController.state.collectAsState()
 
-    val hasMessages = state.messages.isNotEmpty()
+    // 语音态下按「无消息」处理：面板高度与背景均收到 0，只留波纹与底部入口。
+    val hasMessages = state.messages.isNotEmpty() && !voiceMode
+    // 建议气泡照主仓库口径：只看会话本身有没有消息，与语音态无关。
+    val showSuggestions = state.messages.isEmpty()
     val targetHeightPx = if (hasMessages) {
         settledHeightPx.coerceIn(baseContentHeightPx, maxContentHeightPx)
     } else {
@@ -813,16 +849,13 @@ private fun BoxScope.AssistantPanel(
         }
         EtaAssistantSuggestions(
             onSuggestionClick = onSubmit,
-            visible = !hasMessages,
+            visible = showSuggestions,
             keyboardVisible = imeOverlapPx > 0,
         )
-        if (!hasMessages) {
-            AssistantPanelBar(
-                onKeyboard = onKeyboard,
-                onMicrophone = { voiceController.start(VoiceEntryMode.UNIVERSAL) },
-            )
-        }
         AssistantComposer(
+            voiceMode = voiceMode,
+            voiceFeedback = voiceFeedback,
+            onKeyboard = onKeyboard,
             state = state,
             input = input,
             colors = colors,
@@ -893,6 +926,9 @@ private fun AssistantComposer(
     assistantId: String,
     voiceController: VoiceModeController,
     voiceState: VoiceModeState,
+    voiceMode: Boolean = false,
+    voiceFeedback: String? = null,
+    onKeyboard: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -900,76 +936,97 @@ private fun AssistantComposer(
             animationSpec = folmeSpring(damping = 0.92f, response = 0.34f),
         ),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ConversationCapsule(
-                title = state.conversationTitle.ifBlank {
-                    stringResource(R.string.conversation_unnamed)
-                },
-                isMenuVisible = state.isHistoryMenuVisible,
-                enabled = state.phase != EtaVoicePhase.PROCESSING,
-                colors = colors,
-                onClick = onToggleHistoryMenu,
-            )
-            ScreenContextAttachment(
-                state = state.screenContext,
-                enabled = state.phase != EtaVoicePhase.PROCESSING,
-                colors = colors,
-                onSelect = onScreenContextSelect,
-                onRemove = onScreenContextRemove,
-            )
-            ScreenTranslationCapsule(
-                enabled = state.phase != EtaVoicePhase.PROCESSING,
-                colors = colors,
-                onClick = onScreenTranslation,
-            )
-        }
-        // Q3a：间距无条件保留。上游曾把它改成「非 CONSUMED 才留」，
-        // 导致发送后 phase 变 CONSUMED、间距塌陷，三胶囊被压到贴住输入框。
-        Spacer(Modifier.height(7.dp))
-        // 与主界面共用同一个输入栏：附件入口、推理强度、模型选择、助手切换
-        // 全部走同一套组件，两处不再各写一份；附件预览条也由输入栏自己渲染。
-        key(state.conversationId) {
-            AgentChatInputBar(
-                input = input,
-                modelPickerState = state.modelPickerState,
-                history = history,
-                autoCompressEnabled = autoCompressEnabled,
-                showContextUsage = false,
-                isStreaming = state.phase == EtaVoicePhase.PROCESSING,
-                reasoningEffort = state.reasoningEffort,
-                availableReasoningEfforts = state.availableReasoningEfforts,
-                pendingImages = state.pendingImages,
-                pendingFileReferences = state.pendingFileReferences,
-                isEditingMessage = state.messageEdit != null,
-                assistantId = assistantId,
-                editHasLaterTurns = state.messageEdit?.hasLaterTurns == true,
-                onReasoningEffortChange = onReasoningEffortChange,
-                onModelSelected = onModelSelected,
-                onSubmit = onSubmit,
-                onStop = onStop,
-                onAttachImage = onAttachImage,
-                onAttachVideo = onAttachVideo,
-                onRemoveImage = onRemoveImage,
-                onAttachFiles = onAttachFiles,
-                onAttachFolder = onAttachFolder,
-                onAttachFilePath = onAttachFilePath,
-                onRemoveFileReference = onRemoveFileReference,
-                onCancelMessageEdit = onCancelMessageEdit,
-                onEditAssistant = onEditAssistant,
-                onAssistantSelected = onAssistantSelected,
-                focusRequester = focusRequester,
-                voiceState = voiceState,
-                onStartVoiceMode = voiceController::start,
-                onStopVoiceMode = voiceController::stop,
-                overlayMode = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+        EtaSpeechFeedback(error = voiceFeedback)
+        AnimatedContent(
+            targetState = voiceMode,
+            transitionSpec = {
+                fadeIn(tween(250)) togetherWith fadeOut(tween(160)) using SizeTransform(clip = false)
+            },
+            contentAlignment = Alignment.BottomCenter,
+            label = "assistant_input_mode",
+        ) { inVoiceMode ->
+            if (inVoiceMode) {
+                AssistantVoiceEntry(
+                    voiceState = voiceState,
+                    onKeyboard = {
+                        voiceController.stop()
+                        onKeyboard()
+                    },
+                    onFinishSpeech = { voiceController.stop() },
+                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ConversationCapsule(
+                        title = state.conversationTitle.ifBlank {
+                            stringResource(R.string.conversation_unnamed)
+                        },
+                        isMenuVisible = state.isHistoryMenuVisible,
+                        enabled = state.phase != EtaVoicePhase.PROCESSING,
+                        colors = colors,
+                        onClick = onToggleHistoryMenu,
+                    )
+                    ScreenContextAttachment(
+                        state = state.screenContext,
+                        enabled = state.phase != EtaVoicePhase.PROCESSING,
+                        colors = colors,
+                        onSelect = onScreenContextSelect,
+                        onRemove = onScreenContextRemove,
+                    )
+                    ScreenTranslationCapsule(
+                        enabled = state.phase != EtaVoicePhase.PROCESSING,
+                        colors = colors,
+                        onClick = onScreenTranslation,
+                    )
+                }
+                // Q3a：间距无条件保留。上游曾把它改成「非 CONSUMED 才留」，
+                // 导致发送后 phase 变 CONSUMED、间距塌陷，三胶囊被压到贴住输入框。
+                Spacer(Modifier.height(7.dp))
+                // 与主界面共用同一个输入栏：附件入口、推理强度、模型选择、助手切换
+                // 全部走同一套组件，两处不再各写一份；附件预览条也由输入栏自己渲染。
+                key(state.conversationId) {
+                    AgentChatInputBar(
+                        input = input,
+                        modelPickerState = state.modelPickerState,
+                        history = history,
+                        autoCompressEnabled = autoCompressEnabled,
+                        showContextUsage = false,
+                        isStreaming = state.phase == EtaVoicePhase.PROCESSING,
+                        reasoningEffort = state.reasoningEffort,
+                        availableReasoningEfforts = state.availableReasoningEfforts,
+                        pendingImages = state.pendingImages,
+                        pendingFileReferences = state.pendingFileReferences,
+                        isEditingMessage = state.messageEdit != null,
+                        assistantId = assistantId,
+                        editHasLaterTurns = state.messageEdit?.hasLaterTurns == true,
+                        onReasoningEffortChange = onReasoningEffortChange,
+                        onModelSelected = onModelSelected,
+                        onSubmit = onSubmit,
+                        onStop = onStop,
+                        onAttachImage = onAttachImage,
+                        onAttachVideo = onAttachVideo,
+                        onRemoveImage = onRemoveImage,
+                        onAttachFiles = onAttachFiles,
+                        onAttachFolder = onAttachFolder,
+                        onAttachFilePath = onAttachFilePath,
+                        onRemoveFileReference = onRemoveFileReference,
+                        onCancelMessageEdit = onCancelMessageEdit,
+                        onEditAssistant = onEditAssistant,
+                        onAssistantSelected = onAssistantSelected,
+                        focusRequester = focusRequester,
+                        voiceState = voiceState,
+                        onStartVoiceMode = voiceController::start,
+                        onStopVoiceMode = voiceController::stop,
+                        overlayMode = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
         }
     }
 }
@@ -1455,30 +1512,41 @@ private fun HistoryConversationItemRow(
 }
 
 @Composable
-private fun AssistantPanelBar(
+private fun AssistantVoiceEntry(
+    voiceState: VoiceModeState,
     onKeyboard: () -> Unit,
-    onMicrophone: () -> Unit,
+    onFinishSpeech: () -> Unit,
 ) {
     val controls = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         delay(400)
         controls.animateTo(1f, tween(180))
     }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AssistantRoundButton(
-            iconRes = R.drawable.ic_assistant_voice,
-            contentDescription = stringResource(R.string.voice_tap_to_speak),
-            progress = controls.value,
-            enabled = controls.value >= 0.5f,
-            onClick = onMicrophone,
+    val recognizing = voiceState.phase == VoiceModePhase.Transcribing ||
+        voiceState.phase == VoiceModePhase.Thinking ||
+        voiceState.phase == VoiceModePhase.Speaking
+
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+        Text(
+            text = voiceState.transcript.ifBlank {
+                stringResource(
+                    if (recognizing) R.string.voice_recognizing else R.string.voice_listening,
+                )
+            },
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
+            style = TextStyle(
+                shadow = Shadow(
+                    color = Color.Black.copy(alpha = 0.55f),
+                    offset = Offset(0f, 1.5f),
+                    blurRadius = 3f,
+                ),
+            ),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f).heightIn(min = 40.dp).padding(start = 6.dp, end = 14.dp, top = 8.dp),
         )
-        Spacer(Modifier.size(12.dp))
         AssistantRoundButton(
             iconRes = R.drawable.ic_assistant_keyboard_float,
             contentDescription = stringResource(R.string.voice_use_keyboard),
@@ -1486,9 +1554,16 @@ private fun AssistantPanelBar(
             enabled = controls.value >= 0.5f,
             onClick = onKeyboard,
         )
+        Spacer(Modifier.width(12.dp))
+        AssistantRoundButton(
+            iconRes = R.drawable.ic_assistant_stop,
+            contentDescription = stringResource(R.string.voice_finish_speech),
+            progress = controls.value,
+            enabled = controls.value >= 0.5f && !recognizing,
+            onClick = onFinishSpeech,
+        )
     }
 }
-
 @Composable
 private fun AssistantRoundButton(
     iconRes: Int,

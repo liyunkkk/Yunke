@@ -14,7 +14,7 @@ internal object SpeechInputSession {
     fun ready(mode: VoiceEntryMode = VoiceEntryMode.DICTATION): Boolean = DoubaoVoiceConfig.state.value.let {
         VoiceEntryPolicy.enabled(it, mode) && if (it.cloudAsr) it.asrKey.isNotBlank() else OfflineSpeechPack.state.value.ready
     }
-    suspend fun recognize(context: Context, onListening: suspend () -> Unit, onText: suspend (String) -> Unit, mode: VoiceEntryMode = VoiceEntryMode.DICTATION): Boolean {
+    suspend fun recognize(context: Context, onListening: suspend () -> Unit, onText: suspend (String) -> Unit, mode: VoiceEntryMode = VoiceEntryMode.DICTATION, onLevel: (Float) -> Unit = {}): Boolean {
         check(microphone.tryLock()) { "语音输入正在使用麦克风" }
         try {
             DoubaoVoiceConfig.load(context)
@@ -27,8 +27,8 @@ internal object SpeechInputSession {
                     owner.cancel(CancellationException("对应语音功能已关闭或识别引擎已切换"))
                 }
                 try {
-                    if (selected) DoubaoAsrSession.recognize(onListening, onText)
-                    else OfflineSpeechSession.recognize(context, onListening, onText, mode)
+                    if (selected) DoubaoAsrSession.recognize(onListening, onText, onLevel)
+                    else OfflineSpeechSession.recognize(context, onListening, onText, mode, onLevel)
                 } finally { watcher.cancel() }
             }
         } finally { microphone.unlock() }

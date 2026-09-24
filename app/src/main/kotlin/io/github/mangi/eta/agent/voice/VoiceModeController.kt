@@ -62,6 +62,9 @@ internal class VoiceModeController(
     private val app = context.applicationContext
     private val mutableState = MutableStateFlow(VoiceModeState())
     val state = mutableState.asStateFlow()
+    /** 麦克风电平（0..1），仅供浮窗语音态的声波读取，不参与状态机。 */
+    private val mutableLevel = MutableStateFlow(0f)
+    val level = mutableLevel.asStateFlow()
     private val chat = MutableStateFlow(VoiceChatSnapshot())
     private var job: Job? = null
     private var duplex: DoubaoDuplexSession? = null
@@ -126,6 +129,7 @@ internal class VoiceModeController(
                         SpeechInputSession.recognize(
                             app,
                             mode = VoiceEntryMode.UNIVERSAL,
+                            onLevel = { mutableLevel.value = it },
                             onListening = {
                                 trace.mark("recognition.listening")
                                 mutableState.value = mutableState.value.copy(phase = VoiceModePhase.Listening)
@@ -277,6 +281,7 @@ internal class VoiceModeController(
         duplex = null
         SpeechPlayback.stop()
         mutableState.value = VoiceModeState()
+        mutableLevel.value = 0f
         diagnostic?.finish()
         diagnostic = null
     }

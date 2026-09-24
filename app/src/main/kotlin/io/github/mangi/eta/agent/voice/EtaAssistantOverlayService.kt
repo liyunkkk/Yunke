@@ -5,6 +5,8 @@ import android.app.ActivityOptions
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -145,6 +147,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var handoffExitRequested by mutableStateOf(false)
     private var inputText by mutableStateOf("")
     private var inputFocusRequestKey by mutableIntStateOf(-1)
+    // 浮窗语音态标志：不能用 messages.isEmpty() 判定（我方唤出会异步载入上次会话）。
+    private var entryInVoiceMode by mutableStateOf(false)
+    private var voiceNotice by mutableStateOf<String?>(null)
     private var uiState by mutableStateOf(EtaVoiceUiState())
 
     override val lifecycle: Lifecycle get() = lifecycleRegistry
@@ -232,6 +237,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         hiddenForForegroundOperation = false
         handoffInProgress = false
         handoffExitRequested = false
+        entryInVoiceMode = false
+        voiceNotice = null
         val accessibility = AgentAccessibilityService.current()
         if (accessibility == null) {
             uiState = uiState.copy(
@@ -305,11 +312,13 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             stopSelf()
             return
         }
-        // 面板态唤出：还没有消息时保持建议气泡 + 麦克风/键盘双按钮，不主动弹键盘；
-        // 已有消息时沿用原行为，直接聚焦输入框。
-        if (uiState.messages.isEmpty()) {
+        // 照主仓库语义：有录音权限就直接进语音态（由面板内的 voiceMode 驱动开始录音），无权限才弹键盘。
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            entryInVoiceMode = true
+            voiceNotice = null
             updateSoftInput(visible = false)
         } else {
+            voiceNotice = getString(R.string.voice_audio_permission)
             showKeyboard()
         }
     }
@@ -332,6 +341,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         state = uiState,
                         input = inputText,
                         inputFocusRequestKey = inputFocusRequestKey,
+                        voiceMode = entryInVoiceMode,
+                        voiceNotice = voiceNotice,
                         onScreenContextSelect = ::selectScreenContext,
                         onScreenContextRemove = ::removeScreenContext,
                         onScreenTranslation = ::startScreenTranslation,
@@ -346,7 +357,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         },
                         onStop = ::stopCurrentRun,
                         onClose = ::dismissOrContinueInBackground,
-                        onKeyboard = { showKeyboard() },
+                        onKeyboard = {
+                            entryInVoiceMode = false
+                            showKeyboard()
+                        },
                         canOpenConversation = activeRunId == null &&
                             uiState.messages.any { message ->
                                 message is AgentMessageUi && message.content.isNotBlank()

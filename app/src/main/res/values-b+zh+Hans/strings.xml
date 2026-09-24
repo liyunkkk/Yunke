@@ -368,6 +368,7 @@
   <string name="voice_finish_speech">结束录音并发送</string>
   <string name="voice_tap_to_speak">点击说话</string>
   <string name="voice_speech_unavailable">语音识别不可用</string>
+  <string name="voice_audio_permission">请在系统设置中允许 YUNKe 使用麦克风，然后重新唤醒</string>
   <string name="voice_request_failed">请求失败，请重试。</string>
   <string name="overlay_supplement">补充</string>
   <string name="overlay_supplement_hint">补充要求，YUNKe 会基于当前任务继续</string>
