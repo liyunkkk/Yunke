@@ -6,6 +6,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.SystemClock
 import io.github.mangi.eta.agent.model.AgentHttpClient
+import io.github.mangi.eta.agent.voice.pcmLevel
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import okhttp3.*
