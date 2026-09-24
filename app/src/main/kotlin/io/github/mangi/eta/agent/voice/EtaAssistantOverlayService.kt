@@ -1548,7 +1548,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             pendingImages = emptyList(),
             pendingFileReferences = emptyList(),
         )
-        showKeyboard()
+        // 语音态下新建对话不弹键盘：留在语音态继续聆听，避免 IME 与语音态互相打架。
+        if (entryInVoiceMode) updateSoftInput(visible = false) else showKeyboard()
     }
 
     private var currentReasoningCapabilities: ModelReasoningCapabilities? = null

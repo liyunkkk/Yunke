@@ -82,6 +82,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -313,8 +314,22 @@ internal fun EtaVoicePanel(
     val voiceUsable = remember(voiceConfig) { SpeechInputSession.ready(VoiceEntryMode.UNIVERSAL) }
     val voiceFeedback = voiceState.error ?: voiceNotice
         ?: if (voiceMode && !voiceUsable) stringResource(R.string.voice_speech_unavailable) else null
-    LaunchedEffect(voiceMode) {
+    // 浮窗会话切换（语音态下点历史按钮）同样要重启聆听：controller 内部会在
+    // conversationId 变化时 stop()，这里跟着把语音态重新拉起来，避免「假聆听」。
+    LaunchedEffect(voiceMode, state.conversationId) {
         if (voiceMode) voiceController.start(VoiceEntryMode.UNIVERSAL) else voiceController.stop()
+    }
+    // 浮窗侧把消息流喂给语音控制器：主界面在 AgentChatBody 里做同一件事；
+    // 浮窗此前从未调用 updateChat，导致 voiceState.reply 恒为空（语音态看不到回复）。
+    LaunchedEffect(state.messages, state.phase) {
+        val last = state.messages.filterIsInstance<AgentMessageUi>().lastOrNull()
+        voiceController.updateChat(
+            VoiceChatSnapshot(
+                isStreaming = state.phase == EtaVoicePhase.PROCESSING,
+                lastAgentId = last?.id,
+                lastAgentText = last?.content.orEmpty(),
+            ),
+        )
     }
     val entryProgress = remember { Animatable(0f) }
     val scrimProgress = remember { Animatable(0f) }
@@ -504,8 +519,8 @@ private fun BoxScope.AssistantPanel(
 
     // 语音态下按「无消息」处理：面板高度与背景均收到 0，只留波纹与底部入口。
     val hasMessages = state.messages.isNotEmpty() && !voiceMode
-    // 建议气泡照主仓库口径：只看会话本身有没有消息，与语音态无关。
-    val showSuggestions = state.messages.isEmpty()
+    // 语音态只留波纹 + 聆听提示 + 圆按钮，建议气泡不在其中（与语音态裁决一致）。
+    val showSuggestions = state.messages.isEmpty() && !voiceMode
     val targetHeightPx = if (hasMessages) {
         settledHeightPx.coerceIn(baseContentHeightPx, maxContentHeightPx)
     } else {
@@ -952,79 +967,84 @@ private fun AssistantComposer(
                         voiceController.stop()
                         onKeyboard()
                     },
-                    onFinishSpeech = { voiceController.stop() },
+                    onFinishSpeech = { voiceController.finishSpeech() },
+                    onHistory = onToggleHistoryMenu,
                 )
             } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ConversationCapsule(
-                        title = state.conversationTitle.ifBlank {
-                            stringResource(R.string.conversation_unnamed)
-                        },
-                        isMenuVisible = state.isHistoryMenuVisible,
-                        enabled = state.phase != EtaVoicePhase.PROCESSING,
-                        colors = colors,
-                        onClick = onToggleHistoryMenu,
-                    )
-                    ScreenContextAttachment(
-                        state = state.screenContext,
-                        enabled = state.phase != EtaVoicePhase.PROCESSING,
-                        colors = colors,
-                        onSelect = onScreenContextSelect,
-                        onRemove = onScreenContextRemove,
-                    )
-                    ScreenTranslationCapsule(
-                        enabled = state.phase != EtaVoicePhase.PROCESSING,
-                        colors = colors,
-                        onClick = onScreenTranslation,
-                    )
-                }
-                // Q3a：间距无条件保留。上游曾把它改成「非 CONSUMED 才留」，
-                // 导致发送后 phase 变 CONSUMED、间距塌陷，三胶囊被压到贴住输入框。
-                Spacer(Modifier.height(7.dp))
-                // 与主界面共用同一个输入栏：附件入口、推理强度、模型选择、助手切换
-                // 全部走同一套组件，两处不再各写一份；附件预览条也由输入栏自己渲染。
-                key(state.conversationId) {
-                    AgentChatInputBar(
-                        input = input,
-                        modelPickerState = state.modelPickerState,
-                        history = history,
-                        autoCompressEnabled = autoCompressEnabled,
-                        showContextUsage = false,
-                        isStreaming = state.phase == EtaVoicePhase.PROCESSING,
-                        reasoningEffort = state.reasoningEffort,
-                        availableReasoningEfforts = state.availableReasoningEfforts,
-                        pendingImages = state.pendingImages,
-                        pendingFileReferences = state.pendingFileReferences,
-                        isEditingMessage = state.messageEdit != null,
-                        assistantId = assistantId,
-                        editHasLaterTurns = state.messageEdit?.hasLaterTurns == true,
-                        onReasoningEffortChange = onReasoningEffortChange,
-                        onModelSelected = onModelSelected,
-                        onSubmit = onSubmit,
-                        onStop = onStop,
-                        onAttachImage = onAttachImage,
-                        onAttachVideo = onAttachVideo,
-                        onRemoveImage = onRemoveImage,
-                        onAttachFiles = onAttachFiles,
-                        onAttachFolder = onAttachFolder,
-                        onAttachFilePath = onAttachFilePath,
-                        onRemoveFileReference = onRemoveFileReference,
-                        onCancelMessageEdit = onCancelMessageEdit,
-                        onEditAssistant = onEditAssistant,
-                        onAssistantSelected = onAssistantSelected,
-                        focusRequester = focusRequester,
-                        voiceState = voiceState,
-                        onStartVoiceMode = voiceController::start,
-                        onStopVoiceMode = voiceController::stop,
-                        overlayMode = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                // AnimatedContent 的内容槽是 Box 语义（子项叠放）；三胶囊、间距与
+                // 输入栏必须自己收进一层 Column，否则会叠在同一位置被输入栏盖住。
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        ConversationCapsule(
+                            title = state.conversationTitle.ifBlank {
+                                stringResource(R.string.conversation_unnamed)
+                            },
+                            isMenuVisible = state.isHistoryMenuVisible,
+                            enabled = state.phase != EtaVoicePhase.PROCESSING,
+                            colors = colors,
+                            onClick = onToggleHistoryMenu,
+                        )
+                        ScreenContextAttachment(
+                            state = state.screenContext,
+                            enabled = state.phase != EtaVoicePhase.PROCESSING,
+                            colors = colors,
+                            onSelect = onScreenContextSelect,
+                            onRemove = onScreenContextRemove,
+                        )
+                        ScreenTranslationCapsule(
+                            enabled = state.phase != EtaVoicePhase.PROCESSING,
+                            colors = colors,
+                            onClick = onScreenTranslation,
+                        )
+                    }
+                    // Q3a：间距无条件保留。上游曾把它改成「非 CONSUMED 才留」，
+                    // 导致发送后 phase 变 CONSUMED、间距塌陷，三胶囊被压到贴住输入框。
+                    Spacer(Modifier.height(7.dp))
+                    // 与主界面共用同一个输入栏：附件入口、推理强度、模型选择、助手切换
+                    // 全部走同一套组件，两处不再各写一份；附件预览条也由输入栏自己渲染。
+                    key(state.conversationId) {
+                        AgentChatInputBar(
+                            input = input,
+                            modelPickerState = state.modelPickerState,
+                            history = history,
+                            autoCompressEnabled = autoCompressEnabled,
+                            showContextUsage = false,
+                            isStreaming = state.phase == EtaVoicePhase.PROCESSING,
+                            reasoningEffort = state.reasoningEffort,
+                            availableReasoningEfforts = state.availableReasoningEfforts,
+                            pendingImages = state.pendingImages,
+                            pendingFileReferences = state.pendingFileReferences,
+                            isEditingMessage = state.messageEdit != null,
+                            assistantId = assistantId,
+                            editHasLaterTurns = state.messageEdit?.hasLaterTurns == true,
+                            onReasoningEffortChange = onReasoningEffortChange,
+                            onModelSelected = onModelSelected,
+                            onSubmit = onSubmit,
+                            onStop = onStop,
+                            onAttachImage = onAttachImage,
+                            onAttachVideo = onAttachVideo,
+                            onRemoveImage = onRemoveImage,
+                            onAttachFiles = onAttachFiles,
+                            onAttachFolder = onAttachFolder,
+                            onAttachFilePath = onAttachFilePath,
+                            onRemoveFileReference = onRemoveFileReference,
+                            onCancelMessageEdit = onCancelMessageEdit,
+                            onEditAssistant = onEditAssistant,
+                            onAssistantSelected = onAssistantSelected,
+                            focusRequester = focusRequester,
+                            voiceState = voiceState,
+                            onStartVoiceMode = voiceController::start,
+                            onStopVoiceMode = voiceController::stop,
+                            overlayMode = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }
@@ -1516,6 +1536,7 @@ private fun AssistantVoiceEntry(
     voiceState: VoiceModeState,
     onKeyboard: () -> Unit,
     onFinishSpeech: () -> Unit,
+    onHistory: () -> Unit,
 ) {
     val controls = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
@@ -1526,9 +1547,17 @@ private fun AssistantVoiceEntry(
         voiceState.phase == VoiceModePhase.Thinking ||
         voiceState.phase == VoiceModePhase.Speaking
 
+    // 2-C：聆听中显示「你说的话」（便于确认识别结果）；进入识别收尾/思考/朗读后
+    // 改显当前这一轮的流式回复（reply 由 updateChat 写入），回复未产出时回落识别文本。
+    val voiceText = if (recognizing) {
+        voiceState.reply.ifBlank { voiceState.transcript }
+    } else {
+        voiceState.transcript
+    }
+
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
         Text(
-            text = voiceState.transcript.ifBlank {
+            text = voiceText.ifBlank {
                 stringResource(
                     if (recognizing) R.string.voice_recognizing else R.string.voice_listening,
                 )
@@ -1547,6 +1576,15 @@ private fun AssistantVoiceEntry(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f).heightIn(min = 40.dp).padding(start = 6.dp, end = 14.dp, top = 8.dp),
         )
+        // 3-A：语音态也能切会话 / 新建对话，弹出与输入态同一个历史面板。
+        AssistantRoundButton(
+            imageVector = Icons.AutoMirrored.Rounded.Chat,
+            contentDescription = stringResource(R.string.action_conversation_history),
+            progress = controls.value,
+            enabled = controls.value >= 0.5f,
+            onClick = onHistory,
+        )
+        Spacer(Modifier.width(12.dp))
         AssistantRoundButton(
             iconRes = R.drawable.ic_assistant_keyboard_float,
             contentDescription = stringResource(R.string.voice_use_keyboard),
@@ -1566,11 +1604,12 @@ private fun AssistantVoiceEntry(
 }
 @Composable
 private fun AssistantRoundButton(
-    iconRes: Int,
+    iconRes: Int? = null,
     contentDescription: String,
     progress: Float,
     enabled: Boolean,
     onClick: () -> Unit,
+    imageVector: ImageVector? = null,
 ) {
     Box(
         modifier = Modifier
@@ -1585,11 +1624,20 @@ private fun AssistantRoundButton(
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            painter = painterResource(iconRes),
-            contentDescription = contentDescription,
-            tint = Color(0xE6000000),
-            modifier = Modifier.size(22.dp),
-        )
+        if (imageVector != null) {
+            Icon(
+                imageVector = imageVector,
+                contentDescription = contentDescription,
+                tint = Color(0xE6000000),
+                modifier = Modifier.size(22.dp),
+            )
+        } else if (iconRes != null) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = contentDescription,
+                tint = Color(0xE6000000),
+                modifier = Modifier.size(22.dp),
+            )
+        }
     }
 }

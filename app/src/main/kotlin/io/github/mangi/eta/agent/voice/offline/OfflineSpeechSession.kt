@@ -33,6 +33,7 @@ internal object OfflineSpeechSession {
         onText: suspend (String) -> Unit,
         mode: io.github.mangi.eta.agent.voice.VoiceEntryMode = io.github.mangi.eta.agent.voice.VoiceEntryMode.DICTATION,
         onLevel: (Float) -> Unit = {},
+        finishRequested: () -> Boolean = {},
     ): Boolean = withContext(native) {
         check(microphone.tryLock()) { "Speech input is already active" }
         var recognizer: SherpaNcnn? = null
@@ -78,6 +79,8 @@ internal object OfflineSpeechSession {
             val start = SystemClock.elapsedRealtime()
             var lastText = ""
             while (true) {
+                // 面板点「结束录音并发送」：跳出循环，由下方 natural completion 分支冲刷尾包。
+                if (finishRequested()) break
                 ensureActive()
                 val elapsed = SystemClock.elapsedRealtime() - start
                 if (SpeechInputPolicy.timedOut(elapsed, lastText.isNotEmpty())) break

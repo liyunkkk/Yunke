@@ -65,6 +65,11 @@ internal class VoiceModeController(
     /** 麦克风电平（0..1），仅供浮窗语音态的声波读取，不参与状态机。 */
     private val mutableLevel = MutableStateFlow(0f)
     val level = mutableLevel.asStateFlow()
+    /**
+     * 本轮「结束录音并发送」请求。识别会话读到后主动收尾，循环继续下一轮聆听，
+     * 与主仓库 finish() 的语义一致——不是终止整个语音态。
+     */
+    private val mutableFinish = MutableStateFlow(false)
     private val chat = MutableStateFlow(VoiceChatSnapshot())
     private var job: Job? = null
     private var duplex: DoubaoDuplexSession? = null
@@ -125,11 +130,13 @@ internal class VoiceModeController(
                     mutableState.value = VoiceModeState(VoiceEntryMode.UNIVERSAL, VoiceModePhase.Connecting)
                     val token = SpeechPlayback.beginInput()
                     trace.mark("recognition.begin")
+                    mutableFinish.value = false
                     val heard = try {
                         SpeechInputSession.recognize(
                             app,
                             mode = VoiceEntryMode.UNIVERSAL,
                             onLevel = { mutableLevel.value = it },
+                            finishRequested = { mutableFinish.value },
                             onListening = {
                                 trace.mark("recognition.listening")
                                 mutableState.value = mutableState.value.copy(phase = VoiceModePhase.Listening)
@@ -272,6 +279,16 @@ internal class VoiceModeController(
         }
     }
 
+    /** 面板右下「结束录音并发送」：结束本轮识别，随后照常提交并继续聆听。 */
+    fun finishSpeech() {
+        if (job?.isActive == true) {
+            mutableFinish.value = true
+            return
+        }
+        // 循环已结束（出错或异常收尾）时按同一语义重新开始聆听，避免「假聆听」死路。
+        if (mutableState.value.mode == VoiceEntryMode.UNIVERSAL) start(VoiceEntryMode.UNIVERSAL)
+    }
+
     fun stop() {
         diagnostic?.mark("controller.stop")
         generation++
@@ -282,6 +299,7 @@ internal class VoiceModeController(
         SpeechPlayback.stop()
         mutableState.value = VoiceModeState()
         mutableLevel.value = 0f
+        mutableFinish.value = false
         diagnostic?.finish()
         diagnostic = null
     }
