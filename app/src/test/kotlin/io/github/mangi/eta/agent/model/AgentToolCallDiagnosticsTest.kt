@@ -453,6 +453,39 @@ class AgentToolCallDiagnosticsTest {
         assertFalse(capture.lines.joinToString().contains("SECRET_TEXT"))
     }
 
+    @Test fun identicalAnonymousCallsStaySeparateWhenOrdinalsAreKnown() {
+        val capture = Capture()
+        val attempt = capture.begin()
+        val call = ToolCall("", "run_command", "{}")
+        val envelope = assistant(call)
+        envelope.getJSONArray("tool_calls").put(assistant(call).getJSONArray("tool_calls").getJSONObject(0))
+        attempt.providerParsed(envelope)
+        repeat(2) { attempt.parsed(call, it) }
+        repeat(2) { attempt.validation(call, false, it) }
+        val parsed = capture.stage("parsed")
+        val checked = capture.stage("validation")
+        assertNotEquals(parsed[0].getInt("call"), parsed[1].getInt("call"))
+        assertEquals(parsed.map { it.getInt("call") }, checked.map { it.getInt("call") })
+        assertTrue(checked.all { it.getBoolean("ambiguous_anonymous") })
+    }
+
+    @Test fun mergedRawAliasesDoNotConsumeAnotherOrdinalFallbackSlot() {
+        val capture = Capture()
+        val attempt = capture.begin()
+        attempt.responsesEvent(JSONObject().put("type", "response.function_call_arguments.delta")
+            .put("item_id", "private-item-id").put("delta", "{"))
+        attempt.responsesEvent(JSONObject().put("type", "response.function_call_arguments.delta")
+            .put("call_id", "wire-first").put("delta", "}"))
+        attempt.responsesEvent(added(item(ToolCall("wire-first", "terminal", "{}")), 0))
+        attempt.responsesEvent(added(item(ToolCall("wire-second", "terminal", "{}"), "second-item"), 1))
+        attempt.parsed(ToolCall("generated-first", "terminal", "{}"), 0)
+        attempt.parsed(ToolCall("generated-second", "terminal", "{}"), 1)
+        val added = capture.stage("raw_added")
+        val parsed = capture.stage("parsed")
+        assertNotEquals(parsed[0].getInt("call"), parsed[1].getInt("call"))
+        assertEquals(added.map { it.getInt("call") }, parsed.map { it.getInt("call") })
+    }
+
     private fun exercise(attempt: AgentToolCallDiagnostics.Attempt) {
         val call = ToolCall("call", "terminal", "{}")
         attempt.responsesEvent(added(item(call), 0))

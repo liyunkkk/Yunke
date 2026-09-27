@@ -364,7 +364,7 @@ internal class AgentLoop(
                 try {
                     when (providerResponse.stopReason) {
                         AssistantStopReason.TOOL_USE ->
-                            toolCalls.forEach { call -> outcomes += executeTool(round, call) }
+                            toolCalls.forEachIndexed { index, call -> outcomes += executeTool(round, call, index) }
                         AssistantStopReason.OUTPUT_LIMIT ->
                             toolCalls.forEach { call ->
                                 outcomes += rejectedToolOutcome(
@@ -746,6 +746,7 @@ internal class AgentLoop(
     private fun executeTool(
         round: Int,
         toolCall: AgentModelClient.ToolCall,
+        toolIndex: Int,
     ): ToolOutcome {
         runController.throwIfCancelled()
         if (toolCall.name == AgentDelegationArgumentRepair.TOOL && delegationArgumentRepair.disabled) {
@@ -753,7 +754,7 @@ internal class AgentLoop(
             return ToolOutcome(toolCall, delegationArgumentRepair.reject("本轮委派已停用", round))
         }
         val validationError = toolCallValidator.validate(toolCall)
-        toolDiagnosticAttempt?.validation(toolCall, validationError == null)
+        toolDiagnosticAttempt?.validation(toolCall, validationError == null, toolIndex)
         validationError?.let { validationError ->
             if (toolCall.name == AgentDelegationArgumentRepair.TOOL && toolCallValidator.declares(toolCall.name)) {
                 val repair = delegationArgumentRepair.reject(validationError, round)
@@ -799,7 +800,7 @@ internal class AgentLoop(
             )
         )
 
-        toolDiagnosticAttempt?.dispatch(toolCall)
+        toolDiagnosticAttempt?.dispatch(toolCall, toolIndex)
         val rawResult = try {
             if (toolCall.name == AgentCompactionArchive.TOOL && compactionArchive != null) {
                 compactionArchive.read(toolCall.argumentsJson)
@@ -814,7 +815,7 @@ internal class AgentLoop(
                     .toString(),
             )
         }
-        toolDiagnosticAttempt?.result(toolCall, rawResult)
+        toolDiagnosticAttempt?.result(toolCall, rawResult, toolIndex)
         val shellDecision = AgentShellFailureGuard.observe(shellFailureState, toolCall, rawResult)
         shellFailureState = shellDecision.state
         if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage

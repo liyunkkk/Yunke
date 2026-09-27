@@ -149,18 +149,18 @@ internal class AgentToolCallDiagnostics(
             emit("parsed", callMetadata(call).put("index", index), state)
         }
 
-        fun validation(call: ToolCall, accepted: Boolean) = safely {
-            val state = resolveCall(call) ?: return@safely
+        fun validation(call: ToolCall, accepted: Boolean, index: Int? = null) = safely {
+            val state = resolveCall(call, index) ?: return@safely
             emit("validation", callMetadata(call).put("accepted", accepted), state)
         }
 
-        fun dispatch(call: ToolCall) = safely {
-            val state = resolveCall(call) ?: return@safely
+        fun dispatch(call: ToolCall, index: Int? = null) = safely {
+            val state = resolveCall(call, index) ?: return@safely
             emit("dispatch", callMetadata(call), state)
         }
 
-        fun result(call: ToolCall, result: ToolResult) = safely {
-            val state = resolveCall(call) ?: return@safely
+        fun result(call: ToolCall, result: ToolResult, index: Int? = null) = safely {
+            val state = resolveCall(call, index) ?: return@safely
             val fields = callMetadata(call)
             // No result fingerprint/length, stdout, stderr, message, images or sensitive content.
             val parsed = parseObject(result.content, MAX_RESULT_CHARS)
@@ -239,6 +239,18 @@ internal class AgentToolCallDiagnostics(
             sawToolCall = true
             // Blank IDs should not split an otherwise identical call across validation/result.
             val fallback = if (call.id.isBlank()) fingerprint("anonymous_tool", call.name) + fingerprint("arguments", call.argumentsJson) else null
+            if (fallback != null && position != null) {
+                // An explicit tool ordinal distinguishes identical anonymous calls. Retain only
+                // keyed metadata, never ToolCall objects or their argument payloads.
+                val state = resolve(emptyList(), position = position) ?: return null
+                val alias = "anonymous:$fallback"
+                val previous = aliases[alias]
+                if (previous != null && previous !== state) {
+                    previous.ambiguousAnonymous = true
+                    state.ambiguousAnonymous = true
+                } else if (aliases.size < MAX_ALIASES || previous != null) aliases[alias] = state
+                return state
+            }
             return resolve(listOf(call.id), position = position, fallback = fallback)
         }
 
@@ -273,6 +285,12 @@ internal class AgentToolCallDiagnostics(
                 emit("call_link", JSONObject().put("previous_call", other.sequence), target)
                 aliases.entries.forEach { if (it.value === other) it.setValue(target) }
                 positions.entries.forEach { if (it.value === other) it.setValue(target) }
+                target.raw = target.raw || other.raw
+                if (target.outputIndex == null) target.outputIndex = other.outputIndex
+                target.positional = target.positional || other.positional
+                target.ambiguousAnonymous = target.ambiguousAnonymous || other.ambiguousAnonymous
+                // Merged aliases must not leave a duplicate in subsequent ordinal fallback.
+                tracked.remove(other)
             }
             keys.forEach { if (aliases.size < MAX_ALIASES || aliases.containsKey(it)) aliases[it] = target }
             if (position != null && positions.size < MAX_CALLS) positions[position] = target
@@ -307,6 +325,7 @@ internal class AgentToolCallDiagnostics(
             fields.put("stage", stage).put("run", runId).put("attempt", attemptId).put("round", round)
                 .put("seq", this@AgentToolCallDiagnostics.records + 1)
             if (call != null) fields.put("call", call.sequence).put("positional_correlation", call.positional)
+                .put("ambiguous_anonymous", call.ambiguousAnonymous)
             val line = PREFIX + fields.toString()
             // All output is generated ASCII, fixed keys/enums and hashes. Keep JSON intact.
             if (line.length > MAX_LINE_CHARS) return
@@ -320,6 +339,7 @@ internal class AgentToolCallDiagnostics(
         var raw = false
         var outputIndex: Int? = null
         var positional = false
+        var ambiguousAnonymous = false
         var deltaCount = 0L
         var deltaChars = 0L
         var nonStringDeltas = 0L
@@ -370,7 +390,7 @@ internal class AgentToolCallDiagnostics(
     private fun field(fields: JSONObject, name: String, value: Any?, domain: String) {
         fields.put(name + "_present", value != null).put(name + "_kind", kind(value))
         when (value) {
-            is String -> fields.put(name + "_chars", value.length()).put(name + "_hmac", fingerprint(domain, value))
+            is String -> fields.put(name + "_chars", value.length).put(name + "_hmac", fingerprint(domain, value))
             is JSONObject -> fields.put(name + "_key_count", value.length())
             is JSONArray -> fields.put(name + "_count", value.length())
         }
