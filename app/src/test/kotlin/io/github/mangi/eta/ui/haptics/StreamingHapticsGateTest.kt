@@ -81,9 +81,13 @@ class StreamingHapticsGateTest {
     /** The gate must not read window focus at all: a dialog or shade steals focus mid-stream. */
     @Test
     fun gateSourceDoesNotConsultWindowFocus() {
-        val source = java.io.File("src/main/kotlin/io/github/mangi/eta/ui/haptics/StreamingHaptics.kt")
-        assertTrue("gate source not found at ${source.absolutePath}", source.isFile)
-        val body = source.readText().substringAfter("fun onVisibleAdvance").substringBefore("@Composable")
+        val relative = "src/main/kotlin/io/github/mangi/eta/ui/haptics/StreamingHaptics.kt"
+        val candidates = listOf(java.io.File(relative), java.io.File("app/$relative"))
+        val source = candidates.firstOrNull { it.isFile }
+        assertTrue("gate source not found: ${candidates.map { it.absolutePath }}", source != null)
+        val body = requireNotNull(source).readText()
+            .substringAfter("fun onVisibleAdvance")
+            .substringBefore("@Composable")
         assertFalse(body, body.contains("hasWindowFocus"))
     }
 
