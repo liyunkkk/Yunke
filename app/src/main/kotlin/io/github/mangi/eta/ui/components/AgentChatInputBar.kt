@@ -534,7 +534,7 @@ internal fun AgentChatInputBar(
                                         }
                                     },
                                     onLongClick = {
-                                        if (sendMode != "continue" || !isPaused) return@combinedClickable
+                                        if (sendMode != "stop" && !(sendMode == "continue" && isPaused)) return@combinedClickable
                                         TouchHaptics.longPress(view)
                                         onAbortPausedRun()
                                     },

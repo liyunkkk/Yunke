@@ -6,7 +6,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,52 +19,49 @@ import org.robolectric.annotation.GraphicsMode
 class AgentStopTaskDialogTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun materialActionsAndCancelAreSeparate() {
+    @Test fun pauseKeepsChildrenAndDoesNotSendStop() {
         val visible = mutableStateOf(true)
-        var main = 0
-        var all = 0
+        var pauses = 0
+        var stops = 0
         compose.setContent {
             if (visible.value) AgentStopTaskDialog(
-                mainRunning = true,
-                childrenRunning = true,
-                onStopMain = { main++ },
-                onStopAll = { all++ },
+                onPauseChildren = { pauses++; visible.value = false },
+                onStopChildren = { stops++; visible.value = false },
                 onDismiss = { visible.value = false },
             )
         }
-        compose.onNodeWithText("仅停止主回复").assertExists()
-        compose.onNodeWithText("停止整个任务").assertExists()
-        compose.onNodeWithText("可能继续产生费用", substring = true).assertExists()
-        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithText("暂停子代理").assertExists()
+        compose.onNodeWithText("停止子代理").assertExists()
+        compose.onNodeWithText("返回或关闭默认保持暂停", substring = true).assertExists()
+        compose.onNodeWithText("暂停子代理").performClick()
         compose.runOnIdle {
-            assertEquals(0, main)
-            assertEquals(0, all)
+            assertEquals(1, pauses)
+            assertEquals(0, stops)
             assertFalse(visible.value)
         }
-        compose.runOnIdle { visible.value = true }
-        compose.onNodeWithText("仅停止主回复").performClick()
-        compose.runOnIdle { assertEquals(1, main); assertEquals(0, all) }
-        compose.onNodeWithText("停止整个任务").performClick()
-        compose.runOnIdle { assertEquals(1, main); assertEquals(1, all) }
     }
 
-    @Test fun childOnlyDialogDoesNotOfferMainStop() {
+    @Test fun explicitStopIsSeparateFromPause() {
+        var pauses = 0
+        var stops = 0
         compose.setContent {
-            AgentStopTaskDialog(false, true, {}, {}, {})
+            AgentStopTaskDialog(
+                onPauseChildren = { pauses++ },
+                onStopChildren = { stops++ },
+                onDismiss = {},
+            )
         }
-        compose.onNodeWithText("仅停止主回复").assertDoesNotExist()
-        compose.onNodeWithText("停止整个任务").assertExists()
+        compose.onNodeWithText("停止子代理").performClick()
+        compose.runOnIdle { assertEquals(0, pauses); assertEquals(1, stops) }
     }
 
-    @Test fun capturedRunOwnerAndGenerationMustAllRemainCurrent() {
-        val captured = AgentStopSelection("conversation-1", "run-1", 4L)
-        assertTrue(captured.stillCurrent("conversation-1", "run-1", 4L))
-        assertFalse(captured.stillCurrent("conversation-2", "run-1", 4L))
-        assertFalse(captured.stillCurrent("conversation-1", "run-2", 4L))
-        assertFalse(captured.stillCurrent("conversation-1", "run-1", 5L))
-        assertFalse(captured.stillCurrent(null, "run-1", 4L))
-        val childrenAfterParent = AgentStopSelection("conversation-1", null, 4L)
-        assertTrue(childrenAfterParent.stillCurrent("conversation-1", null, 4L))
-        assertFalse(childrenAfterParent.stillCurrent("conversation-1", "run-2", 4L))
+    @Test fun oldRangeDialogAndCostWarningAreGone() {
+        compose.setContent { AgentStopTaskDialog({}, {}, {}) }
+        compose.onNodeWithText("停止任务？").assertDoesNotExist()
+        compose.onNodeWithText("仅停止主回复").assertDoesNotExist()
+        compose.onNodeWithText("停止整个任务").assertDoesNotExist()
+        compose.onNodeWithText("后台子任务 · 管理").assertDoesNotExist()
+        compose.onNodeWithText("可能继续产生费用", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("如何处理子代理？").assertExists()
     }
 }

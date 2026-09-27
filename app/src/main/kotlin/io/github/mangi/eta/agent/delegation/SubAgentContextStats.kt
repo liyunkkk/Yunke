@@ -28,6 +28,8 @@ internal data class SubAgentContextStats(
     val agentId: String = "",
     val agentName: String = "",
     val manualCompactionState: String = "",
+    val statusVersion: Long = 0,
+    val statusChangedAtMs: Long? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().put("task_id", taskId).put("worker", worker)
         .put("role", role).put("model", model).put("model_name", modelName).put("provider_name", providerName)
@@ -38,7 +40,9 @@ internal data class SubAgentContextStats(
         .put("is_compacting", isCompacting).put("compaction_count", compactionCount)
         .put("before_compaction_tokens", beforeCompactionTokens ?: JSONObject.NULL)
         .put("after_compaction_tokens", afterCompactionTokens ?: JSONObject.NULL).put("status", status)
-        .put("slot", slot ?: JSONObject.NULL).put("provider_id", providerId).put("model_id", modelId).put("agent_id", agentId).put("agent_name", agentName).put("manual_compaction_state", manualCompactionState)
+        .put("slot", slot ?: JSONObject.NULL).put("provider_id", providerId).put("model_id", modelId)
+        .put("agent_id", agentId).put("agent_name", agentName).put("manual_compaction_state", manualCompactionState)
+        .put("status_version", statusVersion).put("status_changed_at_ms", statusChangedAtMs ?: JSONObject.NULL)
 
     companion object {
         fun fromJson(j: JSONObject) = SubAgentContextStats(
@@ -47,15 +51,19 @@ internal data class SubAgentContextStats(
             j.intOrNull("context_tokens"), j.optBoolean("projected", true), j.optLong("input_tokens"),
             j.optLong("output_tokens"), j.optBoolean("is_compacting"), j.optInt("compaction_count"),
             j.intOrNull("before_compaction_tokens"), j.intOrNull("after_compaction_tokens"), j.optString("status", "running"),
-            j.intOrNull("slot"), j.optString("provider_id"), j.optString("model_id"), j.optString("agent_id"), j.optString("agent_name"), j.optString("manual_compaction_state"))
+            j.intOrNull("slot"), j.optString("provider_id"), j.optString("model_id"), j.optString("agent_id"),
+            j.optString("agent_name"), j.optString("manual_compaction_state"), j.optLong("status_version", 0),
+            j.longOrNull("status_changed_at_ms"))
         private fun JSONObject.intOrNull(key: String): Int? = if (isNull(key) || !has(key)) null else getInt(key)
+        private fun JSONObject.longOrNull(key: String): Long? = if (isNull(key) || !has(key)) null else getLong(key)
     }
 }
 
 internal class SubAgentContextTracker(initial: SubAgentContextStats) {
-    var value: SubAgentContextStats = initial.copy(
+    @Volatile var value: SubAgentContextStats = initial.copy(
         contextTokens = initial.contextTokens.takeUnless { initial.projected }, projected = false,
-        afterCompactionTokens = initial.afterCompactionTokens.takeUnless { initial.projected })
+        afterCompactionTokens = initial.afterCompactionTokens.takeUnless { initial.projected },
+        statusChangedAtMs = initial.statusChangedAtMs ?: System.nanoTime() / 1_000_000)
         private set
     private val billedRounds = mutableMapOf<Pair<Long, Int>, AgentTokenUsage>()
     private var requestSerial = 0L
@@ -63,15 +71,18 @@ internal class SubAgentContextTracker(initial: SubAgentContextStats) {
     private var invalidatedAtRound: Int? = null
     private var awaitingCompactedUsage = false
 
-    @Synchronized fun start(): SubAgentContextStats {
-        value = value.copy(status = "running")
+    /** Called by the task's mutation path, never by telemetry reads or deserialization. */
+    @Synchronized fun updateStatus(status: String): SubAgentContextStats {
+        if (value.status != status) {
+            value = value.copy(status = status, statusVersion = value.statusVersion + 1,
+                statusChangedAtMs = System.nanoTime() / 1_000_000)
+        }
         return value
     }
 
-    @Synchronized fun awaitDecision(): SubAgentContextStats {
-        value = value.copy(status = "awaiting_decision")
-        return value
-    }
+    @Synchronized fun queued(): SubAgentContextStats = updateStatus("queued")
+    @Synchronized fun start(): SubAgentContextStats = updateStatus("running")
+    @Synchronized fun awaitDecision(): SubAgentContextStats = updateStatus("awaiting_decision")
 
     @Synchronized fun manualRequest(state: String): SubAgentContextStats {
         value = value.copy(manualCompactionState = state)
@@ -79,7 +90,7 @@ internal class SubAgentContextTracker(initial: SubAgentContextStats) {
     }
 
     @Synchronized fun accept(event: AgentEvent): SubAgentContextStats? {
-        if (value.status !in setOf("running", "awaiting_decision")) return null
+        if (value.status !in setOf("running", "pausing", "awaiting_decision")) return null
         if (event is AgentEvent.UsageReceived && event.projected) return null
         value = when (event) {
             is AgentEvent.ProviderRequestStarted -> {
@@ -138,7 +149,8 @@ internal class SubAgentContextTracker(initial: SubAgentContextStats) {
     }
 
     @Synchronized fun finish(status: String): SubAgentContextStats {
-        value = value.copy(status = status, isCompacting = false,
+        updateStatus(status)
+        value = value.copy(isCompacting = false,
             manualCompactionState = if (value.manualCompactionState in setOf("pending", "compressing")) "ended" else value.manualCompactionState)
         return value
     }
