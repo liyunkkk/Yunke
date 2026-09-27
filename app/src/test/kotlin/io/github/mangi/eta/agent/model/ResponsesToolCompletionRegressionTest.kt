@@ -8,6 +8,7 @@ import java.io.IOException
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.serialization.json.Json
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -141,7 +142,7 @@ class ResponsesToolCompletionRegressionTest {
                 val call = onlyCall(complete(baseUrl))
                 assertEquals("terminal", call.name)
                 assertEquals(arguments, call.argumentsJson)
-                assertTrue(JSONObject(arguments).similar(JSONObject(call.argumentsJson)))
+                assertEquals(Json.parseToJsonElement(arguments), Json.parseToJsonElement(call.argumentsJson))
             }
         }
     }
@@ -155,7 +156,7 @@ class ResponsesToolCompletionRegressionTest {
             withSseServer(toolDeltas() + completed(JSONArray().put(functionItem(arguments)))) { baseUrl, _ ->
                 val call = onlyCall(complete(baseUrl))
                 assertEquals("terminal", call.name)
-                assertTrue(arguments.similar(JSONObject(call.argumentsJson)))
+                assertEquals(Json.parseToJsonElement(arguments.toString()), Json.parseToJsonElement(call.argumentsJson))
             }
         }
     }
