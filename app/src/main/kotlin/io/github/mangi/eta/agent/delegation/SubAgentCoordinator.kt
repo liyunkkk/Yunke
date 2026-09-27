@@ -354,7 +354,11 @@ internal class SubAgentCoordinator(
                             }
                         } else t.workspaceId?.let { id -> executeWorkspaceChild!!.invoke(workers[worker], prompt, t.controller, project, id, role == "implementation") }
                             ?: executeChild(workers[worker], prompt, t.controller)
-                        synchronized(t) { t.result = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else "" }
+                        synchronized(t) {
+                            t.controller.throwIfCancelled()
+                            if (t.state !in ACTIVE) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
+                            t.result = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
+                        }
                         awaitFinalization(t)
                         if (role == "implementation") { diagnostic(t, "workspace_seal"); workspace!!.requireOperation(project, "seal", t.workspaceId) }
                         else if (t.workspaceId != null) workspace!!.requireOperation(project, if (role == "review") "review" else "end_review", t.workspaceId)
@@ -456,6 +460,13 @@ internal class SubAgentCoordinator(
             synchronized(task) {
                 if (task.state == "running") { task.finalizing = true; return }
                 if (task.state !in ACTIVE) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
+                // The provider has returned: this is a safe pause boundary, not a spin loop.
+                if (task.state == "awaiting_decision" && !task.boundaryReached) {
+                    task.boundaryReached = true
+                    task.journal.mark("pause_boundary")
+                    publishContext(task.context.value)
+                }
+                (task as java.lang.Object).wait()
             }
         }
     }

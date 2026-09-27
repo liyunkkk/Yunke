@@ -11,7 +11,7 @@ class AgentRuntimeClientLifetimeSourceTest {
         File("src/main/kotlin/io/github/mangi/eta/agent/runtime/AgentRuntimeClient.kt"),
         File("app/src/main/kotlin/io/github/mangi/eta/agent/runtime/AgentRuntimeClient.kt"),
     ).first { it.isFile }.readText()
-    private val run = blockAfter(client, "isStopRequested: () -> Boolean")
+    private val run = blockAfter(client, "    ): AgentRuntimeWire.RunResult")
 
     @Test
     fun interruptedWaitCancelsOnlyForExplicitStopAndPropagatesWithoutATerminalResult() {
@@ -21,9 +21,7 @@ class AgentRuntimeClientLifetimeSourceTest {
                 Thread.currentThread().interrupt()
                 runCatching {
                     if (isStopRequested()) {
-                        val cancelMessage = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
-                        cancelMessage.data = AgentRuntimeWire.ackBundle(request.runId)
-                        serviceMessenger.send(cancelMessage)
+                        sendRequestedStop(serviceMessenger, request.runId, mainStopReason())
                     }
                 }
                 throw interrupted
@@ -50,12 +48,19 @@ class AgentRuntimeClientLifetimeSourceTest {
         val afterStart = run.substring(send, await)
         assertCodeEquals(
             """
-                val cancel = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
-                cancel.data = AgentRuntimeWire.ackBundle(request.runId)
-                serviceMessenger.send(cancel)
+                sendRequestedStop(serviceMessenger, request.runId, mainStopReason())
             """,
             blockAfter(afterStart, "if (isStopRequested())"),
         )
+    }
+
+    @Test
+    fun requestedStopDispatchPreservesCapturedScopeAndReason() {
+        val dispatch = blockAfter(client, "private fun sendRequestedStop(")
+        assertTrue(dispatch.contains("AgentRuntimeStopDispatch.message(mainReason)"))
+        assertTrue(dispatch.contains("AgentRuntimeWire.ackBundle(runId)"))
+        assertTrue(dispatch.contains("putString(\"child_stop_reason\", it.name)"))
+        assertTrue(dispatch.contains("messenger.send(message)"))
     }
 
     @Test

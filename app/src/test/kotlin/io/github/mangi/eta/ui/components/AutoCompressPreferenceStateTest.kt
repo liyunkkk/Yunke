@@ -3,10 +3,13 @@ package io.github.mangi.eta.ui.components
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.compose.runtime.SideEffect
+import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assertDoesNotExist
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import io.github.mangi.eta.config.AutoCompressPreference
 import io.github.mangi.eta.config.Prefs
 import java.util.UUID
@@ -30,46 +33,52 @@ class AutoCompressPreferenceStateTest {
         val second = preferences()
         val selected = mutableStateOf(AutoCompressPreference(first))
         val visible = mutableStateOf(true)
-        var displayed = false
         compose.setContent {
             if (visible.value) {
                 val enabled by rememberAutoCompressEnabled(selected.value)
-                SideEffect { displayed = enabled }
+                Text(if (enabled) "enabled" else "disabled")
             }
         }
+        compose.onNodeWithText("disabled").assertIsDisplayed()
         compose.runOnIdle {
-            assertFalse(displayed)
             assertEquals(1, first.listeners.size)
             selected.value.setEnabled(true)
+            assertTrue(AutoCompressPreference.read(first))
         }
+        compose.onNodeWithText("enabled").assertIsDisplayed()
         compose.runOnIdle {
-            assertTrue(displayed)
             // Reusing the same composition slot with a different source must not reuse its state.
             selected.value = AutoCompressPreference(second)
         }
+        compose.onNodeWithText("disabled").assertIsDisplayed()
         compose.runOnIdle {
-            assertFalse(displayed)
             assertEquals(0, first.listeners.size)
             assertEquals(1, second.listeners.size)
             second.edit().putBoolean(Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED, true).apply()
         }
-        compose.runOnIdle {
-            assertTrue(displayed)
-            visible.value = false
-        }
+        compose.onNodeWithText("enabled").assertIsDisplayed()
+        compose.runOnIdle { visible.value = false }
+        compose.onNodeWithText("enabled").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals(0, second.listeners.size)
             second.edit().putBoolean(Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED, false).apply()
         }
+        compose.onNodeWithText("enabled").assertDoesNotExist()
+        // Re-entry must read the latest storage value, not the disposed UI snapshot.
+        compose.runOnIdle { visible.value = true }
+        compose.onNodeWithText("disabled").assertIsDisplayed()
         compose.runOnIdle {
-            assertTrue(displayed) // There is no disposed UI callback.
-            visible.value = true
-        }
-        compose.runOnIdle {
-            assertFalse(displayed)
             assertEquals(1, second.listeners.size)
-            visible.value = false
+            AutoCompressPreference(second).setEnabled(true)
+            assertTrue(AutoCompressPreference.read(second))
         }
+        compose.onNodeWithText("enabled").assertIsDisplayed()
+        compose.runOnIdle {
+            AutoCompressPreference(second).setEnabled(false)
+            assertFalse(AutoCompressPreference.read(second))
+        }
+        compose.onNodeWithText("disabled").assertIsDisplayed()
+        compose.runOnIdle { visible.value = false }
         compose.runOnIdle { assertEquals(0, second.listeners.size) }
     }
 

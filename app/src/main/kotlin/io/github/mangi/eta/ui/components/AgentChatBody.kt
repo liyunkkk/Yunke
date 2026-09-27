@@ -638,14 +638,34 @@ internal fun AgentConversationMessages(
             onScrollToMessageConsumed()
         }
     }
-    // 操作栏只出现在每轮对话的最终结果上，正在输出的正文保持隐藏。
-    // 流式进行中当前这一轮尚未收尾，不把临时的最后一条正文标为最终结果。
-    val finalResultMessageIds = remember(visibleMessages, isStreaming, isCompressingContext) {
-        resolveFinalResultMessageIds(
-            visibleMessages,
+    // Project onto the EXACT rows consumed by LazyColumn. Expansion and late
+    // records move only the footer anchor, never the message or callback owner.
+    val turnFooters = remember(timelineRows, isStreaming, isCompressingContext) {
+        timelineRows.turnFooters(
             isStreaming = isStreaming,
             isCompressingContext = isCompressingContext,
         )
+    }
+    val finalResultMessageIds = remember(turnFooters) {
+        turnFooters.values.mapTo(mutableSetOf()) { it.id }
+    }
+    // Reveal dependencies follow the projection's existing anchors, not a
+    // second ownership heuristic. A stopped notice can own actions while an
+    // earlier answer in that same turn is still revealing. New user boundaries
+    // and completed footer anchors prevent one turn from blocking another.
+    val footerRevealMessages = remember(timelineRows, turnFooters) {
+        buildMap<String, List<AgentMessageUi>> {
+            val answers = mutableListOf<AgentMessageUi>()
+            timelineRows.forEach { row ->
+                val message = (row as? AgentTimelineRow.Message)?.message
+                if (message is UserMessageUi && !message.isSteerSupplement()) answers.clear()
+                if (message is AgentMessageUi && message.content.isNotBlank()) answers.add(message)
+                if (row.key in turnFooters) {
+                    put(row.key, answers.toList())
+                    answers.clear()
+                }
+            }
+        }
     }
     // 流式消息的渲染会话按 id 提升到列表层持有：item 滚出视口被 LazyColumn 销毁后，
     // 滑回时复用同一解析会话与打字机进度，避免整段内容重新解析并重放显现动画。
@@ -969,6 +989,16 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
+                // Keep the row key/index and animate its root, including its footer.
+                Column(
+                    modifier = Modifier.fillMaxWidth().then(
+                        if (entry is AgentTimelineRow.Message) Modifier.animateItem(
+                            fadeInSpec = tween(durationMillis = 180),
+                            placementSpec = null,
+                            fadeOutSpec = null,
+                        ) else Modifier,
+                    ),
+                ) {
                 when (entry) {
                     is AgentTimelineRow.Message -> {
                         val message = entry.message
@@ -995,20 +1025,16 @@ internal fun AgentConversationMessages(
                                 message.toolName == "browser_use" &&
                                 message.id == currentBrowserMessageId,
                             enableLivePreview = !isStreaming,
-                            showCopyAction = message !is AgentMessageUi ||
-                                message.id in finalResultMessageIds,
-                            showMessageActions = message.id in finalResultMessageIds,
+                            // UserMessageBubble ignores these switches; its toolbar is unchanged.
+                            showCopyAction = false,
+                            showMessageActions = false,
                             messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                             branchEnabled = branchEnabled,
                             isEditing = message.id == editTargetMessageId,
                             isPaused = isPaused,
                             // Keep this modifier stable. Attaching fadeIn only after the run
                             // ends replays appearance on the already-visible answer.
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(durationMillis = 180),
-                                placementSpec = null,
-                                fadeOutSpec = null,
-                            ),
+                            modifier = Modifier,
                         )
                     }
 
@@ -1047,6 +1073,23 @@ internal fun AgentConversationMessages(
                             )
                         }
                     }
+                }
+                turnFooters[entry.key]?.let { owner ->
+                    val revealPending = footerRevealMessages[entry.key].orEmpty().any { answer ->
+                        val retained = streamingMarkdownStates[answer.id]
+                        answer.isStreaming ||
+                            (retained != null && retained.revealedContent != answer.content) ||
+                            (retained == null && (isStreaming || isPaused) && answer.id !in settledMessageIds)
+                    }
+                    AgentTurnFooter(
+                        message = owner,
+                        actions = messageActions,
+                        revealPending = revealPending,
+                        speechPreface = speechPrefaces[owner.id].orEmpty(),
+                        messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
+                        branchEnabled = branchEnabled,
+                    )
+                }
                 }
             }
             if (compressingItemCount > 0) {

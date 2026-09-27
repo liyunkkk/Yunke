@@ -358,15 +358,49 @@ internal object AgentChildTaskGroups {
         if (json.opt("workspace_ownership_verified") != true) return null
         return (json.opt("workspace_id") as? String)?.takeIf(workspaceIdPattern::matches)
     }
+
+    /** The newest retained generation is the source of ordinary configuration snapshots. */
+    fun retainedOrdinaryCandidates(ownerId: String): List<ChildTaskConfigPolicy.Candidate<ChildWorkerConfigResolver.Configuration>>? =
+        synchronized(this) {
+            groups.values.filter { it.ownerId == ownerId && !it.closed }
+                .filter { group -> group.snapshots.isNotEmpty() || group.coordinator?.taskIds()?.isNotEmpty() == true }
+                .lastOrNull()?.workers?.mapNotNull { it.configuration }
+        }
+
+    fun hasRetainedTasks(ownerId: String): Boolean = synchronized(this) {
+        groups.values.any { group ->
+            group.ownerId == ownerId && !group.closed &&
+                (group.snapshots.isNotEmpty() || group.coordinator?.taskIds()?.isNotEmpty() == true)
+        }
+    }
+
+    private fun hasRetainedTasks(group: Group): Boolean =
+        group.snapshots.isNotEmpty() || group.coordinator?.taskIds()?.isNotEmpty() == true
+
     fun execute(ownerId: String, currentGeneration: String?, call: AgentModelClient.ToolCall,
-        currentRunId: String? = null): AgentModelClient.ToolResult {
+        currentRunId: String? = null, replacementGeneration: String? = currentGeneration): AgentModelClient.ToolResult {
         val args = runCatching { JSONObject(call.argumentsJson) }.getOrNull() ?: return error("INVALID_TASK_ARGUMENTS")
         val id = args.optString("task_id")
         if (call.name == "get_task_result" && id.isBlank()) return list(ownerId, args)
         val candidates = ownerGroups(ownerId)
-        val current = candidates.firstOrNull { it.generation == currentGeneration && it.attached }
-        if (call.name == "delegate_task" && args.optString("replace_task_id").isNotBlank()) return replace(candidates, current, call, args)
-        val group = if (id.isNotBlank()) candidates.firstOrNull { owns(it, id) } else current
+        val wantsReplacement = call.name == "delegate_task" && args.optString("replace_task_id").isNotBlank()
+        val selectedGeneration = if (wantsReplacement) replacementGeneration else currentGeneration
+        val current = candidates.firstOrNull { it.generation == selectedGeneration && it.attached }
+        if (wantsReplacement) return replace(candidates, current, call, args)
+        // A new parent must continue ordinary delegation through the retained coordinator when one
+        // still owns the historical task. This coordinator contains the original model snapshot.
+        // If it was already archived, the resulting TASK_FINISHED is intentional: never fall back
+        // to the current user setting for a retained generation.
+        val retained = if (id.isBlank()) candidates.lastOrNull { it !== current && hasRetainedTasks(it) } else null
+        val ordinary = if (retained != null) {
+            val plan = ChildTaskOrdinaryDispatchSelection.plan(
+                current = current?.workers?.mapNotNull { it.configuration }.orEmpty(),
+                frozen = retained.workers.mapNotNull { it.configuration },
+                retainedTasks = true,
+            )
+            retained.takeIf { plan.ordinary.isNotEmpty() }
+        } else current
+        val group = if (id.isNotBlank()) candidates.firstOrNull { owns(it, id) } else ordinary
         if (group == null) return error(if (id.isNotBlank()) "TASK_NOT_FOUND" else "RUN_CLOSED")
         if (synchronized(this) { group.coordinator == null && !group.retiring } && call.name != "get_task_result") return error("TASK_FINISHED")
         val response = if (call.name == "continue_task") continueOwned(group, currentRunId ?: current?.runId, call) else result(group, id, call)
@@ -418,7 +452,7 @@ internal object AgentChildTaskGroups {
         val role = snapshot.optString("role")
         if (role in setOf("image_generation", "video_generation")) return error("MEDIA_DELIVERY_UNCERTAIN")
         val workspaceId = (snapshot.opt("workspace_id") as? String)?.takeIf { it.isNotBlank() }
-        if (role == "implementation" || (snapshot.opt("workspace_path") as? String).orEmpty().isNotBlank() || workspaceId != null)
+        if (role == "implementation" || (snapshot.optString("workspace_path")).isNotBlank() || workspaceId != null)
             return error("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW")
         if (args.has("role") && args.optString("role") != role) return error("REPLACEMENT_ROLE_MISMATCH")
         val checkpoint = snapshot.optJSONObject("supervision")?.optString("checkpoint").orEmpty()

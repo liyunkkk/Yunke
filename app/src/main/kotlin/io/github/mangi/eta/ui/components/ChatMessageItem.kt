@@ -760,20 +760,13 @@ private fun AgentMessageBlock(
     modifier: Modifier = Modifier,
     isPaused: Boolean = false,
 ) {
-    @Suppress("DEPRECATION")
-    val clipboardManager = LocalClipboardManager.current
-    val view = LocalView.current
-    var copied by remember(message.id) { mutableStateOf(false) }
     val keepStreamingMarkdown = message.isStreaming || retainedStreamingState != null
     val displayContent = remember(message.content) { NumericCitationMarkup.strip(message.content) }
-    val displaySpeechPreface = remember(speechPreface) { NumericCitationMarkup.strip(speechPreface) }
-    val speechContent = remember(displaySpeechPreface, displayContent) {
-        listOf(displaySpeechPreface.trim(), displayContent)
-            .filter { it.isNotBlank() }
-            .joinToString("\n\n")
-    }
-    var streamingRevealComplete by remember(message.id) {
-        mutableStateOf(!keepStreamingMarkdown)
+    // Completion belongs to an exact source revision. Late text must not inherit
+    // the previous revision's true flag while its parser/reveal effect catches up.
+    var streamingRevealComplete by remember(message.id, message.content) {
+        mutableStateOf(!keepStreamingMarkdown ||
+            (!message.isStreaming && retainedStreamingState?.revealedContent == message.content))
     }
     LaunchedEffect(message.isStreaming) {
         if (message.isStreaming) streamingRevealComplete = false
@@ -785,13 +778,9 @@ private fun AgentMessageBlock(
     } else {
         null
     }
-    LaunchedEffect(retainedStreamingState, streamingRevealComplete, message.content) {
-        retainedStreamingState?.revealedContent = message.content.takeIf { streamingRevealComplete }
-    }
-    LaunchedEffect(copied) {
-        if (copied) {
-            kotlinx.coroutines.delay(1_400)
-            copied = false
+    LaunchedEffect(retainedStreamingState, streamingRevealComplete, message.content, message.isStreaming) {
+        retainedStreamingState?.revealedContent = message.content.takeIf {
+            streamingRevealComplete && !message.isStreaming
         }
     }
 
@@ -846,112 +835,19 @@ private fun AgentMessageBlock(
             message.content.isNotBlank() &&
             (!keepStreamingMarkdown || streamingRevealComplete)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(
-                    onClick = {
-                        TouchHaptics.click(view)
-                        @Suppress("DEPRECATION")
-                        clipboardManager.setText(AnnotatedString(message.content))
-                        copied = true
-                    },
-                    minWidth = 30.dp,
-                    minHeight = 30.dp,
-                ) {
-                    Icon(
-                        imageVector = if (copied) Icons.Rounded.Check
-                            else Icons.Rounded.ContentCopy,
-                        contentDescription = stringResource(
-                            if (copied) R.string.copy_copied else R.string.copy_answer,
-                        ),
-                        modifier = Modifier.size(15.dp),
-                        tint = if (copied) {
-                            MiuixTheme.colorScheme.primary
-                        } else {
-                            MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f)
-                        },
-                    )
-                }
-                if (allowSpeech) {
-                    SpeechPlaybackButton(message.id, speechContent)
-                }
-                if (showMessageActions) {
-                    TooltipBox(text = stringResource(R.string.ui_branch_conversation), enabled = branchEnabled) {
-                        IconButton(
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onBranch()
-                            },
-                            enabled = branchEnabled,
-                            minWidth = 30.dp,
-                            minHeight = 30.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.CallSplit,
-                                contentDescription = stringResource(R.string.ui_branch_conversation),
-                                modifier = Modifier.size(15.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                    TooltipBox(text = stringResource(R.string.ui_regenerate_2e1905), enabled = messageActionsEnabled) {
-                        IconButton(
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onRegenerate()
-                            },
-                            enabled = messageActionsEnabled,
-                            minWidth = 30.dp,
-                            minHeight = 30.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Refresh,
-                                contentDescription = stringResource(R.string.ui_regenerate_reply_84a7d9),
-                                modifier = Modifier.size(15.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                    TooltipBox(text = stringResource(R.string.ui_delete_3755f5), enabled = messageActionsEnabled) {
-                        IconButton(
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onDelete()
-                            },
-                            enabled = messageActionsEnabled,
-                            minWidth = 30.dp,
-                            minHeight = 30.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Delete,
-                                contentDescription = stringResource(R.string.ui_delete_this_conversation_3f351b),
-                                modifier = Modifier.size(15.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                }
-                if (LocalAppearanceSettings.current.messageTimestampsEnabled) {
-                    val timestamp = message.generatedAtMillis?.takeIf { it > 0L }
-                    if (timestamp != null) {
-                        val zone = java.time.ZoneId.systemDefault()
-                        val label = remember(timestamp, zone) { formatMessageTimestamp(timestamp, zone) }
-                        Text(
-                            text = label,
-                            modifier = Modifier.weight(1f).padding(start = 6.dp),
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            fontSize = 11.sp,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
+            AgentMessageActionRow(
+                messageId = message.id,
+                content = message.content,
+                allowSpeech = allowSpeech,
+                speechPreface = speechPreface,
+                generatedAtMillis = message.generatedAtMillis,
+                showMessageActions = showMessageActions,
+                messageActionsEnabled = messageActionsEnabled,
+                branchEnabled = branchEnabled,
+                onDelete = onDelete,
+                onRegenerate = onRegenerate,
+                onBranch = onBranch,
+            )
         }
     }
 }
@@ -1086,7 +982,6 @@ private fun StreamingMarkdown(
 
     LaunchedEffect(revealCoordinator, view) {
         // Drive feedback in the same frame as visible text, including the final drain.
-        // Catch-up/restore does not emit this callback, so history never replays pulses.
         revealCoordinator.setOnRevealAdvanced {
             io.github.mangi.eta.ui.haptics.StreamingHaptics.onVisibleAdvance(view)
         }
