@@ -11,7 +11,8 @@ class MainMergeIntegrationTest(unittest.TestCase):
                      'onDispose {', 'VirtualDisplayWebPreview.stop()', 'snapshot.optBoolean("recoverable")'):
             self.assertIn(text, page)
         self.assertEqual(1, page.count('check(stillInstalled)'))
-        self.assertEqual(3, page.count('Modifier.weight(1f).fillMaxHeight()'))
+        # 三个操作各只有一个入口，且仍在同一页内联展示（不是独立页面）。
+        self.assertEqual(3, page.count('TouchHaptics.click(view)'))
         self.assertNotIn('VirtualDisplayWebPreview.open(context)', page)
         self.assertNotIn('Scaffold(', page)
 
