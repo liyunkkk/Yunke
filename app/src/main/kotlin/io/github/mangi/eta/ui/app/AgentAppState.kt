@@ -185,6 +185,7 @@ internal class AgentAppState(
     private val modelRetryState = AgentRunRetryState()
     private val runOverheadTokens = mutableMapOf<String, Int>()
     private val runMessageProjector = AgentRunMessageProjector()
+    private val runReplayBatch = AgentRunReplayBatch()
     private val runEventCoalescer = AgentRunEventCoalescer()
     private val runEventFlushJobs = mutableMapOf<String, Job>()
     private val runJobs = androidx.compose.runtime.mutableStateMapOf<String, Job>()
@@ -3869,19 +3870,29 @@ internal class AgentAppState(
     }
 
     private fun restoreRunEvents(runId: String, events: List<AgentEvent>) {
-        // 恢复是完整快照：先清除同一 run 的旧投影，再一次发布，避免历史增量重复追加
-        // 或中途的 Running 状态使已结束的思考重新展开、播放动画。
+        // Snapshot batches publication only. Defer terminal ordering and summaries
+        // explicitly, rather than rescanning the full history for every event.
         Snapshot.withMutableSnapshot {
             flushPendingRunDelta(runId)
-            updateMessages(runId, updateTimestamp = false) { messages ->
-                runMessageProjector.resetForReplay(
-                    runId = runId,
-                    messages = messages,
-                    replaySupplementIndexes = events.filterIsInstance<AgentEvent.UserSupplementReceived>()
-                        .mapTo(mutableSetOf()) { it.index },
-                )
-            }
-            events.forEach { event -> applyRunEvent(runId, event, persistSupplement = false, replaying = true) }
+            runReplayBatch.replay(
+                runId = runId,
+                events = events,
+                reset = {
+                    updateMessages(runId, updateTimestamp = false) { messages ->
+                        runMessageProjector.resetForReplay(
+                            runId = runId,
+                            messages = messages,
+                            replaySupplementIndexes = events.filterIsInstance<AgentEvent.UserSupplementReceived>()
+                                .mapTo(mutableSetOf()) { it.index },
+                        )
+                    }
+                },
+                apply = { event -> applyRunEvent(runId, event, persistSupplement = false, replaying = true) },
+                finish = {
+                    updateMessages(runId, updateTimestamp = false) { it }
+                    refreshConversationSummaries()
+                },
+            )
         }
     }
 
@@ -4684,7 +4695,7 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId) ?: return
         val state = conversationState(conversationId) ?: return
         StreamPerformanceDiagnostics.measure("ui.messages.apply", state.messages.size.toLong()) {
-            val nextMessages = normalizeTerminalRunMessages(runId, transform(state.messages))
+            val nextMessages = runReplayBatch.normalize(runId, transform(state.messages))
             updateConversation(
                 conversationId = conversationId,
                 state = state.copy(messages = nextMessages),
@@ -4845,6 +4856,7 @@ internal class AgentAppState(
     }
 
     private fun refreshConversationSummaries() {
+        if (runReplayBatch.isActive) return
         val summaries = conversationsById.entries
             .sortedWith(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
