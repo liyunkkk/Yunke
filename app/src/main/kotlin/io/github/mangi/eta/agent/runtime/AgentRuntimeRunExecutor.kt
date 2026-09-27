@@ -292,7 +292,7 @@ internal class AgentRuntimeRunExecutor(
             runController.throwIfCancelled()
             val completedResponse = AgentModelClient.complete(
                 config = request.config, sessionId = request.effectiveModelSessionId,
-                capabilitiesProvider = { AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay) },
+                capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay) },
                 prompt = promptWithChildHandoff, toolExecutor = delegatedExecutor, images = request.images,
                 history = request.history, skipHistoryTrimming = true,
                 compactionArchive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, request.effectiveModelSessionId),
