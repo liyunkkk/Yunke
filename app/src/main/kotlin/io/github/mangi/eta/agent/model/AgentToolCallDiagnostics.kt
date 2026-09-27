@@ -159,7 +159,11 @@ internal class AgentToolCallDiagnostics(
             emit("dispatch", callMetadata(call), state)
         }
 
-        fun result(call: ToolCall, result: ToolResult, index: Int? = null) = safely {
+        /**
+         * [result] is the final content paired into history (after local guards such as
+         * [AgentShellFailureGuard]); [rawResult] is the executor output before those guards.
+         */
+        fun result(call: ToolCall, result: ToolResult, index: Int? = null, rawResult: ToolResult? = null) = safely {
             val state = resolveCall(call, index) ?: return@safely
             val fields = callMetadata(call)
             // No result fingerprint/length, stdout, stderr, message, images or sensitive content.
@@ -181,7 +185,29 @@ internal class AgentToolCallDiagnostics(
             }
             (body?.opt("ok") as? Boolean)?.let { fields.put("ok", it) }
             fields.put("code", safeCode(body?.opt("code")))
+            if (rawResult != null && rawResult.content != result.content) {
+                val raw = parseObject(rawResult.content, MAX_RESULT_CHARS).second
+                fields.put("guard_annotated", true)
+                (raw?.opt("ok") as? Boolean)?.let { fields.put("raw_ok", it) }
+                fields.put("raw_code", safeCode(raw?.opt("code")))
+            }
+            shellGuardFields(body?.optJSONObject("shell_failure_diagnostic"), fields)
             emit("result", fields, state)
+        }
+
+        /** Only fixed counters and flags; never the executable name or command text. */
+        private fun shellGuardFields(diagnostic: JSONObject?, fields: JSONObject) {
+            if (diagnostic == null) return
+            val failures = diagnostic.optJSONArray("failures")
+            var maxAttempt = 0
+            if (failures != null) for (i in 0 until minOf(failures.length(), MAX_CALLS)) {
+                val attempt = failures.optJSONObject(i)?.opt("attempt")
+                if (attempt is Int && attempt in 1..AgentShellFailureGuard.MAX_FAILURES) maxAttempt = maxOf(maxAttempt, attempt)
+            }
+            fields.put("shell_missing_count", minOf(failures?.length() ?: 0, MAX_CALLS))
+            if (maxAttempt > 0) fields.put("shell_failure_attempt", maxAttempt)
+            fields.put("shell_failure_max", AgentShellFailureGuard.MAX_FAILURES)
+            (diagnostic.opt("stop_after_batch") as? Boolean)?.let { fields.put("shell_stop_after_batch", it) }
         }
 
         fun failed(code: String) = safely {

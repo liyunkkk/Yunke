@@ -12,6 +12,7 @@ Stages are `raw_added`, `raw_delta_summary`, `raw_args_done`, `raw_item_done`, `
 - `arguments_hmac` compares exact strings using a random per-run secret that is never exported. Hashes cannot be compared across runs. Object-valued arguments use bounded serialization and explicitly identify that basis.
 - `tool` allows the fixed names `terminal` and `run_command`; other tool names are fingerprinted.
 - `requested_environment` is argument evidence; `actual_environment` is the returned execution envelope. Requesting `linux` and returning `debian` is expected alias resolution, not evidence of misrouting.
+- The `result` stage records the content paired into history, after local guards. When a guard rewrote it (for example `SHELL_COMMAND_NOT_FOUND`), `guard_annotated=true` and `raw_code` holds the executor's own code; `shell_failure_attempt`/`shell_failure_max`/`shell_stop_after_batch` expose the missing-command budget without logging the executable name.
 - Validation rejection without dispatch means the command was not executed. Missing diagnostics alone do not establish execution failure: recording may be disabled, capped, or the process may have ended.
 
 ## Privacy and bounds

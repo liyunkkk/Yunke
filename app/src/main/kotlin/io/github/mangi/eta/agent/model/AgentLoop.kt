@@ -815,11 +815,12 @@ internal class AgentLoop(
                     .toString(),
             )
         }
-        toolDiagnosticAttempt?.result(toolCall, rawResult, toolIndex)
         val shellDecision = AgentShellFailureGuard.observe(shellFailureState, toolCall, rawResult)
         shellFailureState = shellDecision.state
         if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage
         val result = shellDecision.result
+        // Record what the model actually receives, plus the pre-guard code for comparison.
+        toolDiagnosticAttempt?.result(toolCall, result, toolIndex, rawResult)
         if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(toolCall.name)) {
             sensitiveToolCallIds += toolCall.id
         }

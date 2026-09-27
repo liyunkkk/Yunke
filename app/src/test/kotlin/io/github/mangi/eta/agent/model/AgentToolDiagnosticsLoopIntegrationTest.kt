@@ -74,6 +74,57 @@ class AgentToolDiagnosticsLoopIntegrationTest {
     }
 
     @Test
+    fun resultStageRecordsGuardedShellCodeAndPreGuardCodeWithoutExecutableName() {
+        val logs = mutableListOf<String>()
+        val arguments = JSONObject().put("action", "open_and_exec").put("environment", "android")
+            .put("command", "$MISSING_EXECUTABLE --version").put("cwd", CWD_SECRET).toString()
+        val call = Call(CALL_ID, TERMINAL, arguments)
+        val raw = JSONObject().put("ok", false).put("tool", TERMINAL).put("environment", "android")
+            .put("exit_code", 127).put("stdout", "").put("stderr", "ash: $MISSING_EXECUTABLE: not found")
+            .toString()
+        val run = runBatches(
+            batches = listOf(listOf(call)),
+            diagnostics = AgentToolCallDiagnostics(enabled = { true }, sink = { logs += it }),
+            executorResult = raw,
+        )
+
+        assertCompleted(run, requests = 2, results = 1)
+        assertEquals(listOf(call), run.executed)
+        // History still receives the guard-annotated result, unchanged by diagnostics.
+        val paired = JSONObject(run.toolResults.single())
+        assertEquals(AgentShellFailureGuard.FAILURE_CODE, paired.getString("code"))
+
+        val result = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }
+            .single { it.getString("stage") == "result" }
+        assertEquals(AgentShellFailureGuard.FAILURE_CODE, result.getString("code"))
+        assertEquals("none", result.getString("raw_code"))
+        assertTrue(result.getBoolean("guard_annotated"))
+        assertEquals(1, result.getInt("shell_missing_count"))
+        assertEquals(1, result.getInt("shell_failure_attempt"))
+        assertEquals(AgentShellFailureGuard.MAX_FAILURES, result.getInt("shell_failure_max"))
+        assertFalse(result.getBoolean("shell_stop_after_batch"))
+        assertEquals("android", result.getString("actual_environment"))
+        assertEquals(127, result.getInt("exit_code"))
+        val text = logs.joinToString("\n")
+        assertFalse("executable name leaked:\n$text", text.contains(MISSING_EXECUTABLE))
+        assertFalse("raw cwd leaked:\n$text", text.contains(CWD_SECRET))
+    }
+
+    @Test
+    fun unguardedResultDoesNotReportGuardFields() {
+        val logs = mutableListOf<String>()
+        runBatches(
+            batches = listOf(listOf(Call(CALL_ID, TERMINAL, terminalArguments()))),
+            diagnostics = AgentToolCallDiagnostics(enabled = { true }, sink = { logs += it }),
+        )
+        val result = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }
+            .single { it.getString("stage") == "result" }
+        assertFalse(result.has("guard_annotated"))
+        assertFalse(result.has("raw_code"))
+        assertFalse(result.has("shell_missing_count"))
+    }
+
+    @Test
     fun disabledDiagnosticsEmitNoLinesAndDoNotChangeExecution() {
         val logs = mutableListOf<String>()
         val call = Call(CALL_ID, TERMINAL, terminalArguments())
@@ -134,6 +185,7 @@ class AgentToolDiagnosticsLoopIntegrationTest {
     private fun runBatches(
         batches: List<List<Call>>,
         diagnostics: AgentToolCallDiagnostics = AgentToolCallDiagnostics(),
+        executorResult: String = EXECUTOR_RESULT,
     ): Run {
         val history = JSONArray().put(AgentConversationCodec.userTextMessage("完成测试任务"))
         val executed = mutableListOf<Call>()
@@ -183,7 +235,7 @@ class AgentToolDiagnosticsLoopIntegrationTest {
                 provider = provider,
                 toolExecutor = AgentModelClient.ToolExecutor { call ->
                     executed += Call(call.id, call.name, call.argumentsJson)
-                    AgentModelClient.ToolResult(EXECUTOR_RESULT)
+                    AgentModelClient.ToolResult(executorResult)
                 },
                 runController = AgentRunController(),
                 traceFormatter = AgentTraceFormatter(),
@@ -278,6 +330,7 @@ class AgentToolDiagnosticsLoopIntegrationTest {
         const val CWD_SECRET = "/secret-cwd"
         const val STDOUT_SECRET = "secret-output"
         const val STDERR_SECRET = "secret-error"
+        const val MISSING_EXECUTABLE = "secretmissingtool"
 
         /** Stage markers from the agreed diagnostics API mapping. */
         val STAGES = listOf("provider_parsed", "parsed", "validation", "dispatch", "result")
