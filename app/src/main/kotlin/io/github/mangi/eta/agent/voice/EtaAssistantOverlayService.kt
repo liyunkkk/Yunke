@@ -148,6 +148,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var inputText by mutableStateOf("")
     private var inputFocusRequestKey by mutableIntStateOf(-1)
     // 浮窗语音态标志：不能用 messages.isEmpty() 判定（我方唤出会异步载入上次会话）。
+    // 外部（ShortX 等）通过 EXTRA_ENTRY_MODE 指定本次唤起的入口态；null 表示沿用默认语义。
+    private var pendingEntryMode: String? = null
     private var entryInVoiceMode by mutableStateOf(false)
     private var voiceNotice by mutableStateOf<String?>(null)
     private var uiState by mutableStateOf(EtaVoiceUiState())
@@ -166,6 +168,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 每次唤起都刷新：带参数则按参数进态，不带参数置 null 走默认语义。
+        pendingEntryMode = intent?.getStringExtra(EXTRA_ENTRY_MODE)
         when (intent?.action) {
             ACTION_SHOW -> showEntry()
             ACTION_HANDOFF_READY -> finishHandoff()
@@ -313,13 +317,29 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             return
         }
         // 照主仓库语义：有录音权限就直接进语音态（由面板内的 voiceMode 驱动开始录音），无权限才弹键盘。
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            entryInVoiceMode = true
-            voiceNotice = null
-            updateSoftInput(visible = false)
-        } else {
-            voiceNotice = getString(R.string.voice_audio_permission)
-            showKeyboard()
+        // 外部可用 EXTRA_ENTRY_MODE=voice/input 强制指定；voice 在无录音权限时仍退回提示 + 键盘。
+        val requestedEntryMode = pendingEntryMode
+        pendingEntryMode = null
+        val hasAudioPermission =
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        when {
+            requestedEntryMode == ENTRY_MODE_INPUT -> {
+                voiceNotice = null
+                showKeyboard()
+            }
+            requestedEntryMode == ENTRY_MODE_VOICE && !hasAudioPermission -> {
+                voiceNotice = getString(R.string.voice_audio_permission)
+                showKeyboard()
+            }
+            requestedEntryMode == ENTRY_MODE_VOICE || hasAudioPermission -> {
+                entryInVoiceMode = true
+                voiceNotice = null
+                updateSoftInput(visible = false)
+            }
+            else -> {
+                voiceNotice = getString(R.string.voice_audio_permission)
+                showKeyboard()
+            }
         }
     }
 
@@ -1820,6 +1840,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         const val ACTION_SHOW = "io.github.mangi.eta.agent.voice.SHOW"
         const val ACTION_OPEN_CONVERSATION = "io.github.mangi.eta.agent.voice.OPEN_CONVERSATION"
         const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.agent.voice.extra.CONVERSATION_KEY"
+        /** 外部指定入口态：voice=直接语音聆听，input=直接输入态。缺省时沿用录音权限判定。 */
+        const val EXTRA_ENTRY_MODE = "io.github.mangi.eta.agent.voice.extra.ENTRY_MODE"
+        const val ENTRY_MODE_VOICE = "voice"
+        const val ENTRY_MODE_INPUT = "input"
         private const val ACTION_HANDOFF_READY = "io.github.mangi.eta.agent.voice.HANDOFF_READY"
         private const val HANDOFF_TIMEOUT_MS = 5_000L
         private const val HANDOFF_EXIT_DURATION_MS = 220L
