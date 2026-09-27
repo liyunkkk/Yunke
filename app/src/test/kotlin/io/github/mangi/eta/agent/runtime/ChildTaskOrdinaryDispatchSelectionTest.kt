@@ -1,8 +1,8 @@
 package io.github.mangi.eta.agent.runtime
 
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertSame
+import org.junit.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 
 class ChildTaskOrdinaryDispatchSelectionTest {
     private fun candidate(id: String, value: String) = ChildTaskConfigPolicy.Candidate(
@@ -30,7 +30,7 @@ class ChildTaskOrdinaryDispatchSelectionTest {
 
         val plan = ChildTaskOrdinaryDispatchSelection.plan(current, null, retainedTasks = true)
 
-        assertEquals(emptyList(), plan.ordinary)
+        assertEquals(emptyList<ChildTaskConfigPolicy.Candidate<String>>(), plan.ordinary)
         assertSame(current, plan.replacement)
         assertEquals(true, plan.retained)
     }
