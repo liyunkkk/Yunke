@@ -971,13 +971,20 @@ private fun StreamingMarkdown(
     }
 
     val animationsAllowed = state.restoreState.animationsAllowed(isPaused)
-    LaunchedEffect(revealCoordinator, animationsAllowed, currentContent) {
-        if (animationsAllowed) {
-            revealCoordinator.resumeAnimationsWithoutCatchingUp()
-        } else {
-            if (currentPaused) revealCoordinator.restoreHistoryThrough(currentContent.length)
-            else revealCoordinator.pauseAnimationsAndCatchUp()
-        }
+    // Content is deliberately not a key. A streaming delta must not re-run the gate decision:
+    // while the restore baseline is still pending, animationsAllowed is false, and every delta
+    // would catch the reveal up to the newest text. That drains the pending records, the frame
+    // clock parks on its wakeup channel, and the typewriter plus its haptics stop for the rest
+    // of the message. Only a real gate change may move the coordinator.
+    LaunchedEffect(revealCoordinator, animationsAllowed, isPaused) {
+        if (animationsAllowed) revealCoordinator.resumeAnimationsWithoutCatchingUp()
+        else if (!isPaused) revealCoordinator.pauseAnimationsAndCatchUp()
+    }
+
+    // An explicit user pause does keep following new text, because nothing will animate it later.
+    // The restore baseline case must not take this path: there the reveal has to stay pending.
+    LaunchedEffect(revealCoordinator, isPaused, content) {
+        if (isPaused) revealCoordinator.restoreHistoryThrough(content.length)
     }
 
     LaunchedEffect(revealCoordinator, view) {
