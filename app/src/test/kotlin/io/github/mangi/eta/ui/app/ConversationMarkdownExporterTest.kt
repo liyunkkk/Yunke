@@ -38,6 +38,7 @@ class ConversationMarkdownExporterTest {
         noticeModelRetry = "Retrying",
         noticeRuntimeFailed = "Runtime failed",
         noticeInterrupted = "Interrupted",
+        noticeCompleted = "Completed",
     )
 
     @Test

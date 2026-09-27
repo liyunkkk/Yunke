@@ -38,6 +38,7 @@ internal object ConversationMarkdownExporter {
         val noticeModelRetry: String,
         val noticeRuntimeFailed: String,
         val noticeInterrupted: String,
+        val noticeCompleted: String,
     ) {
         fun toolStatus(status: ToolActivityStatusUi): String = when (status) {
             ToolActivityStatusUi.Running -> toolStatusRunning
@@ -52,6 +53,7 @@ internal object ConversationMarkdownExporter {
             SystemNoticeCode.ModelRetry -> noticeModelRetry
             SystemNoticeCode.RuntimeFailed -> noticeRuntimeFailed
             SystemNoticeCode.Interrupted -> noticeInterrupted
+            SystemNoticeCode.Completed -> noticeCompleted
         }
     }
 

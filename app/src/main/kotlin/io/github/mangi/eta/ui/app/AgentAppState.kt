@@ -924,6 +924,7 @@ internal class AgentAppState(
                 noticeModelRetry = appContext.getString(R.string.system_notice_model_retry),
                 noticeRuntimeFailed = appContext.getString(R.string.system_notice_runtime_failed),
                 noticeInterrupted = appContext.getString(R.string.system_notice_interrupted),
+                noticeCompleted = appContext.getString(R.string.system_notice_completed),
             ),
         )
     }
@@ -996,7 +997,9 @@ internal class AgentAppState(
         if (conversationArchiveBusy) return
         if (io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance) return
         if (runJobs.isNotEmpty()) return
-        persistenceJob?.join()
+        // 上游持久化已重构为 LatestConversationSaveQueue + conversationPersistenceMutex：
+        // 先取锁等掉在途写入，再读库对账，避免读到半写状态。
+        conversationPersistenceMutex.withLock { }
         val storedIds = withContext(Dispatchers.IO) {
             AgentConversationStore.conversationIds(appContext)
         }.toSet()
