@@ -120,6 +120,9 @@ internal sealed interface AgentEvent {
         val round: Int,
         val usage: AgentTokenUsage,
         val projected: Boolean = false,
+        // Local request-shape snapshots for silent next-request budgeting, not billing.
+        val requestHistoryTokens: Int? = null,
+        val requestOverheadTokens: Int? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
             "usage_received round=$round, projected=$projected, ctx=${usage.contextTokens}, in=${usage.inputTokens}, out=${usage.outputTokens}, reasoning=${usage.reasoningTokens}, cache=${usage.cachedTokens}"
@@ -208,6 +211,8 @@ internal sealed interface AgentEvent {
         val compressorLabel: String = "",
         val blocked: Boolean = false,
         val reason: String = "",
+        /** Pruning changes oversized tool bodies, not the accounting/compaction boundary. */
+        val pruningOnly: Boolean = compressorLabel == "工具输出预算修剪（原文可回读）",
     ) : AgentEvent {
         override fun toLogLine(): String =
             "context_compacted round=$round, applied=$applied, $originalCount->$compactedCount"

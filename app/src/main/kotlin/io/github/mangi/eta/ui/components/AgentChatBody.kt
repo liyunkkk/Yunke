@@ -57,6 +57,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.geometry.Offset
@@ -100,7 +102,6 @@ import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
 import io.github.mangi.eta.ui.app.LocalBlurEnabled
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
-import io.github.mangi.eta.ui.model.countUncommittedLiveTokens
 import io.github.mangi.eta.ui.model.latestBilledContextTokens
 import io.github.mangi.eta.ui.model.canContinueDisconnectedRun
 import io.github.mangi.eta.ui.model.isRetryableFailure
@@ -162,6 +163,8 @@ internal fun AgentChatBody(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     livePromptTokens: Int? = null,
+    livePromptIsProjected: Boolean = false,
+    billedHistoryTokens: Int? = null,
     childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
     compactingModelName: String = "",
     selectedContextTaskId: String? = null,
@@ -294,17 +297,15 @@ internal fun AgentChatBody(
         }
     }
 
-    val billedContextTokens = remember(messages, livePromptTokens, messageEdit) {
+    val billedContextTokens = remember(livePromptTokens, livePromptIsProjected, messageEdit) {
         if (messageEdit != null) {
             null
         } else {
-            livePromptTokens ?: latestBilledContextTokens(messages)
+            livePromptTokens.takeUnless { livePromptIsProjected }
         }
     }
-    val uncommittedLiveTokens = remember(visibleMessages, billedContextTokens, messageEdit) {
-        if (messageEdit != null || billedContextTokens != null) 0
-        else countUncommittedLiveTokens(visibleMessages)
-    }
+    val projectedContextTokens = livePromptTokens.takeIf { livePromptIsProjected && messageEdit == null && isStreaming }
+    val uncommittedLiveTokens = 0 // Cloud-only metering: do not scan streaming text for local estimates.
     val imageSourceCache = remember { ChatImageSourceCache() }
     val previewGallery by produceState<List<String>>(emptyList(), visibleMessages, pendingImages) {
         // This used to parse EVERY historical reply synchronously on each text delta.
@@ -331,6 +332,8 @@ internal fun AgentChatBody(
                 modelPickerState = modelPickerState,
                 history = history,
                 billedContextTokens = billedContextTokens,
+                projectedContextTokens = projectedContextTokens,
+                billedHistoryTokens = billedHistoryTokens,
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
@@ -409,6 +412,8 @@ private fun AgentChatScaffold(
     modelPickerState: AgentModelPickerUiState,
     history: List<AgentModelClient.ConversationMessage>,
     billedContextTokens: Int? = null,
+    projectedContextTokens: Int? = null,
+    billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
@@ -495,6 +500,8 @@ private fun AgentChatScaffold(
                 modelPickerState = modelPickerState,
                 history = history,
                 billedContextTokens = billedContextTokens,
+                projectedContextTokens = projectedContextTokens,
+                billedHistoryTokens = billedHistoryTokens,
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
@@ -607,20 +614,32 @@ internal fun AgentConversationMessages(
     val timelineEntries = remember(visibleMessages) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
     }
-    LaunchedEffect(scrollToMessageId, timelineEntries) {
-        val target = scrollToMessageId ?: return@LaunchedEffect
-        val index = timelineEntries.indexOfFirst { entry ->
-            when (entry) {
-                is AgentTimelineEntry.Message -> entry.message.id == target
-                is AgentTimelineEntry.WorkProcess ->
-                    entry.key == target || entry.messages.any { it.id == target }
-            }
+    val expansionSaver = remember {
+        listSaver<Map<String, Boolean>, String>(
+            save = { value -> value.flatMap { (key, expanded) -> listOf(key, expanded.toString()) } },
+            restore = { value -> value.chunked(2).filter { it.size == 2 }.associate { it[0] to (it[1] == "true") } },
+        )
+    }
+    var workExpansionOverrides by rememberSaveable(stateSaver = expansionSaver) {
+        mutableStateOf<Map<String, Boolean>>(emptyMap())
+    }
+    LaunchedEffect(timelineEntries) {
+        val activeKeys = timelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().mapTo(mutableSetOf()) { it.key }
+        if (workExpansionOverrides.keys.any { it !in activeKeys }) {
+            workExpansionOverrides = workExpansionOverrides.filterKeys { it in activeKeys }
         }
+    }
+    val timelineRows = remember(timelineEntries, workExpansionOverrides, isStreaming) {
+        timelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming)
+    }
+    LaunchedEffect(scrollToMessageId, timelineRows) {
+        val target = scrollToMessageId ?: return@LaunchedEffect
+        val index = timelineRows.indexOfFirst { it.containsMessageId(target) }
         if (index >= 0) {
             onBottomAnchorChanged(false)
             scrollState.animateScrollToItem(index)
             onScrollToMessageConsumed()
-        } else if (timelineEntries.isNotEmpty()) {
+        } else if (timelineRows.isNotEmpty()) {
             onScrollToMessageConsumed()
         }
     }
@@ -658,8 +677,8 @@ internal fun AgentConversationMessages(
     val telemetry = LocalAgentContextTelemetry.current
     val compressingChildren = telemetry.children.filter { it.isCompacting }
     val compressingItemCount = if (isCompressingContext || isWaitingForCompression || compressingChildren.isNotEmpty()) 1 else 0
-    val bottomItemIndex = timelineEntries.size + compressingItemCount
-    val userMessageTargets = remember(timelineEntries) { timelineEntries.userMessageIndices() }
+    val bottomItemIndex = timelineRows.size + compressingItemCount
+    val userMessageTargets = remember(timelineRows) { timelineRows.lazyUserMessageIndices() }
     val directionThreshold = with(LocalDensity.current) { 12.dp.toPx() }
     val directionTracker = remember(scrollState, directionThreshold) {
         ConversationNavigationDirectionTracker(directionThreshold)
@@ -734,10 +753,10 @@ internal fun AgentConversationMessages(
     var isBottomSettling by remember { mutableStateOf(isStreaming) }
     LaunchedEffect(scrollState) {
         snapshotFlow {
-            val tail = currentVisibleMessages.value.lastOrNull() as? AgentMessageUi
-            val rendering = tail?.let { message ->
-                streamingMarkdownStates[message.id]?.revealedContent != message.content
-            } == true
+            val rendering = hasPendingAssistantReveal(currentVisibleMessages.value) { message ->
+                val retained = streamingMarkdownStates[message.id]
+                retained != null && retained.revealedContent != message.content
+            }
             arrayOf(currentStreaming.value, currentAnchor.value, rendering, isUserScrolling)
         }
             .distinctUntilChanged { old, new -> old.contentEquals(new) }
@@ -810,8 +829,8 @@ internal fun AgentConversationMessages(
                 enabled = shouldFollowBottom,
                 bottomItemIndex = currentBottomItemIndex,
                 sentinelBottom = sentinel?.let { it.offset + it.size },
-                // 输入器高度属于滚动内容的 bottom inset，而不是滚动容器高度。
-                // 跟底目标应是 afterContentPadding 之前的正文边界。
+                // 视口已扣除底栏高度；这里只扣列表自身的尾部留白。
+                // 跟底目标仍是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
                 lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index,
                 viewportSizePx = layoutInfo.viewportSize.height,
@@ -896,11 +915,9 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 滚动层保持整屏，输入器作为后绘制浮层；输入器高度进入列表的
-    // afterContentPadding，确保跟到底部时最后一行停在输入器上方。
-    Box(modifier = modifier.clipToBounds()) {
-        val trailingWorkKey =
-            (timelineEntries.lastOrNull() as? AgentTimelineEntry.WorkProcess)?.key
+    // 底栏（含输入器和 IME）高度只在外层消费一次，缩小真实滚动视口。
+    // 先留出底栏空间再裁剪，避免长回复或滚动追赶期间的正文绘制到输入器后面。
+    Box(modifier = modifier.padding(bottom = bottomInset).clipToBounds()) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
@@ -938,17 +955,27 @@ internal fun AgentConversationMessages(
                 .overScrollVertical(),
             contentPadding = PaddingValues(
                 top = 14.dp,
-                bottom = bottomInset + 14.dp,
+                bottom = 14.dp,
             ),
             overscrollEffect = null,
         ) {
             items(
-                items = timelineEntries,
+                items = timelineRows,
                 key = { it.key },
-                contentType = { if (it is AgentTimelineEntry.Message) "message" else "work-process" },
+                contentType = { row ->
+                    when (row) {
+                        is AgentTimelineRow.Message -> "message"
+                        is AgentTimelineRow.WorkHeader -> "work-header"
+                        is AgentTimelineRow.WorkStep -> when (row.message) {
+                            is ToolActivityMessageUi -> "work-tool"
+                            is ThinkingMessageUi -> "work-thinking"
+                            else -> "work-summary"
+                        }
+                    }
+                },
             ) { entry ->
                 when (entry) {
-                    is AgentTimelineEntry.Message -> {
+                    is AgentTimelineRow.Message -> {
                         val message = entry.message
                         ChatMessageItem(
                             message = message,
@@ -990,32 +1017,40 @@ internal fun AgentConversationMessages(
                         )
                     }
 
-                    is AgentTimelineEntry.WorkProcess -> {
-                        entry.messages.forEach { message ->
-                            if (message is ThinkingMessageUi && message.isStreaming) {
-                                streamingMarkdownStates.getOrPut(message.id) {
-                                    StreamingMarkdownState()
-                                }
-                            }
-                        }
-
-                        AgentWorkProcess(
-                            id = entry.key,
-                            messages = entry.messages,
-                            onOpenBrowser = onOpenBrowser,
-                            currentBrowserMessageId = currentBrowserMessageId,
-                            retainedStreamingStates = streamingMarkdownStates,
+                    is AgentTimelineRow.WorkHeader -> {
+                        AgentWorkProcessHeader(
+                            messages = entry.group.messages,
                             isPaused = isPaused,
-                            isTrailing = entry.key == trailingWorkKey,
-                            turnStreaming = isStreaming,
-                            // Keep this modifier stable. Attaching fadeIn only after the run
-                            // ends replays appearance on the already-visible answer.
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(durationMillis = 180),
-                                placementSpec = null,
-                                fadeOutSpec = null,
-                            ),
+                            expanded = entry.expanded,
+                            onToggle = {
+                                workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
+                            },
                         )
+                    }
+                    is AgentTimelineRow.WorkStep -> {
+                        val message = entry.message
+                        val retainedState = if (message is ThinkingMessageUi &&
+                            (message.isStreaming || streamingMarkdownStates.containsKey(message.id))) {
+                            streamingMarkdownStates.getOrPut(message.id) { StreamingMarkdownState() }
+                        } else null
+                        WorkProcessCardSlice(
+                            part = if (entry.isLast) WorkProcessCardPart.Last else WorkProcessCardPart.Middle,
+                        ) {
+                            ChatMessageItem(
+                                message = message,
+                                actions = messageActions,
+                                retainedStreamingState = retainedState,
+                                showBrowserShortcut = message is ToolActivityMessageUi &&
+                                    message.id == currentBrowserMessageId,
+                                enableLivePreview = !isStreaming,
+                                compact = true,
+                                isPaused = isPaused,
+                                modifier = Modifier.padding(
+                                    top = if (entry.isFirst) 2.dp else 0.dp,
+                                    bottom = if (entry.isLast) 8.dp else 0.dp,
+                                ),
+                            )
+                        }
                     }
                 }
             }
@@ -1087,7 +1122,7 @@ internal fun AgentConversationMessages(
             onEdge = { navigateUserMessage(toEdge = true) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = bottomInset + 12.dp),
+                .padding(bottom = 12.dp),
         )
     }
 }
@@ -1218,6 +1253,8 @@ private fun AgentChatBottomBar(
     modelPickerState: AgentModelPickerUiState,
     history: List<AgentModelClient.ConversationMessage>,
     billedContextTokens: Int? = null,
+    projectedContextTokens: Int? = null,
+    billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
@@ -1322,6 +1359,8 @@ private fun AgentChatBottomBar(
                 modelPickerState = modelPickerState,
                 history = history,
                 billedContextTokens = billedContextTokens,
+                projectedContextTokens = projectedContextTokens,
+                billedHistoryTokens = billedHistoryTokens,
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,

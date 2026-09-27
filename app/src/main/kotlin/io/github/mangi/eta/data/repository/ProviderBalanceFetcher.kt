@@ -1,13 +1,20 @@
 package io.github.mangi.eta.data.repository
 
+import java.io.IOException
+import java.io.InterruptedIOException
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import io.github.mangi.eta.agent.model.AgentHttpClient
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.agent.model.CustomHeaderFilter
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -16,47 +23,131 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import okio.Buffer
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+
+/**
+ * 余额查询失败。消息只包含稳定、安全的信息（HTTP 状态码、超时、网络错误等），
+ * 绝不携带服务端响应正文，可直接展示给用户。
+ */
+internal class BalanceQueryException(
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)
 
 internal object ProviderBalanceFetcher {
+    /**
+     * 单次余额请求的总超时（连接 + 写入 + 读取 + 重定向）。
+     * 余额查询复用了为流式模型准备的 600s 读超时客户端，慢/挂死的网关会拖住整轮刷新，
+     * 因此这里用独立的短总超时兜底。
+     */
+    const val TOTAL_TIMEOUT_MS = 15_000L
+
     private val json = Json { ignoreUnknownKeys = true }
     private val binaryExpr = Regex("""^(.+?)\s+([+\-*/])\s+(.+)$""")
+
+    private val balanceClient: OkHttpClient by lazy {
+        AgentHttpClient.client.newBuilder()
+            .callTimeout(TOTAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build()
+    }
 
     suspend fun fetch(
         provider: ProviderSetting,
         option: BalanceOption = provider.balanceOption,
+    ): Result<String> = fetch(provider, option, balanceClient)
+
+    /**
+     * 可注入 OkHttp 客户端的重载，供测试构造短超时/取消场景。
+     * 协程取消会真正 cancel 掉底层 OkHttp call，且不会把 [CancellationException] 吞成失败结果。
+     */
+    internal suspend fun fetch(
+        provider: ProviderSetting,
+        option: BalanceOption,
+        client: OkHttpClient,
     ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            val resolved = option.resolved()
-            require(resolved.enabled) { "Balance query not enabled" }
-            require(resolved.apiPath.isNotBlank()) { "Balance API path not set" }
-            require(resolved.resultPath.isNotBlank()) { "Result JSON path not set" }
-            val url = resolveBalanceUrl(provider.baseUrl, resolved.apiPath, resolved.preset)
-            val token = resolved.accessToken.ifBlank { provider.apiKey }
-            val request = Request.Builder()
-                .url(url)
-                .headers(
-                    okhttp3.Headers.Builder()
-                        .add("Accept", "application/json")
-                        .apply {
-                            if (token.isNotBlank()) {
-                                add("Authorization", "Bearer $token")
-                            }
-                            CustomHeaderFilter.mergeInto(this, provider.customHeaders)
-                        }
-                        .build()
-                )
-                .get()
-                .build()
-            val body = AgentHttpClient.client.newCall(request).execute().use { response ->
-                val text = response.body.string()
-                if (!response.isSuccessful) {
-                    error("Query failed HTTP ${response.code}: ${text.take(200)}")
-                }
-                text
-            }
-            extractValue(body, resolved.resultPath)
+        try {
+            Result.success(query(provider, option, client))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (throwable: Throwable) {
+            Result.failure(throwable)
         }
+    }
+
+    private suspend fun query(
+        provider: ProviderSetting,
+        option: BalanceOption,
+        client: OkHttpClient,
+    ): String {
+        val resolved = option.resolved()
+        require(resolved.enabled) { "Balance query not enabled" }
+        require(resolved.apiPath.isNotBlank()) { "Balance API path not set" }
+        require(resolved.resultPath.isNotBlank()) { "Result JSON path not set" }
+        val url = resolveBalanceUrl(provider.baseUrl, resolved.apiPath, resolved.preset)
+        val token = resolved.accessToken.ifBlank { provider.apiKey }
+        val request = Request.Builder()
+            .url(url)
+            .headers(
+                okhttp3.Headers.Builder()
+                    .add("Accept", "application/json")
+                    .apply {
+                        if (token.isNotBlank()) {
+                            add("Authorization", "Bearer $token")
+                        }
+                        CustomHeaderFilter.mergeInto(this, provider.customHeaders)
+                    }
+                    .build()
+            )
+            .get()
+            .build()
+        val body = try {
+            withTimeoutOrNull(TOTAL_TIMEOUT_MS) { client.newCall(request).awaitBody() }
+                ?: throw BalanceQueryException("Balance request timed out")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (queryFailure: BalanceQueryException) {
+            throw queryFailure
+        } catch (timeout: InterruptedIOException) {
+            throw BalanceQueryException("Balance request timed out", timeout)
+        } catch (network: IOException) {
+            throw BalanceQueryException("Balance request failed", network)
+        }
+        return extractValue(body, resolved.resultPath)
+    }
+
+    /** Cancellation remains attached until the bounded response body has been consumed. */
+    private suspend fun Call.awaitBody(): String = suspendCancellableCoroutine { continuation ->
+        continuation.invokeOnCancellation { cancel() }
+        enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (!continuation.isCancelled) continuation.resumeWithException(e)
+            }
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val text = response.use {
+                        if (!it.isSuccessful) throw BalanceQueryException("Balance request failed (HTTP ${it.code})")
+                        val limit = 256L * 1024L
+                        if (it.body.contentLength() > limit) throw BalanceQueryException("Balance response too large")
+                        val buffer = Buffer()
+                        val source = it.body.source()
+                        while (true) {
+                            val count = source.read(buffer, minOf(8192L, limit + 1L - buffer.size))
+                            if (count == -1L) break
+                            if (buffer.size > limit) throw BalanceQueryException("Balance response too large")
+                        }
+                        buffer.readUtf8()
+                    }
+                    continuation.resumeWith(Result.success(text))
+                } catch (failure: Exception) {
+                    if (!continuation.isCancelled) continuation.resumeWithException(failure)
+                }
+            }
+        })
     }
 
     internal fun resolveBalanceUrl(

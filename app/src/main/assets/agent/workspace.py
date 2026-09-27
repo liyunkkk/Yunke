@@ -11,9 +11,11 @@ import time
 
 LIMIT = 65536
 
+
 def require(condition, code):
     if not condition:
         raise ValueError(code)
+
 
 def git(root, *args):
     env = os.environ.copy()
@@ -28,6 +30,7 @@ def git(root, *args):
     require(len(p.stdout) <= 2 * 1024 * 1024, 'WORKSPACE_OUTPUT_TOO_LARGE')
     return p.stdout.decode('utf-8', errors='replace').strip()
 
+
 def project_path(raw):
     p = Path(raw)
     require(p.is_absolute() and len(p.parts) == 3 and p.parts[1] == 'workspace', 'PROJECT_MUST_BE_WORKSPACE_CHILD')
@@ -35,6 +38,7 @@ def project_path(raw):
     require(p.is_dir() and str(p.resolve()) == str(p), 'INVALID_PROJECT')
     require(git(p, 'rev-parse', '--show-toplevel') == str(p), 'PROJECT_MUST_BE_GIT_ROOT')
     return p
+
 
 def internal(root, rel):
     p = root / rel
@@ -44,9 +48,11 @@ def internal(root, rel):
         require(not cur.is_symlink(), 'WORKSPACE_SYMLINK_DENIED')
     return p
 
+
 def record_path(root, task):
     require(re.fullmatch(r'[a-f0-9]{32}', task or '') is not None, 'INVALID_WORKSPACE_ID')
     return internal(root, '.agent/results/' + task + '.json')
+
 
 def save(root, record):
     p = record_path(root, record['id'])
@@ -56,15 +62,45 @@ def save(root, record):
     tmp.write_text(json.dumps(record, ensure_ascii=False), encoding='utf-8')
     tmp.replace(p)
 
+
 def load(root, task):
     p = record_path(root, task)
+    require(not p.is_symlink(), 'WORKSPACE_SYMLINK_DENIED')
     require(p.is_file(), 'WORKSPACE_NOT_FOUND')
-    record = json.loads(p.read_text())
-    require(record['id'] == task, 'INVALID_WORKSPACE_RECORD')
+    try:
+        record = json.loads(p.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, ValueError):
+        raise ValueError('INVALID_WORKSPACE_RECORD')
+    require(isinstance(record, dict) and record.get('id') == task, 'INVALID_WORKSPACE_RECORD')
     return record
+
+
+def list_authorized(root, workspace_ids):
+    """Read only exact, runtime-authorized result filenames.
+
+    A bad authorized entry is reported as unavailable; it never causes a
+    directory scan that could expose records outside the runtime allowlist.
+    """
+    require(isinstance(workspace_ids, list), 'INVALID_WORKSPACE_IDS')
+    for task in workspace_ids:
+        require(isinstance(task, str) and re.fullmatch(r'[a-f0-9]{32}', task) is not None,
+                'INVALID_WORKSPACE_ID')
+
+    records = []
+    unavailable = []
+    for task in sorted(set(workspace_ids)):
+        try:
+            records.append(load(root, task))
+        except (OSError, UnicodeError, ValueError, TypeError, KeyError):
+            # A listed but unusable entry cannot add a workspace. Reporting its
+            # ID lets the caller distinguish this from an empty ledger.
+            unavailable.append(task)
+    return records, unavailable
+
 
 def tree_path(root, record):
     return internal(root, '.agent/worktrees/' + record['id'])
+
 
 def safe_file(tree, relative):
     path = Path(relative)
@@ -77,9 +113,11 @@ def safe_file(tree, relative):
             require(p.stat().st_nlink == 1, 'WORKSPACE_HARDLINK_DENIED')
     return p
 
+
 def clean(root):
     # .agent is runtime-owned, even before a user's ignore rules have been configured.
     return not git(root, 'status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).agent')
+
 
 def summary(root, record):
     out = dict(record)
@@ -90,11 +128,13 @@ def summary(root, record):
         out['diff_stat'] = diff[:2000]
     return out
 
+
 def page(text, args, key):
     offset, limit = int(args.get('offset', 0)), int(args.get('limit', 4000))
     require(offset >= 0 and 1 <= limit <= 4000, 'INVALID_PAGE')
     end = min(len(text), offset + limit)
     return {key: text[offset:end], 'next_offset': end if end < len(text) else None, 'total_chars': len(text)}
+
 
 def execute(args):
     root = project_path(args['project'])
@@ -105,6 +145,7 @@ def execute(args):
     with open(lock, 'a') as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         return locked(root, args)
+
 
 def locked(root, args):
     action = args['action']
@@ -121,6 +162,20 @@ def locked(root, args):
         save(root, record)
         return summary(root, record)
     if action == 'list':
+        if 'workspace_ids' in args:
+            offset, limit = args.get('offset', 0), args.get('limit', 50)
+            require(type(offset) is int and type(limit) is int and 0 <= offset <= 4096 and 1 <= limit <= 50,
+                    'INVALID_PAGE')
+            records, unavailable = list_authorized(root, args['workspace_ids'])
+            end = offset + limit
+            return {
+                'workspaces': records[offset:end],
+                'total_count': len(records),
+                'truncated': end < len(records),
+                'next_offset': end if end < max(len(records), len(unavailable)) else None,
+                'unavailable_workspace_ids': unavailable[offset:end],
+                'unavailable_count': len(unavailable),
+            }
         folder = internal(root, '.agent/results')
         return {'workspaces': [json.loads(p.read_text()) for p in sorted(folder.glob('*.json'))[:50]
                                if re.fullmatch(r'[a-f0-9]{32}\.json', p.name) and not p.is_symlink()]}
@@ -154,7 +209,8 @@ def locked(root, args):
             p.parent.mkdir(parents=True, exist_ok=True)
             # O_NOFOLLOW plus symlink/component checks; no child has an arbitrary shell.
             fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-            with os.fdopen(fd, 'w', encoding='utf-8') as out: out.write(text)
+            with os.fdopen(fd, 'w', encoding='utf-8') as out:
+                out.write(text)
         else:
             require(p.is_file(), 'FILE_NOT_FOUND')
             p.unlink()
@@ -201,12 +257,14 @@ def locked(root, args):
         git(root, 'worktree', 'remove', str(tree))
     elif action == 'discard':
         require(record['state'] in ('ready', 'failed', 'merged', 'discarded'), 'WORKSPACE_IN_USE')
-        if tree.exists(): git(root, 'worktree', 'remove', '--force', str(tree))
+        if tree.exists():
+            git(root, 'worktree', 'remove', '--force', str(tree))
         record['state'] = 'discarded'
         save(root, record)
     else:
         raise ValueError('UNKNOWN_WORKSPACE_ACTION')
     return summary(root, record)
+
 
 if __name__ == '__main__':
     try:

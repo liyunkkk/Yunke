@@ -253,8 +253,15 @@ internal class AgentTraceFormatter(
         }.getOrDefault("更新记忆")
 
     /** 结果成败供事件与 UI 状态使用，不再依赖摘要文本里的标记。 */
-    fun isSuccessResult(result: AgentModelClient.ToolResult): Boolean =
-        parseResultJson(result)?.optBoolean("ok", true) ?: true
+    fun isSuccessResult(result: AgentModelClient.ToolResult): Boolean {
+        val json = parseResultJson(result) ?: return true
+        if (!json.optBoolean("ok", true)) return false
+        if (json.optString("tool") in setOf("terminal", "run_command")) {
+            if (json.optBoolean("timed_out", false)) return false
+            if (json.has("exit_code") && !json.isNull("exit_code") && json.optInt("exit_code") != 0) return false
+        }
+        return true
+    }
 
     fun summarizeResult(
         toolName: String,
@@ -388,15 +395,20 @@ internal class AgentTraceFormatter(
             exitCode == 0 -> "执行完成"
             else -> "失败 · 退出码 $exitCode"
         }
-        val output = if (exitCode == 0) {
-            json.optString("stdout")
-        } else {
-            json.optString("stderr").ifBlank { json.optString("stdout") }
-        }
-        val truncated = json.optBoolean("stdout_truncated", false) ||
-            json.optBoolean("stderr_truncated", false)
-        val preview = terminalOutputPreview(output, truncated) ?: return status
-        return "$status\n$preview"
+        // Preview streams separately: long stdout must not hide stderr warnings.
+        // Stderr alone is not a failure; exit status and structured diagnostics decide that.
+        val stdout = terminalOutputPreview(json.optString("stdout"), json.optBoolean("stdout_truncated", false))
+        val stderr = terminalOutputPreview(json.optString("stderr"), json.optBoolean("stderr_truncated", false))
+        return buildList {
+            add(status)
+            if (exitCode != 0 || timedOut) {
+                stderr?.let { add(it) }
+                stdout?.let { add(it) }
+            } else {
+                stdout?.let { add(it) }
+                stderr?.let { add("警告 · stderr\n$it") }
+            }
+        }.joinToString("\n")
     }
 
     private fun terminalOutputPreview(output: String, truncated: Boolean): String? {

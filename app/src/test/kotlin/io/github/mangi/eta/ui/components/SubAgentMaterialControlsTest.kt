@@ -125,9 +125,11 @@ class SubAgentMaterialControlsTest {
     }
 
     @Test fun flatSettingsRowsPlaceValuesAfterAlignedLabels() {
-        compose.setContent {
+        val profile = SubAgentProfile("test", "测试代理", tier = SubAgentTaskTier.COMPLEX)
+        val fixture = SubAgentUiFixture(profiles = listOf(profile))
+        compose.setSubAgentContent(fixture) {
             MaterialTheme {
-                SubAgentProfileRow(SubAgentProfile("test", "测试代理", tier = SubAgentTaskTier.COMPLEX), emptyList(), settings = true)
+                SubAgentProfileRow(profile, emptyList(), settings = true)
             }
         }
         val label = compose.onNodeWithText("职责", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
@@ -198,7 +200,7 @@ class SubAgentMaterialControlsTest {
     @Test
     @Config(qualifiers = "w320dp-h480dp")
     fun settingsAddActionStaysVisibleWhileAgentListScrolls() {
-        compose.setContent { MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}) } }
+        compose.setSubAgentContent { MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}) } }
         compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
         val add = compose.onNodeWithText("添加子代理").assertIsDisplayed()
         val parent = add.fetchSemanticsNode().boundsInRoot
@@ -209,31 +211,29 @@ class SubAgentMaterialControlsTest {
     }
 
     @Test fun boundParallelRowsObserveTheSharedModelLimit() {
-        val prefs = io.github.mangi.eta.agent.delegation.SubAgentPreferences
         val provider = "parallel-ui-${java.util.UUID.randomUUID()}"
-        val first = prefs.add()
-        val second = prefs.add()
-        try {
-            prefs.saveModel(first.id, io.github.mangi.eta.agent.model.ModelFeatureSelection(true, provider, "record-a"))
-            prefs.saveModel(second.id, io.github.mangi.eta.agent.model.ModelFeatureSelection(true, provider, "record-b"))
-            val a = prefs.profiles().first { it.id == first.id }.copy(name = "并发甲")
-            val b = prefs.profiles().first { it.id == second.id }.copy(name = "并发乙")
-            val config = io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig(
-                providerId = provider, providerName = "已用提供商", baseUrl = "https://example.invalid", apiKey = "test",
-                model = "bound-api", systemPrompt = "")
-            compose.setContent { MaterialTheme { Column {
-                SubAgentParallelLimitRow(a, config)
-                SubAgentParallelLimitRow(b, config)
-            } } }
-            compose.onAllNodesWithText("不限", useUnmergedTree = true).assertCountEquals(0)
-            prefs.saveParallelLimit(provider, "bound-api", 0)
-            compose.onAllNodesWithText("不限", useUnmergedTree = true).assertCountEquals(2)
-            compose.runOnIdle {
-                assertEquals(0, prefs.parallelLimit(provider, "bound-api"))
-                assertEquals(1, prefs.parallelLimit(provider, "record-a"))
-                assertEquals(1, prefs.parallelLimit(provider, "unused-api"))
-            }
-        } finally { prefs.remove(first.id); prefs.remove(second.id) }
+        val a = SubAgentProfile("parallel-a", "并发甲", providerId = provider, modelId = "record-a")
+        val b = SubAgentProfile("parallel-b", "并发乙", providerId = provider, modelId = "record-b")
+        val fixture = SubAgentUiFixture(profiles = listOf(a, b))
+        val config = io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig(
+            providerId = provider, providerName = "已用提供商", baseUrl = "https://example.invalid", apiKey = "test",
+            model = "bound-api", systemPrompt = "")
+        compose.setSubAgentContent(fixture) { MaterialTheme { Column {
+            SubAgentParallelLimitRow(a, config)
+            SubAgentParallelLimitRow(b, config)
+        } } }
+        compose.onAllNodesWithText("不限", useUnmergedTree = true).assertCountEquals(0)
+        compose.runOnIdle {
+            assertTrue(fixture.editor.saveParallelLimit(a.id, provider, a.modelId, "bound-api", 0)
+                is io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences.WriteResult.Saved)
+        }
+        compose.onAllNodesWithText("不限", useUnmergedTree = true).assertCountEquals(2)
+        compose.runOnIdle {
+            val current = fixture.snapshot()
+            assertEquals(0, current.parallelLimit(io.github.mangi.eta.agent.delegation.SubAgentParallelModel(provider, "bound-api")))
+            assertEquals(1, current.parallelLimit(io.github.mangi.eta.agent.delegation.SubAgentParallelModel(provider, "record-a")))
+            assertEquals(1, current.parallelLimit(io.github.mangi.eta.agent.delegation.SubAgentParallelModel(provider, "unused-api")))
+        }
     }
 
     @Test fun parallelRowDisablesWithoutOpeningADialog() {
@@ -241,7 +241,8 @@ class SubAgentMaterialControlsTest {
         val config = mutableStateOf(io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig(
             providerId = "provider", baseUrl = "https://example.invalid", apiKey = "test", model = "first-api", systemPrompt = ""))
         val enabled = mutableStateOf(true)
-        compose.setContent { MaterialTheme { SubAgentParallelLimitRow(profile, config.value, enabled.value) } }
+        val fixture = SubAgentUiFixture(profiles = listOf(profile))
+        compose.setSubAgentContent(fixture) { MaterialTheme { SubAgentParallelLimitRow(profile, config.value, enabled.value) } }
         compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsEnabled()
         compose.runOnIdle { config.value = config.value.copy(model = "second-api") }
         compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsEnabled()

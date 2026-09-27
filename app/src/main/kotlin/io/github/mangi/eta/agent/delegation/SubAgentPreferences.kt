@@ -91,12 +91,12 @@ internal object SubAgentPreferences {
         body.put("resolution", tier)
         return config.copy(extraBodyJson = body.toString(), customBody = emptyList())
     }
-    fun workerDescription(profile: SubAgentProfile, workerNumber: Int, config: AgentModelClient.ModelConfig): String {
+    fun workerDescription(profile: SubAgentProfile, workerNumber: Int, config: AgentModelClient.ModelConfig, parallelLimit: Int = parallelLimit(config.providerId, config.model)): String {
         val tier = if (!profile.supportsTaskTier) "not applicable (only implementation agents have task tiers)" else profile.tier?.let { "${it.wireValue} (${it.label}); suited tasks: ${it.routingHint}" }
             ?: "unspecified; capability unknown"
         return "$workerNumber: agent_id=${profile.id}, name=${profile.name}, role=${profile.role} — " +
             "${config.providerName} / ${config.modelDisplayName.ifBlank { config.model }}; " +
-            "image resolution default=${profile.imageResolution ?: "endpoint default"}; shared provider/model parallel limit=${parallelLimit(config.providerId, config.model).let { if (it == 0) "unlimited" else it.toString() }}; user-assigned task tier=$tier; reasoning=${if (profile.isMedia) {
+            "image resolution default=${profile.imageResolution ?: "endpoint default"}; shared provider/model parallel limit=${parallelLimit.let { if (it == 0) "unlimited" else it.toString() }}; user-assigned task tier=$tier; reasoning=${if (profile.isMedia) {
                 val media = MediaReasoningSettings.resolve(config, profile.role)
                 if (media.status == MediaReasoningSettings.Status.SUPPORTED)
                     "${config.effectiveReasoningEffort.wireValue} (explicit media endpoint mapping; not a text reasoning loop)"

@@ -21,6 +21,7 @@ import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ConversationFolderUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -45,6 +46,38 @@ class AgentConversationStoreTest {
         context = RuntimeEnvironment.getApplication()
         EtaDatabase.closeForTests()
         context.deleteDatabase("eta.db")
+    }
+
+    @Test fun missingReceiptCannotResurrectAnUnscopedHistoricalBill() {
+        val state = AgentChatHomeUiState(
+            messages = listOf(AgentMessageUi(
+                id = "assistant-1", content = "done", isStreaming = false,
+                usage = TokenUsageUi(inputTokens = 126364),
+            )),
+            history = listOf(AgentModelClient.ConversationMessage("user", "task")),
+            input = "", isStreaming = false, thinkingEnabled = false,
+            providerId = "p", modelId = "m",
+        )
+        runBlocking { AgentConversationStore.save(context, "c", mapOf("c" to state), mapOf("c" to "task"), mapOf("c" to 1L)) }
+        EtaDatabase.closeForTests()
+        val restored = requireNotNull(AgentConversationStore.load(context).conversationsById["c"])
+        assertNull(restored.livePromptTokens)
+        assertFalse(restored.livePromptIsProjected)
+        assertEquals(126364, (restored.messages.single() as AgentMessageUi).usage?.inputTokens)
+    }
+
+    @Test fun cloudInputSurvivesDatabaseReopenAndInvalidationStaysEmpty() {
+        val original = AgentChatHomeUiState(messages = emptyList(),
+            history = listOf(AgentModelClient.ConversationMessage("user", "task")),
+            input = "", isStreaming = false, thinkingEnabled = false,
+            providerId = "p", modelId = "m", livePromptTokens = 152885)
+        runBlocking { AgentConversationStore.save(context, "c", mapOf("c" to original), mapOf("c" to "task"), mapOf("c" to 1L)) }
+        EtaDatabase.closeForTests()
+        val restored = requireNotNull(AgentConversationStore.load(context).conversationsById["c"])
+        assertEquals(152885, restored.livePromptTokens)
+        runBlocking { AgentConversationStore.save(context, "c", mapOf("c" to restored.copy(livePromptTokens = null)), mapOf("c" to "task"), mapOf("c" to 1L)) }
+        EtaDatabase.closeForTests()
+        assertEquals(null, AgentConversationStore.load(context).conversationsById["c"]?.livePromptTokens)
     }
 
     @Test

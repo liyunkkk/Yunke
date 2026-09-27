@@ -3,54 +3,76 @@ package io.github.mangi.eta.agent.delegation
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentImageGenerationOptions
 import io.github.mangi.eta.agent.model.ImageGenerationParameterException
+import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 
-/** Owned by a single parent run. Terminal state cannot be overwritten by a late worker. */
+/** A coordinator owns its queues, pools, workspaces and task results beyond the parent's reply. */
 internal class SubAgentCoordinator(
     private val workers: List<AgentModelClient.ModelConfig>,
     private val timeoutMs: Long = 360_000,
     private val compressionTimeoutMs: Long = 360_000,
     private val videoTimeoutMs: Long = 600_000,
     private val roles: List<String> = List(workers.size) { "research" },
-    private val workspace: SubAgentWorkspace? = null,
-    private val executeWorkspaceChild: ((AgentModelClient.ModelConfig, String, AgentRunController, String, String, Boolean) -> String)? = null,
-    private val onContext: (SubAgentContextStats) -> Unit = {},
-    private val executeObservedChild: ((AgentModelClient.ModelConfig, String, AgentRunController, String, String?, Boolean, (io.github.mangi.eta.agent.runtime.AgentEvent) -> Unit) -> String)? = null,
+    workspace: SubAgentWorkspace? = null,
+    executeWorkspaceChild: ((AgentModelClient.ModelConfig, String, AgentRunController, String, String, Boolean) -> String)? = null,
+    onContext: (SubAgentContextStats) -> Unit = {},
+    executeObservedChild: ((AgentModelClient.ModelConfig, String, AgentRunController, String, String?, Boolean, (AgentEvent) -> Unit) -> String)? = null,
     private val workerIds: List<String> = workers.indices.map { "worker-${it + 1}" },
     private val workerNames: List<String> = workerIds,
     private val workerModelIds: List<String> = List(workers.size) { "" },
-    private val prepareManualCompactor: (AgentModelClient.ModelConfig) -> AgentModelClient.ModelConfig = { it },
-    private val executeVideoChild: ((AgentModelClient.ModelConfig, String, AgentRunController) -> String)? = null,
-    private val executeImageChild: ((AgentModelClient.ModelConfig, String, AgentRunController, AgentImageGenerationOptions) -> String)? = null,
+    prepareManualCompactor: (AgentModelClient.ModelConfig) -> AgentModelClient.ModelConfig = { it },
+    executeVideoChild: ((AgentModelClient.ModelConfig, String, AgentRunController) -> String)? = null,
+    executeImageChild: ((AgentModelClient.ModelConfig, String, AgentRunController, AgentImageGenerationOptions) -> String)? = null,
     private val modelParallelLimits: List<Int> = List(workers.size) { 1 },
     private val allowTimeoutContinuation: Boolean = false,
-    private val diagnostics: SubAgentDiagnostics = SubAgentDiagnostics(),
-    private val executeChild: (AgentModelClient.ModelConfig, String, AgentRunController) -> String,
+    diagnostics: SubAgentDiagnostics = SubAgentDiagnostics(),
+    onTaskChanged: () -> Unit = {},
+    poolScope: String? = null,
+    executeChild: (AgentModelClient.ModelConfig, String, AgentRunController) -> String,
 ) : AutoCloseable {
     init { require(workers.isNotEmpty() && roles.size == workers.size && workerIds.size == workers.size && workerIds.distinct().size == workers.size && workerNames.size == workers.size && workerModelIds.size == workers.size && modelParallelLimits.size == workers.size && modelParallelLimits.all { it >= 0 }) }
 
+    @Volatile private var workspace = workspace
+    @Volatile private var executeWorkspaceChild = executeWorkspaceChild
+    @Volatile private var onContext: ((SubAgentContextStats) -> Unit)? = onContext
+    @Volatile private var executeObservedChild = executeObservedChild
+    @Volatile private var prepareManualCompactor = prepareManualCompactor
+    @Volatile private var executeVideoChild = executeVideoChild
+    @Volatile private var executeImageChild = executeImageChild
+    @Volatile private var diagnostics: SubAgentDiagnostics? = diagnostics
+    @Volatile private var onTaskChanged: (() -> Unit)? = onTaskChanged
+    @Volatile private var executeChild = executeChild
+    private val callbacks = SubAgentCallbackDispatcher()
+    private var resourcesReleased = false
+
     private class Task(val id: String, val worker: Int, val role: String, val project: String, @Volatile var workspaceId: String? = null) {
+        // Runtime evidence only: a caller-supplied workspace ID must never authorize its own review.
+        @Volatile var workspaceOwnershipVerified = false
         lateinit var context: SubAgentContextTracker
         lateinit var clock: SubAgentExecutionClock
+        val journal = SubAgentEventJournal()
         @Volatile var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
+        @Volatile var leaseRenewal: java.util.concurrent.ScheduledFuture<*>? = null
         @Volatile var workspacePath = ""
         @Volatile var executing = false
+        @Volatile var preparing = false
+        @Volatile var boundaryReached = false
         @Volatile var continuationCount = 0
         @Volatile var finalizing = false
+        @Volatile var successorId: String? = null
+        var predecessorId: String? = null
         val queuedAt = System.nanoTime() / 1_000_000
         @Volatile var startedAt: Long? = null
-        @Volatile var lastHeartbeat = queuedAt
         @Volatile var decisionAt: Long? = null
         @Volatile var decisionWaitMs = 0L
-        @Volatile var phase = "queued"
-        @Volatile var leaseRenewal: java.util.concurrent.ScheduledFuture<*>? = null
-
+        @Volatile var lastProgress = queuedAt
+        @Volatile var warnedStall = false
         val dispatchGate = java.util.concurrent.CountDownLatch(1)
         val controller = AgentRunController()
         @Volatile var state = "queued"
@@ -60,32 +82,36 @@ internal class SubAgentCoordinator(
     }
     private val poolLeases = workers.indices.map { i ->
         val config = workers[i]
-        // Real providers use one shared budget by API model name, not per profile/UUID.
         val key = if (config.providerId.isBlank()) "unconfigured:${System.identityHashCode(this)}:${workerIds[i]}"
             else config.providerId + "\u0000" + config.model
-        SubAgentModelPools.acquire(key, modelParallelLimits[i])
+        val scopedKey = poolScope?.let { scope ->
+            "scoped:${scope.length}:$scope:${key.length}:$key"
+        } ?: key
+        SubAgentModelPools.acquire(scopedKey, modelParallelLimits[i])
     }
     private val pools = poolLeases.map { it.executor }
     private val timer = Executors.newScheduledThreadPool(2)
     private val tasks = linkedMapOf<String, Task>()
     private var closed = false
 
+    fun ownsTask(taskId: String): Boolean = synchronized(this) { tasks.containsKey(taskId) }
+    fun taskIds(): List<String> = synchronized(this) { tasks.keys.toList() }
+    fun hasActiveTasks(): Boolean = synchronized(this) { tasks.values.any { it.state in ACTIVE || it.executing || it.preparing } }
+    fun cancelAll() { synchronized(this) { tasks.values.toList() }.forEach { stop(it, "cancelled") } }
+    private fun changed() { callbacks.post("changed") { onTaskChanged?.invoke() } }
     fun requestCompact(taskId: String, keepRecent: Int?, model: AgentModelClient.ModelConfig?): Boolean {
         val task = synchronized(this) { if (closed) null else tasks[taskId] } ?: return false
         return synchronized(task) {
-            if (task.state != "running" || task.role in setOf("image_generation", "video_generation")) {
-                publishContext(task.context.manualRequest("ended"))
-                false
-            } else if (task.context.value.isCompacting || task.context.value.manualCompactionState == "pending") {
-                true
-            } else {
+            if (task.state != "running" || task.role in MEDIA) {
+                publishContext(task.context.manualRequest("ended")); false
+            } else if (task.context.value.isCompacting || task.context.value.manualCompactionState == "pending") true
+            else {
                 val accepted = task.controller.requestCompact(keepRecent, model ?: prepareManualCompactor(workers[task.worker]))
                 publishContext(task.context.manualRequest(if (accepted) "pending" else "ended"))
                 accepted
             }
         }
     }
-
     fun execute(call: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
         val json = try {
             val args = JSONObject(call.argumentsJson)
@@ -93,48 +119,49 @@ internal class SubAgentCoordinator(
                 "delegate_task" -> start(args)
                 "get_task_result" -> get(args)
                 "continue_task" -> continueTask(args)
+                "supervise_task" -> supervise(args)
                 "manage_agent_workspace" -> manage(args)
-                "cancel_task" -> {
-                    val task = find(args.getString("task_id"))
-                    stop(task, "cancelled")
-                    snapshot(task)
-                }
+                "cancel_task" -> { val task = find(args.getString("task_id")); stop(task, "cancelled"); snapshot(task) }
                 else -> error("Unknown delegation tool")
             }
         } catch (error: ImageGenerationParameterException) {
             JSONObject().put("ok", false).put("code", "IMAGE_GENERATION_INVALID_OPTIONS").put("message", error.message)
-        } catch (_: IllegalArgumentException) {
-            JSONObject().put("ok", false).put("code", "INVALID_TASK_ARGUMENTS")
-        } catch (_: org.json.JSONException) {
-            JSONObject().put("ok", false).put("code", "INVALID_TASK_ARGUMENTS")
-        }
-        if (!json.optBoolean("ok", true)) diagnostics.mark("dispatch_rejected", errorCode = json.optString("code"))
-        // Child evidence may contain sensitive tool output. Do not persist raw returned text.
+        } catch (_: IllegalArgumentException) { errorResult("INVALID_TASK_ARGUMENTS") }
+        catch (_: org.json.JSONException) { errorResult("INVALID_TASK_ARGUMENTS") }
+        if (!json.optBoolean("ok", true)) callbacks.post("dispatch_rejected") { diagnostics?.mark("dispatch_rejected", errorCode = json.optString("code")) }
         return AgentModelClient.ToolResult(json.toString(), sensitive = true)
     }
 
     private fun start(args: JSONObject): JSONObject {
+        var blockedPredecessor: Task? = null
         val task = synchronized(this) {
             if (closed) return errorResult("RUN_CLOSED")
             val instruction = args.getString("task")
             val context = args.optString("context")
             require(instruction.isNotBlank() && instruction.length <= 12000 && context.length <= 20000)
             val suppliedRole = if (args.has("role")) args.getString("role") else null
-            require(suppliedRole == null || suppliedRole in setOf("research", "implementation", "review", "summary", "image_generation", "video_generation"))
+            require(suppliedRole == null || suppliedRole in ROLES)
+            val predecessor = args.optString("replace_task_id").takeIf { it.isNotBlank() }?.let { tasks[it] ?: return errorResult("UNKNOWN_REPLACED_TASK") }
+            predecessor?.successorId?.let { successor ->
+                return errorResult("REPLACEMENT_ALREADY_DISPATCHED").put("task_id", successor)
+            }
             val workerById = args.optString("agent_id").takeIf { it.isNotBlank() }?.let { workerIds.indexOf(it) }
             if (workerById != null && workerById < 0) return errorResult("AGENT_NOT_CONFIGURED")
             if (workerById != null && args.has("worker") && workerById != args.getInt("worker") - 1) return errorResult("WORKER_ID_MISMATCH")
+            val role = suppliedRole ?: predecessor?.role ?: "research"
             val worker = workerById ?: if (args.has("worker")) args.getInt("worker") - 1 else {
-                val roleForSelection = suppliedRole ?: "research"
-                val desired = if (roleForSelection == "summary") "review" else roleForSelection
-                val candidates = if (roleForSelection == "research") roles.indices.filter { roles[it] !in setOf("image_generation", "video_generation") } else roles.indices.filter { roles[it] == desired }
-                candidates.minByOrNull { candidate -> tasks.values.count { it.worker == candidate && (it.state in setOf("queued", "running") || it.executing) } }
+                val desired = if (role == "summary") "review" else role
+                val candidates = if (role == "research") roles.indices.filter { roles[it] !in MEDIA } else roles.indices.filter { roles[it] == desired }
+                candidates.minByOrNull { i -> tasks.values.count { it.worker == i && (it.state in ACTIVE || it.executing || it.preparing) } }
                     ?: return errorResult("ROLE_NOT_CONFIGURED")
             }
             require(worker in workers.indices)
-            val role = suppliedRole ?: "research"
-            require(role in setOf("research", "implementation", "review", "summary", "image_generation", "video_generation"))
-            if (role == "research" && roles[worker] in setOf("image_generation", "video_generation")) return errorResult("WORKER_ROLE_MISMATCH")
+            if (predecessor != null) {
+                if (worker == predecessor.worker) return errorResult("REPLACEMENT_REQUIRES_NEW_WORKER")
+                if (predecessor.errorCode == "SUB_AGENT_PROVIDER_UNAVAILABLE" && workers[worker].providerId == workers[predecessor.worker].providerId)
+                    return errorResult("REPLACEMENT_PROVIDER_UNAVAILABLE")
+            }
+            if (role == "research" && roles[worker] in MEDIA) return errorResult("WORKER_ROLE_MISMATCH")
             if (role != "research" && roles[worker] != (if (role == "summary") "review" else role)) return errorResult("WORKER_ROLE_MISMATCH")
             val imageOptions = if (args.has("image_options")) {
                 if (role != "image_generation") AgentImageGenerationOptions.invalid("image_options 仅适用于 image_generation。")
@@ -143,298 +170,369 @@ internal class SubAgentCoordinator(
             } else AgentImageGenerationOptions()
             val project = args.optString("project")
             val workspaceId = args.optString("workspace_id").ifBlank { null }
-            if (role in setOf("image_generation", "video_generation")) {
+            if (role in MEDIA) {
                 require(project.isBlank() && workspaceId == null)
                 if (role == "image_generation" && executeImageChild == null) return errorResult("IMAGE_GENERATION_UNAVAILABLE")
                 if (role == "video_generation" && executeVideoChild == null) return errorResult("VIDEO_GENERATION_UNAVAILABLE")
             }
-            if (role == "implementation" || workspaceId != null) {
-                require(workspace != null && executeWorkspaceChild != null && Regex("/workspace/[^/]+").matches(project))
-            }
-            if (workspaceId != null && tasks.values.any { it.project == project && it.workspaceId == workspaceId && (it.state in setOf("queued", "running") || it.executing) }) return errorResult("WORKSPACE_IN_USE")
+            if (role == "implementation" || workspaceId != null) require(workspace != null && executeWorkspaceChild != null && Regex("/workspace/[^/]+").matches(project))
+            if (workspaceId != null && tasks.values.any { it.project == project && it.workspaceId == workspaceId && (it.state in ACTIVE || it.executing || it.preparing) }) return errorResult("WORKSPACE_IN_USE")
             require(role != "implementation" || workspaceId == null)
-            val task = Task(UUID.randomUUID().toString(), worker, role, project, workspaceId)
+            // Validate the complete new dispatch before changing the old execution.
+            if (predecessor != null) {
+                if (predecessor.role in MEDIA || role != predecessor.role) return errorResult("REPLACEMENT_ROLE_MISMATCH")
+                if (predecessor.workspaceId != null) return errorResult("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW")
+                if (predecessor.state == "awaiting_decision" && predecessor.errorCode == "SUB_AGENT_NO_PROGRESS") {
+                    blockedPredecessor = predecessor
+                    return@synchronized null
+                }
+                if (predecessor.state != "failed" && predecessor.errorCode != "REPLACED_AFTER_BLOCK")
+                    return errorResult("REPLACEMENT_NOT_ALLOWED")
+                if (predecessor.executing) return errorResult("REPLACE_PENDING_STOP")
+            }
+            val t = Task(UUID.randomUUID().toString(), worker, role, project, workspaceId)
+            t.predecessorId = predecessor?.id
+            t.preparing = role == "implementation"
             val model = workers[worker]
-            task.context = SubAgentContextTracker(SubAgentContextStats(task.id, worker + 1, role, model.model,
-                model.modelDisplayName.ifBlank { model.model }, model.providerName, model.contextWindow, status = "queued", agentId = workerIds[worker], agentName = workerNames[worker], providerId = model.providerId, modelId = workerModelIds[worker]))
-            tasks[task.id] = task
-            task.future = pools[worker].submit {
-                try { task.dispatchGate.await() } catch (_: InterruptedException) { return@submit }
-                synchronized(task) {
-                    if (task.state != "queued") return@submit
-                    task.executing = true
-                    task.startedAt = System.nanoTime() / 1_000_000
-                    task.state = "running"
-                    val executionBudget = when (role) {
+            t.context = SubAgentContextTracker(SubAgentContextStats(t.id, worker + 1, role, model.model,
+                model.modelDisplayName.ifBlank { model.model }, model.providerName, model.contextWindow,
+                status = "queued", agentId = workerIds[worker], agentName = workerNames[worker], providerId = model.providerId, modelId = workerModelIds[worker]))
+            t.controller.setPauseBoundaryObserver { t.boundaryReached = true; t.journal.mark("pause_boundary") }
+            t.controller.setTaskProgressReporter { summary ->
+                synchronized(t) {
+                    if (t.state != "running" || summary.isBlank()) false
+                    else { t.journal.setCheckpoint(summary); changed(); true }
+                }
+            }
+            tasks[t.id] = t
+            changed()
+            try {
+            t.future = pools[worker].submit {
+                try { t.dispatchGate.await() } catch (_: InterruptedException) { return@submit }
+                synchronized(t) {
+                    if (t.state != "queued") return@submit
+                    t.executing = true
+                    t.startedAt = System.nanoTime() / 1_000_000
+                    t.lastProgress = t.startedAt!!
+                    t.state = "running"
+                    val budget = when (role) {
                         "video_generation" -> videoTimeoutMs
                         "image_generation" -> minOf(timeoutMs, IMAGE_TIMEOUT_MS)
                         else -> timeoutMs
                     }
-                    task.clock = SubAgentExecutionClock(executionBudget, compressionTimeoutMs)
-                    publishContext(task.context.start())
-                    diagnostic(task,"started")
+                    t.clock = SubAgentExecutionClock(budget, compressionTimeoutMs, softExecution = role !in MEDIA)
+                    publishContext(t.context.start()); diagnostic(t, "started"); t.journal.mark("running"); changed()
                 }
                 var ownsWorkspaceLease = false
                 try {
-                    task.watchdog = timer.scheduleAtFixedRate({
-                        val expired = synchronized(task) { if (task.state in setOf("running", "awaiting_decision") && !task.finalizing) task.clock.expired() else null }
-                        if (expired != null) {
-                            if (allowTimeoutContinuation && role !in setOf("image_generation", "video_generation") && expired == "SUB_AGENT_TIMEOUT") {
-                                synchronized(task) {
-                                    if (task.state == "running" && !task.finalizing) {
-                                        task.controller.pauseAtCheckpoint()
-                                        task.clock.pauseExecution()
-                                        task.state = "awaiting_decision"
-                                        task.decisionAt = System.nanoTime() / 1_000_000
-                                        task.errorCode = expired
-                                        publishContext(task.context.awaitDecision())
-                                        diagnostic(task,"execution_budget_wait")
-                                    }
-                                }
-                            } else stop(task, "timed_out", expired)
-                        }
-                        if (task.state !in setOf("running", "awaiting_decision")) task.watchdog?.cancel(false)
+                    t.watchdog = timer.scheduleAtFixedRate({
                         val now = System.nanoTime() / 1_000_000
-                        if (now - task.lastHeartbeat >= 30_000) {
-                            task.lastHeartbeat = now
-                            diagnostic(task,"heartbeat." + task.phase)
+                        synchronized(t) {
+                            if (t.state in ACTIVE && !t.finalizing) {
+                                val expired = t.clock.expired()
+                                if (expired != null) stop(t, "timed_out", expired)
+                                else if (t.state == "awaiting_decision" && !t.boundaryReached && now - (t.decisionAt ?: now) >= PAUSE_BOUNDARY_TIMEOUT_MS)
+                                    stop(t, "timed_out", "SUB_AGENT_PAUSE_BOUNDARY_TIMEOUT")
+                                else if (t.state == "running" && role !in MEDIA) {
+                                    if (t.clock.softWarningDue()) { t.journal.mark("execution_soft_warning"); diagnostic(t, "execution_soft_warning") }
+                                    val stalled = now - t.lastProgress
+                                    if (stalled >= STALL_WARNING_MS && !t.warnedStall) {
+                                        t.warnedStall = true; t.journal.mark("no_progress_warning"); diagnostic(t, "no_progress_warning")
+                                    }
+                                    if (stalled >= STALL_PAUSE_MS) pause(t, "SUB_AGENT_NO_PROGRESS")
+                                }
+                            }
+                            if (t.state in ACTIVE && now - t.journal.lastHeartbeatMs >= 30_000) t.journal.mark("heartbeat")
                         }
-                    }, minOf(timeoutMs, 100L).coerceAtLeast(1), 50, TimeUnit.MILLISECONDS)
-                    task.controller.throwIfCancelled()
+                        if (t.state !in ACTIVE) t.watchdog?.cancel(false)
+                    }, 100, 1000, TimeUnit.MILLISECONDS)
+                    t.controller.throwIfCancelled()
                     if (role == "implementation") {
-                        if (task.workspaceId == null) {
-                            diagnostic(task,"workspace_prepare")
+                        if (t.workspaceId == null) {
+                            diagnostic(t, "workspace_prepare")
                             val prepared = workspace!!.requireOperation(project, "prepare")
-                            task.workspaceId = prepared.getString("id")
-                            task.workspacePath = prepared.getString("path")
+                            synchronized(t) {
+                                t.workspaceId = prepared.getString("id"); t.workspacePath = prepared.getString("path")
+                                t.workspaceOwnershipVerified = true
+                            }
                         }
                         ownsWorkspaceLease = true
                     } else if (workspaceId != null) {
-                        diagnostic(task,"workspace_begin_review")
+                        diagnostic(t, "workspace_begin_review")
                         val existing = workspace!!.requireOperation(project, "begin_review", workspaceId)
                         check(existing.getString("state") == "reviewing")
                         ownsWorkspaceLease = true
-                        task.workspacePath = existing.getString("path")
+                        synchronized(t) {
+                            t.workspacePath = existing.getString("path")
+                            t.workspaceOwnershipVerified = true
+                        }
                     }
-                    if (ownsWorkspaceLease) {
-                        task.leaseRenewal = timer.scheduleWithFixedDelay({
-                            if (task.state in setOf("running", "awaiting_decision") && !task.finalizing) {
-                                val renewed = runCatching { workspace!!.requireOperation(project, "renew", task.workspaceId) }
-                                if (renewed.isFailure) { diagnostic(task,"lease_failed",renewed.exceptionOrNull()); stop(task, "failed", "WORKSPACE_LEASE_LOST") }
-                            }
-                        }, 60, 60, TimeUnit.SECONDS)
-                    }
-                    task.controller.throwIfCancelled()
+                    if (ownsWorkspaceLease) t.leaseRenewal = timer.scheduleWithFixedDelay({
+                        if (t.state in ACTIVE && !t.finalizing) {
+                            val renewed = runCatching { workspace!!.requireOperation(project, "renew", t.workspaceId) }
+                            if (renewed.isFailure) { diagnostic(t, "lease_failed", renewed.exceptionOrNull()); stop(t, "failed", "WORKSPACE_LEASE_LOST") }
+                        }
+                    }, 60, 60, TimeUnit.SECONDS)
+                    t.controller.throwIfCancelled()
                     val prompt = "Role: $role\nTask:\n$instruction\n\nContext supplied by main agent:\n$context"
-                    diagnostic(task, if (role in setOf("image_generation", "video_generation")) "media_request" else "model_loop")
-                    val answer = if (role in setOf("image_generation", "video_generation")) {
+                    diagnostic(t, if (role in MEDIA) "media_request" else "model_loop")
+                    val observedChild = executeObservedChild
+                    val answer = if (role in MEDIA) {
                         val mediaPrompt = instruction + if (context.isBlank()) "" else "\n\n补充要求：\n$context"
-                        if (role == "video_generation") executeVideoChild!!.invoke(workers[worker], mediaPrompt, task.controller)
-                        else executeImageChild!!.invoke(workers[worker], mediaPrompt, task.controller, imageOptions)
-                    } else if (executeObservedChild != null) {
-                        executeObservedChild.invoke(workers[worker], prompt, task.controller, project, task.workspaceId, role == "implementation") { event ->
-                            diagnosticEvent(task,event)
-                            synchronized(task) {
-                                if (task.state in setOf("running", "awaiting_decision")) task.context.accept(event)?.let { stats ->
-                                    task.clock.setCompacting(stats.isCompacting)
-                                    publishContext(stats)
+                        if (role == "video_generation") executeVideoChild!!.invoke(workers[worker], mediaPrompt, t.controller)
+                        else executeImageChild!!.invoke(workers[worker], mediaPrompt, t.controller, imageOptions)
+                    } else if (observedChild != null) {
+                        observedChild.invoke(workers[worker], prompt, t.controller, project, t.workspaceId, role == "implementation") { event ->
+                            diagnosticEvent(t, event)
+                            synchronized(t) {
+                                if (t.state in ACTIVE) {
+                                    if (t.journal.accept(event)) { t.lastProgress = System.nanoTime() / 1_000_000; t.warnedStall = false }
+                                    t.context.accept(event)?.let { stats -> t.clock.setCompacting(stats.isCompacting); publishContext(stats) }
                                 }
                             }
                         }
-                    } else task.workspaceId?.let { id ->
-                        executeWorkspaceChild!!.invoke(workers[worker], prompt, task.controller, project, id, role == "implementation")
-                    } ?: executeChild(workers[worker], prompt, task.controller)
-                    task.controller.throwIfCancelled()
-                    while (true) {
-                        task.controller.throwIfCancelled()
-                        val canFinalize = synchronized(task) {
-                            if (task.state == "running") { task.finalizing = true; true } else false
+                    } else t.workspaceId?.let { id ->
+                        executeWorkspaceChild!!.invoke(workers[worker], prompt, t.controller, project, id, role == "implementation")
+                    } ?: executeChild(workers[worker], prompt, t.controller)
+                    t.controller.throwIfCancelled()
+                    synchronized(t) { if (t.state == "running") t.finalizing = true }
+                    t.controller.throwIfCancelled()
+                    if (role == "implementation") { diagnostic(t, "workspace_seal"); workspace!!.requireOperation(project, "seal", t.workspaceId) }
+                    else if (t.workspaceId != null) workspace!!.requireOperation(project, if (role == "review") "review" else "end_review", t.workspaceId)
+                    t.controller.throwIfCancelled()
+                    synchronized(t) {
+                        if (t.state == "running") {
+                            t.result = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
+                            t.state = "completed"; t.journal.mark("completed", progress = true)
+                            diagnostic(t, "completed"); t.context.finish(t.state); changed()
                         }
-                        if (canFinalize) break
-                    }
-                    if (role == "implementation") { diagnostic(task,"workspace_seal"); workspace!!.requireOperation(project, "seal", task.workspaceId) }
-                    else if (task.workspaceId != null) workspace!!.requireOperation(project, if (role == "review") "review" else "end_review", task.workspaceId)
-                    task.controller.throwIfCancelled()
-                    while (true) {
-                        task.controller.throwIfCancelled()
-                        val published = synchronized(task) {
-                            if (task.state == "running") {
-                                task.result = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
-                                task.state = "completed"
-                                diagnostic(task,"completed")
-                                task.context.finish(task.state)
-                                true
-                            } else false
-                        }
-                        if (published) break
-                        if (task.state != "awaiting_decision") task.controller.throwIfCancelled()
                     }
                 } catch (error: Exception) {
-                    diagnostic(task,"worker_exception",error)
-                    // Future.cancel interrupts the worker. Clear only for bounded cleanup, then restore.
+                    diagnostic(t, "worker_exception", error)
                     val interrupted = Thread.interrupted()
-                    if (ownsWorkspaceLease && task.workspaceId != null) runCatching { workspace?.operation(project, if (role == "implementation") "fail" else "end_review", task.workspaceId) }
+                    if (ownsWorkspaceLease && t.workspaceId != null) runCatching { workspace?.operation(project, if (role == "implementation") "fail" else "end_review", t.workspaceId) }
                     if (interrupted) Thread.currentThread().interrupt()
-                    synchronized(task) {
-                        if (task.state !in setOf("running", "awaiting_decision")) return@synchronized
-                        val cancelledByCaller = task.controller.isCancelled || interrupted ||
-                            error is io.github.mangi.eta.agent.runtime.AgentRunCancelledException ||
-                            error is java.util.concurrent.CancellationException
-                        if (cancelledByCaller) {
-                            task.state = "cancelled"
-                            task.errorCode = ""
-                            task.context.finish(task.state)
-                            return@synchronized
+                    synchronized(t) {
+                        if (t.state in ACTIVE) {
+                            val cancelled = t.controller.isCancelled || interrupted || error is io.github.mangi.eta.agent.runtime.AgentRunCancelledException || error is java.util.concurrent.CancellationException
+                            if (cancelled) { t.state = "cancelled"; t.errorCode = "" }
+                            else {
+                                val providerFailure = SubAgentProviderFailure.find(error)
+                                t.errorCode = when {
+                                    error is ImageGenerationParameterException -> "IMAGE_GENERATION_INVALID_OPTIONS"
+                                    error is SubAgentContextLimitException -> "SUB_AGENT_CONTEXT_LIMIT"
+                                    error is WorkspaceOperationException -> error.code
+                                    providerFailure != null -> "SUB_AGENT_PROVIDER_UNAVAILABLE"
+                                    role == "image_generation" -> "IMAGE_GENERATION_FAILED"
+                                    role == "video_generation" -> "VIDEO_GENERATION_FAILED"
+                                    else -> "SUB_AGENT_FAILED"
+                                }
+                                t.result = when {
+                                    error is ImageGenerationParameterException -> error.message.orEmpty()
+                                    error is SubAgentContextLimitException -> "子代理上下文不足，自动压缩不可用或未能释放足够空间。请拆分任务；已有工作树改动保留。"
+                                    providerFailure != null -> "子代理供应商不可用（${providerFailure.code.replace('_', ' ')}）：${workerNames[worker]}（${workers[worker].providerName} / ${workers[worker].model}）。这不是任务结论；不要自动重试副作用或付费请求。"
+                                    else -> "子代理未完成，请主代理接手；不会自动重新执行。（${error.javaClass.simpleName}）"
+                                }
+                                t.state = "failed"
+                            }
+                            t.journal.mark(t.state); t.context.finish(t.state); changed()
                         }
-                        val providerFailure = SubAgentProviderFailure.find(error)
-                        task.errorCode = when {
-                            error is ImageGenerationParameterException -> "IMAGE_GENERATION_INVALID_OPTIONS"
-                            error is SubAgentContextLimitException -> "SUB_AGENT_CONTEXT_LIMIT"
-                            error is WorkspaceOperationException -> error.code
-                            providerFailure != null -> "SUB_AGENT_PROVIDER_UNAVAILABLE"
-                            role == "image_generation" -> "IMAGE_GENERATION_FAILED"
-                            role == "video_generation" -> "VIDEO_GENERATION_FAILED"
-                            else -> "SUB_AGENT_FAILED"
-                        }
-                        val providerName = workers[task.worker].providerName.ifBlank { "未命名供应商" }
-                        val modelName = workers[task.worker].model
-                        task.result = when {
-                            error is ImageGenerationParameterException -> error.message.orEmpty()
-                            error is SubAgentContextLimitException ->
-                                "子代理上下文不足，自动压缩不可用或未能释放足够空间。请拆分任务或调整模型窗口后重新委派；已有工作树改动保留。"
-                            providerFailure != null ->
-                                "子代理供应商不可用：${workerNames[task.worker]}（$providerName / $modelName）。" +
-                                    providerFailure.message.orEmpty() +
-                                    " 这不是任务结论。不要采用该子代理的部分输出，也不要立刻用同一供应商重试；可以更换子代理，或告诉用户该供应商当前不可用。"
-                            else -> "子代理未完成，请主代理接手或重新委派。（${error.javaClass.simpleName}）"
-                        }
-                        task.state = "failed"
-                        task.context.finish(task.state)
                     }
                 } finally {
-                    task.watchdog?.cancel(false)
-                    task.leaseRenewal?.cancel(false)
-                    synchronized(task) { publishContext(task.context.finish(task.state)) }
-                    task.executing = false
-                    diagnostic(task,"worker_released")
+                    t.watchdog?.cancel(false); t.leaseRenewal?.cancel(false)
+                    synchronized(t) { publishContext(t.context.finish(t.state)); t.executing = false; changed() }
+                    diagnostic(t, "worker_released")
+                    releaseIfClosedAndIdle()
                 }
             }
-            task
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                tasks.remove(t.id)
+                return errorResult("TASK_DISPATCH_REJECTED")
+            }
+            predecessor?.successorId = t.id
+            t
         }
-        // Prepare the implementation worktree before the caller sees the task. The worker
-        // stays behind dispatchGate, so a failed prepare never starts the model loop.
+        if (task == null) {
+            val predecessor = requireNotNull(blockedPredecessor)
+            // No Coordinator monitor is held while taking the old task's monitor.
+            synchronized(predecessor) {
+                if (predecessor.state == "awaiting_decision" && predecessor.errorCode == "SUB_AGENT_NO_PROGRESS")
+                    stop(predecessor, "cancelled", "REPLACED_AFTER_BLOCK")
+            }
+            return errorResult("REPLACE_PENDING_STOP")
+        }
         if (task.role == "implementation") {
             try {
-                val prepared = workspace!!.requireOperation(task.project, "prepare")
+                val backend = requireNotNull(workspace)
+                val prepared = backend.requireOperation(task.project, "prepare")
                 synchronized(task) {
-                    task.workspaceId = prepared.getString("id")
-                    task.workspacePath = prepared.getString("path")
+                    task.workspaceId = prepared.getString("id"); task.workspacePath = prepared.getString("path")
+                    task.workspaceOwnershipVerified = true
                 }
-            } catch (error: WorkspaceOperationException) {
-                stop(task, "failed", error.code)
+                if (task.state != "queued") {
+                    backend.operation(task.project, "fail", task.workspaceId)
+                    return snapshot(task)
+                }
+            } catch (error: Exception) {
+                val code = (error as? WorkspaceOperationException)?.code ?: "WORKSPACE_PREPARE_FAILED"
+                stop(task, "failed", code)
+                if (error is InterruptedException) Thread.currentThread().interrupt()
+                return errorResult(code)
+            } finally {
+                task.preparing = false
                 task.dispatchGate.countDown()
-                return errorResult(error.code)
+                changed()
+                releaseIfClosedAndIdle()
             }
         }
-        // Never call an external telemetry sink while holding the coordinator lock.
-        // The gate preserves queued -> running event order without charging queue time.
-        synchronized(task) { publishContext(task.context.value); diagnostic(task,"queued") }
+        synchronized(task) { publishContext(task.context.value); diagnostic(task, "queued") }
         task.dispatchGate.countDown()
         return snapshot(task)
     }
-    private fun diagnostic(task: Task, stage: String, failure: Throwable? = null, more: Map<String,Number> = emptyMap(), tool: String = "") {
-        runCatching {
-            val now=System.nanoTime()/1_000_000
-            if (!stage.startsWith("heartbeat.")) task.phase=stage
-            val fields=linkedMapOf<String,Number>("elapsed_ms" to (now-task.queuedAt),
-                "queue_ms" to ((task.startedAt ?: now)-task.queuedAt),
-                "decision_wait_ms" to (task.decisionWaitMs + (task.decisionAt?.let { now-it } ?: 0)),
-                "continuations" to task.continuationCount, "limit" to SubAgentModelPools.currentLimit(poolLeases[task.worker]),
-                "workspace_present" to if(task.workspaceId==null) 0 else 1)
-            if(task.startedAt != null) fields.putAll(task.clock.diagnostics())
-            fields.putAll(SubAgentModelPools.diagnostics(poolLeases[task.worker]))
-            fields.putAll(more)
-            diagnostics.mark(stage,task.id,workerIds[task.worker],workers[task.worker].providerId,workers[task.worker].model,
-                task.role,task.state,task.errorCode,failure,fields,tool)
+
+    private fun pause(task: Task, code: String) {
+        synchronized(task) {
+            if (task.state != "running" || task.finalizing || task.role in MEDIA) return
+            task.boundaryReached = false
+            task.controller.pause()
+            task.clock.pauseExecution()
+            task.state = "awaiting_decision"
+            task.decisionAt = System.nanoTime() / 1_000_000
+            task.errorCode = code
+            task.journal.mark("awaiting_decision")
+            publishContext(task.context.awaitDecision())
+            diagnostic(task, "awaiting_decision"); changed()
         }
     }
-    private fun diagnosticEvent(task: Task, event: io.github.mangi.eta.agent.runtime.AgentEvent) {
-        when(event) {
-            is io.github.mangi.eta.agent.runtime.AgentEvent.ProviderRequestStarted -> diagnostic(task,"provider_request",more=mapOf("round" to event.round))
-            is io.github.mangi.eta.agent.runtime.AgentEvent.ProviderResponseStarted -> diagnostic(task,"provider_response",more=mapOf("round" to event.round,"http_status" to event.httpCode))
-            is io.github.mangi.eta.agent.runtime.AgentEvent.ModelRetryScheduled -> diagnostic(task,"provider_retry",more=mapOf("attempt" to event.attempt,"delay_ms" to event.delayMs))
-            is io.github.mangi.eta.agent.runtime.AgentEvent.ToolStarted -> diagnostic(task,"tool_started",more=mapOf("round" to event.round),tool=event.name)
-            is io.github.mangi.eta.agent.runtime.AgentEvent.ToolFinished -> diagnostic(task,"tool_finished",more=mapOf("round" to event.round,"tool_ok" to if(event.success==true) 1 else if(event.success==false) 0 else -1),tool=event.name)
-            is io.github.mangi.eta.agent.runtime.AgentEvent.ContextCompactionStarted -> diagnostic(task,"compaction_started",more=mapOf("round" to event.round))
-            is io.github.mangi.eta.agent.runtime.AgentEvent.ContextCompacted -> diagnostic(task,"compaction_finished",more=mapOf("round" to event.round))
+    private fun diagnostic(task: Task, stage: String, failure: Throwable? = null, more: Map<String, Number> = emptyMap(), tool: String = "") {
+        runCatching {
+            val now = System.nanoTime() / 1_000_000
+            val fields = linkedMapOf<String, Number>("elapsed_ms" to (now - task.queuedAt),
+                "queue_ms" to ((task.startedAt ?: now) - task.queuedAt),
+                "decision_wait_ms" to (task.decisionWaitMs + (task.decisionAt?.let { now - it } ?: 0)),
+                "continuations" to task.continuationCount, "limit" to SubAgentModelPools.currentLimit(poolLeases[task.worker]),
+                "workspace_present" to if (task.workspaceId == null) 0 else 1)
+            if (task.startedAt != null) fields.putAll(task.clock.diagnostics())
+            fields.putAll(SubAgentModelPools.diagnostics(poolLeases[task.worker])); fields.putAll(more)
+            val state = task.state
+            val code = task.errorCode
+            callbacks.post("diagnostic:${task.id}:$stage") {
+                diagnostics?.mark(stage, task.id, workerIds[task.worker], workers[task.worker].providerId, workers[task.worker].model,
+                    task.role, state, code, failure, fields, tool)
+            }
+        }
+    }
+    private fun diagnosticEvent(task: Task, event: AgentEvent) {
+        when (event) {
+            is AgentEvent.ProviderRequestStarted -> diagnostic(task, "provider_request", more = mapOf("round" to event.round))
+            is AgentEvent.ProviderResponseStarted -> diagnostic(task, "provider_response", more = mapOf("round" to event.round, "http_status" to event.httpCode))
+            is AgentEvent.ModelRetryScheduled -> diagnostic(task, "provider_retry", more = mapOf("attempt" to event.attempt, "delay_ms" to event.delayMs))
+            is AgentEvent.ToolStarted -> diagnostic(task, "tool_started", more = mapOf("round" to event.round), tool = event.name)
+            is AgentEvent.ToolFinished -> diagnostic(task, "tool_finished", more = mapOf("round" to event.round, "tool_ok" to if (event.success == true) 1 else if (event.success == false) 0 else -1), tool = event.name)
+            is AgentEvent.ContextCompactionStarted -> diagnostic(task, "compaction_started", more = mapOf("round" to event.round))
+            is AgentEvent.ContextCompacted -> diagnostic(task, "compaction_finished", more = mapOf("round" to event.round))
             else -> Unit
         }
     }
-    // Telemetry failure must never prevent cancellation or change a task outcome.
-    private fun publishContext(stats: SubAgentContextStats) { runCatching { onContext(stats) } }
-    @Synchronized private fun find(id: String): Task = requireNotNull(tasks[id]) { "Task does not belong to this run" }
+    private fun publishContext(stats: SubAgentContextStats) { callbacks.post("context:${stats.taskId}") { onContext?.invoke(stats) } }
+    @Synchronized private fun find(id: String): Task = requireNotNull(tasks[id]) { "Task does not belong to this session" }
     private fun get(args: JSONObject): JSONObject {
-        // Compaction may redact old sensitive tool replies. Rediscover task IDs without replaying result bodies.
         if (!args.has("task_id")) {
             val all = synchronized(this) { tasks.values.toList().asReversed() }
             val offset = args.optInt("offset", 0).coerceAtLeast(0)
-            val page = all.drop(offset).take(20).map { task -> synchronized(task) {
-                JSONObject().put("task_id", task.id).put("status", task.state).put("role", task.role)
-                    .put("worker", task.worker + 1).put("agent_id", workerIds[task.worker])
+            val page = all.drop(offset).take(20).map { t -> synchronized(t) {
+                JSONObject().put("task_id", t.id).put("status", t.state).put("role", t.role)
+                    .put("worker", t.worker + 1).put("agent_id", workerIds[t.worker])
             } }
-            return JSONObject().put("ok", true).put("tasks", org.json.JSONArray(page)).put("total", all.size)
+            return JSONObject().put("ok", true).put("tasks", JSONArray(page)).put("total", all.size)
                 .put("next_offset", if (offset + page.size < all.size) offset + page.size else JSONObject.NULL)
         }
         val task = find(args.getString("task_id"))
         val wait = args.optLong("wait_ms", 0).coerceIn(0, 10000)
         if (wait > 0 && task.state in setOf("queued", "running")) {
-            try { task.future?.get(wait, TimeUnit.MILLISECONDS) }
-            catch (_: TimeoutException) { }
-            catch (_: java.util.concurrent.CancellationException) { }
-            catch (_: java.util.concurrent.ExecutionException) { }
+            if (args.has("after_seq")) task.journal.awaitPage(args.optLong("after_seq"), args.optInt("event_limit", 16), wait) {
+                task.state in setOf("queued", "running")
+            } else {
+                // Legacy callers ask for completion without an event cursor; cursor callers wake on each event.
+                try { task.future?.get(wait, TimeUnit.MILLISECONDS) }
+                catch (_: java.util.concurrent.TimeoutException) { }
+                catch (_: java.util.concurrent.CancellationException) { }
+                catch (_: java.util.concurrent.ExecutionException) { }
+                catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+            }
         }
-        return snapshot(task)
+        return snapshot(task, args.optLong("after_seq", 0), args.optInt("event_limit", 16))
+    }
+    private fun supervise(args: JSONObject): JSONObject {
+        val task = find(args.getString("task_id"))
+        val action = args.getString("action")
+        synchronized(task) {
+            if (task.state != "running" || task.role in MEDIA) return errorResult("TASK_NOT_RUNNING_TEXT")
+            when (action) {
+                "guide" -> {
+                    val guidance = args.getString("guidance")
+                    require(guidance.isNotBlank() && guidance.length <= 2000)
+                    if (!task.controller.queueBoundaryGuidance(guidance)) return errorResult("TASK_NOT_ACCEPTING_GUIDANCE")
+                    task.journal.mark("guidance_accepted")
+                }
+                "checkpoint" -> {
+                    if (!task.controller.queueBoundaryGuidance("请在下一轮调用 report_task_progress，报告已核实工作、下一步及阻碍的高层摘要；不包含私有思维、密钥或敏感参数，然后继续原任务。")) return errorResult("TASK_NOT_ACCEPTING_GUIDANCE")
+                    task.journal.mark("checkpoint_requested")
+                }
+                "pause" -> pause(task, "SUB_AGENT_MANUAL_PAUSE")
+                else -> return errorResult("INVALID_TASK_ARGUMENTS")
+            }
+            return snapshot(task)
+        }
     }
     private fun continueTask(args: JSONObject): JSONObject {
         val task = find(args.getString("task_id"))
         synchronized(task) {
             if (task.state != "awaiting_decision") return errorResult("TASK_NOT_AWAITING_DECISION")
             task.decisionAt?.let { task.decisionWaitMs += System.nanoTime() / 1_000_000 - it }
-            task.decisionAt = null
-            task.clock.renewExecution()
-            task.errorCode = ""
-            task.continuationCount++
-            task.state = "running"
-            publishContext(task.context.start())
-            diagnostic(task,"continued")
+            task.decisionAt = null; task.lastProgress = System.nanoTime() / 1_000_000; task.warnedStall = false
+            task.clock.renewExecution(); task.errorCode = ""; task.continuationCount++; task.state = "running"
+            publishContext(task.context.start()); diagnostic(task, "continued"); task.journal.mark("continued"); changed()
             task.controller.resume()
             return snapshot(task)
         }
     }
     private fun stop(task: Task, state: String, errorCode: String = "") {
         synchronized(task) {
-            if (task.state !in setOf("queued", "running", "awaiting_decision")) return
-            task.state = state
-            task.errorCode = errorCode
-            task.watchdog?.cancel(false)
-            publishContext(task.context.finish(state))
-            diagnostic(task,state)
+            if (task.state !in ACTIVE) return
+            task.state = state; task.errorCode = errorCode
+            task.watchdog?.cancel(false); task.journal.mark(state)
+            publishContext(task.context.finish(state)); diagnostic(task, state); changed()
         }
-        task.controller.cancel()
-        task.future?.cancel(true)
+        task.controller.cancel(); task.future?.cancel(true)
     }
-    private fun snapshot(task: Task): JSONObject = synchronized(task) {
+    private fun snapshot(task: Task, after: Long = 0, limit: Int = 16): JSONObject = synchronized(task) {
+        val model = workers[task.worker]
+        val replaceReason = when {
+            task.role in MEDIA -> "media_delivery_uncertain"
+            task.state == "failed" -> "failed"
+            task.state == "awaiting_decision" && task.errorCode == "SUB_AGENT_NO_PROGRESS" -> "blocked_no_progress"
+            task.errorCode == "REPLACED_AFTER_BLOCK" && !task.executing -> "blocked_stopped"
+            else -> "healthy_or_not_isolated"
+        }
         JSONObject().put("ok", true).put("task_id", task.id).put("worker", task.worker + 1)
             .put("agent_id", workerIds[task.worker]).put("agent_name", workerNames[task.worker])
+            .put("model", model.model).put("model_display_name", model.modelDisplayName.ifBlank { model.model })
+            .put("provider_id", model.providerId).put("provider_name", model.providerName)
             .put("status", task.state).put("result", task.result)
             .put("context_usage", task.context.value.copy(status = task.state,
-                isCompacting = task.state in setOf("running", "awaiting_decision") && task.context.value.isCompacting).toJson())
+                isCompacting = task.state in ACTIVE && task.context.value.isCompacting).toJson())
             .put("role", task.role).put("project", task.project).put("error_code", task.errorCode)
             .put("workspace_id", task.workspaceId ?: JSONObject.NULL).put("workspace_path", task.workspacePath)
-            .put("review_required", true)
-            .put("can_continue", task.state == "awaiting_decision")
+            .put("workspace_ownership_verified", task.workspaceOwnershipVerified)
+            .put("review_required", true).put("can_continue", task.state == "awaiting_decision")
+            .put("can_replace", task.successorId == null && task.workspaceId == null && replaceReason in setOf("failed", "blocked_no_progress", "blocked_stopped"))
+            .put("successor_task_id", task.successorId ?: JSONObject.NULL)
+            .put("replaces_task_id", task.predecessorId ?: JSONObject.NULL)
+            .put("replace_reason", replaceReason)
             .put("continuation_count", task.continuationCount)
             .put("parallel_limit", SubAgentModelPools.currentLimit(poolLeases[task.worker]))
+            .put("supervision", task.journal.page(after.coerceAtLeast(0), limit))
             .put("continuation_note", if (task.state == "awaiting_decision") "已请求在安全边界暂停，保留同一任务、上下文与工作树；主代理可 continue_task 或 cancel_task。正在进行的请求/工具不会重放。" else "")
     }
     @Synchronized private fun manage(args: JSONObject): JSONObject {
@@ -444,22 +542,55 @@ internal class SubAgentCoordinator(
         require(action in setOf("list", "inspect", "merge", "discard"))
         val project = args.getString("project")
         val id = args.optString("workspace_id").ifBlank { null }
-        if (tasks.values.any { it.project == project && (id == null || it.workspaceId == id) && (it.state in setOf("queued", "running") || it.executing) }) return errorResult("WORKSPACE_IN_USE")
+        if (tasks.values.any { it.project == project && (id == null || it.workspaceId == id) && (it.state in ACTIVE || it.executing || it.preparing) }) return errorResult("WORKSPACE_IN_USE")
         return backend.operation(project, action, id)
     }
     private fun errorResult(code: String) = JSONObject().put("ok", false).put("code", code)
-
     private companion object {
+        val MEDIA = setOf("image_generation", "video_generation")
+        val ACTIVE = setOf("queued", "running", "awaiting_decision")
+        val ROLES = setOf("research", "implementation", "review", "summary", "image_generation", "video_generation")
         const val IMAGE_TIMEOUT_MS = 180_000L
+        const val STALL_WARNING_MS = 120_000L
+        const val STALL_PAUSE_MS = 360_000L
+        const val PAUSE_BOUNDARY_TIMEOUT_MS = 30_000L
     }
+    /** Release execution-only references without destroying completed results. */
+    fun releaseExecutionResources() {
+        synchronized(this) {
+            check(tasks.values.none { it.state in ACTIVE || it.executing || it.preparing }) { "Child execution is still active" }
+            closed = true
+        }
+        releaseIfClosedAndIdle()
+    }
+
+    private fun releaseIfClosedAndIdle() {
+        val release = synchronized(this) {
+            if (!closed || resourcesReleased || tasks.values.any { it.state in ACTIVE || it.executing || it.preparing }) false
+            else { resourcesReleased = true; true }
+        }
+        if (!release) return
+        timer.shutdownNow()
+        poolLeases.forEach(SubAgentModelPools::release)
+        workspace = null
+        executeWorkspaceChild = null
+        executeObservedChild = null
+        executeVideoChild = null
+        executeImageChild = null
+        executeChild = { _, _, _ -> error("Child execution resources released") }
+        prepareManualCompactor = { it }
+        onContext = null
+        onTaskChanged = null
+        diagnostics = null
+        callbacks.close()
+    }
+
     override fun close() {
         val owned = synchronized(this) {
-            if (closed) return
             closed = true
             tasks.values.toList()
         }
         owned.forEach { stop(it, "cancelled") }
-        poolLeases.forEach(SubAgentModelPools::release)
-        timer.shutdownNow()
+        releaseIfClosedAndIdle()
     }
 }

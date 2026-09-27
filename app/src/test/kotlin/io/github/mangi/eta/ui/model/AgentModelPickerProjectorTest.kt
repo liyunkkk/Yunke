@@ -190,7 +190,7 @@ class AgentModelPickerProjectorTest {
         assertEquals(1f, contextUsageProgress(120_000, 100_000) ?: -1f, 0f)
         assertEquals("1.05M", formatCompactTokenCount(1_050_000))
         assertEquals(
-            "No conversation context yet",
+            "0K / 100K tokens · 0.0%",
             formatContextUsage(AgentContextUsageUi(contextTokens = null, contextWindow = 100_000)),
         )
         assertEquals(
@@ -259,6 +259,7 @@ class AgentModelPickerProjectorTest {
         val expected = history.sumOf { AgentContextBudget.countMessage(it) } +
             AgentContextBudget.countCurrentTurn(expectedPrompt, expectedImages)
         assertEquals(expected, usage.contextTokens)
+        assertTrue(usage.estimated)
         assertEquals(8_000, usage.contextWindow)
         assertTrue(expectedPrompt.contains("/sdcard/notes.txt"))
         assertTrue(expectedPrompt.contains("please read this"))
@@ -301,8 +302,10 @@ class AgentModelPickerProjectorTest {
             pendingImages = listOf(huge),
             selectedModel = selected.copy(supportsVision = true),
         )
-        assertTrue((withImage.contextTokens ?: 0) < (vision.contextTokens ?: 0) / 2)
-        assertTrue((withImage.contextTokens ?: 0) > (textOnly.contextTokens ?: 0))
+        val tiny = liveContextUsage(emptyList(), "看图", listOf(huge.copy(dataUrl = "data:image/png;base64,AA")), selected)
+        assertEquals(tiny.contextTokens, withImage.contextTokens)
+        assertTrue(requireNotNull(withImage.contextTokens) >= requireNotNull(textOnly.contextTokens))
+        assertTrue(requireNotNull(vision.contextTokens) > requireNotNull(textOnly.contextTokens))
     }
 
     @Test
@@ -326,6 +329,7 @@ class AgentModelPickerProjectorTest {
             selectedModel = selected,
         )
         assertEquals(history.sumOf { AgentContextBudget.countMessage(it) }, usage.contextTokens)
+        assertTrue(usage.estimated)
     }
 
     @Test
@@ -360,6 +364,7 @@ class AgentModelPickerProjectorTest {
             listOf(image.toLiveModelImage()),
         )
         assertEquals(expected, usage.contextTokens)
+        assertTrue(usage.estimated)
         assertTrue(AgentContextBudget.countImageTokens(image.toLiveModelImage()) > 85)
     }
 
@@ -390,15 +395,24 @@ class AgentModelPickerProjectorTest {
     }
 
     @Test
+    fun latestContextUsageSkipsNewestAssistantWithoutUsage() {
+        val messages = listOf<AgentChatMessageUi>(
+            AgentMessageUi("billed", "older", isStreaming = false, usage = TokenUsageUi(inputTokens = 126364)),
+            AgentMessageUi("newest", "new", isStreaming = false),
+        )
+        assertEquals(126364, latestBilledContextTokens(messages))
+    }
+
+    @Test
     fun emptyDraftWithoutLimitHasNoInventedPercentage() {
         assertNull(contextUsageProgress(0, null))
         assertNull(contextUsageProgress(null, null))
-        assertEquals(0f, contextUsageProgress(0, 8000))
+        assertEquals(0f, contextUsageProgress(0, 8000) ?: -1f, 0f)
         val summary = formatContextUsage(
             AgentContextUsageUi(contextTokens = 0, contextWindow = null),
             noLimitText = "Unknown limit",
         )
-        assertTrue(summary.contains("Unknown limit"))
+        assertEquals("0K tokens\nUnknown limit", summary)
         assertFalse(summary.contains("%"))
     }
 
@@ -515,6 +529,7 @@ class AgentModelPickerProjectorTest {
             requestOverheadTokens = 12_000,
         )
         assertEquals(local + 12_000, usage.contextTokens)
+        assertTrue(usage.estimated)
     }
 
     @Test
@@ -588,7 +603,7 @@ class AgentModelPickerProjectorTest {
     }
 
     @Test
-    fun latestBilledContextTokensAddsUnbilledThinkingAndToolResults() {
+    fun latestBilledContextTokensKeepsMeasuredInputWithoutAddingUnbilledTail() {
         val billed = listOf(
             UserMessageUi(id = "u1", content = "hi"),
             AgentMessageUi(
@@ -643,7 +658,20 @@ class AgentModelPickerProjectorTest {
                 isStreaming = true,
             ),
         )
-        assertEquals(2_000, latestBilledContextTokens(compacted))
+        assertNull(latestBilledContextTokens(compacted))
+    }
+
+    @Test
+    fun compactedRunBoundaryDoesNotHideNewRunBill() {
+        val oldId = "assistant-run-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-1-0"
+        val newId = "assistant-run-11111111-2222-3333-4444-555555555555-1-0"
+        val messages = listOf<AgentChatMessageUi>(
+            AgentMessageUi(oldId, "old", usage = TokenUsageUi(inputTokens = 90000)),
+            ContextCompactedMessageUi("marker", 8, "summary", resumeRound = 2),
+            AgentMessageUi(oldId.replace("-1-0", "-1-1"), "retained", usage = TokenUsageUi(inputTokens = 90000)),
+            AgentMessageUi(newId, "new", usage = TokenUsageUi(inputTokens = 1000)),
+        )
+        assertEquals(1000, latestBilledContextTokens(messages))
     }
 
     @Test
@@ -761,10 +789,8 @@ class AgentModelPickerProjectorTest {
             selectedModel = selected,
             uncommittedLiveTokens = streaming,
         )
-        assertEquals(
-            history.sumOf { AgentContextBudget.countMessage(it) } + streaming,
-            usage.contextTokens,
-        )
+        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) } + streaming, usage.contextTokens)
+        assertTrue(usage.estimated)
     }
 
     @Test

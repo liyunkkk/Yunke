@@ -64,7 +64,7 @@ internal fun ManageChatsScreen(
     onTogglePin: (String) -> Unit,
     onDeleteConversation: (ConversationSummaryUi) -> Unit,
     onDeleteAll: () -> Unit,
-    onSearchHistory: (String) -> List<MessageSearchHit> = { emptyList() },
+    onSearchHistory: suspend (String) -> List<MessageSearchHit> = { emptyList() },
     onOpenHistoryHit: (MessageSearchHit) -> Unit = {},
 ) {
     var showDeleteAll by remember { mutableStateOf(false) }

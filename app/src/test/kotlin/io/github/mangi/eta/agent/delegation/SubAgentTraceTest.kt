@@ -26,7 +26,7 @@ class SubAgentTraceTest {
         for (name in SubAgentTools.names) {
             assertTrue(AgentSensitiveToolPolicy.isSensitive(name))
             val call = AgentModelClient.ToolCall("id", name,
-                """{"task":"private evidence","context":"private evidence","task_id":"private evidence"}""")
+                """{"task":"private evidence","context":"private evidence","task_id":"private evidence","guidance":"private evidence","action":"guide"}""")
             assertFalse(formatter.summarizeArguments(call).contains("private evidence"))
             assertNull(formatter.displayCommand(call))
         }

@@ -105,8 +105,15 @@ internal class AgentLocalTools(
     private val runSkillsRoot: File? = null,
     pendingSkillConflict: PendingSkillConflictCapability? = null,
     private val rootAvailable: () -> Boolean = { RootAccess.isGranted },
+    private val frozenSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = runCatching {
+        io.github.mangi.eta.agent.device.AgentTaskSurface.stored()
+    }.getOrDefault(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK),
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
+    private val backgroundSurface = frozenSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
+    private val virtualLifecycle = setOf("start_virtual_session", "keep_virtual_result", "finish_virtual_session")
+    private fun virtualRouted(name: String) = backgroundSurface &&
+        (io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(name) || name in virtualLifecycle)
     private val closed = AtomicBoolean(false)
     private val deviceController = RootShellDeviceController(logger, screenshotExcludedPackages, rootAvailable)
     private val rootCommandExecutor = BoundedRootCommandExecutor(logger, rootAvailable = rootAvailable)
@@ -173,8 +180,16 @@ internal class AgentLocalTools(
     private val inspectedGitHubSnapshots =
         ConcurrentHashMap<String, GitHubInspectionSnapshot>()
 
+    /** Run before closing tools on successful completion; cancellation only holds the owner. */
+    fun completeVirtualDelivery(): JSONObject? {
+        if (!backgroundSurface) return null
+        io.github.mangi.eta.agent.device.VirtualDisplaySession.onRunClosed(context, browserRunId)
+        return io.github.mangi.eta.agent.device.VirtualDisplaySession.deliveryReceipt(browserRunId)
+    }
+
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        io.github.mangi.eta.agent.device.VirtualDisplaySession.holdOnCancelledRun(browserRunId)
         publishedObservation.set(PublishedObservation())
         AgentBrowserSession.interruptAgentAction(browserRunId)
         terminalController.interruptAll()
@@ -197,7 +212,13 @@ internal class AgentLocalTools(
         terminalController.sessionIdentity(sessionId)
 
     override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
-        if (!ForegroundExclusiveGate.shouldSerialize(toolCall.name)) {
+        val handoffBlocksGui = runCatching {
+            io.github.mangi.eta.agent.device.AgentTaskSurface.blocksGuiTool(toolCall.name, frozenSurface) && !backgroundSurface
+        }.getOrDefault(true)
+        if (handoffBlocksGui) {
+            return textResult(errorResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.NOT_READY, "副屏交接未就绪，本次未执行；请在设置改为前台"))
+        }
+        if (virtualRouted(toolCall.name) || !ForegroundExclusiveGate.shouldSerialize(toolCall.name)) {
             return executeInternal(toolCall)
         }
         if (!ForegroundExclusiveGate.acquire(browserRunId) { closed.get() }) {
@@ -210,6 +231,7 @@ internal class AgentLocalTools(
 
     private fun executeInternal(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult =
         runCatching {
+            if (closed.get()) return@runCatching textResult(errorResult("RUN_CLOSED", "任务已关闭"))
             if (AssistantRepository.isReady() && AssistantRepository.currentProfile(memoryAssistantId) == null) {
                 terminalController.interruptAll()
                 terminalController.stopOwnedDaemons()
@@ -221,6 +243,16 @@ internal class AgentLocalTools(
             ) {
                 return@runCatching textResult(errorResult("ROOT_REQUIRED", "此操作需要 Root 授权，本次未执行"))
             }
+            if (virtualRouted(toolCall.name)) {
+                if (!rootAvailable()) return@runCatching textResult(errorResult("ROOT_REQUIRED", "后台副屏需要 Root"))
+                return@runCatching when(toolCall.name) {
+                    "start_virtual_session" -> textResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.start(context,browserRunId).toString())
+                    "keep_virtual_result" -> textResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.keep(browserRunId,args).toString())
+                    "finish_virtual_session" -> textResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.finish(browserRunId, context).toString())
+                    else -> io.github.mangi.eta.agent.device.VirtualDisplaySession.executeGui(context,browserRunId,toolCall.name,args,screenshotExcludedPackages())
+                }
+            }
+            if (toolCall.name in virtualLifecycle) return@runCatching textResult(errorResult("BACKGROUND_MODE_REQUIRED", "当前任务不是后台模式"))
             deviceToolPermissionError(toolCall.name)?.let { return@runCatching it }
             memoryToolPermissionError(toolCall.name)?.let { return@runCatching it }
             when (val decision = beforeToolExecution(toolCall.name)) {
@@ -240,6 +272,8 @@ internal class AgentLocalTools(
                 "text_to_speech" -> textResult(textToSpeech(args))
                 "search_apps" -> textResult(searchApps(args))
                 "launch_app" -> textResult(launchApp(args))
+                "inspect_virtual_backend" -> textResult(io.github.mangi.eta.agent.device.VirtualDisplayBackendBridge.inspect(context).toString())
+                "keep_virtual_result" -> textResult(keepVirtualResult(args))
                 "open_uri" -> textResult(openUri(args))
                 "delegate_to_kimi_code" -> textResult(kimiCodeSubagentTool.delegate(args))
                 "browser_use" -> browserUse(args, toolCall.id)
@@ -667,6 +701,13 @@ internal class AgentLocalTools(
             .put("apps", apps.toJsonArray())
             .toString()
     }
+
+
+    private fun keepVirtualResult(@Suppress("UNUSED_PARAMETER") args: JSONObject): String =
+        errorResult(
+            io.github.mangi.eta.agent.device.VirtualDisplaySession.NOT_READY,
+            "虚拟副屏交接尚未就绪；只读阶段不支持保留、恢复或关闭应用，本次未执行",
+        )
 
     private fun launchApp(args: JSONObject): String {
         val packageName = args.optString("package_name").trim().ifBlank { null }

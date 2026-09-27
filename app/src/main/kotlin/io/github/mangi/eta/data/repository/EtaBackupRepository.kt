@@ -14,6 +14,7 @@ import io.github.mangi.eta.agent.terminal.LinuxEnvironmentPaths
 import io.github.mangi.eta.agent.terminal.LinuxExecutionBackend
 import io.github.mangi.eta.agent.terminal.TerminalPrivateStorage
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.datastore.EtaSettingsBackup
 import io.github.mangi.eta.data.datastore.SettingsDataStore
@@ -101,10 +102,11 @@ internal data class EtaConversationExport(
     val contextCheckpoint: ConversationContextCheckpointEntity? = null,
     val attachmentCount: Int = 0,
     val attachments: List<ConversationArchiveAttachment> = emptyList(),
+    val subAgentConfigJson: String? = null,
 ) {
     companion object {
         const val FORMAT = "eta-conversation"
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
         const val MANIFEST_NAME = "eta-conversation.json"
     }
 }
@@ -223,7 +225,7 @@ internal object EtaBackupRepository {
                 AgentExecutionService.beginBackupMaintenance()
                 try {
                     val appContext = context.applicationContext
-                    recoverInterruptedImport(appContext)
+                    recoverInterruptedImport(appContext, maintenanceAlreadyHeld = true)
                     val operation = File(appContext.filesDir, "backup-restore")
                     BackupDurability.mkdirs(operation)
                     var mayRetire = false
@@ -247,14 +249,21 @@ internal object EtaBackupRepository {
                             decodeConversation(it.readText())
                         }
                         if (conversation != null) {
+                            // Validate the entire owner archive before any Room history or preferences write.
+                            val config = BackupSubAgentConfig.archiveForImport(conversation.schemaVersion,
+                                conversation.subAgentConfigJson, ConversationSubAgentPreferences())
                             val plan = ConversationArchiveImport.prepare(appContext, conversation, files)
                             val newId = plan.document.conversation.id
                             check(EtaDatabase.get(appContext).conversationDao().conversationEntity(newId) == null) { "新会话 ID 冲突，未开始导入" }
+                            val prefs = requireNotNull(Prefs.localAgentPreferences()) { "Agent preferences 未初始化" }
+                            check(!BackupSubAgentConfig.hasOwner(prefs, newId)) { "新会话 owner 冲突，未开始导入" }
                             withContext(NonCancellable) {
                                 durableText(File(operation, "new-conversation-id"), newId)
                                 val journal = BackupRestoreJournal(operation)
                                 journal.begin(plan.files.keys.toList())
+                                val owner = BackupConversationOwnerImport.plan(operation, newId, config)
                                 try {
+                                    owner.begin(appContext)
                                     EtaDatabase.get(appContext).withTransaction {
                                         plan.files.forEach { (target, source) -> journal.replace(target, source) }
                                         val imported = plan.document
@@ -264,8 +273,8 @@ internal object EtaBackupRepository {
                                     }
                                 } catch (failure: Throwable) {
                                     try {
-                                        // Metadata transaction aborts before this block. Only new files
-                                        // need undo; no full provider/memory/skill snapshot is required.
+                                        // Room has rolled back; undo only the owner installed by THIS import.
+                                        BackupConversationOwnerImport.recover(appContext, operation, committed = false)
                                         journal.rollback()
                                         journal.commit()
                                         mayRetire = true
@@ -277,6 +286,7 @@ internal object EtaBackupRepository {
                                 }
                                 // Marker failure must keep maintenance active until startup recovery.
                                 journal.commit()
+                                BackupConversationOwnerImport.recover(appContext, operation, committed = true)
                                 mayRetire = true
                             }
                             return@withLock plan.document.toConversationSummary()
@@ -340,7 +350,7 @@ internal object EtaBackupRepository {
                             withContext(NonCancellable) {
                                 try {
                                     journal.rollback()
-                                    restoreMetadata(appContext, old, reconcile = false)
+                                    restoreMetadata(appContext, old, reconcile = false, exactPreferences = true)
                                 } catch (rollbackFailure: Throwable) {
                                     failure.addSuppressed(rollbackFailure)
                                     throw EtaBackupException("恢复失败且回滚尚未完成，恢复日志已保留。请重启应用完成恢复。", failure)
@@ -363,17 +373,19 @@ internal object EtaBackupRepository {
                 } finally {
                     val operation = File(context.filesDir, "backup-restore")
                     // A failed rollback keeps new execution blocked until startup recovery succeeds.
-                    if (!BackupRestoreJournal.hasJournal(operation)) {
+                    if (!operation.exists()) {
                         AgentExecutionService.endBackupMaintenance()
                     }
                 }
             }
         }
 
-    /** Startup recovery runs before UI accepts work. Do not ignore a recovery failure. */
-    suspend fun recoverInterruptedImport(context: Context) {
+    /** Fence actual run admission before examining any journal: logs alone do not block new history. */
+    suspend fun recoverInterruptedImport(context: Context, maintenanceAlreadyHeld: Boolean = false) {
         val operation = File(context.filesDir, "backup-restore")
         if (!operation.exists()) return
+        if (!maintenanceAlreadyHeld) AgentExecutionService.beginBackupMaintenance()
+        // On failure the fence stays up; the caller must not admit work before a later successful recovery.
         if (BackupRestoreJournal.hasJournal(operation) && !BackupRestoreJournal.isCommitted(operation)) {
             val idFile = File(operation, "new-conversation-id")
             if (idFile.exists() || File(idFile.path + ".bak").exists()) {
@@ -381,17 +393,22 @@ internal object EtaBackupRepository {
                 require(Regex("conv-[0-9a-f-]{36}").matches(id)) { "会话恢复日志 ID 无效" }
                 // This ID was freshly allocated for this import only.
                 EtaDatabase.get(context).conversationDao().deleteImportedConversation(id)
+                BackupConversationOwnerImport.recover(context, operation, committed = false)
                 BackupRestoreJournal(operation).rollback()
             } else {
                 val old = android.util.AtomicFile(File(operation, "previous.json")).openRead().use {
                     decodeDocument(BackupArchiveSafety.readText(it))
                 }
                 BackupRestoreJournal(operation).rollback()
-                restoreMetadata(context, old, reconcile = false)
+                restoreMetadata(context, old, reconcile = false, exactPreferences = true)
             }
         }
-        // Retirement is atomic. A crash during recursive deletion must never reactivate this log.
+        if (BackupRestoreJournal.hasJournal(operation) && BackupRestoreJournal.isCommitted(operation)) {
+            BackupConversationOwnerImport.recover(context, operation, committed = true)
+        }
+        // The atomic retirement removes the journal from the recovery namespace before releasing admission.
         BackupDurability.retire(operation).deleteRecursively()
+        if (!maintenanceAlreadyHeld) AgentExecutionService.endBackupMaintenance()
     }
 
     suspend fun inspect(input: InputStream): EtaBackupSummary = withContext(Dispatchers.IO) {
@@ -492,11 +509,14 @@ internal object EtaBackupRepository {
             conversation = conversation,
             messages = messages,
             contextCheckpoint = checkpoint,
+            subAgentConfigJson = BackupSubAgentConfig.archiveForExport(conversationId, ConversationSubAgentPreferences()),
             attachmentCount = 0,
         )
     }
 
-    private suspend fun restoreMetadata(context: Context, document: EtaBackupDocument, reconcile: Boolean = true) {
+    private suspend fun restoreMetadata(
+        context: Context, document: EtaBackupDocument, reconcile: Boolean = true, exactPreferences: Boolean = false,
+    ) {
         val database = EtaDatabase.get(context)
         database.withTransaction {
             database.providerDao().replaceAll(
@@ -526,7 +546,8 @@ internal object EtaBackupRepository {
             McpSecretStore(context).replaceAll(document.mcpTokens)
             document.settings?.let { SettingsDataStore.restoreBackup(it) }
                 ?: SettingsDataStore.setSelection(document.selectedProviderId, document.selectedModelId)
-            if (document.agentPreferences.isNotEmpty()) {
+            // Old archives without this field retain their current prefs; our own undo snapshot is exact.
+            if (exactPreferences || document.agentPreferences.isNotEmpty()) {
                 Prefs.restoreAgentPreferences(document.agentPreferences)
             }
         } else {
@@ -628,6 +649,10 @@ internal object EtaBackupRepository {
             }
         }
         document.assistantMemories.keys.forEach { io.github.mangi.eta.data.model.AssistantStorage.id(it) }
+        if (document.agentPreferences.keys.any { it == "agent_conversation_child_seed_v1" ||
+                it.startsWith("agent_conversation_child_owner_v1_") }) {
+            BackupSubAgentConfig.validatePreferences(document.agentPreferences, ConversationSubAgentPreferences())
+        }
         val mcpIds = document.mcpServers.map { it.id }
         if (mcpIds.size != mcpIds.toSet().size || mcpIds.any(String::isBlank)) {
             throw EtaBackupException("备份中的 MCP 服务器存在重复或无效 ID")

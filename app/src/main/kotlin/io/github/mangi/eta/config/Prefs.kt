@@ -217,7 +217,7 @@ internal object Prefs {
     }
 
     fun restoreAgentPreferences(values: Map<String, String>) {
-        val prefs = localAgent ?: return
+        val prefs = requireNotNull(localAgent) { "Agent preferences 未初始化" }
         val editor = prefs.edit().clear()
         values.forEach { (key, encoded) ->
             if (key.isBlank() || encoded.length < 2 || encoded[1] != ':') return@forEach
@@ -229,7 +229,7 @@ internal object Prefs {
                 's' -> editor.putString(key, payload)
             }
         }
-        editor.commit()
+        check(editor.commit()) { "Agent preferences 恢复未落盘" }
     }
 
     /** 关闭时压缩用当前对话模型；已选过自定义模型的旧配置视为开启。 */

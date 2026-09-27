@@ -109,7 +109,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.media.AgentVideoCodec
-import io.github.mangi.eta.agent.model.AgentContextBudget
 import io.github.mangi.eta.agent.voice.VoiceEntryMode
 import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.agent.voice.VoiceModePhase
@@ -158,6 +157,8 @@ internal fun AgentChatInputBar(
     modelPickerState: AgentModelPickerUiState,
     history: List<AgentModelClient.ConversationMessage>,
     billedContextTokens: Int? = null,
+    projectedContextTokens: Int? = null,
+    billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
@@ -207,11 +208,15 @@ internal fun AgentChatInputBar(
     val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
     val draftText = textFieldState.text.toString()
-    val historyTokenCount = remember(history) {
-        history.sumOf { AgentContextBudget.countMessage(it) }
+    // Raw counts calibrate existing cloud receipts; filtered counts are local preview only.
+    val historyTokenCount = remember(history) { history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) } }
+    val supportsVision = modelPickerState.selectedModel?.supportsVision == true
+    val supportsVideo = modelPickerState.selectedModel?.supportsVideo == true
+    val localHistoryTokenCount = remember(history, supportsVision, supportsVideo) {
+        io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
     }
     val liveUsage = remember(
-        historyTokenCount,
+        localHistoryTokenCount, projectedContextTokens,
         billedContextTokens,
         requestOverheadTokens,
         billedOverheadTokens,
@@ -223,21 +228,33 @@ internal fun AgentChatInputBar(
         modelPickerState.selectedModel,
     ) {
         liveContextUsage(
-            // History tokens are cached above so typing does not rescan the transcript.
             history = emptyList(),
+            historyTokenCount = localHistoryTokenCount,
+            projectedContextTokens = projectedContextTokens,
             currentInput = draftText,
             pendingImages = pendingImages,
             selectedModel = modelPickerState.selectedModel,
             pendingFileReferences = pendingFileReferences,
             pendingConversationMentions = conversationMentions.pending,
-            historyTokenCount = historyTokenCount,
             billedContextTokens = billedContextTokens,
             requestOverheadTokens = requestOverheadTokens,
             billedOverheadTokens = billedOverheadTokens,
             uncommittedLiveTokens = uncommittedLiveTokens,
         )
     }
-    val contextSendBlocked = shouldBlockSendForContextWindow(autoCompressEnabled, liveUsage)
+    val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
+        conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
+        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens) {
+        io.github.mangi.eta.ui.model.compressionContextUsage(
+            history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
+            selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
+            localHistoryTokenCount = localHistoryTokenCount,
+            pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
+            billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
+            billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
+        )
+    }
+    val contextSendBlocked = shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
     val compressionSendBlocked = isCompressingContext
     val canSend = !modelPickerState.isChanging && modelPickerState.selectedModel != null && !contextSendBlocked && !compressionSendBlocked && (
         textFieldState.text.isNotBlank() ||

@@ -328,7 +328,9 @@ internal fun ChatMessageItem(
             onBranch = { actions.onBranchMessage(message.id) },
             modifier = modifier,
         )
-        is SystemNoticeMessageUi -> AgentMessageBlock(
+        is SystemNoticeMessageUi -> if (message.code == SystemNoticeCode.Completed) {
+            TaskCompletedDivider(modifier)
+        } else AgentMessageBlock(
             message = AgentMessageUi(
                 id = message.id,
                 content = buildString {
@@ -340,6 +342,7 @@ internal fun ChatMessageItem(
                                 SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
                                 SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
                                 SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
+                                SystemNoticeCode.Completed -> R.string.system_notice_completed
                             },
                         ),
                     )
@@ -387,37 +390,23 @@ internal fun ChatMessageItem(
  * 把连续的思考与工具调用收束为一个可展开的工作过程，避免 Agent 事件退化为聊天气泡噪音。
  */
 @Composable
-internal fun AgentWorkProcess(
-    id: String,
+internal fun AgentWorkProcessHeader(
     messages: List<AgentChatMessageUi>,
-    onOpenBrowser: () -> Unit,
-    currentBrowserMessageId: String?,
-    retainedStreamingStates: Map<String, StreamingMarkdownState>,
     modifier: Modifier = Modifier,
     isPaused: Boolean = false,
-    isTrailing: Boolean = false,
-    turnStreaming: Boolean = false,
+    expanded: Boolean,
+    onToggle: () -> Unit,
 ) {
     val running = messages.any { message ->
         (message is ThinkingMessageUi && message.isStreaming) ||
             (message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running)
     }
-    // 推理结束但本轮还在跑时，已完成步骤仍留在卡片里；整轮步骤都结束后才自动收起。
-    val keepOpen = running || (isTrailing && turnStreaming)
     val toolCount = messages.count { it is ToolActivityMessageUi }
     val runningTool = messages.lastOrNull { message ->
         message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running
     } as? ToolActivityMessageUi
     val runningToolTitle = runningTool?.argumentsSummary?.takeIf { it.isNotBlank() }
         ?: runningTool?.let { toolDisplayName(it.toolName) }
-    var expanded by rememberSaveable(id) { mutableStateOf(running) }
-    var manuallyExpanded by rememberSaveable(id) { mutableStateOf(false) }
-
-    LaunchedEffect(keepOpen) {
-        if (manuallyExpanded) return@LaunchedEffect
-        expanded = keepOpen
-    }
-
     val view = LocalView.current
     SideEffect {
         if (isPaused) return@SideEffect
@@ -436,99 +425,72 @@ internal fun AgentWorkProcess(
 
     val pulseAlpha = rememberActivePulse(active = running && !isPaused, label = "work_pulse")
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 4.dp)
-            .squircleSurface(
-                color = MiuixTheme.colorScheme.surface,
-                cornerRadius = 14.dp,
-            )
-            .squircleBorder(
-                width = 0.5.dp,
-                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.50f),
-                cornerRadius = 14.dp,
-            ),
+    WorkProcessCardSlice(
+        part = if (expanded && messages.isNotEmpty()) WorkProcessCardPart.First else WorkProcessCardPart.Whole,
+        modifier = modifier,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                    manuallyExpanded = true
-                    expanded = !expanded
-                }
-                .padding(horizontal = 13.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = when {
-                    runningTool != null -> iconForTool(runningTool.toolName)
-                    running -> ImageVector.vectorResource(R.drawable.ic_atom)
-                    else -> Icons.Rounded.Build
-                },
-                contentDescription = null,
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
                 modifier = Modifier
-                    .size(15.dp)
-                    .graphicsLayer(alpha = if (running && !isPaused) pulseAlpha else 1f),
-                tint = if (running && !isPaused) {
-                    MiuixTheme.colorScheme.primary
-                } else {
-                    MiuixTheme.colorScheme.onSurfaceVariantSummary
-                },
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = when {
-                    running && toolCount > 0 -> pluralStringResource(
-                        R.plurals.work_processing_step,
-                        toolCount,
-                        toolCount,
-                    ) + (runningToolTitle?.let { " · $it" } ?: "")
-                    running -> stringResource(R.string.work_analyzing)
-                    toolCount > 0 -> pluralStringResource(
-                        R.plurals.work_completed_steps,
-                        toolCount,
-                        toolCount,
-                    )
-                    else -> stringResource(R.string.work_completed)
-                },
-                style = MiuixTheme.textStyles.body2,
-                color = if (running && !isPaused) {
-                    MiuixTheme.colorScheme.onSurface
-                } else {
-                    MiuixTheme.colorScheme.onSurfaceVariantSummary
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Icon(
-                imageVector = if (expanded) Icons.Rounded.ExpandMore
-                    else Icons.Rounded.ChevronRight,
-                contentDescription = stringResource(
-                    if (expanded) R.string.work_collapse else R.string.work_expand,
-                ),
-                modifier = Modifier.size(14.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.7f),
-            )
-        }
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = when {
+                        runningTool != null -> iconForTool(runningTool.toolName)
+                        running -> ImageVector.vectorResource(R.drawable.ic_atom)
+                        else -> Icons.Rounded.Build
+                    },
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(15.dp)
+                        .graphicsLayer(alpha = if (running && !isPaused) pulseAlpha else 1f),
+                    tint = if (running && !isPaused) {
+                        MiuixTheme.colorScheme.primary
+                    } else {
+                        MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    },
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = when {
+                        running && toolCount > 0 -> pluralStringResource(
+                            R.plurals.work_processing_step,
+                            toolCount,
+                            toolCount,
+                        ) + (runningToolTitle?.let { " · $it" } ?: "")
+                        running -> stringResource(R.string.work_analyzing)
+                        toolCount > 0 -> pluralStringResource(
+                            R.plurals.work_completed_steps,
+                            toolCount,
+                            toolCount,
+                        )
+                        else -> stringResource(R.string.work_completed)
+                    },
+                    style = MiuixTheme.textStyles.body2,
+                    color = if (running && !isPaused) {
+                        MiuixTheme.colorScheme.onSurface
+                    } else {
+                        MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandMore
+                        else Icons.Rounded.ChevronRight,
+                    contentDescription = stringResource(
+                        if (expanded) R.string.work_collapse else R.string.work_expand,
+                    ),
+                    modifier = Modifier.size(14.dp),
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.7f),
+                )
+            }
 
-        AnimatedVisibility(
-            visible = expanded,
-            enter = fadeIn() + expandVertically(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                )
-            ),
-            exit = fadeOut() + shrinkVertically(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow,
-                )
-            ),
-        ) {
-            Column {
+            if (expanded && messages.isNotEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -536,20 +498,6 @@ internal fun AgentWorkProcess(
                         .height(0.5.dp)
                         .background(MiuixTheme.colorScheme.outline.copy(alpha = 0.45f)),
                 )
-                Column(modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)) {
-                    val nestedActions = remember { ChatMessageActions() }
-                    SideEffect { nestedActions.onOpenBrowser = onOpenBrowser }
-                    messages.forEach { message ->
-                        ChatMessageItem(
-                            message = message,
-                            actions = nestedActions,
-                            showBrowserShortcut = message.id == currentBrowserMessageId,
-                            retainedStreamingState = retainedStreamingStates[message.id],
-                            compact = true,
-                            isPaused = isPaused,
-                        )
-                    }
-                }
             }
         }
     }

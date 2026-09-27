@@ -62,7 +62,7 @@ internal object ConversationArchiveMedia {
                 token
             }
         }
-        return Prepared(transformed.copy(schemaVersion = 2, attachments = attachments,
+        return Prepared(transformed.copy(schemaVersion = EtaConversationExport.SCHEMA_VERSION, attachments = attachments,
             attachmentCount = attachments.size), files)
     }
 

@@ -9,7 +9,7 @@ internal object AgentTerminalToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "terminal",
-                    description = "Manage terminal sessions on the current device. environment=android runs Android system commands and root operations; environment=linux runs the Alpine or Debian environment selected by the user. Apktool build is unavailable until an ARM64 AAPT2 runtime is installed. Use open_and_exec for one-shot commands. Use open to create a persistent shell session and exec with session_id for multi-step work. Use async=true without session_id for long-running independent commands, then read_async_result with job_id to stream output chunks. Use daemon_start for services that must keep running after the Agent run (listening ports, web panels, watchers): the process detaches from any command shell, logs to a file, and survives until daemon_stop or device reboot. Manage daemons with daemon_list, daemon_logs and daemon_stop by task_id. Use close to stop jobs or close sessions.",
+                    description = "Manage terminal sessions on the current device. environment=android runs Android system commands and root operations; environment=linux runs the Alpine or Debian environment selected by the user. Default android: explicitly pass environment=linux and cwd=/workspace/<project> for Linux tools and project Git commands. run_command is Android-only and never enters the Linux environment. Do not repeat a failed call in the unchanged environment. Apktool build is unavailable until an ARM64 AAPT2 runtime is installed. Use open_and_exec for one-shot commands. Use open to create a persistent shell session and exec with session_id for multi-step work. Use async=true without session_id for long-running independent commands, then read_async_result with job_id to stream output chunks. Use daemon_start for services that must keep running after the Agent run (listening ports, web panels, watchers): the process detaches from any command shell, logs to a file, and survives until daemon_stop or device reboot. Manage daemons with daemon_list, daemon_logs and daemon_stop by task_id. Use close to stop jobs or close sessions.",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -121,7 +121,7 @@ internal object AgentTerminalToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "run_command",
-                    description = "在 Android 设备上用非交互 Root Shell 执行命令。适合系统信息、包管理、文件检查、Linux 命令流水线。每次调用都是新 shell；不要运行交互式或长期驻留命令。",
+                    description = "只在 Android 系统的非交互 Root Shell 执行命令，不会进入 Debian 或 Alpine。适合 Android 系统信息、包管理和本机文件检查。Linux 工具及工作区 Git 操作必须使用 terminal(environment=linux,cwd=/workspace/项目名)，本工具不接受 environment。每次调用都是新 shell；不要运行交互式或长期驻留命令。遇到命令不存在时不要在相同环境原样重试，更不要自动跨环境重放有副作用的命令。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(

@@ -86,6 +86,9 @@ internal object AgentRuntimeWire {
     /** client -> service：在当前 run 内压缩，不另开 run。 */
     const val MSG_COMPACT_RUN = 16
 
+    /** Stop only the parent; independently owned child groups remain available. */
+    const val MSG_STOP_MAIN_RUN = 17
+
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"
 
@@ -155,6 +158,7 @@ internal object AgentRuntimeWire {
     private const val KEY_HISTORY_ALREADY_COMPACTED = "history_already_compacted"
     private const val KEY_CREATED_AT = "created_at"
     private const val KEY_RESULTS = "results"
+    private const val KEY_VIRTUAL_DELIVERY_COMPLETED = "virtual_delivery_completed"
     private const val MAX_RESULT_CONTENT_CHARS = 64_000
     private const val MAX_RESULT_REASONING_CHARS = 32_000
     private const val MAX_DRAIN_CONTENT_CHARS = 16_000
@@ -217,6 +221,7 @@ internal object AgentRuntimeWire {
         val error: String? = null,
         val reasoningContent: String = "",
         val transcript: List<AgentModelClient.ConversationMessage> = emptyList(),
+        val virtualDeliveryCompleted: Boolean = false,
     )
 
     data class EntryHandoff(
@@ -491,6 +496,7 @@ internal object AgentRuntimeWire {
     ): Bundle = Bundle().apply {
         putString(KEY_RUN_ID, runId)
         putBoolean(KEY_OK, ok)
+        putBoolean(KEY_VIRTUAL_DELIVERY_COMPLETED, virtualDeliveryCompleted)
         putString(
             KEY_CONTENT,
             content.boundedText(
@@ -521,6 +527,7 @@ internal object AgentRuntimeWire {
             error = bundle.getString(KEY_ERROR),
             reasoningContent = bundle.getString(KEY_REASONING_CONTENT).orEmpty(),
             transcript = AgentRuntimeTranscriptTransfer.readFromBundle(bundle),
+            virtualDeliveryCompleted = bundle.getBoolean(KEY_VIRTUAL_DELIVERY_COMPLETED, false),
         )
 
     fun toBundle(completedRun: CompletedRun): Bundle = completedRun.toBundle(compactForDrain = false)
@@ -714,6 +721,8 @@ internal object AgentRuntimeWire {
                 putString(KEY_TYPE, "usage_received")
                 putInt("round", event.round)
                 putBoolean("projected", event.projected)
+                event.requestHistoryTokens?.let { putInt("request_history_tokens", it) }
+                event.requestOverheadTokens?.let { putInt("request_overhead_tokens", it) }
                 putTokenUsage(event.usage)
             }
 
@@ -781,6 +790,7 @@ internal object AgentRuntimeWire {
                 putInt("original_count", event.originalCount)
                 putInt("compacted_count", event.compactedCount)
                 putString("compressor_label", event.compressorLabel)
+                putBoolean("pruning_only", event.pruningOnly)
                 putBoolean("context_blocked", event.blocked)
                 putString("context_reason", event.reason)
                 if (historyDescriptor == null) putString("history_json", encodeConversationHistory(event.history))
@@ -878,6 +888,8 @@ internal object AgentRuntimeWire {
             round = bundle.getInt("round"),
             usage = bundle.getTokenUsage(),
             projected = bundle.getBoolean("projected", false),
+            requestHistoryTokens = bundle.optionalInt("request_history_tokens"),
+            requestOverheadTokens = bundle.optionalInt("request_overhead_tokens"),
         )
 
         "user_supplement_received" -> AgentEvent.UserSupplementReceived(
@@ -940,6 +952,8 @@ internal object AgentRuntimeWire {
             compressorLabel = bundle.getString("compressor_label").orEmpty(),
             blocked = bundle.getBoolean("context_blocked", false),
             reason = bundle.getString("context_reason").orEmpty(),
+            pruningOnly = bundle.getBoolean("pruning_only",
+                bundle.getString("compressor_label") == "工具输出预算修剪（原文可回读）"),
         )
 
         "run_finished" -> AgentEvent.RunFinished(

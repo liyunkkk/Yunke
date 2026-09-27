@@ -28,4 +28,18 @@ class SubAgentExecutionClockTest {
         now = 210
         assertEquals("SUB_AGENT_COMPACTION_TIMEOUT", clock.expired())
     }
+    @Test fun textDeadlineWarnsOnlyOnceButCompactionStillExpiresAfterDecisionPause() {
+        var now = 0L
+        val clock = SubAgentExecutionClock(100, 200, softExecution = true, now = { now })
+        now = 120
+        assertTrue(clock.softWarningDue())
+        assertFalse(clock.softWarningDue())
+        assertNull(clock.expired())
+        clock.pauseExecution()
+        now = 10_000
+        assertNull(clock.expired())
+        clock.setCompacting(true)
+        now = 10_201
+        assertEquals("SUB_AGENT_COMPACTION_TIMEOUT", clock.expired())
+    }
 }

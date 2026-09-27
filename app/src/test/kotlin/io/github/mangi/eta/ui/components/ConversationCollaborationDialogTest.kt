@@ -21,12 +21,12 @@ class ConversationCollaborationDialogTest {
     @get:Rule val compose = createComposeRule()
 
     @Test fun showsRolesAndToggleWithoutObsoleteReadOnlyParagraph() {
-        val enabled = mutableStateOf(false)
+        val fixture = SubAgentUiFixture(enabled = false)
         val visible = mutableStateOf(true)
-        compose.setContent {
+        compose.setSubAgentContent(fixture) {
             MiuixTheme(colors = lightColorScheme()) {
-                ConversationCollaborationDialog(visible.value, enabled.value,
-                    { enabled.value = it }, { visible.value = false })
+                ConversationCollaborationDialog(visible.value, false,
+                    {}, { visible.value = false })
             }
         }
         compose.onNodeWithText("本会话协作").assertExists()
@@ -35,47 +35,40 @@ class ConversationCollaborationDialogTest {
         }
         compose.onNodeWithText("点按模型切换 · 长按调整思考", substring = true).assertExists()
         compose.onNodeWithText("最多两个只读子代理", substring = true).assertDoesNotExist()
+        compose.runOnIdle { assertFalse(fixture.snapshot().enabled) }
         compose.onNodeWithText("自动委派").performClick()
-        compose.runOnIdle { assertTrue(enabled.value) }
+        compose.runOnIdle { assertTrue(fixture.snapshot().enabled) }
         compose.onNodeWithText("完成").performClick()
         compose.runOnIdle { assertFalse(visible.value) }
     }
     @Test fun emptySlotClickOpensModelPickerAndLongPressDoesNotTriggerClick() {
-        val slot = 0
-        val saved = io.github.mangi.eta.agent.delegation.SubAgentPreferences.selection(slot)
-        val savedEffort = io.github.mangi.eta.agent.delegation.SubAgentPreferences.reasoning(slot)
-        try {
-            io.github.mangi.eta.agent.delegation.SubAgentPreferences.save(slot,
-                io.github.mangi.eta.agent.model.ModelFeatureSelection(true, "", ""))
-            compose.setContent {
-                MiuixTheme(colors = lightColorScheme()) {
-                    ConversationCollaborationDialog(true, true, {}, {})
-                }
+        val fixture = SubAgentUiFixture()
+        compose.setSubAgentContent(fixture) {
+            MiuixTheme(colors = lightColorScheme()) {
+                ConversationCollaborationDialog(true, true, {}, {})
             }
-            compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { longClick() }
-            compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
-            compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { click() }
-            compose.onNodeWithText("选择执行代理 1模型").assertExists()
-            compose.onNode(hasText("无") and SemanticsMatcher.expectValue(
-                androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton)).performClick()
-            compose.onNodeWithText("本会话协作").assertExists()
-            compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { longClick() }
-            compose.onNodeWithText("调整思考深度").assertDoesNotExist()
-            compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
-            compose.runOnIdle {
-                assertTrue(io.github.mangi.eta.agent.delegation.SubAgentPreferences.selection(slot).modelId.isBlank())
-            }
-        } finally {
-            io.github.mangi.eta.agent.delegation.SubAgentPreferences.save(slot, saved)
-            io.github.mangi.eta.agent.delegation.SubAgentPreferences.saveReasoning(slot, savedEffort)
         }
+        compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { longClick() }
+        compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
+        compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { click() }
+        compose.onNodeWithText("选择执行代理 1模型").assertExists()
+        compose.onNode(hasText("无") and SemanticsMatcher.expectValue(
+            androidx.compose.ui.semantics.SemanticsProperties.Role, androidx.compose.ui.semantics.Role.RadioButton)).performClick()
+        compose.onNodeWithText("本会话协作").assertExists()
+        compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { longClick() }
+        compose.onNodeWithText("调整思考深度").assertDoesNotExist()
+        compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
+        compose.runOnIdle { assertTrue(fixture.snapshot().profiles.first { it.id == "legacy-0" }.modelId.isBlank()) }
     }
 
     @Test fun runningTaskDisablesAllControlsAndClosesOpenPicker() {
         val running = mutableStateOf(false)
+        val fixture = SubAgentUiFixture(canEdit = { !running.value })
+        val before = fixture.snapshot()
+        val revisionBefore = fixture.repository.revision(fixture.owner).value
         var changes = 0
         var dismissals = 0
-        compose.setContent {
+        compose.setSubAgentContent(fixture) {
             MiuixTheme(colors = lightColorScheme()) {
                 ConversationCollaborationDialog(true, true, { changes++ }, { dismissals++ }, taskRunning = running.value)
             }
@@ -94,6 +87,8 @@ class ConversationCollaborationDialogTest {
         compose.runOnIdle {
             org.junit.Assert.assertEquals(0, changes)
             org.junit.Assert.assertEquals(0, dismissals)
+            org.junit.Assert.assertEquals(before, fixture.snapshot())
+            org.junit.Assert.assertEquals(revisionBefore, fixture.repository.revision(fixture.owner).value)
             running.value = false
         }
         compose.onNodeWithText("执行代理 1").assertIsEnabled()
@@ -105,7 +100,7 @@ class ConversationCollaborationDialogTest {
     @Config(qualifiers = "w320dp-h480dp")
     fun lockedDialogKeepsDisabledDoneButtonInsideSmallViewport() {
         var dismissals = 0
-        compose.setContent {
+        compose.setSubAgentContent {
             MiuixTheme(colors = lightColorScheme()) {
                 ConversationCollaborationDialog(true, true, {}, { dismissals++ }, taskRunning = true)
             }
@@ -117,7 +112,7 @@ class ConversationCollaborationDialogTest {
 
     @Test fun taskTierMenuHasThreeChoicesAndClosesWhenTaskStarts() {
         val running = mutableStateOf(false)
-        compose.setContent {
+        compose.setSubAgentContent {
             MiuixTheme(colors = lightColorScheme()) {
                 ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
             }
@@ -131,7 +126,7 @@ class ConversationCollaborationDialogTest {
     }
 
     @Test fun agentModelAndNameShareLeftColumnAndTierLivesOnRight() {
-        compose.setContent {
+        compose.setSubAgentContent {
             androidx.compose.material3.MaterialTheme {
                 ConversationCollaborationDialog(true, true, {}, {})
             }
@@ -149,7 +144,7 @@ class ConversationCollaborationDialogTest {
     @Test
     @Config(qualifiers = "w320dp-h480dp")
     fun compactTierKeepsAccessibleTouchTargetAndDoneStaysVisible() {
-        compose.setContent {
+        compose.setSubAgentContent {
             androidx.compose.material3.MaterialTheme {
                 ConversationCollaborationDialog(true, true, {}, {})
             }

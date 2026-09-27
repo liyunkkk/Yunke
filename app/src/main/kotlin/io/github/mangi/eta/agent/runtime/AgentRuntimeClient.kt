@@ -1,88 +1,61 @@
 package io.github.mangi.eta.agent.runtime
 
-import io.github.mangi.eta.agent.model.AgentModelClient
-
 import android.content.Context
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.core.AgentLogger
 import io.github.mangi.eta.core.safeLogType
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * 入口进程侧的 Runtime 客户端。
- *
- * 它只负责把一次 Agent 请求交给模块进程，并把事件/结果带回入口适配层；
- * 不执行模型、不执行工具、不渲染 UI。
- */
-internal class AgentRuntimeClient(
-    private val context: Context,
-    private val logger: AgentLogger
-) {
+/** Entry-side IPC client; no model execution or tool ownership here. */
+internal class AgentRuntimeClient(private val context: Context, private val logger: AgentLogger) {
     sealed interface AttachOutcome {
         data class Completed(val result: AgentRuntimeWire.RunResult) : AttachOutcome
         data object NotActive : AttachOutcome
         data object Unavailable : AttachOutcome
     }
-
     sealed interface ActiveRunQuery {
         data class Known(val runIds: Set<String>) : ActiveRunQuery {
             val runId: String? get() = runIds.firstOrNull()
         }
         data object Unavailable : ActiveRunQuery
     }
-
     sealed interface CompletedRunsQuery {
         data class Known(val runs: List<AgentRuntimeWire.CompletedRun>) : CompletedRunsQuery
         data object Unavailable : CompletedRunsQuery
     }
 
-    fun run(
-        request: AgentRuntimeWire.RunRequest,
-        onEvent: (AgentEvent) -> Unit,
-    ): AgentRuntimeWire.RunResult = run(request, onEvent, isStopRequested = { false })
+    fun run(request: AgentRuntimeWire.RunRequest, onEvent: (AgentEvent) -> Unit): AgentRuntimeWire.RunResult =
+        run(request, onEvent, isStopRequested = { false })
 
-    fun run(
-        request: AgentRuntimeWire.RunRequest,
-        onEvent: (AgentEvent) -> Unit,
-        isStopRequested: () -> Boolean,
-    ): AgentRuntimeWire.RunResult {
+    fun run(request: AgentRuntimeWire.RunRequest, onEvent: (AgentEvent) -> Unit,
+        isStopRequested: () -> Boolean): AgentRuntimeWire.RunResult {
         if (isStopRequested()) return AgentRuntimeWire.RunResult(request.runId, false, "", "已停止")
         val resultLatch = CountDownLatch(1)
         val resultRef = AtomicReference<AgentRuntimeWire.RunResult?>()
         val preparedImagesRef = AtomicReference<AgentRuntimeImageTransfer.PreparedImages?>()
         val preparedHistoryRef = AtomicReference<AgentRuntimeHistoryTransfer.PreparedHistory?>()
-        val clientMessenger = Messenger(
-            ClientHandler(
-                onEvent = onEvent,
-                onResult = { result ->
-                    resultRef.set(result)
-                    resultLatch.countDown()
-                },
-                onRequestIngested = {
-                    preparedImagesRef.getAndSet(null)?.close()
-                    preparedHistoryRef.getAndSet(null)?.close()
-                },
-            )
-        )
-
+        val clientMessenger = Messenger(ClientHandler(onEvent,
+            onResult = { result -> resultRef.set(result); resultLatch.countDown() },
+            onRequestIngested = {
+                preparedImagesRef.getAndSet(null)?.close()
+                preparedHistoryRef.getAndSet(null)?.close()
+            }))
         val lease = AgentRuntimeConnection.acquire(context, logger)
             ?: return AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务绑定失败")
         val serviceMessenger = lease.messenger
         val deathRecipient = IBinder.DeathRecipient {
             if (resultRef.get() == null) {
-                resultRef.set(
-                    AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务连接已断开")
-                )
+                resultRef.set(AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务连接已断开"))
                 resultLatch.countDown()
             }
         }
-
         try {
             lease.binder.linkToDeath(deathRecipient, 0)
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_START_RUN)
@@ -98,29 +71,25 @@ internal class AgentRuntimeClient(
                 cancel.data = AgentRuntimeWire.ackBundle(request.runId)
                 serviceMessenger.send(cancel)
             }
-            // 最终结果或 Binder 断连负责唤醒；正常长任务不因客户端等待时长被取消。
             resultLatch.await()
             return resultRef.get() ?: AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 未返回结果")
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
             runCatching {
-                val cancelMessage = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
-                cancelMessage.data = AgentRuntimeWire.ackBundle(request.runId)
-                serviceMessenger.send(cancelMessage)
+                if (isStopRequested()) {
+                    val cancelMessage = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
+                    cancelMessage.data = AgentRuntimeWire.ackBundle(request.runId)
+                    serviceMessenger.send(cancelMessage)
+                }
             }
-            return AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 等待被中断")
+            throw interrupted
         } catch (throwable: Throwable) {
             logger.warn("Agent runtime start request failed: type=${throwable.safeLogType()}")
-            return AgentRuntimeWire.RunResult(
-                runId = request.runId,
-                ok = false,
-                content = "",
-                error = when (throwable) {
-                    is AgentRuntimeWire.PayloadTooLargeException -> throwable.message
-                    is AgentRuntimeImageTransfer.ImageTransferException -> throwable.message
-                    else -> "Agent Runtime 请求发送失败（${throwable.safeLogType()}）"
-                },
-            )
+            return AgentRuntimeWire.RunResult(request.runId, false, "", when (throwable) {
+                is AgentRuntimeWire.PayloadTooLargeException -> throwable.message
+                is AgentRuntimeImageTransfer.ImageTransferException -> throwable.message
+                else -> "Agent Runtime 请求发送失败（${throwable.safeLogType()}）"
+            })
         } finally {
             preparedImagesRef.getAndSet(null)?.close()
             preparedHistoryRef.getAndSet(null)?.close()
@@ -129,12 +98,24 @@ internal class AgentRuntimeClient(
         }
     }
 
+    /** Entire captured run, INCLUDING detached or queued children of that run. */
     fun cancelRun(runId: String) {
         if (runId.isBlank()) return
         withRuntimeMessenger(Unit) { serviceMessenger ->
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
             msg.data = AgentRuntimeWire.ackBundle(runId)
             serviceMessenger.send(msg)
+        }
+    }
+
+    /** Only stop the parent response. A successful return confirms IPC delivery, not task completion. */
+    fun stopMainRun(runId: String): Boolean {
+        if (runId.isBlank()) return false
+        return withRuntimeMessenger(false) { serviceMessenger ->
+            val msg = Message.obtain(null, AgentRuntimeWire.MSG_STOP_MAIN_RUN)
+            msg.data = AgentRuntimeWire.ackBundle(runId)
+            serviceMessenger.send(msg)
+            true
         }
     }
 
@@ -148,7 +129,6 @@ internal class AgentRuntimeClient(
             true
         }
     }
-
     fun pauseRun(runId: String) {
         if (runId.isBlank()) return
         withRuntimeMessenger(Unit) { serviceMessenger ->
@@ -157,7 +137,6 @@ internal class AgentRuntimeClient(
             serviceMessenger.send(msg)
         }
     }
-
     fun resumeRun(runId: String) {
         if (runId.isBlank()) return
         withRuntimeMessenger(Unit) { serviceMessenger ->
@@ -166,24 +145,17 @@ internal class AgentRuntimeClient(
             serviceMessenger.send(msg)
         }
     }
-
-    fun compactRun(
-        runId: String,
-        keepRecent: Int,
-        compressModelConfig: AgentModelClient.ModelConfig? = null,
-        childTaskId: String? = null,
-    ): Boolean {
+    fun compactRun(runId: String, keepRecent: Int, compressModelConfig: AgentModelClient.ModelConfig? = null,
+        childTaskId: String? = null): Boolean {
         if (runId.isBlank()) return false
         return withRuntimeMessenger(false) { serviceMessenger ->
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_COMPACT_RUN)
             msg.data = AgentRuntimeWire.compactBundle(runId, keepRecent, compressModelConfig, childTaskId)
-            // Child requests must be acknowledged: it may finish while the UI resolves the compressor.
             val reply = AtomicReference<Boolean?>(null)
             val latch = CountDownLatch(1)
             if (childTaskId != null) msg.replyTo = Messenger(Handler(Looper.getMainLooper()) { response ->
                 if (response.what == AgentRuntimeWire.MSG_COMPACT_RUN) {
-                    reply.set(response.data.getBoolean("compact_accepted", false))
-                    latch.countDown()
+                    reply.set(response.data.getBoolean("compact_accepted", false)); latch.countDown()
                 }
                 true
             })
@@ -191,7 +163,6 @@ internal class AgentRuntimeClient(
             if (childTaskId == null) true else latch.await(5, TimeUnit.SECONDS) && reply.get() == true
         }
     }
-
     fun ackResult(runId: String): Boolean {
         if (runId.isBlank()) return false
         return withRuntimeMessenger(false) { serviceMessenger ->
@@ -201,108 +172,60 @@ internal class AgentRuntimeClient(
             true
         }
     }
-
-    fun drainCompletedRuns(): List<AgentRuntimeWire.CompletedRun> {
-        return when (val query = queryCompletedRuns()) {
-            is CompletedRunsQuery.Known -> query.runs
-            CompletedRunsQuery.Unavailable -> emptyList()
-        }
+    fun drainCompletedRuns(): List<AgentRuntimeWire.CompletedRun> = when (val query = queryCompletedRuns()) {
+        is CompletedRunsQuery.Known -> query.runs
+        CompletedRunsQuery.Unavailable -> emptyList()
     }
-
     fun queryCompletedRuns(): CompletedRunsQuery {
         val resultLatch = CountDownLatch(1)
         val resultRef = AtomicReference<List<AgentRuntimeWire.CompletedRun>>(emptyList())
-        val clientMessenger = Messenger(
-            DrainHandler { results ->
-                resultRef.set(results)
-                resultLatch.countDown()
-            }
-        )
-
+        val clientMessenger = Messenger(DrainHandler { results -> resultRef.set(results); resultLatch.countDown() })
         return withRuntimeMessenger<CompletedRunsQuery>(CompletedRunsQuery.Unavailable) { serviceMessenger ->
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_DRAIN_RESULTS)
             msg.replyTo = clientMessenger
             serviceMessenger.send(msg)
-            if (resultLatch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                CompletedRunsQuery.Known(resultRef.get())
-            } else {
-                CompletedRunsQuery.Unavailable
-            }
+            if (resultLatch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) CompletedRunsQuery.Known(resultRef.get())
+            else CompletedRunsQuery.Unavailable
         }
     }
-
     fun queryActiveRun(): ActiveRunQuery {
         val responseLatch = CountDownLatch(1)
         val runIdsRef = AtomicReference<Set<String>>(emptySet())
-        val clientMessenger = Messenger(
-            ActiveRunHandler { runIds ->
-                runIdsRef.set(runIds)
-                responseLatch.countDown()
-            }
-        )
-
+        val clientMessenger = Messenger(ActiveRunHandler { runIds -> runIdsRef.set(runIds); responseLatch.countDown() })
         return withRuntimeMessenger<ActiveRunQuery>(ActiveRunQuery.Unavailable) { serviceMessenger ->
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_QUERY_ACTIVE_RUN)
             msg.replyTo = clientMessenger
             serviceMessenger.send(msg)
-            if (!responseLatch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                ActiveRunQuery.Unavailable
-            } else {
-                ActiveRunQuery.Known(runIdsRef.get())
-            }
+            if (!responseLatch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) ActiveRunQuery.Unavailable
+            else ActiveRunQuery.Known(runIdsRef.get())
         }
     }
-
-    /** 历史一次性交给 onReplay；未指定时沿用 onEvent。后续新增事件始终交给 onEvent。 */
-    fun attachRun(
-        runId: String,
-        onReplay: ((List<AgentEvent>) -> Unit)? = null,
-        onEvent: (AgentEvent) -> Unit,
-    ): AttachOutcome {
+    fun attachRun(runId: String, onReplay: ((List<AgentEvent>) -> Unit)? = null,
+        onEvent: (AgentEvent) -> Unit): AttachOutcome {
         if (runId.isBlank()) return AttachOutcome.NotActive
         val terminalLatch = CountDownLatch(1)
         val attachLatch = CountDownLatch(1)
         val attachedRef = AtomicReference<Boolean?>(null)
         val resultRef = AtomicReference<AgentRuntimeWire.RunResult?>()
-        val clientMessenger = Messenger(
-            AttachHandler(
-                onReplay = onReplay,
-                onEvent = onEvent,
-                onAttachResponse = { attached ->
-                    attachedRef.set(attached)
-                    attachLatch.countDown()
-                    if (!attached) terminalLatch.countDown()
-                },
-                onResult = { result ->
-                    resultRef.set(result)
-                    attachLatch.countDown()
-                    terminalLatch.countDown()
-                },
-            )
-        )
-        val lease = AgentRuntimeConnection.acquire(context, logger)
-            ?: return AttachOutcome.Unavailable
-        val deathRecipient = IBinder.DeathRecipient {
-            attachLatch.countDown()
-            terminalLatch.countDown()
-        }
-
+        val clientMessenger = Messenger(AttachHandler(onReplay, onEvent,
+            onAttachResponse = { attached ->
+                attachedRef.set(attached); attachLatch.countDown()
+                if (!attached) terminalLatch.countDown()
+            }, onResult = { result ->
+                resultRef.set(result); attachLatch.countDown(); terminalLatch.countDown()
+            }))
+        val lease = AgentRuntimeConnection.acquire(context, logger) ?: return AttachOutcome.Unavailable
+        val deathRecipient = IBinder.DeathRecipient { attachLatch.countDown(); terminalLatch.countDown() }
         try {
             lease.binder.linkToDeath(deathRecipient, 0)
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_ATTACH_RUN)
             msg.replyTo = clientMessenger
             msg.data = AgentRuntimeWire.ackBundle(runId)
             lease.messenger.send(msg)
-            if (!attachLatch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                return AttachOutcome.Unavailable
-            }
+            if (!attachLatch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) return AttachOutcome.Unavailable
             terminalLatch.await()
             resultRef.get()?.let { return AttachOutcome.Completed(it) }
-            return if (attachedRef.get() == false) {
-                AttachOutcome.NotActive
-            } else {
-                AttachOutcome.Unavailable
-            }
+            return if (attachedRef.get() == false) AttachOutcome.NotActive else AttachOutcome.Unavailable
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
             return AttachOutcome.Unavailable
@@ -317,24 +240,16 @@ internal class AgentRuntimeClient(
 
     private fun <T> withRuntimeMessenger(defaultValue: T, block: (Messenger) -> T): T {
         val lease = AgentRuntimeConnection.acquire(context, logger) ?: return defaultValue
-        try {
-            return block(lease.messenger)
-        } catch (interrupted: InterruptedException) {
-            Thread.currentThread().interrupt()
-            return defaultValue
-        } catch (throwable: Throwable) {
+        try { return block(lease.messenger) }
+        catch (interrupted: InterruptedException) { Thread.currentThread().interrupt(); return defaultValue }
+        catch (throwable: Throwable) {
             logger.warn("Agent runtime service call failed: type=${throwable.safeLogType()}")
             return defaultValue
-        } finally {
-            lease.close()
-        }
+        } finally { lease.close() }
     }
-
-    private class ClientHandler(
-        private val onEvent: (AgentEvent) -> Unit,
+    private class ClientHandler(private val onEvent: (AgentEvent) -> Unit,
         private val onResult: (AgentRuntimeWire.RunResult) -> Unit,
-        private val onRequestIngested: () -> Unit,
-    ) : Handler(Looper.getMainLooper()) {
+        private val onRequestIngested: () -> Unit) : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
@@ -342,60 +257,33 @@ internal class AgentRuntimeClient(
                     recordDeliveryTiming(data, live = true)
                     AgentRuntimeWire.eventFromBundle(data)?.let(onEvent)
                 }
-
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return
-                    val result = runCatching {
-                        AgentRuntimeWire.runResultFromBundle(data)
-                    }.getOrElse { throwable ->
-                        AgentRuntimeWire.RunResult(
-                            runId = AgentRuntimeWire.runIdFromBundle(data),
-                            ok = false,
-                            content = "",
-                            error = "Agent Runtime 结果解析失败（${throwable.javaClass.simpleName}）",
-                        )
+                    val result = runCatching { AgentRuntimeWire.runResultFromBundle(data) }.getOrElse { throwable ->
+                        AgentRuntimeWire.RunResult(AgentRuntimeWire.runIdFromBundle(data), false, "",
+                            "Agent Runtime 结果解析失败（${throwable.javaClass.simpleName}）")
                     }
                     onResult(result)
                 }
-
                 AgentRuntimeWire.MSG_REQUEST_INGESTED -> onRequestIngested()
             }
         }
     }
-
-    private class DrainHandler(
-        private val onResults: (List<AgentRuntimeWire.CompletedRun>) -> Unit
-    ) : Handler(Looper.getMainLooper()) {
+    private class DrainHandler(private val onResults: (List<AgentRuntimeWire.CompletedRun>) -> Unit) : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
-            if (msg.what == AgentRuntimeWire.MSG_DRAIN_RESULTS_RESPONSE) {
+            if (msg.what == AgentRuntimeWire.MSG_DRAIN_RESULTS_RESPONSE)
                 onResults(AgentRuntimeWire.completedRunsFromBundle(msg.data ?: return))
-            }
         }
     }
-
-    private class ActiveRunHandler(
-        private val onResponse: (Set<String>) -> Unit,
-    ) : Handler(Looper.getMainLooper()) {
+    private class ActiveRunHandler(private val onResponse: (Set<String>) -> Unit) : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
-            if (msg.what == AgentRuntimeWire.MSG_QUERY_ACTIVE_RUN_RESPONSE) {
+            if (msg.what == AgentRuntimeWire.MSG_QUERY_ACTIVE_RUN_RESPONSE)
                 onResponse(AgentRuntimeWire.runIdsFromBundle(msg.data ?: return))
-            }
         }
     }
-
-    private class AttachHandler(
-        onReplay: ((List<AgentEvent>) -> Unit)?,
-        onEvent: (AgentEvent) -> Unit,
-        onAttachResponse: (Boolean) -> Unit,
-        onResult: (AgentRuntimeWire.RunResult) -> Unit,
-    ) : Handler(Looper.getMainLooper()) {
-        private val delivery = AgentRuntimeAttachDelivery(
-            onReplay = onReplay,
-            onEvent = onEvent,
-            onAttachResponse = onAttachResponse,
-            onResult = onResult,
-        )
-
+    private class AttachHandler(onReplay: ((List<AgentEvent>) -> Unit)?, onEvent: (AgentEvent) -> Unit,
+        onAttachResponse: (Boolean) -> Unit, onResult: (AgentRuntimeWire.RunResult) -> Unit) : Handler(Looper.getMainLooper()) {
+        private val delivery = AgentRuntimeAttachDelivery(onReplay, onEvent, onAttachResponse, onResult)
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
@@ -405,15 +293,9 @@ internal class AgentRuntimeClient(
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return
-                    val result = runCatching {
-                        AgentRuntimeWire.runResultFromBundle(data)
-                    }.getOrElse { throwable ->
-                        AgentRuntimeWire.RunResult(
-                            runId = AgentRuntimeWire.runIdFromBundle(data),
-                            ok = false,
-                            content = "",
-                            error = "Agent Runtime 结果解析失败（${throwable.javaClass.simpleName}）",
-                        )
+                    val result = runCatching { AgentRuntimeWire.runResultFromBundle(data) }.getOrElse { throwable ->
+                        AgentRuntimeWire.RunResult(AgentRuntimeWire.runIdFromBundle(data), false, "",
+                            "Agent Runtime 结果解析失败（${throwable.javaClass.simpleName}）")
                     }
                     delivery.result(result)
                 }
@@ -422,15 +304,13 @@ internal class AgentRuntimeClient(
             }
         }
     }
-
     private companion object {
         fun recordDeliveryTiming(data: android.os.Bundle, live: Boolean) {
-            StreamDeliveryTiming.delayNs(
-                data.getLong(StreamDeliveryTiming.KEY, 0L),
-                android.os.SystemClock.elapsedRealtimeNanos(), live,
-            )?.let { io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics.record("ipc.delta.delay", ns = it) }
+            StreamDeliveryTiming.delayNs(data.getLong(StreamDeliveryTiming.KEY, 0L),
+                android.os.SystemClock.elapsedRealtimeNanos(), live)?.let {
+                io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics.record("ipc.delta.delay", ns = it)
+            }
         }
-
         const val RESPONSE_TIMEOUT_SECONDS = 8L
     }
 }

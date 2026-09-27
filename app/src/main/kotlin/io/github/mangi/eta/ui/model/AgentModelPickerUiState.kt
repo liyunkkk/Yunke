@@ -49,6 +49,7 @@ internal data class AgentModelOptionUi(
 internal data class AgentContextUsageUi(
     val contextTokens: Int?,
     val contextWindow: Int?,
+    val estimated: Boolean = false,
 ) {
     val progress: Float?
         get() = contextUsageProgress(contextTokens, contextWindow)
@@ -136,34 +137,31 @@ internal fun latestContextUsage(
     messages: List<AgentChatMessageUi>,
     selectedModel: AgentModelOptionUi?,
 ): AgentContextUsageUi = AgentContextUsageUi(
-    contextTokens = messages.asReversed()
-        .asSequence()
-        .filterIsInstance<AgentMessageUi>()
-        .mapNotNull { it.usage?.contextTokens }
-        .firstOrNull(),
+    contextTokens = latestBilledContextTokens(messages),
     contextWindow = selectedModel?.contextWindow,
 )
 
 /**
- * 圆环只显示最近一次接口账单的 prompt 占用，不再叠本地估算。
- * 账单之后的工具结果、思考和草稿会等下一轮 usage 回来再更新，避免和 ST「输入」对不齐。
+ * Reads a bill only within a still-valid message context. Callers must not use
+ * message bills to restore occupancy after model/history invalidation.
+ * A compaction marker's baseline is local metadata, never cloud occupancy.
  */
 internal fun latestBilledContextTokens(messages: List<AgentChatMessageUi>): Int? {
     val compactIndex = messages.indexOfLast { it is ContextCompactedMessageUi }
-    val marker = compactIndex.takeIf { it >= 0 }?.let { messages[it] as ContextCompactedMessageUi }
-    val resumeRound = marker?.resumeRound ?: 0
-    val billedIndex = messages.indices.lastOrNull { index ->
-        val message = messages[index]
-        message is AgentMessageUi &&
-            windowTokensFromUsage(message.usage) != null &&
-            index > compactIndex &&
-            (resumeRound <= 0 || (messageRoundFromId(message.id) ?: 0) >= resumeRound)
-    } ?: -1
-    if (billedIndex >= 0) {
-        return windowTokensFromUsage((messages[billedIndex] as AgentMessageUi).usage)
+    val marker = messages.getOrNull(compactIndex) as? ContextCompactedMessageUi
+    fun runPrefix(message: AgentMessageUi): String? =
+        if (messageRoundFromId(message.id) == null) null
+        else message.id.substringBeforeLast("-").substringBeforeLast("-")
+    // Rounds restart in a new run: apply the marker only to its preceding run.
+    val compactedRun = if (compactIndex >= 0) messages.take(compactIndex)
+        .filterIsInstance<AgentMessageUi>().lastOrNull()?.let(::runPrefix) else null
+    for (index in messages.lastIndex downTo (compactIndex + 1)) {
+        val message = messages[index] as? AgentMessageUi ?: continue
+        val round = messageRoundFromId(message.id)
+        if (compactedRun != null && runPrefix(message) == compactedRun &&
+            round != null && round < (marker?.resumeRound ?: 0)) continue
+        windowTokensFromUsage(message.usage)?.let { return it }
     }
-    val baseline = marker?.baselineTokens ?: 0
-    if (compactIndex >= 0 && baseline > 0) return baseline
     return null
 }
 
@@ -254,11 +252,13 @@ internal fun messageRoundFromId(id: String): Int? {
 
 internal fun windowTokensFromUsage(usage: TokenUsageUi?): Int? {
     if (usage == null || usage.isEmpty) return null
-    usage.inputTokens?.takeIf { it > 0 }?.let { return it }
+    usage.inputTokens?.let { return it.takeIf { tokens -> tokens > 0 } }
+    // A total accompanying output without prompt usage is not measured input.
+    if (usage.outputTokens != null || usage.reasoningTokens != null) return null
     return usage.contextTokens?.takeIf { it > 0 }
 }
 
-@Suppress("UNUSED_PARAMETER")
+/** Ring display: keep actual input stable. Only an unmeasured context uses local budget. */
 internal fun liveContextUsage(
     history: List<AgentModelClient.ConversationMessage>,
     currentInput: String,
@@ -271,45 +271,70 @@ internal fun liveContextUsage(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
+    projectedContextTokens: Int? = null,
 ): AgentContextUsageUi {
-    val supportsVision = selectedModel?.supportsVision == true
-    val imageFileReferences = if (supportsVision) {
-        emptyList()
-    } else {
-        pendingImages.mapIndexed { index, image ->
-            AgentFileReference(
-                displayName = image.cacheDisplayName(index),
-                absolutePath = "/cache/chat-image-${index + 1}",
-                kind = AgentFileReferenceKind.File,
-            )
-        }
+    if (billedContextTokens != null && billedContextTokens > 0) {
+        return AgentContextUsageUi(billedContextTokens, selectedModel?.contextWindow)
     }
-    val prompt = AgentFileReferencePromptCodec.format(
-        currentInput,
-        pendingFileReferences.map { it.reference } + imageFileReferences,
-        pendingConversationMentions.toMentionedConversations(),
-    )
-    val images = if (supportsVision) pendingImages.map { it.toLiveModelImage() } else emptyList()
-    val currentTurnTokens = if (prompt.isEmpty() && images.isEmpty()) {
-        0
-    } else {
-        AgentContextBudget.countCurrentTurn(prompt, images)
+    val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
+    val local = projectedContextTokens?.takeIf { it > 0 }?.toLong()
+        ?: ((historyTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
+            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
+            requestOverheadTokens.coerceAtLeast(0) + uncommittedLiveTokens.coerceAtLeast(0))
+    return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), selectedModel?.contextWindow, estimated = true)
+}
+
+/** Decision-only: actual input + locally counted changes since that exact request. */
+internal fun compressionContextUsage(
+    history: List<AgentModelClient.ConversationMessage>,
+    currentInput: String,
+    pendingImages: List<PendingImageUi>,
+    selectedModel: AgentModelOptionUi?,
+    pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
+    pendingConversationMentions: List<PendingConversationMentionUi> = emptyList(),
+    historyTokenCount: Int? = null,
+    billedContextTokens: Int? = null,
+    requestOverheadTokens: Int = 0,
+    billedOverheadTokens: Int? = null,
+    billedHistoryTokens: Int? = null,
+    localHistoryTokenCount: Int? = null,
+): AgentContextUsageUi {
+    if (billedContextTokens == null || billedContextTokens <= 0 ||
+        billedHistoryTokens == null || billedOverheadTokens == null) {
+        // Legacy cloud receipts keep the ring accurate, but lack the calibration
+        // needed for a safe delta. Only the silent budget falls back to a full estimate.
+        val local = liveContextUsage(history, currentInput, pendingImages, selectedModel,
+            pendingFileReferences, pendingConversationMentions, localHistoryTokenCount,
+            requestOverheadTokens = requestOverheadTokens)
+        val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
+            draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
+        return local.copy(contextTokens = maxOf(local.contextTokens?.toLong() ?: 0L, floor)
+            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
     }
-    val overhead = requestOverheadTokens.coerceAtLeast(0)
-    val historyTokens = when {
-        billedContextTokens != null && billedContextTokens > 0 -> billedContextTokens
-        else -> (historyTokenCount ?: history.sumOf { AgentContextBudget.countMessage(it) }) +
-            overhead +
-            uncommittedLiveTokens.coerceAtLeast(0)
+    // Both calibration snapshots belong to the validated cloud receipt.
+    val delta = billedHistoryTokens?.let { baseline ->
+        (historyTokenCount ?: history.sumOf { AgentContextBudget.countMessage(it) }).toLong() - baseline
+    } ?: 0L
+    val fixedDelta = billedOverheadTokens?.let { requestOverheadTokens.toLong() - it } ?: 0L
+    val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
+    return AgentContextUsageUi((billedContextTokens.toLong() + delta + fixedDelta + draft)
+        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), selectedModel?.contextWindow, estimated = true)
+}
+
+private fun draftContextTokens(
+    input: String, pendingImages: List<PendingImageUi>, selectedModel: AgentModelOptionUi?,
+    files: List<PendingFileReferenceUi>, mentions: List<PendingConversationMentionUi>,
+): Int {
+    val vision = selectedModel?.supportsVision == true
+    val video = selectedModel?.supportsVideo == true
+    fun accepted(image: PendingImageUi): Boolean = if (image.isVideo) video || vision else vision
+    val imageFiles = pendingImages.mapIndexedNotNull { index, image ->
+        if (accepted(image)) null else AgentFileReference(displayName = image.cacheDisplayName(index),
+            absolutePath = "/cache/chat-image-${index + 1}", kind = AgentFileReferenceKind.File)
     }
-    return AgentContextUsageUi(
-        contextTokens = if (billedContextTokens != null && billedContextTokens > 0) {
-            historyTokens
-        } else {
-            historyTokens + currentTurnTokens
-        },
-        contextWindow = selectedModel?.contextWindow,
-    )
+    val prompt = AgentFileReferencePromptCodec.format(input, files.map { it.reference } + imageFiles, mentions.toMentionedConversations())
+    val images = pendingImages.filter(::accepted).map { it.toOutboundModelImage(video) }
+    return if (prompt.isEmpty() && images.isEmpty()) 0 else AgentContextBudget.countCurrentTurn(prompt, images)
 }
 
 internal fun PendingImageUi.toLiveModelImage(): AgentModelClient.ModelImage =
@@ -376,25 +401,25 @@ internal fun contextUsageProgress(contextTokens: Int?, contextWindow: Int?): Flo
     return (contextTokens.toFloat() / contextWindow.toFloat()).coerceIn(0f, 1f)
 }
 
+@Suppress("UNUSED_PARAMETER")
 internal fun formatContextUsage(
     usage: AgentContextUsageUi,
     noUsageText: String = "No conversation context yet",
     noLimitText: String = "The current model does not provide a context limit",
     locale: Locale = Locale.getDefault(),
-): String = when {
-    usage.contextTokens == null -> noUsageText
-    usage.contextWindow == null || usage.contextWindow <= 0 ->
-        "${formatCompactTokenCount(usage.contextTokens, locale)} tokens\n$noLimitText"
-    else -> {
-        val percent = usage.contextTokens.toDouble() / usage.contextWindow.toDouble() * 100.0
-        val percentFormat = NumberFormat.getNumberInstance(locale).apply {
-            minimumFractionDigits = 1
-            maximumFractionDigits = 1
-        }
-        "${formatCompactTokenCount(usage.contextTokens, locale)} / " +
-            "${formatCompactTokenCount(usage.contextWindow, locale)} tokens · " +
-            "${percentFormat.format(percent)}%"
+): String {
+    // Zero is a display placeholder, never a fabricated cloud measurement.
+    val tokens = usage.contextTokens?.coerceAtLeast(0) ?: 0
+    val tokenText = (if (usage.estimated) "≈" else "") +
+        (if (tokens == 0) "0K" else formatCompactTokenCount(tokens, locale))
+    val window = usage.contextWindow
+    if (window == null || window <= 0) return "$tokenText tokens" + 10.toChar() + noLimitText
+    val percentFormat = NumberFormat.getNumberInstance(locale).apply {
+        minimumFractionDigits = 1
+        maximumFractionDigits = 1
     }
+    return "$tokenText / ${formatCompactTokenCount(window, locale)} tokens · " +
+        "${percentFormat.format(tokens.toDouble() / window * 100.0)}%"
 }
 
 internal fun formatCompactTokenCount(value: Int, locale: Locale = Locale.getDefault()): String {

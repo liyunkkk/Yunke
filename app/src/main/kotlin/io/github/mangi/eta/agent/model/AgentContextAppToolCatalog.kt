@@ -6,6 +6,10 @@ import org.json.JSONObject
 /** 上下文、应用入口与屏幕观察工具 schema。 */
 internal object AgentContextAppToolCatalog {
     fun appendTo(tools: JSONArray) {
+        for ((name,description) in listOf(
+            "start_virtual_session" to "启动本次后台副屏会话，重复调用不重复创建；失败不会回退主屏。",
+            "finish_virtual_session" to "移交已标记的交付任务到主屏后台，清理本次中间任务并关闭空副屏。必须检查 handedOff 和 released；失败时不杀进程，不声称交付成功。"
+        )) tools.put(AgentToolSchema.function(name=name,description=description,parameters=JSONObject().put("type","object").put("properties",JSONObject())))
         tools
             .put(
                 AgentToolSchema.function(
@@ -67,6 +71,41 @@ internal object AgentContextAppToolCatalog {
                                     JSONObject()
                                         .put("type", "string")
                                         .put("description", "应用显示名，例如 QQ")
+                                )
+                        )
+                )
+            )
+            .put(
+                AgentToolSchema.function(
+                    name = "inspect_virtual_backend",
+                    description = "用当前应用内的探针进行 Root 只读后端检查，不启动副屏。查询成功不等于授权；mutations_enabled 与 session_authenticated 恒为 false，不迁移、恢复或关闭应用。",
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put("properties", JSONObject())
+                )
+            )
+            .put(
+                AgentToolSchema.function(
+                    name = "keep_virtual_result",
+                    description = "标记本次副屏会话要交付的任务。优先 task_ids；也可按本次已启动包名选择。这里只标记，必须再调用 finish_virtual_session 验证迁移及关闭。",
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("task_ids", JSONObject().put("type","array").put("items",JSONObject().put("type","integer")).put("description","本次启动工具返回的精确任务编号"))
+                                .put(
+                                    "package_name",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "一个最终应用的精确包名")
+                                )
+                                .put(
+                                    "packages",
+                                    JSONObject()
+                                        .put("type", "array")
+                                        .put("items", JSONObject().put("type", "string"))
+                                        .put("description", "多个最终应用的精确包名")
                                 )
                         )
                 )

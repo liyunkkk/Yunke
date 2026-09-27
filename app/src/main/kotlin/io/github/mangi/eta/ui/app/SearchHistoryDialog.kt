@@ -31,7 +31,7 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 internal fun SearchHistoryDialog(
     show: Boolean,
     onDismiss: () -> Unit,
-    onSearch: (String) -> List<MessageSearchHit>,
+    onSearch: suspend (String) -> List<MessageSearchHit>,
     onOpenHit: (MessageSearchHit) -> Unit,
     showConversationTitle: Boolean = true,
 ) {
@@ -47,6 +47,9 @@ internal fun SearchHistoryDialog(
 
     LaunchedEffect(show, query) {
         if (!show) return@LaunchedEffect
+        results = emptyList()
+        if (query.isBlank()) return@LaunchedEffect
+        // The suspend callback captures UI state before doing cancellable background work.
         results = onSearch(query)
     }
 

@@ -5,6 +5,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Update
 import androidx.room.Transaction
 
 @Dao
@@ -24,6 +25,31 @@ internal interface ConversationDao {
             "FROM conversations ORDER BY updated_at DESC LIMIT :limit OFFSET :offset"
     )
     suspend fun conversationsPage(limit: Int, offset: Int): List<ConversationMetadata>
+
+    @Query("SELECT id, title, thinking_enabled, reasoning_effort, applied_runtime_run_ids_json, " +
+        "created_at, updated_at, folder_id, is_pinned, provider_id, model_id, assistant_id " +
+        "FROM conversations WHERE id = :id")
+    suspend fun conversationMetadata(id: String): ConversationMetadata?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertMissingConversations(rows: List<ConversationEntity>)
+
+    // Partial UPDATE, never REPLACE: REPLACE would cascade-delete unloaded child rows.
+    @Update(entity = ConversationEntity::class)
+    suspend fun updateConversationMetadata(rows: List<ConversationMetadata>)
+
+    @Query("DELETE FROM conversations WHERE id = :id")
+    suspend fun deleteConversation(id: String)
+
+    @Query("SELECT id, conversation_id, type, substr(content, 1, 2048) AS content, " +
+        "tool_name, tool_status, NULL AS arguments_summary, NULL AS result_summary " +
+        "FROM conversation_messages WHERE conversation_id = :id ORDER BY sort_index DESC LIMIT 1")
+    suspend fun conversationPreview(id: String): ConversationTextRow?
+
+    @Query("SELECT id, conversation_id, type, content, tool_name, tool_status, arguments_summary, result_summary " +
+        "FROM conversation_messages WHERE conversation_id = :id " +
+        "AND type IN ('user', 'assistant', 'thinking', 'tool') ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
+    suspend fun searchablePage(id: String, limit: Int, offset: Int): List<ConversationTextRow>
 
     @Query("SELECT * FROM conversation_messages ORDER BY conversation_id ASC, sort_index ASC")
     suspend fun messages(): List<ConversationMessageEntity>
@@ -199,3 +225,21 @@ internal data class ConversationDayCount(
     val day: String,
     val count: Int,
 )
+
+/** Text-only projection: searching/previewing a chat never decodes its image JSON or history. */
+internal data class ConversationTextRow(
+    val id: String,
+    @ColumnInfo(name = "conversation_id") val conversationId: String,
+    val type: String,
+    val content: String,
+    @ColumnInfo(name = "tool_name") val toolName: String?,
+    @ColumnInfo(name = "tool_status") val toolStatus: String?,
+    @ColumnInfo(name = "arguments_summary") val argumentsSummary: String?,
+    @ColumnInfo(name = "result_summary") val resultSummary: String?,
+) {
+    fun asMessageEntity() = ConversationMessageEntity(
+        id = id, conversationId = conversationId, sortIndex = 0, type = type,
+        content = content, toolName = toolName, toolStatus = toolStatus,
+        argumentsSummary = argumentsSummary, resultSummary = resultSummary,
+    )
+}

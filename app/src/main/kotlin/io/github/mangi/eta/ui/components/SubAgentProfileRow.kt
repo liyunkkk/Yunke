@@ -3,16 +3,12 @@ package io.github.mangi.eta.ui.components
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.material3.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ViewInAr
-import androidx.compose.material.icons.rounded.Assignment
-import androidx.compose.material.icons.rounded.AccountTree
-import androidx.compose.material.icons.rounded.AutoAwesome
-import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,6 +20,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.SubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
 import io.github.mangi.eta.agent.model.MediaReasoningSettings
 import io.github.mangi.eta.agent.model.ModelFeatureSelection
 import io.github.mangi.eta.data.model.ProviderSetting
@@ -32,24 +29,23 @@ import io.github.mangi.eta.ui.TtsModelPickerDialog
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 
-/** Shared gestures and model/thinking dialogs for settings and conversation controls. */
+/** Pickers capture both editor identity and profile binding; a changed owner/run dismisses them. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun SubAgentProfileRow(
-    profile: SubAgentProfile,
-    providers: List<ProviderSetting>,
-    enabled: Boolean = true,
-    settings: Boolean = false,
-) {
+internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<ProviderSetting>, enabled: Boolean = true, settings: Boolean = false) {
+    val editor = LocalConversationSubAgentEditor.current
+    val usable = enabled && editor?.enabled == true
     val view = LocalView.current
-    val currentEnabled by rememberUpdatedState(enabled)
-    var modelPicker by remember(profile.id) { mutableStateOf(false) }
-    var thinkingPicker by remember(profile.id) { mutableStateOf(false) }
-    var rolePicker by remember(profile.id) { mutableStateOf(false) }
-    var tierPicker by remember(profile.id) { mutableStateOf(false) }
-    var resolutionPicker by remember(profile.id, profile.providerId, profile.modelId, profile.role) { mutableStateOf(false) }
-    LaunchedEffect(enabled) { if (!enabled) { modelPicker = false; thinkingPicker = false; rolePicker = false; tierPicker = false } }
-    LaunchedEffect(profile.role) { rolePicker = false; tierPicker = false; thinkingPicker = false; modelPicker = false }
+    val currentUsable by rememberUpdatedState(usable)
+    var modelPicker by remember(editor, profile.id) { mutableStateOf(false) }
+    var thinkingPicker by remember(editor, profile.id) { mutableStateOf(false) }
+    var rolePicker by remember(editor, profile.id) { mutableStateOf(false) }
+    var tierPicker by remember(editor, profile.id) { mutableStateOf(false) }
+    var resolutionPicker by remember(editor, profile.id, profile.providerId, profile.modelId, profile.role) { mutableStateOf(false) }
+    LaunchedEffect(usable, editor) {
+        if (!usable) { modelPicker = false; thinkingPicker = false; rolePicker = false; tierPicker = false; resolutionPicker = false }
+    }
+    LaunchedEffect(profile.role) { rolePicker = false; tierPicker = false; thinkingPicker = false; modelPicker = false; resolutionPicker = false }
     val config = remember(profile.providerId, profile.modelId, profile.role, providers) {
         val provider = providers.firstOrNull { it.id == profile.providerId && it.isEnabled }
         val model = provider?.models?.firstOrNull { it.id == profile.modelId && it.isEnabled }
@@ -71,61 +67,61 @@ internal fun SubAgentProfileRow(
     Column(verticalArrangement = Arrangement.spacedBy(if (settings) 0.dp else 12.dp)) {
         if (settings) {
             SubAgentSettingRow("模型", config?.let { it.modelDisplayName.ifBlank { it.model } }
-                    ?: if (profile.modelId.isBlank()) "选择模型" else "模型不可用",
-                Icons.Rounded.ViewInAr, "${profile.name}模型", enabled = enabled, badge = config?.providerName,
-                onClick = { if (currentEnabled) { TouchHaptics.click(view); modelPicker = true } },
-                onLongClick = { if (currentEnabled && canThink) { TouchHaptics.longPress(view); thinkingPicker = true } })
+                ?: if (profile.modelId.isBlank()) "选择模型" else "模型不可用",
+                Icons.Rounded.ViewInAr, "${profile.name}模型", enabled = usable, badge = config?.providerName,
+                onClick = { if (currentUsable) { TouchHaptics.click(view); modelPicker = true } },
+                onLongClick = { if (currentUsable && canThink) { TouchHaptics.longPress(view); thinkingPicker = true } })
             Box(Modifier.fillMaxWidth()) {
                 SubAgentSettingRow("职责", profile.roleLabel, Icons.Rounded.Assignment,
-                    "选择${profile.name}职责", enabled = enabled, dropdown = true,
-                    onClick = { if (currentEnabled) { TouchHaptics.click(view); rolePicker = !rolePicker } })
+                    "选择${profile.name}职责", enabled = usable, dropdown = true,
+                    onClick = { if (currentUsable) { TouchHaptics.click(view); rolePicker = !rolePicker } })
                 Box(Modifier.align(Alignment.CenterEnd).size(40.dp)) {
-                if (enabled) SubAgentDropdownMenu(rolePicker, { rolePicker = false }, Modifier.selectableGroup()) {
-                    listOf("implementation" to "执行", "review" to "审查／总结", "image_generation" to "图片生成", "video_generation" to "视频生成").forEach { (role, label) ->
-                        SubAgentSelectionItem(label, profile.role == role) {
-                            if (currentEnabled) SubAgentPreferences.update(profile.id) { it.withRole(role) }
-                            rolePicker = false
+                    if (usable) SubAgentDropdownMenu(rolePicker, { rolePicker = false }, Modifier.selectableGroup()) {
+                        listOf("implementation" to "执行", "review" to "审查／总结", "image_generation" to "图片生成", "video_generation" to "视频生成").forEach { (role, label) ->
+                            SubAgentSelectionItem(label, profile.role == role) {
+                                if (currentUsable) editor?.updateProfile(profile.id) { it.withRole(role) }
+                                rolePicker = false
+                            }
                         }
                     }
-                }
                 }
             }
             if (profile.supportsTaskTier) Box(Modifier.fillMaxWidth()) {
                 SubAgentSettingRow("任务分工", profile.tier?.label ?: "未设置分工", Icons.Rounded.AccountTree,
-                    "设置${profile.name}任务分工", enabled = enabled, dropdown = true,
-                    onClick = { if (currentEnabled) { TouchHaptics.click(view); tierPicker = !tierPicker } })
+                    "设置${profile.name}任务分工", enabled = usable, dropdown = true,
+                    onClick = { if (currentUsable) { TouchHaptics.click(view); tierPicker = !tierPicker } })
                 Box(Modifier.align(Alignment.CenterEnd).size(40.dp)) {
-                if (enabled) SubAgentDropdownMenu(tierPicker, { tierPicker = false }, Modifier.selectableGroup()) {
-                    SubAgentTaskTier.entries.forEach { tier ->
-                        SubAgentSelectionItem(tier.label, profile.tier == tier) {
-                            if (currentEnabled) SubAgentPreferences.update(profile.id) { latest ->
-                                if (latest.supportsTaskTier) latest.copy(tier = tier) else latest
+                    if (usable) SubAgentDropdownMenu(tierPicker, { tierPicker = false }, Modifier.selectableGroup()) {
+                        SubAgentTaskTier.entries.forEach { tier ->
+                            SubAgentSelectionItem(tier.label, profile.tier == tier) {
+                                if (currentUsable) editor?.updateProfile(profile.id) { latest ->
+                                    if (latest.supportsTaskTier) latest.copy(tier = tier) else latest
+                                }
+                                tierPicker = false
                             }
-                            tierPicker = false
                         }
                     }
-                }
                 }
             }
             if (profile.role == "image_generation") {
                 SubAgentSettingRow("默认分辨率", profile.imageResolution?.let(io.github.mangi.eta.agent.model.ImageResolutionTier::label) ?: "跟随接口",
-                    Icons.Rounded.ViewInAr, "设置${profile.name}分辨率", enabled = enabled && config != null,
-                    onClick = { if (currentEnabled && config != null) { TouchHaptics.click(view); resolutionPicker = true } })
+                    Icons.Rounded.ViewInAr, "设置${profile.name}分辨率", enabled = usable && config != null,
+                    onClick = { if (currentUsable && config != null) { TouchHaptics.click(view); resolutionPicker = true } })
             }
             SubAgentSettingRow("思考深度", thinkingLabel,
-                Icons.Rounded.AutoAwesome, "调整${profile.name}思考深度", enabled = enabled && canThink,
-                onClick = { if (currentEnabled && canThink) { TouchHaptics.click(view); thinkingPicker = true } })
-            SubAgentParallelLimitRow(profile, config, enabled)
+                Icons.Rounded.AutoAwesome, "调整${profile.name}思考深度", enabled = usable && canThink,
+                onClick = { if (currentUsable && canThink) { TouchHaptics.click(view); thinkingPicker = true } })
+            SubAgentParallelLimitRow(profile, config, usable)
         } else {
             Row(Modifier.fillMaxWidth().heightIn(min = 88.dp), horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f).heightIn(min = 64.dp)
                     .semantics { contentDescription = "${profile.name}模型" }
                     .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
-                        role = Role.Button, enabled = enabled, hapticFeedbackEnabled = false,
+                        role = Role.Button, enabled = usable, hapticFeedbackEnabled = false,
                         onClickLabel = "选择${profile.name}模型", onLongClickLabel = "调整${profile.name}思考深度",
-                        onClick = { if (currentEnabled) { TouchHaptics.click(view); modelPicker = true } },
-                        onLongClick = { if (currentEnabled && canThink) { TouchHaptics.longPress(view); thinkingPicker = true } }),
+                        onClick = { if (currentUsable) { TouchHaptics.click(view); modelPicker = true } },
+                        onLongClick = { if (currentUsable && canThink) { TouchHaptics.longPress(view); thinkingPicker = true } }),
                     verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically)) {
                     Text(profile.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(config?.let { it.modelDisplayName.ifBlank { it.model } } ?: if (profile.modelId.isBlank()) "无" else "模型不可用",
@@ -135,18 +131,16 @@ internal fun SubAgentProfileRow(
                         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                if (profile.supportsTaskTier) SubAgentTaskTierButton(profile.name, profile.tier, enabled,
-                    { tier -> if (currentEnabled) SubAgentPreferences.update(profile.id) { it.copy(tier = tier) } }, compact = true)
-                else androidx.compose.material3.IconButton(enabled = enabled,
-                    onClick = { if (currentEnabled) { TouchHaptics.click(view); modelPicker = true } }) {
-                    Icon(androidx.compose.material.icons.Icons.AutoMirrored.Rounded.KeyboardArrowRight, "选择${profile.name}模型",
+                if (profile.supportsTaskTier) SubAgentTaskTierButton(profile.name, profile.tier, usable,
+                    { tier -> if (currentUsable) editor?.updateProfile(profile.id) { it.copy(tier = tier) } }, compact = true)
+                else IconButton(enabled = usable, onClick = { if (currentUsable) { TouchHaptics.click(view); modelPicker = true } }) {
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "选择${profile.name}模型",
                         Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface)
                 }
             }
         }
     }
-
-    if (enabled && resolutionPicker && config != null) {
+    if (usable && resolutionPicker && config != null) {
         val verifiedGrok = runCatching {
             val body = if (config.extraBodyJson.isBlank()) org.json.JSONObject() else org.json.JSONObject(config.extraBodyJson)
             io.github.mangi.eta.agent.model.RequestBodyMerge.mergeCustomBody(body, config.customBody)
@@ -158,8 +152,8 @@ internal fun SubAgentProfileRow(
                     if (verifiedGrok) "当前 Grok 实测端点仅验证低、高；中、超高不可选。" else "实际支持取决于端点映射。")
                 (listOf<String?>(null) + io.github.mangi.eta.agent.model.ImageResolutionTier.values).forEach { tier ->
                     val allowed = !verifiedGrok || tier == null || tier in setOf("low", "high")
-                    TextButton(enabled = allowed, onClick = {
-                        if (currentEnabled) SubAgentPreferences.update(profile.id) { latest ->
+                    TextButton(enabled = usable && allowed, onClick = {
+                        if (currentUsable) editor?.updateProfile(profile.id) { latest ->
                             if (latest.providerId == profile.providerId && latest.modelId == profile.modelId && latest.role == "image_generation") latest.copy(imageResolution = tier) else latest
                         }
                         resolutionPicker = false
@@ -167,25 +161,24 @@ internal fun SubAgentProfileRow(
                 }
             } }, confirmButton = { TextButton(onClick = { resolutionPicker = false }) { Text("关闭") } })
     }
-
-    if (enabled && modelPicker) {
+    if (usable && modelPicker) {
         val all = AgentModelPickerProjector.project(providers, profile.providerId, profile.modelId)
         val models = all.copy(providerGroups = all.providerGroups.map { group ->
             group.copy(models = group.models.filter { profile.acceptsModel(it.supportsImageGeneration, it.supportsVideoGeneration) })
         }.filter { it.models.isNotEmpty() })
         TtsModelPickerDialog(models, true, { modelPicker = false }, { provider, model ->
-            if (currentEnabled) SubAgentPreferences.saveModel(profile.id, ModelFeatureSelection(true, provider, model))
+            if (currentUsable) editor?.saveModel(profile.id, ModelFeatureSelection(true, provider, model), expected = profile)
             modelPicker = false
         }, "选择${profile.name}模型", onClearSelection = {
-            if (currentEnabled) SubAgentPreferences.saveModel(profile.id, ModelFeatureSelection(true, "", ""))
+            if (currentUsable) editor?.saveModel(profile.id, ModelFeatureSelection(true, "", ""), expected = profile)
             modelPicker = false
         }, highlightSelection = true)
     }
-    if (enabled && thinkingPicker && config != null && canThink) {
+    if (usable && thinkingPicker && config != null && canThink) {
         val effort = requireNotNull(effective)
         val options = efforts
         ThinkingEffortPickerDialog(true, effort, options.ifEmpty { listOf(effort) }, { thinkingPicker = false }, { next ->
-            if (currentEnabled && next in options) SubAgentPreferences.update(profile.id) { latest ->
+            if (currentUsable && next in options) editor?.updateProfile(profile.id) { latest ->
                 if (latest.role == profile.role && latest.providerId == profile.providerId && latest.modelId == profile.modelId)
                     latest.copy(reasoning = next) else latest
             }

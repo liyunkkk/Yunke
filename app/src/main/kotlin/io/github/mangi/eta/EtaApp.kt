@@ -76,6 +76,8 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
                 AndroidAgentLogger.error(
                     "Interrupted backup recovery failed: type=${throwable.safeLogType()}"
                 )
+                // Never initialize work admission after an incomplete rollback.
+                throw throwable
             }
         }
         // Complete legacy accounting migration before any UI/runtime can issue a new request.

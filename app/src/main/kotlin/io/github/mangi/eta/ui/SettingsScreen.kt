@@ -127,6 +127,7 @@ internal fun SettingsScreen(
     currentModelId: String? = null,
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val taskBackendInstalled = rememberTaskBackendInstalled()
     val capabilities = rememberDeviceCapabilities()
     val enhancementHistory = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
     var hasConnectedFramework by remember { mutableStateOf(enhancementHistory.hasConnected) }
@@ -425,6 +426,14 @@ internal fun SettingsScreen(
                         startAction = { PreferenceIcon(Icons.Rounded.Dashboard) },
                         onClick = { onNavigate(AppRoute.Tools) },
                     )
+
+                    if (taskBackendInstalled == true) {
+                        ArrowPreference(
+                            title = stringResource(R.string.agent_task_surface_title),
+                            startAction = { PreferenceIcon(Icons.Rounded.Layers) },
+                            onClick = { onNavigate(AppRoute.AgentTaskPreference) },
+                        )
+                    }
 
                     SwitchPref(
                         context = context,

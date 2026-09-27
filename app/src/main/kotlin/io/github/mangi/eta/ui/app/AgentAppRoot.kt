@@ -63,6 +63,8 @@ import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.model.AppUpdateOffer
 import io.github.mangi.eta.data.repository.AppUpdateRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.ui.AgentTaskPreferenceScreen
+import io.github.mangi.eta.ui.AgentTaskSurfacePrompt
 import io.github.mangi.eta.ui.AppearanceSettingsScreen
 import io.github.mangi.eta.ui.HapticsSettingsScreen
 import io.github.mangi.eta.ui.ContextCompressionSettingsScreen
@@ -138,6 +140,19 @@ fun AgentAppRoot(
     val navigator = remember(backStack) { AgentNavigator(backStack) }
     val appViewModel = viewModel<AgentAppViewModel>()
     val agentState = appViewModel.state
+    val subAgentOwner = agentState.subAgentConfigOwner
+    val subAgentEditor = remember(agentState, subAgentOwner) { agentState.subAgentEditor(subAgentOwner) }
+    val childGroupsRevision by io.github.mangi.eta.agent.runtime.AgentChildTaskGroups.revision.collectAsState()
+    val hasBackgroundChildren = remember(subAgentOwner, childGroupsRevision) {
+        (subAgentOwner as? io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Conversation)?.let {
+            io.github.mangi.eta.agent.runtime.AgentChildTaskGroups.hasActive(it.value)
+        } ?: false
+    }
+    var stopRequest by remember { mutableStateOf<AgentAppState.StopRequest?>(null) }
+    LaunchedEffect(subAgentOwner) { stopRequest = null }
+    fun reportStopSelectionChanged() {
+        android.widget.Toast.makeText(context, "任务状态已变化，请重新选择要停止的任务。", android.widget.Toast.LENGTH_SHORT).show()
+    }
     val usageConversationId = agentState.conversationPaneState.selectedConversationId
     val recordedUsageState by remember(usageConversationId) {
         io.github.mangi.eta.data.repository.UsageStatsRepository.conversationUsageFlow(usageConversationId)
@@ -152,6 +167,7 @@ fun AgentAppRoot(
         onDispose { io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop() }
     }
     val speechPlayback by io.github.mangi.eta.agent.voice.tts.SpeechPlayback.state.collectAsState()
+    AgentTaskSurfacePrompt()
     LaunchedEffect(speechPlayback.error) {
         speechPlayback.error?.let { android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show() }
     }
@@ -531,6 +547,10 @@ fun AgentAppRoot(
     val swipeDismiss = swipeBackDirection.takeIf {
         LocalAppearanceSettings.current.swipeDismissEnabled
     }
+    CompositionLocalProvider(
+        io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor provides subAgentEditor,
+    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
     NavDisplay(
         backStack = backStack,
         onBack = { popRoute() },
@@ -562,9 +582,9 @@ fun AgentAppRoot(
                                 is AgentHomeAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId)
                                 is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId, action.providerId)
                                 is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                AgentHomeAction.StopRun -> agentState.pauseCurrentRun()
+                                AgentHomeAction.StopRun -> { stopRequest = agentState.captureStopRequest() }
                                 AgentHomeAction.ContinueRun -> agentState.continuePausedGeneration()
-                                AgentHomeAction.AbortPausedRun -> agentState.abandonPausedRun()
+                                AgentHomeAction.AbortPausedRun -> { stopRequest = agentState.captureStopRequest() }
                                 is AgentHomeAction.AssistantSelected -> agentState.selectAssistant(action.id)
                                 is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
                                 is AgentHomeAction.VideoAttached -> agentState.attachVideo(action.uri)
@@ -631,9 +651,9 @@ fun AgentAppRoot(
                                 is AgentChatAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId)
                                 is AgentChatAction.ModelSelected -> agentState.selectModel(action.modelId, action.providerId)
                                 is AgentChatAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                AgentChatAction.StopRun -> agentState.pauseCurrentRun()
+                                AgentChatAction.StopRun -> { stopRequest = agentState.captureStopRequest() }
                                 AgentChatAction.ContinueRun -> agentState.continuePausedGeneration()
-                                AgentChatAction.AbortPausedRun -> agentState.abandonPausedRun()
+                                AgentChatAction.AbortPausedRun -> { stopRequest = agentState.captureStopRequest() }
                                 is AgentChatAction.AssistantSelected -> agentState.selectAssistant(action.id)
                                 AgentChatAction.OpenBrowser -> pushRoute(AppRoute.Browser)
                                 is AgentChatAction.EditAssistant -> pushRoute(AppRoute.AssistantEdit(action.id))
@@ -685,6 +705,13 @@ fun AgentAppRoot(
             }
             entry<AppRoute.Haptics>(swipeDismiss = swipeDismiss) {
                 HapticsSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.AgentTaskPreference>(swipeDismiss = null) {
+                AgentTaskPreferenceScreen(onBack = ::popRoute)
+            }
+            // Compatibility alias for a restored old back stack; there is no separate recovery page.
+            entry<AppRoute.VirtualDisplayRecovery>(swipeDismiss = null) {
+                AgentTaskPreferenceScreen(onBack = ::popRoute)
             }
             entry<AppRoute.Tools>(swipeDismiss = swipeDismiss) {
                 AgentToolsScreen(
@@ -1015,6 +1042,34 @@ fun AgentAppRoot(
             }
     }
 
+    if (hasBackgroundChildren && !agentState.homeState.isStreaming &&
+        (backStack.lastOrNull() == AppRoute.Home || backStack.lastOrNull() == AppRoute.Chat)) {
+        androidx.compose.material3.FilledTonalButton(
+            onClick = { stopRequest = agentState.captureStopRequest() },
+            modifier = Modifier.align(Alignment.TopEnd).padding(top = 72.dp, end = 16.dp),
+        ) { androidx.compose.material3.Text("后台子任务 · 管理") }
+    }
+
+    stopRequest?.let { captured ->
+        io.github.mangi.eta.ui.components.AgentStopTaskDialog(
+            mainRunning = captured.mainRunning,
+            childrenRunning = captured.childrenRunning,
+            onStopMain = {
+                stopRequest = null
+                if (!agentState.stopMainReply(captured)) reportStopSelectionChanged()
+            },
+            onStopAll = {
+                stopRequest = null
+                if (!agentState.stopEntireTask(captured)) reportStopSelectionChanged()
+            },
+            onDismiss = { stopRequest = null },
+            onPause = if (agentState.canPauseStopRequest(captured)) ({
+                stopRequest = null
+                if (!agentState.pauseStopRequest(captured)) reportStopSelectionChanged()
+            }) else null,
+        )
+    }
+
     if (browserSheetVisible) {
         AgentBrowserScreen(onDismiss = { browserSheetVisible = false })
     }
@@ -1055,7 +1110,7 @@ fun AgentAppRoot(
             reason = prompt.reason,
             onDismiss = agentState::dismissContextBudgetPrompt,
             onCompactThisRun = { agentState.allowCurrentRunCompaction(prompt.runId) },
-            onStop = { agentState.stopBudgetBlockedRun(prompt.runId) },
+            onStop = { stopRequest = agentState.captureStopRequest() },
         )
     }
 
@@ -1222,6 +1277,8 @@ fun AgentAppRoot(
             )
         }
     }
+    } // task controls overlay
+    } // selected conversation settings context
 }
 
 
