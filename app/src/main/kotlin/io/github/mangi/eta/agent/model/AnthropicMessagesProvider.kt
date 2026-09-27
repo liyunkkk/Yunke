@@ -446,15 +446,11 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         val usage: AgentTokenUsage? = null
     )
 
+    // Anthropic keeps the cache subsets outside input_tokens; normalise to the
+    // OpenAI-style total prompt so occupancy and billing share one meaning.
     private fun parseUsage(usage: JSONObject?): AgentTokenUsage? {
         usage ?: return null
-        return AgentTokenUsage(
-            contextTokens = null,
-            inputTokens = usage.firstInt("input_tokens"),
-            outputTokens = usage.firstInt("output_tokens"),
-            reasoningTokens = usage.firstInt("thinking_output_tokens"),
-            cachedTokens = usage.firstInt("cache_read_input_tokens")
-        ).takeUnless { it.isEmpty }
+        return AnthropicUsageTotals.parse { key -> usage.firstInt(key) }
     }
 
     private fun parseJsonObject(raw: String): JSONObject =
