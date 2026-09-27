@@ -108,7 +108,8 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             .put("model", config.model)
             .put("max_tokens", DEFAULT_MAX_TOKENS)
             .put("stream", true)
-            .put("messages", anthropicMessages)
+            // Anthropic 要求同一批 tool_result 合并在紧随 assistant 的一条 user 里。
+            .put("messages", AnthropicMessageSequence.normalize(anthropicMessages))
             .also { request ->
                 val system = systemParts.joinToString("\n\n").trim()
                 if (system.isNotBlank()) request.put("system", system)
@@ -118,6 +119,8 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 request.remove(ImageRequestParameters.CONFIG_KEY) // Local image settings never enter text protocols.
                 ProviderReasoning.applyAnthropicRequest(request, config)
                 config.summaryOutputLimit?.let { request.put("max_tokens", it) }
+                // customBody 可以覆盖 messages；覆盖后的正文同样不得绕过配对校验。
+                AnthropicMessageSequence.validateFinalRequest(request)
             }
     }
 
