@@ -115,19 +115,24 @@ class AgentShellToolAvailabilityTest {
             baseUrl = "https://example.invalid/v1", apiKey = "k", model = "m", systemPrompt = "",
             terminalTools = true, browserTools = false,
         )
-        for (root in listOf(true, false)) {
-            val text = (0 until AgentPromptBuilder.buildSystemMessages(config, SkillContext.EMPTY,
-                AgentMemoryContext.DISABLED, rootAvailable = root, shellTools = snapshot).length()).joinToString("\n") {
-                AgentPromptBuilder.buildSystemMessages(config, SkillContext.EMPTY, AgentMemoryContext.DISABLED,
-                    rootAvailable = root, shellTools = snapshot).getJSONObject(it).optString("content")
-            }
-            assertTrue(text.contains("本机命令检测"))
-            assertTrue(text.contains("environment 按下方本机命令检测选择"))
-            assertFalse(text.contains("首轮调用 terminal，action=open_and_exec，environment=android"))
-            assertFalse(text.contains("未指定环境的命令使用 terminal 的 environment=android"))
+        fun promptText(rootAvailable: Boolean, tools: AgentShellToolAvailability.Snapshot?): String {
+            val messages = AgentPromptBuilder.buildSystemMessages(
+                config = config,
+                skillContext = SkillContext.EMPTY,
+                memoryContext = AgentMemoryContext.DISABLED,
+                rootAvailable = rootAvailable,
+                shellTools = tools,
+            )
+            return (0 until messages.length()).joinToString("\n") { messages.getJSONObject(it).optString("content") }
         }
-        // Without a snapshot the prompt stays valid and carries no fabricated detection.
-        val plain = AgentPromptBuilder.buildSystemMessages(config, SkillContext.EMPTY, AgentMemoryContext.DISABLED, true)
-        assertFalse((0 until plain.length()).any { plain.getJSONObject(it).optString("content").contains("本机命令检测") })
+        for (root in listOf(true, false)) {
+            val text = promptText(root, snapshot)
+            assertTrue(text, text.contains("本机命令检测"))
+            assertTrue(text, text.contains("environment 按下方本机命令检测选择"))
+            assertFalse(text, text.contains("首轮调用 terminal，action=open_and_exec，environment=android"))
+            assertFalse(text, text.contains("未指定环境的命令使用 terminal 的 environment=android"))
+            // Without a snapshot the prompt stays valid and carries no fabricated detection.
+            assertFalse(promptText(root, null).contains("本机命令检测"))
+        }
     }
 }
