@@ -62,7 +62,7 @@ class StreamingHapticsGateTest {
     }
 
     @Test
-    fun lostWindowFocusStillTicksButStoppedLifecycleDoesNot() {
+    fun windowFocusIsNotConsultedButStoppedLifecycleStops() {
         val owner = Owner().apply { resume() }
         lateinit var view: android.view.View
         compose.setContent {
@@ -71,13 +71,20 @@ class StreamingHapticsGateTest {
                 StreamingHaptics.Observe(enabled = true)
             }
         }
-        // Robolectric views report no window focus; feedback must not depend on it.
-        compose.runOnIdle {
-            assertFalse(view.hasWindowFocus())
-            assertTrue(ticked { StreamingHaptics.onVisibleAdvance(view) })
-        }
+        // Feedback must depend on lifecycle only. Window focus is asserted structurally below,
+        // because a host environment may report either focus state for an attached view.
+        compose.runOnIdle { assertTrue(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
         compose.runOnIdle { owner.stop() }
         compose.runOnIdle { assertFalse(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
+    }
+
+    /** The gate must not read window focus at all: a dialog or shade steals focus mid-stream. */
+    @Test
+    fun gateSourceDoesNotConsultWindowFocus() {
+        val source = java.io.File("src/main/kotlin/io/github/mangi/eta/ui/haptics/StreamingHaptics.kt")
+        assertTrue("gate source not found at ${source.absolutePath}", source.isFile)
+        val body = source.readText().substringAfter("fun onVisibleAdvance").substringBefore("@Composable")
+        assertFalse(body, body.contains("hasWindowFocus"))
     }
 
     @Test
