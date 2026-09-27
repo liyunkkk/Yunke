@@ -377,6 +377,10 @@ internal object AgentChildTaskGroups {
     private fun hasRetainedTasks(group: Group): Boolean =
         group.snapshots.isNotEmpty() || group.coordinator?.taskIds()?.isNotEmpty() == true
 
+    /** Ordinary dispatch may only be routed to a generation whose coordinator is still alive. */
+    private fun hasLiveRetainedTasks(group: Group): Boolean =
+        synchronized(this) { group.coordinator }?.taskIds()?.isNotEmpty() == true
+
     fun execute(ownerId: String, currentGeneration: String?, call: AgentModelClient.ToolCall,
         currentRunId: String? = null, replacementGeneration: String? = currentGeneration): AgentModelClient.ToolResult {
         val args = runCatching { JSONObject(call.argumentsJson) }.getOrNull() ?: return error("INVALID_TASK_ARGUMENTS")
@@ -389,9 +393,11 @@ internal object AgentChildTaskGroups {
         if (wantsReplacement) return replace(candidates, current, call, args)
         // A new parent must continue ordinary delegation through the retained coordinator when one
         // still owns the historical task. This coordinator contains the original model snapshot.
-        // If it was already archived, the resulting TASK_FINISHED is intentional: never fall back
-        // to the current user setting for a retained generation.
-        val retained = if (id.isBlank()) candidates.lastOrNull { it !== current && hasRetainedTasks(it) } else null
+        // Only a live coordinator can dispatch. An archived generation holds read-only snapshots of
+        // finished tasks; routing new work there would answer TASK_FINISHED forever for this owner.
+        // A race where the chosen live generation retires before dispatch still yields TASK_FINISHED
+        // and never falls back to the current user setting for that retained generation.
+        val retained = if (id.isBlank()) candidates.lastOrNull { it !== current && hasLiveRetainedTasks(it) } else null
         val ordinary = if (retained != null) {
             val plan = ChildTaskOrdinaryDispatchSelection.plan(
                 current = current?.workers?.mapNotNull { it.configuration }.orEmpty(),
