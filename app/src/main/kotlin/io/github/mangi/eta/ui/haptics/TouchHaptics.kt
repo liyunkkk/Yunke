@@ -200,7 +200,8 @@ internal object TouchHaptics {
             } else {
                 VibrationEffect.createOneShot(durationMs, amplitude)
             }
-            vibrator.cancel()
+            // No cancel(): it would also stop unrelated vibrations from the system and other apps
+            // on the shared default vibrator. Overlapping short ticks are harmless.
             vibrator.vibrate(
                 effect,
                 VibrationAttributes.Builder()
