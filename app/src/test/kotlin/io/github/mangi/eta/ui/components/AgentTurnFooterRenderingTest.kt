@@ -38,7 +38,8 @@ import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 /** Exercises the real lazy-list call site, not a second footer projection. CI only. */
 @RunWith(RobolectricTestRunner::class)
-@Config(application = Application::class, sdk = [34], qualifiers = "w480dp-h1200dp-mdpi")
+// Match the native shader runtime used by AgentWorkProcessCardDrawTest.
+@Config(application = Application::class, sdk = [36], qualifiers = "w480dp-h1200dp-mdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AgentTurnFooterRenderingTest {
     @get:Rule val compose = createComposeRule()

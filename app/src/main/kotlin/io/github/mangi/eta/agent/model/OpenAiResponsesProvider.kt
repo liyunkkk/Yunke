@@ -109,6 +109,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         var terminal: JSONObject? = null
         var terminalType: String? = null
         var sawEvent = false
+        var sawFunctionCall = false
         var reportedUsage: AgentTokenUsage? = null
         fun reportUsage(json: JSONObject?) {
             val usage = parseUsage(json) ?: return
@@ -217,6 +218,14 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 if (payload.isBlank() || payload == "[DONE]") return
                 sawEvent = true
                 val event = JSONObject(payload)
+                // Even an orphan argument delta is tool evidence, not recoverable text.
+                val eventType = event.optString("type")
+                if (eventType.startsWith("response.function_call_arguments.") ||
+                    (eventType in setOf("response.output_item.added", "response.output_item.done") &&
+                        event.optJSONObject("item")?.optString("type") == "function_call")
+                ) {
+                    sawFunctionCall = true
+                }
                 deliveryGuard.observe(event)
                 reportUsage(event.optJSONObject("response")?.optJSONObject("usage"))
                 throwEventError(event)
@@ -379,7 +388,9 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 if (terminal != null) finish()
             },
             shouldIgnoreFailure = {
-                streamedText.isNotBlank() || streamedReasoning.isNotBlank() || toolCalls.isNotEmpty()
+                // Route a disconnect after tool evidence through the non-retryable
+                // completeness check below, never through the network retry path.
+                streamedText.isNotBlank() || streamedReasoning.isNotBlank() || sawFunctionCall
             },
         )
 
@@ -387,9 +398,16 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             return interruptedAssistantMessage(streamedText.toString(), streamedReasoning.toString())
         }
 
+        if (terminal == null && sawFunctionCall) {
+            throw AgentModelFailure(
+                code = "RESPONSES_TOOL_CALL_INCOMPLETE",
+                retryable = false,
+                message = "模型接口 Responses 工具调用缺少响应终止事件；已拒绝执行，且不会自动重试。",
+            )
+        }
         if (!sawEvent) throw AgentModelFailure.incompleteStream("模型接口未返回 SSE data chunk")
-        val recoveredFromStream = terminal == null &&
-            (streamedText.isNotBlank() || streamedReasoning.isNotBlank() || toolCalls.isNotEmpty())
+        val recoveredFromStream = terminal == null && !sawFunctionCall &&
+            (streamedText.isNotBlank() || streamedReasoning.isNotBlank())
         val finalResponse = terminal ?: if (recoveredFromStream) {
             JSONObject()
         } else {
@@ -666,7 +684,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                     itemId = item.optString("id").ifBlank { "item_$index" },
                     callId = item.optString("call_id").ifBlank { "tool_call_$index" },
                     name = item.optString("name").ifBlank { "unknown_tool" },
-                    arguments = ToolArguments.merge("", item.opt("arguments")).ifBlank { "{}" },
+                    arguments = requireFinalToolArguments(item),
                 )
             }
         }
@@ -677,6 +695,22 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             toolCalls = calls,
             contentParts = contentParts,
         )
+    }
+
+    private fun requireFinalToolArguments(item: JSONObject): String {
+        val arguments = item.opt("arguments")
+        if (arguments == null || arguments === JSONObject.NULL ||
+            (arguments is String && arguments.isBlank())
+        ) {
+            throw AgentModelFailure(
+                code = "RESPONSES_TOOL_ARGUMENTS_INCOMPLETE",
+                retryable = false,
+                message = "模型接口 Responses 终态工具调用的 arguments 缺失、为 null 或空白；已拒绝执行，且不会自动重试。",
+            )
+        }
+        // The non-empty terminal snapshot is authoritative. Never revive streamed
+        // fields; retain object-valued arguments and explicit "{}" for validation.
+        return ToolArguments.merge("", arguments)
     }
 
     private fun finishReason(terminalType: String?, response: JSONObject, hasCalls: Boolean): String {

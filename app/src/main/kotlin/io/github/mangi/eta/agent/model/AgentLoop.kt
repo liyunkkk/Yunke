@@ -68,6 +68,7 @@ internal class AgentLoop(
 
     private var toolCallValidator = AgentToolCallValidator(tools)
     private val delegationArgumentRepair = AgentDelegationArgumentRepair()
+    private val invalidToolArgumentsGuard = AgentInvalidToolArgumentsGuard()
     private var shellFailureState = AgentShellFailureGuard.State()
     private var shellFailureStopMessage: String? = null
     private var delegationRepairNotifiedRound: Int? = null
@@ -385,6 +386,9 @@ internal class AgentLoop(
                 }
                 // Stop only after every tool result in this batch has been paired.
                 // This is a bounded repair budget, not a limit on legitimate long tasks.
+                invalidToolArgumentsGuard.stopMessage?.let { message ->
+                    throw AgentModelFailure(AgentInvalidToolArgumentsGuard.STOP_CODE, false, message)
+                }
                 shellFailureStopMessage?.let { message ->
                     throw AgentModelFailure(AgentShellFailureGuard.STOP_CODE, false, message)
                 }
@@ -764,12 +768,20 @@ internal class AgentLoop(
                 return rejectedToolOutcome(round, toolCall, "DELEGATION_ARGUMENT_REPAIR_EXHAUSTED",
                     "委派参数补全失败，本轮已停用新委派；未创建子任务，已有子任务不受影响。请主代理接手。")
             }
+            val rejection = invalidToolArgumentsGuard.reject(
+                toolName = toolCall.name,
+                declared = toolCallValidator.declares(toolCall.name),
+                validationError = validationError,
+            )
             return rejectedToolOutcome(
                 round = round,
                 toolCall = toolCall,
-                code = "INVALID_TOOL_ARGUMENTS",
-                message = validationError,
+                code = rejection.code,
+                message = rejection.message,
             )
+        }
+        if (toolCall.name != AgentDelegationArgumentRepair.TOOL) {
+            invalidToolArgumentsGuard.validated(toolCall.name)
         }
         onEvent(
             AgentEvent.ToolStarted(
