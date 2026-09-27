@@ -80,10 +80,17 @@ internal fun WorkProcessCardSlice(
                     translate(Offset(inset, inset - geometry.topExtension))
                 }
                 val stroke = Stroke(strokeWidth)
+                // 中间段的圆角都被推到裁剪区外，可见区域内 fillPath 就是整矩形；
+                // 此时用 clipRect 即可，避免展开动画每帧对整段内容做路径裁剪。
+                val needsPathClip = part.startsCard || part.endsCard
                 onDrawWithContent {
                     clipRect {
                         drawPath(fillPath, surface)
-                        clipPath(fillPath) { this@onDrawWithContent.drawContent() }
+                        if (needsPathClip) {
+                            clipPath(fillPath) { this@onDrawWithContent.drawContent() }
+                        } else {
+                            this@onDrawWithContent.drawContent()
+                        }
                         drawPath(borderPath, border, style = stroke)
                     }
                 }

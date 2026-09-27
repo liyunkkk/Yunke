@@ -69,6 +69,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -861,6 +862,7 @@ private fun StableMarkdown(
         content = content,
         retainState = true,
     ),
+    progressive: Boolean = false,
 ) {
     val components = remember { chatMarkdownComponents() }
     Markdown(
@@ -894,6 +896,7 @@ private fun StableMarkdown(
                 content = state.content,
                 components = successComponents,
                 modifier = successModifier,
+                progressive = progressive,
             )
         },
     )
@@ -1158,8 +1161,28 @@ private fun ChatMarkdownDocument(
     components: MarkdownComponents,
     modifier: Modifier = Modifier,
     revealCoordinator: SmoothTextRevealCoordinator? = null,
+    progressive: Boolean = false,
 ) {
     val blocks = remember(root) { topLevelMarkdownBlocks(root) }
+    // 用户点击展开长文档时，把整篇的组合与文字测量分摊到连续几帧，避免首帧一次性
+    // 构建全部 AnnotatedString 并测量全文。只在进入组合时决定一次，历史滚入可视区
+    // 的已展开内容仍一次到位，不会在滚动途中改变高度。
+    val progressiveAtEntry = remember { progressive && revealCoordinator == null }
+    val composedBlockLimit = if (progressiveAtEntry) {
+        val lengths = remember(blocks) { blocks.map { (it.endOffset - it.startOffset).coerceAtLeast(0) } }
+        var limit by remember(blocks) {
+            mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
+        }
+        LaunchedEffect(lengths) {
+            while (limit < lengths.size) {
+                withFrameNanos { }
+                limit = nextProgressiveBlockLimit(lengths, limit, PROGRESSIVE_FRAME_CHARS)
+            }
+        }
+        limit
+    } else {
+        Int.MAX_VALUE
+    }
     val startedRevealKeys = rememberStartedRevealKeys(revealCoordinator)
     val nextRevealKey = remember(blocks, startedRevealKeys) {
         blocks.mapNotNull { it.firstRevealBlockKey() }
@@ -1178,7 +1201,8 @@ private fun ChatMarkdownDocument(
     val density = LocalDensity.current
     var previousVisibleType: IElementType? = null
     Column(modifier) {
-        blocks.forEach { node ->
+        blocks.forEachIndexed { index, node ->
+            if (index >= composedBlockLimit) return@forEachIndexed
             val revealKey = node.firstRevealBlockKey()
             val visible = streamingMarkdownBlockVisible(
                 coordinatorActive = revealCoordinator != null,
@@ -1186,7 +1210,7 @@ private fun ChatMarkdownDocument(
                 startedRevealKeys = startedRevealKeys,
                 nextRevealKey = nextRevealKey,
             )
-            if (!visible) return@forEach
+            if (!visible) return@forEachIndexed
             val gap = with(density) {
                 markdownBlockSpacing(previousVisibleType, node.type).toDp()
             }
@@ -1244,6 +1268,24 @@ internal fun shouldFreezeStreamingMarkdownBlock(
 ): Boolean = tailStartOffset != null && blockStartOffset != tailStartOffset
 
 private const val STREAMING_PARSE_PUBLISH_INTERVAL_MS = 90L
+private const val PROGRESSIVE_FIRST_FRAME_CHARS = 1_000
+private const val PROGRESSIVE_FRAME_CHARS = 800
+
+/**
+ * 从 [current] 开始按字符预算继续纳入顶层块。每次至少前进一块，保证单个超长块
+ * 也能在有限帧内完成；返回值不超过块数。
+ */
+internal fun nextProgressiveBlockLimit(blockLengths: List<Int>, current: Int, charBudget: Int): Int {
+    var limit = current.coerceIn(0, blockLengths.size)
+    var used = 0
+    while (limit < blockLengths.size) {
+        val length = blockLengths[limit]
+        if (used > 0 && used + length > charBudget) break
+        used += length
+        limit++
+    }
+    return limit
+}
 
 internal fun streamingMarkdownBlockVisible(
     coordinatorActive: Boolean,
@@ -2283,6 +2325,8 @@ private fun ThinkingRow(
 ) {
     var expanded by rememberSaveable(message.id) { mutableStateOf(!message.collapsed) }
     var manuallyExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    // 仅本次组合内由点击触发的展开才分帧组合正文；不跨配置变更保存。
+    var expandedByTap by remember(message.id) { mutableStateOf(false) }
     // 思考结束后立即切换为与完成态回答相同的稳定 Markdown。工具执行期间 App 可能
     // 处于后台，不能让旧思考保留显现债务，回来后在新回答旁边补播整段内容。
     val streamingState = if (message.isStreaming) {
@@ -2340,6 +2384,7 @@ private fun ThinkingRow(
                 .clip(RoundedCornerShape(10.dp))
                 .clickable {
                     manuallyExpanded = true
+                    expandedByTap = !expanded
                     expanded = !expanded
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
@@ -2425,6 +2470,7 @@ private fun ThinkingRow(
                             tone = ChatMarkdownTone.Thinking,
                             markdownState = checkNotNull(stableMarkdownState),
                             modifier = contentModifier,
+                            progressive = expandedByTap,
                         )
                     }
                 }
