@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.runtime
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,7 +44,7 @@ class AgentRuntimeClientLifetimeSourceTest {
     @Test
     fun stopRequestedWhileStartingStillCancelsBeforeWaiting() {
         val send = run.indexOf("serviceMessenger.send(msg)")
-        val await = run.indexOf("resultLatch.await()")
+        val await = run.indexOf("awaitRunResult(resultLatch, isStopRequested)")
         assertTrue(send >= 0 && await > send)
         val afterStart = run.substring(send, await)
         assertCodeEquals(
@@ -52,6 +53,19 @@ class AgentRuntimeClientLifetimeSourceTest {
             """,
             blockAfter(afterStart, "if (isStopRequested())"),
         )
+    }
+
+    @Test
+    fun stoppedRunWithoutAResultStillReturnsAClearFailureInsteadOfWaitingForever() {
+        // A stopped run must not hold the caller forever when the runtime never answers.
+        assertFalse(run.contains("resultLatch.await()"))
+        assertTrue(run.contains("if (!awaitRunResult(resultLatch, isStopRequested)) {"))
+        assertTrue(
+            run.contains(
+                "return AgentRuntimeWire.RunResult(request.runId, false, \"\", \"已停止，但运行时未在限期内返回结果\")",
+            ),
+        )
+        assertTrue(run.contains("return resultRef.get() ?: AgentRuntimeWire.RunResult(\"\", false, \"\", \"Agent Runtime 未返回结果\")"))
     }
 
     @Test

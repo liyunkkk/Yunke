@@ -71,7 +71,9 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             if (isStopRequested()) {
                 sendRequestedStop(serviceMessenger, request.runId, mainStopReason())
             }
-            resultLatch.await()
+            if (!awaitRunResult(resultLatch, isStopRequested)) {
+                return AgentRuntimeWire.RunResult(request.runId, false, "", "已停止，但运行时未在限期内返回结果")
+            }
             return resultRef.get() ?: AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 未返回结果")
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -318,7 +320,7 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             }
         }
     }
-    private companion object {
+    internal companion object {
         fun recordDeliveryTiming(data: android.os.Bundle, live: Boolean) {
             StreamDeliveryTiming.delayNs(data.getLong(StreamDeliveryTiming.KEY, 0L),
                 android.os.SystemClock.elapsedRealtimeNanos(), live)?.let {
@@ -326,5 +328,30 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             }
         }
         const val RESPONSE_TIMEOUT_SECONDS = 8L
+        const val RESULT_HEARTBEAT_SECONDS = 1L
+        const val STOP_RESULT_GRACE_SECONDS = 15L
+
+        /**
+         * A run may legitimately take a long time, so only an explicit stop starts the grace
+         * clock: an unresponsive runtime after a stop must still return control to the caller.
+         */
+        fun awaitRunResult(
+            resultLatch: CountDownLatch,
+            isStopRequested: () -> Boolean,
+            heartbeatSeconds: Long = RESULT_HEARTBEAT_SECONDS,
+            stopGraceSeconds: Long = STOP_RESULT_GRACE_SECONDS,
+        ): Boolean {
+            // A running run may legitimately take hours, so block without polling until a stop is
+            // requested; only then does the bounded grace clock start.
+            while (!isStopRequested()) {
+                if (resultLatch.await(heartbeatSeconds, TimeUnit.SECONDS)) return true
+            }
+            var remainingGraceSeconds = stopGraceSeconds
+            while (remainingGraceSeconds > 0) {
+                if (resultLatch.await(heartbeatSeconds, TimeUnit.SECONDS)) return true
+                remainingGraceSeconds -= heartbeatSeconds
+            }
+            return false
+        }
     }
 }
