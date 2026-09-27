@@ -29,7 +29,7 @@ class AgentRunReplayBatchTest {
             }
         }
         assertEquals(1_000, events.size)
-        assertLargeReplay(events, expectedApplications = 800, expectedBodySize = 300)
+        assertLargeReplay(events, expectedApplications = 1_000, expectedBodySize = 300)
     }
 
     @Test
@@ -38,11 +38,11 @@ class AgentRunReplayBatchTest {
             repeat(64) { round -> addBlock(round, AgentEvent.AssistantBlockKind.TEXT) }
         }
         assertEquals(256, events.size)
-        assertLargeReplay(events, expectedApplications = 192, expectedBodySize = 64)
+        assertLargeReplay(events, expectedApplications = 256, expectedBodySize = 64)
     }
 
     @Test
-    fun coalescingPreservesAllNonDeltaBoundariesAndDifferentBlockIdentities() {
+    fun replayPreservesEveryDeltaAndAllEventBoundaries() {
         val events = listOf(
             delta(1, 0, "a"), delta(1, 0, "b"),
             AgentEvent.UserSupplementReceived(1, "steer"),
@@ -52,7 +52,39 @@ class AgentRunReplayBatchTest {
         )
         val applied = mutableListOf<AgentEvent>()
         AgentRunReplayBatch().replay("run", events, {}, applied::add, {})
-        assertEquals(listOf(delta(1, 0, "ab"), events[2], events[3], events[4], events[5], events[6], events[7]), applied)
+        assertEquals(events, applied)
+    }
+
+    @Test
+    fun adjacentLateThinkingPrefixesKeepSerialDeduplicationSemantics() {
+        val runId = "late-thinking"
+        val events = listOf(
+            AgentEvent.AssistantBlockStart(1, AgentEvent.AssistantBlockKind.THINKING, 0),
+            AgentEvent.AssistantBlockDelta(1, AgentEvent.AssistantBlockKind.THINKING, 0, 3, "abc"),
+            AgentEvent.AssistantBlockEnd(1, AgentEvent.AssistantBlockKind.THINKING, 0, contentChars = 3),
+            AgentEvent.AssistantBlockStart(1, AgentEvent.AssistantBlockKind.TEXT, 0),
+            delta(1, 0, "answer"),
+            AgentEvent.AssistantBlockEnd(1, AgentEvent.AssistantBlockKind.TEXT, 0, contentChars = 6),
+            AgentEvent.AssistantBlockStart(1, AgentEvent.AssistantBlockKind.THINKING, 1),
+            AgentEvent.AssistantBlockDelta(1, AgentEvent.AssistantBlockKind.THINKING, 1, 1, "a"),
+            AgentEvent.AssistantBlockDelta(1, AgentEvent.AssistantBlockKind.THINKING, 1, 2, "ab"),
+        )
+        val initial = listOf<AgentChatMessageUi>(UserMessageUi("user-$runId", "task"))
+        val serialProjector = AgentRunMessageProjector { 1_000L }
+        var serial = initial
+        events.forEach { serial = project(serialProjector, runId, it, serial) }
+        val replayProjector = AgentRunMessageProjector { 1_000L }
+        var replayed = initial
+        val batch = AgentRunReplayBatch()
+        batch.replay(runId, events, reset = {}, apply = {
+            replayed = batch.normalize(runId, project(replayProjector, runId, it, replayed))
+        }, finish = { replayed = batch.normalize(runId, replayed) })
+        assertEquals(serial, replayed)
+        val thinkings = replayed.filterIsInstance<ThinkingMessageUi>()
+        assertEquals(1, thinkings.size)
+        assertEquals("abc", thinkings.single().content)
+        assertFalse(thinkings.single().isStreaming)
+        assertTrue(thinkings.single().collapsed)
     }
 
     @Test
@@ -140,7 +172,7 @@ class AgentRunReplayBatchTest {
             .all { it.content == "xy" && !it.isStreaming })
         assertEquals(messages.size, messages.map { it.id }.toSet().size)
 
-        // Coalesced replay must match the original event-by-event projection's
+        // Batched derived work must match the original event-by-event projection's
         // payloads and order, without reintroducing per-event sorting in the oracle.
         val serialProjector = AgentRunMessageProjector { 1_000L }
         var serial = serialProjector.resetForReplay(runId, initial)

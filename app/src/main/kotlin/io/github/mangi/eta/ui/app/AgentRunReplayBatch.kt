@@ -10,9 +10,9 @@ import io.github.mangi.eta.ui.model.normalizeTerminalRunMessages
  * event still blocks input and allocates temporary histories. Defer that derived
  * work until finish, while applying metadata/usage/compaction events in order.
  *
- * Adjacent deltas for the same block are coalesced just as on the live event path;
- * every other event is a hard boundary. No events or message payloads are retained
- * after the call, and a failed replay cannot leave live updates in deferred mode.
+ * Keep every recorded event unchanged: thinking deduplication inspects each
+ * incoming delta, so concatenating even adjacent deltas can change its meaning.
+ * No events or payloads are retained, and failure cannot leave deferral active.
  */
 internal class AgentRunReplayBatch(
     private val order: (String, List<AgentChatMessageUi>) -> List<AgentChatMessageUi> =
@@ -35,16 +35,7 @@ internal class AgentRunReplayBatch(
         activeRunId = runId
         try {
             reset()
-            val coalescer = AgentRunEventCoalescer()
-            events.forEach { event ->
-                if (event is AgentEvent.AssistantBlockDelta) {
-                    coalescer.append(runId, event)?.let(apply)
-                } else {
-                    coalescer.flush(runId)?.let(apply)
-                    apply(event)
-                }
-            }
-            coalescer.flush(runId)?.let(apply)
+            events.forEach(apply)
         } finally {
             activeRunId = null
         }
