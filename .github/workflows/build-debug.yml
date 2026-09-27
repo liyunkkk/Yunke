@@ -70,9 +70,7 @@ jobs:
 
       - name: 运行单元测试
         timeout-minutes: 12
-        run: >-
-          ./gradlew --no-daemon --no-configuration-cache
-          :app:testDebugUnitTest
+        run: python3 -u .github/scripts/run_unit_tests.py
 
       - name: 上传单测报告
         if: always()
@@ -82,6 +80,7 @@ jobs:
           path: |
             app/build/test-results/testDebugUnitTest/
             app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/test-diagnostics/
           if-no-files-found: ignore
           retention-days: 7
 

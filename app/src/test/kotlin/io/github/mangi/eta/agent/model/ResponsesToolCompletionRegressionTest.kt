@@ -6,8 +6,13 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import java.io.IOException
 import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
 import org.json.JSONArray
 import org.json.JSONObject
@@ -344,6 +349,10 @@ class ResponsesToolCompletionRegressionTest {
         disconnect: Boolean = false,
         block: (String, AtomicInteger) -> Unit,
     ) {
+        if (disconnect) {
+            withDisconnectedSseSocket(body, block)
+            return
+        }
         val requests = AtomicInteger()
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         val executor = Executors.newSingleThreadExecutor()
@@ -353,20 +362,12 @@ class ResponsesToolCompletionRegressionTest {
             exchange.requestBody.use { it.readBytes() }
             val bytes = body.toByteArray(Charsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "text/event-stream")
-            // A larger declared body forces a transport failure after all tool frames
-            // have been read, rather than an ordinary successful HTTP EOF.
-            exchange.sendResponseHeaders(200, bytes.size.toLong() + if (disconnect) 64L else 0L)
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
             try {
                 exchange.responseBody.write(bytes)
                 exchange.responseBody.flush()
             } finally {
-                try {
-                    exchange.responseBody.close()
-                } catch (error: IOException) {
-                    if (!disconnect) throw error
-                } finally {
-                    exchange.close()
-                }
+                try { exchange.responseBody.close() } finally { exchange.close() }
             }
         }
         server.start()
@@ -375,6 +376,81 @@ class ResponsesToolCompletionRegressionTest {
         } finally {
             server.stop(0)
             executor.shutdownNow()
+        }
+    }
+
+    /** Own the TCP socket: HttpServer.close() on an underfilled fixed-length exchange
+     * can leave a keep-alive connection open. A real FIN makes this a transport-failure
+     * regression, not a 60-second wait for the fixture to finish an impossible body. */
+    private fun withDisconnectedSseSocket(body: String, block: (String, AtomicInteger) -> Unit) {
+        val requests = AtomicInteger()
+        val active = AtomicReference<Socket?>()
+        val failure = AtomicReference<Throwable?>()
+        val server = ServerSocket().apply {
+            bind(InetSocketAddress("127.0.0.1", 0))
+            soTimeout = 250
+        }
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "responses-disconnect-fixture").apply { isDaemon = true }
+        }
+        executor.submit {
+            while (!server.isClosed) {
+                val socket = try { server.accept() }
+                catch (_: SocketTimeoutException) { continue }
+                catch (error: IOException) {
+                    if (!server.isClosed) failure.compareAndSet(null, error)
+                    break
+                }
+                active.set(socket)
+                try {
+                    socket.use {
+                        socket.soTimeout = 5_000
+                        val input = socket.getInputStream().buffered()
+                        val header = StringBuilder()
+                        while (!header.endsWith("\r\n\r\n")) {
+                            check(header.length < 32 * 1024) { "Fixture request headers too large" }
+                            val byte = input.read()
+                            check(byte >= 0) { "Fixture request headers incomplete" }
+                            header.append(byte.toChar())
+                        }
+                        val length = header.toString().lineSequence()
+                            .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
+                            ?.substringAfter(':')?.trim()?.toIntOrNull() ?: 0
+                        check(length in 0..1_048_576) { "Fixture request body too large" }
+                        var remaining = length
+                        val scratch = ByteArray(4096)
+                        while (remaining > 0) {
+                            val count = input.read(scratch, 0, minOf(scratch.size, remaining))
+                            check(count > 0) { "Fixture request body incomplete" }
+                            remaining -= count
+                        }
+                        requests.incrementAndGet()
+                        val bytes = body.toByteArray(Charsets.UTF_8)
+                        val headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n" +
+                            "Content-Length: ${bytes.size + 64}\r\nConnection: close\r\n\r\n"
+                        socket.getOutputStream().apply {
+                            write(headers.toByteArray(Charsets.US_ASCII))
+                            write(bytes)
+                            flush()
+                        }
+                        // Send every event, then FIN before the advertised body is complete.
+                        socket.shutdownOutput()
+                    }
+                } catch (error: Throwable) {
+                    if (!server.isClosed) failure.compareAndSet(null, error)
+                } finally {
+                    active.compareAndSet(socket, null)
+                }
+            }
+        }
+        try {
+            block("http://127.0.0.1:${server.localPort}", requests)
+            assertNull("Socket fixture must not fail before delivering the response", failure.get())
+        } finally {
+            server.close()
+            runCatching { active.getAndSet(null)?.close() }
+            executor.shutdownNow()
+            executor.awaitTermination(5, TimeUnit.SECONDS)
         }
     }
 
