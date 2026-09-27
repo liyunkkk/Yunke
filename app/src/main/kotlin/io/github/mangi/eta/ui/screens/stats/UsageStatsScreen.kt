@@ -257,7 +257,9 @@ private fun ModelUsagePane(
                     style = MiuixTheme.textStyles.headline1,
                 )
                 ModelMetricRow(
-                    label = stringResource(R.string.stats_page_input_tokens),
+                    // The value excludes cache reads, while the hit rate below divides by the
+                    // full prompt. Labelling both "input" made the two impossible to reconcile.
+                    label = stringResource(R.string.stats_page_fresh_input_tokens),
                     value = formatTokenCount(filtered.totalFreshInputTokens),
                 )
                 ModelMetricRow(
@@ -589,7 +591,7 @@ private fun ModelUsageRow(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 ModelMetricRow(
-                    label = stringResource(R.string.stats_page_input_tokens),
+                    label = stringResource(R.string.stats_page_fresh_input_tokens),
                     value = formatTokenCount(model.freshInputTokens),
                 )
                 ModelMetricRow(
@@ -791,7 +793,7 @@ private fun StatsGrid(stats: UsageStatsSnapshot, modifier: Modifier = Modifier) 
             StatCard(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Rounded.Keyboard,
-                label = stringResource(R.string.stats_page_input_tokens),
+                label = stringResource(R.string.stats_page_fresh_input_tokens),
                 value = formatCurrentLifetime(
                     current = formatTokenCount(stats.currentFreshInputTokens),
                     lifetime = formatTokenCount(stats.lifetimeFreshInputTokens),

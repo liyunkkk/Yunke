@@ -1354,6 +1354,7 @@
     <string name="stats_page_total_conversations">總對話數</string>
     <string name="stats_page_total_messages">總訊息數</string>
     <string name="stats_page_input_tokens">輸入 Token</string>
+    <string name="stats_page_fresh_input_tokens">輸入 Token（不含快取）</string>
     <string name="stats_page_output_tokens">輸出 Token</string>
     <string name="stats_page_cached_tokens">快取 Token</string>
     <string name="stats_page_launch_count">應用啟動次數</string>
