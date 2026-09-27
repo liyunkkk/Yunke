@@ -16,9 +16,13 @@ class CloudUsageReceiptCodecTest {
         assertEquals("", CloudUsageReceiptCodec.encode("c", "p", "m", "history", null))
     }
 
-    @Test fun unknownCloudUsageShowsZeroAndLimitButDoesNotBecomeMeasuredUsage() {
+    @Test fun unknownCloudUsageStaysUnknownAndDoesNotBecomeMeasuredUsage() {
         val usage = AgentContextUsageUi(null, 260000)
-        assertEquals("0K / 260K tokens · 0.0%", formatContextUsage(usage, noUsageText = "暂无上下文用量", locale = Locale.US))
+        // Unknown must read as unknown; only a real measurement may show 0K / 0.0%.
+        assertEquals(
+            "暂无上下文用量 · 260K tokens",
+            formatContextUsage(usage, noUsageText = "暂无上下文用量", locale = Locale.US),
+        )
         assertNull(usage.contextTokens)
         assertFalse(isContextWindowExceeded(usage))
         assertEquals("0K / 260K tokens · 0.0%", formatContextUsage(AgentContextUsageUi(0, 260000), locale = Locale.US))

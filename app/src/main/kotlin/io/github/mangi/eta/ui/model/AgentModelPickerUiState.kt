@@ -401,15 +401,22 @@ internal fun contextUsageProgress(contextTokens: Int?, contextWindow: Int?): Flo
     return (contextTokens.toFloat() / contextWindow.toFloat()).coerceIn(0f, 1f)
 }
 
-@Suppress("UNUSED_PARAMETER")
 internal fun formatContextUsage(
     usage: AgentContextUsageUi,
     noUsageText: String = "No conversation context yet",
     noLimitText: String = "The current model does not provide a context limit",
     locale: Locale = Locale.getDefault(),
 ): String {
-    // Zero is a display placeholder, never a fabricated cloud measurement.
-    val tokens = usage.contextTokens?.coerceAtLeast(0) ?: 0
+    // "Not measured yet" and "measured as zero" are different states. Rendering both as
+    // 0K / 0.0% made an unknown occupancy look like a real reading, while the ring stayed
+    // empty because progress is null — one state shown two ways.
+    val measured = usage.contextTokens
+    if (measured == null) {
+        val window = usage.contextWindow
+        return if (window == null || window <= 0) noUsageText
+        else "$noUsageText · ${formatCompactTokenCount(window, locale)} tokens"
+    }
+    val tokens = measured.coerceAtLeast(0)
     val tokenText = (if (usage.estimated) "≈" else "") +
         (if (tokens == 0) "0K" else formatCompactTokenCount(tokens, locale))
     val window = usage.contextWindow
