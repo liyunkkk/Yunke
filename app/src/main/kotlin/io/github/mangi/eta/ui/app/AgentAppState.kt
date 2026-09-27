@@ -181,6 +181,11 @@ internal class AgentAppState(
     private val runGeneratedAtMillis = mutableMapOf<String, Long>()
     // A stopped worker still owns its transcript until its terminal result is committed.
     private val stoppingRuns = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    // The UI must be able to unlock itself: a stop that never gets a RunResult cannot hold the screen.
+    private val stopSealTimeout = RunStopSealTimeout()
+    private val stopSealTerminalTimeout =
+        RunStopSealTimeout(timeoutMillis = RunStopSealTimeout.TERMINAL_GRACE_MS)
+    private val stopSealWatchdogJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val mainStopReasons = java.util.concurrent.ConcurrentHashMap<String, AgentChildControlPolicy.Reason>()
     private val modelRetryState = AgentRunRetryState()
     private val runOverheadTokens = mutableMapOf<String, Int>()
@@ -912,7 +917,7 @@ internal class AgentAppState(
 
     private fun rejectConversationArchiveMutation(): Boolean {
         if (stoppingRuns.keys.any { runConversationIds[it] == selectedConversationId }) {
-            Toast.makeText(appContext, "已停止，正在保存本轮上下文，请稍后再操作。", Toast.LENGTH_SHORT).show()
+            Toast.makeText(appContext, StopSealNotices.PENDING, Toast.LENGTH_SHORT).show()
             return true
         }
         if (!conversationArchiveBusy && !io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance) return false
@@ -3340,11 +3345,13 @@ internal class AgentAppState(
             // Publish scope before the stop flag observed by the delivery thread.
             if (keepChildren) mainStopReasons[runId] = reason else mainStopReasons.remove(runId)
             stoppingRuns[runId] = retrying
+            armStopSealWatchdog(runId)
             scope.launch(Dispatchers.IO) {
                 val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
                 val accepted = if (keepChildren) client.stopMainRun(runId, reason) else { client.cancelRun(runId); true }
                 if (!accepted) withContext(Dispatchers.Main.immediate) {
                     stoppingRuns.remove(runId)
+                    cancelStopSealWatchdog(runId)
                     conversationIdForRun(runId)?.let { owner ->
                         conversationState(owner)?.let { current ->
                             updateConversation(owner, current.copy(isStreaming = true, isPaused = false), updateTimestamp = false)
@@ -3900,8 +3907,20 @@ internal class AgentAppState(
         if (event is AgentEvent.AssistantBlockDelta) {
             StreamPerformanceDiagnostics.record("ui.delta.received", value = event.delta.length.toLong())
         }
-        if (stoppingRuns.containsKey(runId) && event !is AgentEvent.ContextCompacted &&
-            event !is AgentEvent.UserSupplementReceived && event !is AgentEvent.UsageReceived && event !is AgentEvent.ChildContextUpdated) return
+        if (stoppingRuns.containsKey(runId)) {
+            // A terminal event is the runtime's own confirmation; dropping it left the watchdog as
+            // the only way out of the stopping state.
+            if (RunStopEventGate.isRunTerminal(event)) {
+                finishStopSeal(runId)
+            } else if (
+                event !is AgentEvent.ContextCompacted &&
+                event !is AgentEvent.UserSupplementReceived &&
+                event !is AgentEvent.UsageReceived &&
+                event !is AgentEvent.ChildContextUpdated
+            ) {
+                return
+            }
+        }
         if (runMessageProjector.isSealed(runId) && !event.allowedAfterSeal()) {
             runEventFlushJobs.remove(runId)?.cancel()
             runEventCoalescer.flush(runId)
@@ -3918,6 +3937,56 @@ internal class AgentAppState(
 
         flushPendingRunDelta(runId)
         applyRunEvent(runId, event)
+    }
+
+    /**
+     * 停止请求发出后启动看门狗。Runtime 可能永远不回 RunResult（子任务收尾阻塞、Binder 丢失），
+     * 所以解除界面锁定不能只依赖它；到点后由看门狗补一条终态结果，并如实说明本轮结果未确认。
+     */
+    private fun armStopSealWatchdog(
+        runId: String,
+        timeout: RunStopSealTimeout = stopSealTimeout,
+    ) {
+        val ticket = timeout.beginStop(runId) ?: return
+        stopSealWatchdogJobs.remove(runId)?.cancel()
+        stopSealWatchdogJobs[runId] = scope.launch {
+            delay(timeout.timeoutMillis)
+            withContext(Dispatchers.Main.immediate) {
+                stopSealWatchdogJobs.remove(runId)
+                if (!timeout.claimUnlock(ticket)) return@withContext
+                // applyRunResult consumes the stoppingRuns entry itself; removing it here would
+                // erase the retry flag that decides which stop notice the user sees.
+                if (!stoppingRuns.containsKey(runId)) return@withContext
+                AndroidAgentLogger.warn("Stop seal timed out without a terminal result for run=$runId")
+                applyRunResult(
+                    runId,
+                    AgentRuntimeWire.RunResult(
+                        runId = runId,
+                        ok = false,
+                        content = "",
+                        error = StopSealNotices.TIMED_OUT,
+                    ),
+                )
+                Toast.makeText(appContext, StopSealNotices.TIMED_OUT, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /** Runtime 已确认终态，撤掉看门狗，避免它稍后再改写一条已经落定的结果。 */
+    private fun cancelStopSealWatchdog(runId: String) {
+        stopSealWatchdogJobs.remove(runId)?.cancel()
+        stopSealTimeout.release(runId)
+        stopSealTerminalTimeout.release(runId)
+    }
+
+    /**
+     * 收到终态事件：本轮已经结束，只给正式 RunResult 一个短宽限期。
+     * 这里不动 stoppingRuns，transcript 归属与 retry 标志仍由 applyRunResult 统一收尾。
+     */
+    private fun finishStopSeal(runId: String) {
+        stopSealWatchdogJobs.remove(runId)?.cancel()
+        stopSealTimeout.release(runId)
+        armStopSealWatchdog(runId, stopSealTerminalTimeout)
     }
 
     private fun AgentEvent.allowedAfterSeal(): Boolean =
@@ -4451,6 +4520,7 @@ internal class AgentAppState(
         acknowledgeRuntimeResult: Boolean = false,
     ) {
         val stoppedDuringRetry = stoppingRuns.remove(runId)
+        cancelStopSealWatchdog(runId)
         mainStopReasons.remove(runId)
         modelRetryState.clear(runId)
         contextBudgetBlockedRuns.remove(runId)
