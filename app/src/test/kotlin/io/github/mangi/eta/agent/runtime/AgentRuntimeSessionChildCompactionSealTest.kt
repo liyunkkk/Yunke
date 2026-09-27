@@ -57,7 +57,7 @@ class AgentRuntimeSessionChildCompactionSealTest {
 
             // The signal must release the waiter long before the seal budget would run out.
             assertTrue("seal only finished after the deadline: ${elapsedMs}ms",
-                elapsedMs < CHILD_COMPACTION_SEAL_TIMEOUT_MS / 2)
+                elapsedMs < AgentRuntimeSession.CHILD_COMPACTION_SEAL_TIMEOUT_MS / 2)
             assertEquals(listOf("child-enter", "child-return", "persist", "result", "terminal-return"),
                 order.toList())
             assertTrue(session.isTerminal)
@@ -96,7 +96,7 @@ class AgentRuntimeSessionChildCompactionSealTest {
         assertTrue(session.isTerminal)
         // The last admitted child commits; the reentrant claim never enters the bounded wait.
         assertTrue("reentrant claim entered the bounded wait: ${elapsedMs}ms",
-            elapsedMs < CHILD_COMPACTION_SEAL_TIMEOUT_MS / 2)
+            elapsedMs < AgentRuntimeSession.CHILD_COMPACTION_SEAL_TIMEOUT_MS / 2)
     }
 
     @Test
@@ -135,9 +135,9 @@ class AgentRuntimeSessionChildCompactionSealTest {
             assertTrue(accepted)
             // A stuck child must not be able to hold the seal open past the budget.
             assertTrue("seal gave up before the budget: ${elapsedMs}ms",
-                elapsedMs >= CHILD_COMPACTION_SEAL_TIMEOUT_MS / 2)
+                elapsedMs >= AgentRuntimeSession.CHILD_COMPACTION_SEAL_TIMEOUT_MS / 2)
             assertTrue("seal was not bounded: ${elapsedMs}ms",
-                elapsedMs <= CHILD_COMPACTION_SEAL_TIMEOUT_MS * 2)
+                elapsedMs <= AgentRuntimeSession.CHILD_COMPACTION_SEAL_TIMEOUT_MS * 2)
             assertFalse("the seal waited for the stuck child", order.contains("child-return"))
             assertTrue(session.isTerminal)
             assertNotNull(session.terminalResult)
