@@ -16,7 +16,7 @@ class SubAgentFinalizationPauseTest {
     private fun snapshot(c: SubAgentCoordinator, id: String) =
         JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", id))).content)
 
-    @Test fun providerReturnWhilePausedWaitsWithoutSpinningAndKeepsAnswerForContinuation() {
+    @Test(timeout = 15_000) fun providerReturnWhilePausedWaitsWithoutSpinningAndKeepsAnswerForContinuation() {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val worker = AtomicReference<Thread>()

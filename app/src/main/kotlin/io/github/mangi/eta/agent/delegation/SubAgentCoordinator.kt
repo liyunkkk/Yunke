@@ -355,8 +355,9 @@ internal class SubAgentCoordinator(
                         } else t.workspaceId?.let { id -> executeWorkspaceChild!!.invoke(workers[worker], prompt, t.controller, project, id, role == "implementation") }
                             ?: executeChild(workers[worker], prompt, t.controller)
                         synchronized(t) {
-                            t.controller.throwIfCancelled()
-                            if (t.state !in ACTIVE) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
+                            // Never wait for a pause while holding the task monitor: resume,
+                            // cancellation and snapshots all need it. Finalization waits below.
+                            if (t.controller.isCancelled || t.state !in ACTIVE) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
                             t.result = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
                         }
                         awaitFinalization(t)
