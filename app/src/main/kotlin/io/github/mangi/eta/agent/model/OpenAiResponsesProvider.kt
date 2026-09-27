@@ -67,6 +67,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 runController = runController,
                 onEvent = deliver,
                 deliveryGuard = deliveryGuard,
+                toolDiagnosticAttempt = request.toolDiagnosticAttempt,
             )
             callbackFailure?.let { throw it }
             ResponsesReasoningState.capture(assistant, config)
@@ -97,6 +98,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         runController: AgentRunController,
         onEvent: (ProviderEvent) -> Unit,
         deliveryGuard: ResponsesToolEnvelopeRecovery.DeliveryGuard,
+        toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null,
     ): JSONObject {
         val streamedText = StringBuilder()
         val streamedReasoning = StringBuilder()
@@ -218,6 +220,8 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 if (payload.isBlank() || payload == "[DONE]") return
                 sawEvent = true
                 val event = JSONObject(payload)
+                // Observe field presence before normalization/defaulting; no raw payload is logged.
+                toolDiagnosticAttempt?.responsesEvent(event)
                 // Even an orphan argument delta is tool evidence, not recoverable text.
                 val eventType = event.optString("type")
                 if (eventType.startsWith("response.function_call_arguments.") ||
@@ -569,7 +573,13 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 itemId = call.itemId,
                 callId = call.callId,
                 name = call.name,
-                arguments = call.arguments.toString().ifBlank { "{}" },
+                arguments = call.arguments.toString().ifBlank {
+                    throw AgentModelFailure(
+                        code = "RESPONSES_TOOL_ARGUMENTS_INCOMPLETE",
+                        retryable = false,
+                        message = "模型接口 Responses 工具流未提供完整参数；已拒绝执行，且不会自动重试。",
+                    )
+                },
             )
         },
         contentParts = emptyList(),

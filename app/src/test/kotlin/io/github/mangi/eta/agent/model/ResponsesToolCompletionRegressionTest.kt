@@ -100,6 +100,22 @@ class ResponsesToolCompletionRegressionTest {
         }
     }
 
+    @Test fun completedEmptyOutputCannotInventArgumentsForAnAddedOnlyCall() {
+        for (arguments in listOf<Any?>(null, "", " \t\n")) {
+            val body = event("response.output_item.added", JSONObject()
+                .put("output_index", 0).put("item", functionItem(arguments))) + completed(JSONArray())
+            assertRejectedWithoutExecution(body, "RESPONSES_TOOL_ARGUMENTS_INCOMPLETE")
+        }
+    }
+
+    @Test fun completedEmptyOutputPreservesExplicitEmptyObject() {
+        val body = event("response.output_item.added", JSONObject()
+            .put("output_index", 0).put("item", functionItem("{}"))) + completed(JSONArray())
+        withSseServer(body) { baseUrl, _ ->
+            assertEquals("{}", onlyCall(complete(baseUrl)).argumentsJson)
+        }
+    }
+
     @Test fun completedEmptyOutputKeepsStreamCompatibility() {
         withSseServer(toolDeltas() + completed(JSONArray())) { baseUrl, _ ->
             val response = complete(baseUrl)
@@ -154,6 +170,65 @@ class ResponsesToolCompletionRegressionTest {
                 assertFalse(response.assistantMessage.has("tool_calls"))
                 assertEquals(1, requests.get())
             }
+        }
+    }
+
+    @Test fun diagnosticsCorrelateRawProviderCodecAndResultWithoutLeakingPayloads() {
+        val logs = mutableListOf<String>()
+        val diagnostics = AgentToolCallDiagnostics(enabled = { true }, sink = { logs += it })
+        val body = toolDeltas() + completed(JSONArray().put(functionItem(VALID_ARGUMENTS)))
+        withSseServer(body) { baseUrl, _ ->
+            val result = AgentModelRetry().complete(
+                initialRound = 7,
+                request = request(baseUrl).copy(toolDiagnostics = diagnostics),
+                provider = OpenAiResponsesProvider,
+                controller = AgentRunController(),
+                onEvent = {}, onProviderEvent = { _, _ -> }, discardAttemptReasoning = {},
+            )
+            val call = AgentConversationCodec.parseToolCalls(result.response.assistantMessage).single()
+            val attempt = requireNotNull(result.toolDiagnosticAttempt)
+            attempt.parsed(call, 0)
+            attempt.validation(call, true)
+            attempt.dispatch(call)
+            attempt.result(call, AgentModelClient.ToolResult(
+                """{"ok":true,"tool":"terminal","environment":"debian","exit_code":0,"stdout":"secret-output"}""",
+            ))
+            val records = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }
+            val raw = records.single { it.optString("stage") == "raw_terminal" }
+            val parsed = records.single { it.optString("stage") == "parsed" }
+            val executed = records.single { it.optString("stage") == "result" }
+            assertEquals(raw.getInt("call"), parsed.getInt("call"))
+            assertEquals(raw.getInt("attempt"), executed.getInt("attempt"))
+            assertEquals(raw.getString("arguments_hmac"), parsed.getString("arguments_hmac"))
+            assertEquals("linux", parsed.getString("requested_environment"))
+            assertEquals("debian", executed.getString("actual_environment"))
+            val text = logs.joinToString("\n")
+            for (secret in listOf(VALID_ARGUMENTS, "secret-output", "call_terminal", ITEM_ID, "pwd")) {
+                assertFalse("diagnostics leaked a payload", text.contains(secret))
+            }
+        }
+    }
+
+    @Test fun diagnosticsCaptureMissingTerminalEvidenceWithoutAnotherRequest() {
+        val logs = mutableListOf<String>()
+        val diagnostics = AgentToolCallDiagnostics(enabled = { true }, sink = { logs += it })
+        withSseServer(toolDeltas()) { baseUrl, requests ->
+            val failure = runCatching {
+                AgentModelRetry().complete(
+                    initialRound = 1,
+                    request = request(baseUrl).copy(toolDiagnostics = diagnostics),
+                    provider = OpenAiResponsesProvider,
+                    controller = AgentRunController(),
+                    onEvent = {}, onProviderEvent = { _, _ -> }, discardAttemptReasoning = {},
+                )
+            }.exceptionOrNull()
+            assertTrue(failure is AgentModelFailure)
+            assertEquals(1, requests.get())
+            val failed = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }
+                .single { it.optString("stage") == "failed" }
+            assertEquals("RESPONSES_TOOL_CALL_INCOMPLETE", failed.getString("code"))
+            assertTrue(failed.getBoolean("saw_tool_call"))
+            assertFalse(failed.getBoolean("saw_terminal"))
         }
     }
 

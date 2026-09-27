@@ -9,7 +9,11 @@ internal class AgentModelRetry(
         controller.awaitRetryDelay(delay)
     },
 ) {
-    data class Result(val round: Int, val response: ProviderResponse)
+    data class Result(
+        val round: Int,
+        val response: ProviderResponse,
+        val toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null,
+    )
 
     fun complete(
         initialRound: Int,
@@ -35,9 +39,13 @@ internal class AgentModelRetry(
             // 收集线程可能在读线程仍处于回调中时就从 complete 返回；闸门保证被取代的旧尝试的迟到
             // 回调不再进入 onProviderEvent，避免覆盖后续请求记录的 usage。
             val deliveryGate = ProviderEventDeliveryGate()
+            val toolAttempt = request.toolDiagnostics?.beginAttempt(round, provider.id)
+                ?: request.toolDiagnosticAttempt
+            val diagnosticRequest = if (toolAttempt == null) attemptRequest
+                else attemptRequest.copy(toolDiagnosticAttempt = toolAttempt)
             try {
                 val response = try {
-                    provider.complete(attemptRequest, controller) { event ->
+                    provider.complete(diagnosticRequest, controller) { event ->
                         deliveryGate.deliver {
                             // Mark before calling consumers: a throwing callback may already have
                             // delivered a tool. Starts, deltas, and orphan ends all forbid replay.
@@ -71,8 +79,11 @@ internal class AgentModelRetry(
                     deliveryGate.close()
                 }
                 callbackFailure?.let { throw it }
-                return Result(round, response)
+                toolAttempt?.providerParsed(response.assistantMessage)
+                return Result(round, response, toolAttempt)
             } catch (failure: Exception) {
+                // Only a fixed/classified code reaches diagnostics, never exception text.
+                toolAttempt?.failed((failure as? AgentModelFailure)?.code ?: "PROVIDER_EXCEPTION")
                 callbackFailure?.let { throw it }
                 controller.throwIfCancelled()
                 // 还没吐出可见正文就被 steering/暂停打断：当作空助手回合，Loop 继续同一 run。

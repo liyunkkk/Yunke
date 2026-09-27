@@ -31,6 +31,7 @@ internal class AgentLoop(
     private val systemCount: Int = 0,
     private val compactionArchive: AgentCompactionArchive? = null,
     private val turnId: String = java.util.UUID.randomUUID().toString(),
+    private val toolDiagnostics: AgentToolCallDiagnostics = AgentToolCallDiagnostics(),
     private val onHistoryCompacted: () -> Unit = {},
     private val compactHistory: ((
         List<AgentModelClient.ConversationMessage>,
@@ -70,6 +71,7 @@ internal class AgentLoop(
     private val delegationArgumentRepair = AgentDelegationArgumentRepair()
     private val invalidToolArgumentsGuard = AgentInvalidToolArgumentsGuard()
     private var shellFailureState = AgentShellFailureGuard.State()
+    private var toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null
     private var shellFailureStopMessage: String? = null
     private var delegationRepairNotifiedRound: Int? = null
     private val accumulatedReasoning = StringBuilder()
@@ -214,7 +216,7 @@ internal class AgentLoop(
                 modelRetry.complete(
                     initialRound = round,
                     request = ProviderRequest(requestConfigForRound(),
-                        filteredMessages, roundTools, sessionId),
+                        filteredMessages, roundTools, sessionId, toolDiagnostics = toolDiagnostics),
                     provider = provider,
                     controller = runController,
                     onEvent = onEvent,
@@ -267,6 +269,7 @@ internal class AgentLoop(
             if (completedRound.round != round) interruptedTextPrefix.setLength(0)
             round = completedRound.round
             val providerResponse = completedRound.response
+            toolDiagnosticAttempt = completedRound.toolDiagnosticAttempt
 
             // Keep a fully returned response before observing a concurrent user stop.
             continuationText.finish().forEach { textEvent ->
@@ -278,6 +281,7 @@ internal class AgentLoop(
                 assistantMessage.put("content", continuationText.normalize(originalContent))
             }
             val toolCalls = AgentConversationCodec.parseToolCalls(assistantMessage)
+            toolCalls.forEachIndexed { index, call -> toolDiagnosticAttempt?.parsed(call, index) }
             toolCalls.filter { AgentSensitiveToolPolicy.isSensitive(it.name) }
                 .forEach { sensitiveToolCallIds += it.id }
             val assistantReasoning = continuationReasoning.visibleCompletedReasoning(
@@ -748,7 +752,9 @@ internal class AgentLoop(
             // Exhaustion was already reported. Complete protocol pairing without another failed card.
             return ToolOutcome(toolCall, delegationArgumentRepair.reject("本轮委派已停用", round))
         }
-        toolCallValidator.validate(toolCall)?.let { validationError ->
+        val validationError = toolCallValidator.validate(toolCall)
+        toolDiagnosticAttempt?.validation(toolCall, validationError == null)
+        validationError?.let { validationError ->
             if (toolCall.name == AgentDelegationArgumentRepair.TOOL && toolCallValidator.declares(toolCall.name)) {
                 val repair = delegationArgumentRepair.reject(validationError, round)
                 sensitiveToolCallIds += toolCall.id
@@ -793,6 +799,7 @@ internal class AgentLoop(
             )
         )
 
+        toolDiagnosticAttempt?.dispatch(toolCall)
         val rawResult = try {
             if (toolCall.name == AgentCompactionArchive.TOOL && compactionArchive != null) {
                 compactionArchive.read(toolCall.argumentsJson)
@@ -807,6 +814,7 @@ internal class AgentLoop(
                     .toString(),
             )
         }
+        toolDiagnosticAttempt?.result(toolCall, rawResult)
         val shellDecision = AgentShellFailureGuard.observe(shellFailureState, toolCall, rawResult)
         shellFailureState = shellDecision.state
         if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage
