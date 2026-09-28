@@ -75,29 +75,28 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(call, r"\.fillMaxSize\s*\(\s*\)")
         self.assertNotIn("layerBackdrop", call)
 
-    def test_messages_draw_behind_transparent_composer(self):
+    def test_messages_stop_at_the_composer_top_edge(self):
+        # The composer surround is transparent, but reply text must never draw
+        # behind or beside the composer: shrink the viewport first, then clip.
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         self.assertEqual(len(boxes), 1, "Expected one outer messages Box")
-        self.assertRegex(boxes[0], r"\bmodifier\s*=\s*modifier\s*\.clipToBounds\s*\(\s*\)")
-        self.assertNotRegex(
-            boxes[0].split("{", 1)[0], r"\bbottomInset\b",
-            "The viewport must extend behind the transparent composer",
+        self.assertRegex(
+            boxes[0],
+            r"\bmodifier\s*=\s*modifier\s*\.padding\s*\(\s*bottom\s*=\s*bottomInset\s*\)\s*\.clipToBounds\s*\(\s*\)",
         )
 
-    def test_inset_is_consumed_once_by_list_and_navigation(self):
-        # Streaming, paused and stopped states share the same layout contract:
-        # the list padding and the navigation button each lift above the composer once.
-        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 2)
+    def test_inset_is_consumed_once_by_the_viewport(self):
+        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 1)
 
-    def test_lazy_column_lifts_last_item_above_composer(self):
+    def test_lazy_column_padding_does_not_repeat_the_inset(self):
         lists = list(calls(self.messages, "LazyColumn"))
         self.assertEqual(len(lists), 1, "Expected one messages LazyColumn")
         paddings = list(calls(lists[0], "PaddingValues"))
         self.assertEqual(len(paddings), 1)
-        self.assertRegex(paddings[0], r"\bbottom\s*=\s*14\.dp\s*\+\s*bottomInset\s*(?:,|$)")
+        self.assertRegex(paddings[0], r"\bbottom\s*=\s*14\.dp\s*(?:,|$)")
 
     def test_navigation_stays_above_composer(self):
         buttons = list(calls(self.messages, "ConversationTurnNavigationButton"))
@@ -105,7 +104,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(
             buttons[0],
             r"\.align\s*\(\s*Alignment\.BottomCenter\s*\)\s*"
-            r"\.padding\s*\(\s*bottom\s*=\s*12\.dp\s*\+\s*bottomInset\s*,?\s*\)",
+            r"\.padding\s*\(\s*bottom\s*=\s*12\.dp\s*,?\s*\)",
         )
 
     def test_composer_surround_is_transparent(self):
@@ -115,8 +114,8 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertNotIn("textureBlur", self.source)
 
     def test_bottom_follow_retains_effective_viewport_formula(self):
-        # afterContentPadding includes the composer inset, so subtracting it keeps
-        # the follow target at the text boundary above the transparent composer.
+        # The viewport already ends at the composer top edge; subtracting the list's
+        # own bottom padding keeps the follow target at the last text line.
         self.assertRegex(
             self.messages,
             r"\bviewportEnd\s*=\s*layoutInfo\.viewportEndOffset\s*"

@@ -906,8 +906,9 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 底栏（含输入器和 IME）高度只作为列表底部内边距消费一次，正文可以透过输入框周围的透明区域显示。
-    Box(modifier = modifier.clipToBounds()) {
+    // 底栏（含输入器和 IME）高度只在这里消费一次，缩小真实滚动视口后再裁剪：
+    // 输入框周围虽然透明，正文也必须止于输入框上沿，不能绘制到输入框后面或两侧。
+    Box(modifier = modifier.padding(bottom = bottomInset).clipToBounds()) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
@@ -943,10 +944,9 @@ internal fun AgentConversationMessages(
                 // Navigation already emits one explicit click/long-press haptic.
                 .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
                 .overScrollVertical(),
-            // 底栏透明：列表绘制到输入框后面，用内边距保证最后一条仍能完整滚到输入框上方。
             contentPadding = PaddingValues(
                 top = 14.dp,
-                bottom = 14.dp + bottomInset,
+                bottom = 14.dp,
             ),
             overscrollEffect = null,
         ) {
@@ -1136,7 +1136,7 @@ internal fun AgentConversationMessages(
             onEdge = { navigateUserMessage(toEdge = true) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp + bottomInset),
+                .padding(bottom = 12.dp),
         )
     }
 }
