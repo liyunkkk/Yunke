@@ -2,8 +2,6 @@ package io.github.mangi.eta.ui.screens.chat
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
@@ -28,6 +26,7 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +55,20 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
+
+/** 管理页列表顺序。已有会话保持原位；新会话按当前列表里的相对顺序插到最前。置顶变化才整表重排。 */
+internal fun stableManageChatOrder(
+    previous: List<String>,
+    current: List<String>,
+    reorder: Boolean = false,
+): List<String> {
+    if (previous.isEmpty() || reorder) return current
+    val present = current.toSet()
+    val kept = previous.filter { it in present }
+    val keptSet = kept.toSet()
+    return current.filter { it !in keptSet } + kept
+}
+
 @Composable
 internal fun ManageChatsScreen(
     conversations: List<ConversationSummaryUi>,
@@ -69,6 +82,21 @@ internal fun ManageChatsScreen(
 ) {
     var showDeleteAll by remember { mutableStateOf(false) }
     var showSearchHistory by remember { mutableStateOf(false) }
+    // 多个会话同时在跑时，更新时间会不断把它们换到前面。管理页按打开时的顺序钉住，
+    // 只在原地刷新标题和状态，滑动删除才点得中。新出现的会话插到最前，关掉页面再打开才重排。
+    var orderIds by remember { mutableStateOf(conversations.map { it.id }) }
+    val pinnedIds = conversations.filter { it.isPinned }.map { it.id }
+    var pinnedSnapshot by remember { mutableStateOf(pinnedIds) }
+    val pinnedChanged = pinnedIds.toSet() != pinnedSnapshot.toSet()
+    val nextOrder = stableManageChatOrder(orderIds, conversations.map { it.id }, pinnedChanged)
+    SideEffect {
+        if (nextOrder != orderIds || pinnedChanged) {
+            orderIds = nextOrder
+            pinnedSnapshot = pinnedIds
+        }
+    }
+    val byId = conversations.associateBy { it.id }
+    val ordered = nextOrder.mapNotNull { byId[it] }
 
     MiuixScaffoldPage(
         title = stringResource(R.string.history_page_title),
@@ -90,7 +118,7 @@ internal fun ManageChatsScreen(
             }
         },
     ) {
-        if (conversations.isEmpty()) {
+        if (ordered.isEmpty()) {
             item(key = "empty") {
                 Text(
                     text = stringResource(R.string.history_page_empty),
@@ -100,7 +128,7 @@ internal fun ManageChatsScreen(
                 )
             }
         } else {
-            conversations.forEach { conversation ->
+            ordered.forEach { conversation ->
                 item(key = conversation.id) {
                     SwipeableManageChatRow(
                         conversation = conversation,
@@ -110,10 +138,7 @@ internal fun ManageChatsScreen(
                         modifier = Modifier.animateItem(
                             fadeInSpec = null,
                             fadeOutSpec = tween(180),
-                            placementSpec = spring(
-                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                stiffness = Spring.StiffnessMediumLow,
-                            ),
+                            placementSpec = null,
                         ),
                     )
                 }
