@@ -313,8 +313,10 @@ internal class AgentLoop(
                 // reasoning block's UI projection is hidden, not the model's thinking.
                 // 半截正文留在当前轮次历史里，继续时模型才能接着写。
                 // 未完成的工具调用不执行；已经完整给出的 TOOL_USE 在恢复后走正常批次。
+                val interruptedText = assistantMessage.optString("content")
+                    .takeIf { it != "null" }.orEmpty()
                 if (hasAssistantPayload) {
-                    assistantMessage.optString("content").takeIf { it != "null" }?.let(interruptedTextPrefix::append)
+                    interruptedTextPrefix.append(interruptedText)
                     messages.put(
                         AgentConversationCodec.assistantHistoryMessage(
                             source = assistantMessage,
@@ -322,7 +324,12 @@ internal class AgentLoop(
                         ).put(AgentTurnIdentity.JSON_KEY, turnId),
                     )
                     responseStored = true
-                    if (!runController.isCancelled) appendCompactContinueIfNeeded(suppressOptionalThinking = false)
+                }
+                // 思考期暂停没有可续写的正文：这一轮的 reasoning_content 不会回到模型手里，
+                // 只给一条通用续写指令会让它重新读整轮对话，所以换成接续思考的指令。
+                // 完全没有产出时不追加任何指令，恢复后就是原请求重发。
+                if (responseStored && !runController.isCancelled) {
+                    appendContinuePromptAfterInterrupt(thinkingOnly = interruptedText.isBlank())
                 }
                 runController.throwIfCancelled()
                 appendPendingSteeringMessage()
@@ -773,6 +780,25 @@ internal class AgentLoop(
 
     private fun steeringPrompt(supplement: String): String =
         AgentContextCompactor.steeringUserContent(supplement)
+
+    /**
+     * 中断后追加续写指令。正文被截断时接在 assistant 之后续写；暂停发生在思考阶段时
+     * 换成接续思考的指令，否则恢复的请求只多了一条通用续写要求，而模型看不到自己的
+     * 思考，只能从头重新分析整轮对话。两种情况都保留用户配置的思考开关。
+     */
+    private fun appendContinuePromptAfterInterrupt(thinkingOnly: Boolean) {
+        if (!thinkingOnly) {
+            appendCompactContinueIfNeeded(suppressOptionalThinking = false)
+            return
+        }
+        val last = messages.optJSONObject(messages.length() - 1) ?: return
+        if (!last.optString("role").equals("assistant", ignoreCase = true)) return
+        messages.put(
+            AgentConversationCodec.userTextMessage(
+                AgentContextCompactor.SEAMLESS_CONTINUE_THINKING_PROMPT,
+            ).put(AgentTurnIdentity.JSON_KEY, turnId),
+        )
+    }
 
     private fun appendCompactContinueIfNeeded(suppressOptionalThinking: Boolean = true) {
         val last = messages.optJSONObject(messages.length() - 1) ?: return
