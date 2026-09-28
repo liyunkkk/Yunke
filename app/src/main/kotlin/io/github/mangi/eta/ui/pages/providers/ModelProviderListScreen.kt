@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.state.ToggleableState
@@ -51,6 +52,7 @@ import io.github.mangi.eta.data.model.typeLabel
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.components.MiuixDialogActions
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.components.MiuixScaffold
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 import io.github.mangi.eta.ui.navigation.AppRoute
@@ -79,6 +81,7 @@ internal fun ModelProviderListScreen(
     currentProviderId: String? = null,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val scope = rememberCoroutineScope()
     val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
     val storedProviderId by RuntimeConfigRepository.selectedProviderIdFlow().collectAsState(initial = null)
@@ -179,7 +182,10 @@ internal fun ModelProviderListScreen(
                             startAction = {
                                 ProviderBrandIcon(ProviderSourceTypes.OPENAI)
                             },
-                            onClick = { onNavigate(AppRoute.ModelProviderAuthMethod(NewProviderType.OpenAiCompatible)) },
+                            onClick = {
+                                TouchHaptics.click(view)
+                                onNavigate(AppRoute.ModelProviderAuthMethod(NewProviderType.OpenAiCompatible))
+                            },
                         )
 
                         ArrowPreference(
@@ -188,7 +194,10 @@ internal fun ModelProviderListScreen(
                             startAction = {
                                 ProviderBrandIcon(ProviderSourceTypes.ANTHROPIC)
                             },
-                            onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.Anthropic)) },
+                            onClick = {
+                                TouchHaptics.click(view)
+                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.Anthropic))
+                            },
                         )
 
                         ArrowPreference(
@@ -197,7 +206,10 @@ internal fun ModelProviderListScreen(
                             startAction = {
                                 ProviderBrandIcon(ProviderSourceTypes.DOUBAO_SPEECH)
                             },
-                            onClick = { onNavigate(AppRoute.ModelProviderNew(NewProviderType.DoubaoSpeech)) },
+                            onClick = {
+                                TouchHaptics.click(view)
+                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.DoubaoSpeech))
+                            },
                         )
 
                     }
@@ -224,6 +236,7 @@ internal fun ModelProviderListScreen(
                                 color = MiuixTheme.colorScheme.primary,
                                 modifier = Modifier
                                     .clickable {
+                                        TouchHaptics.click(view)
                                         selectedProviderIds = if (
                                             selectableProviders.isNotEmpty() &&
                                             selectedProviderIds.containsAll(selectableProviders.map { it.id })
@@ -263,8 +276,12 @@ internal fun ModelProviderListScreen(
                                     isCurrent = provider.id == selectedProviderId,
                                     selectionMode = selectionMode,
                                     checked = provider.id in selectedProviderIds,
-                                    onOpen = { onNavigate(AppRoute.ModelProviderDetail(provider.id)) },
+                                    onOpen = {
+                                        TouchHaptics.click(view)
+                                        onNavigate(AppRoute.ModelProviderDetail(provider.id))
+                                    },
                                     onToggleChecked = {
+                                        TouchHaptics.click(view)
                                         if (!provider.isBuiltIn) {
                                             selectedProviderIds = if (provider.id in selectedProviderIds) {
                                                 selectedProviderIds - provider.id
@@ -274,6 +291,7 @@ internal fun ModelProviderListScreen(
                                         }
                                     },
                                     onEnterSelection = {
+                                        TouchHaptics.longPress(view)
                                         if (!provider.isBuiltIn) {
                                             selectionMode = true
                                             selectedProviderIds = setOf(provider.id)
@@ -303,8 +321,12 @@ internal fun ModelProviderListScreen(
                 ProviderSelectionBar(
                     selectedCount = selectedProviderIds.size,
                     enabled = !isDeleting,
-                    onDelete = { showBatchDeleteDialog = true },
+                    onDelete = {
+                        TouchHaptics.click(view)
+                        showBatchDeleteDialog = true
+                    },
                     onExit = {
+                        TouchHaptics.click(view)
                         selectionMode = false
                         selectedProviderIds = emptySet()
                     },
