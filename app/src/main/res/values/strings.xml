@@ -1024,6 +1024,15 @@
     <item quantity="other">The %d selected providers will be permanently deleted.</item>
   </plurals>
   <string name="provider_reset_summary">Restore the default settings and official model catalog for “%1$s”. The API key will be kept.</string>
+  <string name="provider_remote_pick_title">Choose models to add</string>
+  <string name="provider_remote_select_all">Select all</string>
+  <string name="provider_remote_invert">Invert</string>
+  <string name="provider_remote_add">Add</string>
+  <string name="provider_remote_none_new">No new models to add</string>
+  <plurals name="provider_models_added">
+    <item quantity="one">Added %d model</item>
+    <item quantity="other">Added %d models</item>
+  </plurals>
   <plurals name="provider_models_fetched">
     <item quantity="one">Fetched %d model</item>
     <item quantity="other">Fetched %d models</item>

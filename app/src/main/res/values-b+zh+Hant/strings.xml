@@ -1044,6 +1044,14 @@
     <item quantity="other">選取的 %d 個提供商將永久刪除。</item>
   </plurals>
   <string name="provider_reset_summary">將還原「%1$s」的預設設定與官方模型清單，並保留 API Key。</string>
+  <string name="provider_remote_pick_title">選擇要加入的模型</string>
+  <string name="provider_remote_select_all">全選</string>
+  <string name="provider_remote_invert">反選</string>
+  <string name="provider_remote_add">加入</string>
+  <string name="provider_remote_none_new">沒有可加入的新模型</string>
+  <plurals name="provider_models_added">
+    <item quantity="other">已加入 %d 個模型</item>
+  </plurals>
   <plurals name="provider_models_fetched">
     <item quantity="other">已取得 %d 個模型</item>
   </plurals>

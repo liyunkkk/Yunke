@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -36,6 +37,12 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
@@ -206,6 +213,7 @@ internal fun ProviderModelsTab(
     var selectedModelIds by remember(provider.id) { mutableStateOf(setOf<String>()) }
     var showBatchDeleteDialog by remember { mutableStateOf(false) }
     var modelSearchQuery by remember(provider.id) { mutableStateOf("") }
+    var remoteCandidates by remember(provider.id) { mutableStateOf<List<Model>?>(null) }
     val normalizedModelSearchQuery = modelSearchQuery.trim()
     val filteredModels = remember(provider.models, modelSearchQuery) {
         filterProviderModels(provider.models, modelSearchQuery)
@@ -260,25 +268,26 @@ internal fun ProviderModelsTab(
                                         return@launch
                                     }
                                     val chatModels = models.filter(RemoteModelFetcher::isCatalogModel)
-                                    val sync = ModelRepository.syncRemoteModels(provider.id, chatModels)
-                                    if (sync.applied) {
-                                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
-                                    }
+                                    val existingKeys = provider.models.map { it.modelId.trim().lowercase() }.toSet()
+                                    val fresh = chatModels
+                                        .distinctBy { it.modelId.trim().lowercase() }
+                                        .filter { it.modelId.trim().lowercase() !in existingKeys }
                                     val filteredCount = models.size - chatModels.size
-                                    message = if (!sync.applied) {
-                                        context.getString(R.string.page_the_remote_end_did_not_return_a_usable_conversation__781487)
-                                    } else if (filteredCount > 0) {
-                                        context.getString(
-                                            R.string.provider_models_fetched_filtered,
-                                            chatModels.size,
-                                            filteredCount,
-                                        )
+                                    if (fresh.isEmpty()) {
+                                        message = if (chatModels.isEmpty()) {
+                                            context.getString(R.string.page_the_remote_end_did_not_return_a_usable_conversation__781487)
+                                        } else {
+                                            context.getString(R.string.provider_remote_none_new)
+                                        }
                                     } else {
-                                        context.resources.getQuantityString(
-                                            R.plurals.provider_models_fetched,
-                                            chatModels.size,
-                                            chatModels.size,
-                                        )
+                                        remoteCandidates = fresh
+                                        message = if (filteredCount > 0) {
+                                            context.getString(
+                                                R.string.provider_models_fetched_filtered,
+                                                chatModels.size,
+                                                filteredCount,
+                                            )
+                                        } else null
                                     }
                                 } catch (cancelled: CancellationException) {
                                     throw cancelled
@@ -552,6 +561,39 @@ internal fun ProviderModelsTab(
                 },
             )
         }
+    }
+
+    remoteCandidates?.let { candidates ->
+        RemoteModelPickDialog(
+            models = candidates,
+            onDismiss = { remoteCandidates = null },
+            onConfirm = { selected ->
+                remoteCandidates = null
+                scope.launch {
+                    isMutatingModel = true
+                    try {
+                        val added = ModelRepository.addSelectedRemoteModels(provider.id, selected)
+                        if (added > 0) {
+                            RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                        }
+                        message = context.resources.getQuantityString(
+                            R.plurals.provider_models_added,
+                            added,
+                            added,
+                        )
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (throwable: Throwable) {
+                        message = context.getString(
+                            R.string.provider_error,
+                            throwable.message ?: context.getString(R.string.provider_sync_failed),
+                        )
+                    } finally {
+                        isMutatingModel = false
+                    }
+                }
+            },
+        )
     }
 
     if (showBatchDeleteDialog) {
@@ -1041,4 +1083,96 @@ private fun capabilityTags(model: Model): List<String> {
     )
     if (showsReasoningTag(model)) add(context.getString(R.string.page_support_thinking_5b9e4c))
     }
+}
+
+@Composable
+private fun RemoteModelPickDialog(
+    models: List<Model>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<Model>) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var selectedKeys by remember(models) { mutableStateOf(emptySet<String>()) }
+    val visible = remember(models, query) {
+        val needle = query.trim()
+        if (needle.isEmpty()) models
+        else models.filter { model ->
+            model.displayName.contains(needle, ignoreCase = true) ||
+                model.modelId.contains(needle, ignoreCase = true)
+        }
+    }
+    fun keyOf(model: Model) = model.modelId.trim().lowercase()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { MaterialText(stringResource(R.string.provider_remote_pick_title)) },
+        text = {
+            Column(Modifier.fillMaxWidth().height(420.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    label = { MaterialText(stringResource(R.string.ui_search_model_df5586)) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = {
+                        selectedKeys = selectedKeys + visible.map(::keyOf)
+                    }) { MaterialText(stringResource(R.string.provider_remote_select_all)) }
+                    TextButton(onClick = {
+                        val visibleKeys = visible.map(::keyOf).toSet()
+                        val kept = selectedKeys - visibleKeys
+                        val flipped = visibleKeys - selectedKeys
+                        selectedKeys = kept + flipped
+                    }) { MaterialText(stringResource(R.string.provider_remote_invert)) }
+                    Spacer(Modifier.weight(1f))
+                    MaterialText(
+                        "${selectedKeys.size}/${models.size}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    items(visible, key = { keyOf(it) }) { model ->
+                        val key = keyOf(model)
+                        val checked = key in selectedKeys
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                selectedKeys = if (checked) selectedKeys - key else selectedKeys + key
+                            }.padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = checked, onCheckedChange = { on ->
+                                selectedKeys = if (on) selectedKeys + key else selectedKeys - key
+                            })
+                            Column(Modifier.weight(1f)) {
+                                MaterialText(model.displayName.ifBlank { model.modelId }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (model.displayName.isNotBlank() && model.displayName != model.modelId) {
+                                    MaterialText(
+                                        model.modelId,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(models.filter { keyOf(it) in selectedKeys }) },
+                enabled = selectedKeys.isNotEmpty(),
+            ) { MaterialText(stringResource(R.string.provider_remote_add)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { MaterialText(stringResource(R.string.action_cancel)) }
+        },
+    )
 }
