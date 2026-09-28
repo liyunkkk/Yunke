@@ -10,6 +10,7 @@ import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderAuthMode
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.SessionGatewayRule
 import java.util.UUID
 
 internal data class ProviderHeaderDraft(
@@ -29,6 +30,11 @@ internal data class ProviderConfigDraft(
     val anthropicVersion: String,
     val headers: List<ProviderHeaderDraft> = emptyList(),
     val balanceOption: BalanceOption = BalanceOption(),
+    val sessionModelPattern: String = SessionGatewayRule.DEFAULT_MODEL,
+    val sessionPathPattern: String = SessionGatewayRule.DEFAULT_PATH,
+    val sessionRetention: String = SessionGatewayRule.DEFAULT_RETENTION,
+    val sessionKeySource: String = SessionGatewayRule.DEFAULT_SOURCE,
+    val sessionKeyField: String = SessionGatewayRule.DEFAULT_FIELD,
 ) {
     companion object {
         fun from(provider: ProviderSetting): ProviderConfigDraft = ProviderConfigDraft(
@@ -48,6 +54,11 @@ internal data class ProviderConfigDraft(
             anthropicVersion = (provider as? AnthropicProviderSetting)?.anthropicVersion
                 ?: AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
             balanceOption = provider.balanceOption,
+            sessionModelPattern = SessionGatewayRule.decode(provider.sessionGatewayJson).modelPattern,
+            sessionPathPattern = SessionGatewayRule.decode(provider.sessionGatewayJson).pathPattern,
+            sessionRetention = SessionGatewayRule.decode(provider.sessionGatewayJson).retention,
+            sessionKeySource = SessionGatewayRule.decode(provider.sessionGatewayJson).keySource,
+            sessionKeyField = SessionGatewayRule.decode(provider.sessionGatewayJson).keyField,
         )
     }
 }
@@ -71,6 +82,11 @@ internal val ProviderConfigDraftSaver = mapSaver(
             "balanceOptionResultPath" to draft.balanceOption.resultPath,
             "balanceOptionUserId" to draft.balanceOption.userId,
             "balanceOptionAccessToken" to draft.balanceOption.accessToken,
+            "sessionModelPattern" to draft.sessionModelPattern,
+            "sessionPathPattern" to draft.sessionPathPattern,
+            "sessionRetention" to draft.sessionRetention,
+            "sessionKeySource" to draft.sessionKeySource,
+            "sessionKeyField" to draft.sessionKeyField,
         )
     },
     restore = { state ->
@@ -95,6 +111,11 @@ internal val ProviderConfigDraftSaver = mapSaver(
                 userId = state["balanceOptionUserId"] as? String ?: "",
                 accessToken = state["balanceOptionAccessToken"] as? String ?: "",
             ),
+            sessionModelPattern = state["sessionModelPattern"] as? String ?: SessionGatewayRule.DEFAULT_MODEL,
+            sessionPathPattern = state["sessionPathPattern"] as? String ?: SessionGatewayRule.DEFAULT_PATH,
+            sessionRetention = state["sessionRetention"] as? String ?: SessionGatewayRule.DEFAULT_RETENTION,
+            sessionKeySource = state["sessionKeySource"] as? String ?: SessionGatewayRule.DEFAULT_SOURCE,
+            sessionKeyField = state["sessionKeyField"] as? String ?: SessionGatewayRule.DEFAULT_FIELD,
         )
     },
 )
@@ -112,6 +133,7 @@ internal fun buildUpdatedProvider(
     anthropicVersion: String,
     customHeaders: List<CustomHeader>,
     balanceOption: BalanceOption,
+    sessionGatewayJson: String = "",
 ): ProviderSetting {
     return when (source) {
         is OpenAiCompatibleProviderSetting -> source.copy(
@@ -125,6 +147,7 @@ internal fun buildUpdatedProvider(
             endpointMode = endpointMode,
             responsesStripReasoningStatus = responsesStripReasoningStatus,
             hostedWebSearchEnabled = hostedWebSearchEnabled,
+            sessionGatewayJson = sessionGatewayJson,
         )
         is CustomProviderSetting -> source.copy(
             customHeaders = customHeaders.map { it.copy(name = it.name.trim()) },
@@ -137,6 +160,7 @@ internal fun buildUpdatedProvider(
             endpointMode = endpointMode,
             responsesStripReasoningStatus = responsesStripReasoningStatus,
             hostedWebSearchEnabled = hostedWebSearchEnabled,
+            sessionGatewayJson = sessionGatewayJson,
         )
         is AnthropicProviderSetting -> source.copy(
             customHeaders = customHeaders.map { it.copy(name = it.name.trim()) },
@@ -147,9 +171,20 @@ internal fun buildUpdatedProvider(
             authMode = ProviderAuthMode.parse(authMode),
             isEnabled = isEnabled,
             anthropicVersion = anthropicVersion.trim().ifBlank { AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION },
+            sessionGatewayJson = sessionGatewayJson,
         )
     }
 }
+
+internal fun ProviderConfigDraft.encodedSessionGateway(): String = SessionGatewayRule.encode(
+    SessionGatewayRule(
+        modelPattern = sessionModelPattern.ifBlank { SessionGatewayRule.DEFAULT_MODEL },
+        pathPattern = sessionPathPattern.ifBlank { SessionGatewayRule.DEFAULT_PATH },
+        retention = sessionRetention.ifBlank { SessionGatewayRule.DEFAULT_RETENTION },
+        keySource = sessionKeySource.ifBlank { SessionGatewayRule.DEFAULT_SOURCE },
+        keyField = sessionKeyField.ifBlank { SessionGatewayRule.DEFAULT_FIELD },
+    )
+)
 
 internal fun validateProviderDraft(context: android.content.Context, draft: ProviderConfigDraft): String? {
     if (draft.name.isBlank()) return context.getString(R.string.page_name_cannot_be_empty_ca8984)

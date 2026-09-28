@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
+import io.github.mangi.eta.data.model.SessionGatewayRule
 import io.github.mangi.eta.data.model.ReasoningEffort
 import org.json.JSONArray
 import org.json.JSONObject
@@ -61,8 +62,18 @@ internal object ResponsesRequestBuilder {
         }
         // Apply after custom-body and Codex defaults: a correction must never request parallel calls.
         if (singleToolCall && responseTools.length() > 0) request.put("parallel_tool_calls", false)
-        // Same conversation keeps one cache identity, including gateways that read prompt_cache_key.
-        if (sessionId.isNotBlank()) request.put("prompt_cache_key", sessionId)
+        // 网关规则命中时写入会话身份；官方 Codex 端点始终带上，避免路径正则漏掉。
+        if (sessionId.isNotBlank()) {
+            val url = ProviderUrls.openAiResponsesUrl(config.baseUrl)
+            val rule = SessionGatewayRule(
+                modelPattern = config.sessionModelPattern,
+                pathPattern = config.sessionPathPattern,
+                keyField = config.sessionKeyField,
+            )
+            if (rule.matches(config.model, url) || OpenAiCodexOAuth.isCodexEndpoint(config.baseUrl)) {
+                request.put(rule.safeKeyField(), sessionId)
+            }
+        }
         return request
     }
 

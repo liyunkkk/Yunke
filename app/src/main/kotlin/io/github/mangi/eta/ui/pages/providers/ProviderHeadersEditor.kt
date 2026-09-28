@@ -26,6 +26,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.SessionGatewayRule
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
@@ -33,6 +34,79 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+
+internal fun LazyListScope.providerSessionGateway(
+    modelPattern: String,
+    pathPattern: String,
+    retention: String,
+    keySource: String,
+    keyField: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onChange: (model: String, path: String, retention: String, source: String, field: String) -> Unit,
+) {
+    item(key = "session_gateway") {
+        ProviderSection(title = "会话 ID") {
+            val chevronRotation by animateFloatAsState(if (expanded) 180f else 0f)
+            BasicComponent(
+                title = "网关",
+                summary = "${modelPattern.ifBlank { SessionGatewayRule.DEFAULT_MODEL }} · ${keyField.ifBlank { SessionGatewayRule.DEFAULT_FIELD }}",
+                endActions = {
+                    Icon(
+                        imageVector = Icons.Rounded.ExpandMore,
+                        contentDescription = if (expanded) "收起" else "展开",
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                        modifier = Modifier.rotate(chevronRotation),
+                    )
+                },
+                onClick = { onExpandedChange(!expanded) },
+            )
+            if (expanded) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TextField(
+                        value = modelPattern,
+                        onValueChange = { onChange(it, pathPattern, retention, keySource, keyField) },
+                        label = "模型正则（每一行一个）",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextField(
+                        value = pathPattern,
+                        onValueChange = { onChange(modelPattern, it, retention, keySource, keyField) },
+                        label = "路径正则（每一行一个）",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextField(
+                        value = retention,
+                        onValueChange = { onChange(modelPattern, pathPattern, it, keySource, keyField) },
+                        label = "会话保持",
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextField(
+                            value = keySource,
+                            onValueChange = { onChange(modelPattern, pathPattern, retention, it, keyField) },
+                            label = "Key 来源",
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextField(
+                            value = keyField,
+                            onValueChange = { onChange(modelPattern, pathPattern, retention, keySource, it) },
+                            label = "字段",
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 internal fun LazyListScope.providerHeadersEditor(
     headers: List<ProviderHeaderDraft>,

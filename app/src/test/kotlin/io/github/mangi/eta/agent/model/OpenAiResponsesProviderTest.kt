@@ -211,13 +211,13 @@ class OpenAiResponsesProviderTest {
     fun responsesRequestKeepsPromptCacheKeyForTheSameConversation() {
         val messages = JSONArray().put(JSONObject().put("role", "user").put("content", "你好"))
         val first = OpenAiResponsesProvider.buildRequestJson(
-            config = config("https://gateway.example/v1"),
+            config = config("https://gateway.example/v1").copy(model = "gpt-5.4"),
             messages = messages,
             tools = JSONArray(),
             sessionId = "conv-1",
         )
         val again = OpenAiResponsesProvider.buildRequestJson(
-            config = config("https://gateway.example/v1"),
+            config = config("https://gateway.example/v1").copy(model = "gpt-5.4"),
             messages = messages,
             tools = JSONArray(),
             sessionId = "conv-1",

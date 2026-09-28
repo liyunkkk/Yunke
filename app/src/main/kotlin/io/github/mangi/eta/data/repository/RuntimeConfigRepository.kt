@@ -9,6 +9,7 @@ import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
+import io.github.mangi.eta.data.model.SessionGatewayRule
 import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.withApiKey
@@ -128,6 +129,7 @@ internal object RuntimeConfigRepository {
         val reasoningEffort = reasoningCapabilities?.normalize(
             model.preferredReasoningEffort ?: ReasoningEffort.OFF,
         ) ?: ReasoningEffort.OFF
+        val sessionRule = SessionGatewayRule.decode(provider.sessionGatewayJson)
         return AgentModelClient.ModelConfig(
             assistantId = assistant?.id.orEmpty(),
             providerId = provider.id,
@@ -150,6 +152,9 @@ internal object RuntimeConfigRepository {
             reasoningCapabilities = reasoningCapabilities,
             customHeaders = provider.customHeaders + model.customHeaders,
             customBody = provider.customBody + model.customBody,
+            sessionModelPattern = sessionRule.modelPattern,
+            sessionPathPattern = sessionRule.pathPattern,
+            sessionKeyField = sessionRule.safeKeyField(),
             supportsVision = model.supportsVision,
             supportsVideo = model.supportsVideo,
         )

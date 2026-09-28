@@ -51,6 +51,8 @@ internal data class ProviderEntity(
     val balanceOptionJson: String = "{}",
     @ColumnInfo(name = "auth_mode", defaultValue = "'api_key'")
     val authMode: String = "api_key",
+    @ColumnInfo(name = "session_gateway_json", defaultValue = "''")
+    val sessionGatewayJson: String = "",
 )
 
 @Serializable
@@ -133,6 +135,7 @@ internal fun ProviderSetting.toEntity(): ProviderEntity =
         hostedWebSearchEnabled = hostedWebSearchEnabled,
         balanceOptionJson = ProviderJson.encodeBalance(balanceOption),
         authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(authMode),
+        sessionGatewayJson = sessionGatewayJson,
         anthropicVersion = when (this) {
             is AnthropicProviderSetting -> anthropicVersion
             else -> AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION
@@ -168,6 +171,7 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             createdAt = provider.createdAt,
             authMode = io.github.mangi.eta.data.model.ProviderAuthMode.parse(provider.authMode),
             balanceOption = ProviderJson.decodeBalance(provider.balanceOptionJson),
+            sessionGatewayJson = provider.sessionGatewayJson,
             anthropicVersion = provider.anthropicVersion.ifBlank {
                 AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION
             },
@@ -192,6 +196,7 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             responsesStripReasoningStatus = provider.responsesStripReasoningStatus,
             hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
             balanceOption = ProviderJson.decodeBalance(provider.balanceOptionJson),
+            sessionGatewayJson = provider.sessionGatewayJson,
         )
 
         else -> OpenAiCompatibleProviderSetting(
@@ -213,6 +218,7 @@ internal fun ProviderWithModels.toDomain(): ProviderSetting {
             responsesStripReasoningStatus = provider.responsesStripReasoningStatus,
             hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
             balanceOption = ProviderJson.decodeBalance(provider.balanceOptionJson),
+            sessionGatewayJson = provider.sessionGatewayJson,
         )
     }
 }

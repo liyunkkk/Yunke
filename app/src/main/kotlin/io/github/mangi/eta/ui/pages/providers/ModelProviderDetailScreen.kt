@@ -245,6 +245,7 @@ private fun ProviderConfigTab(
 ) {
     val context = LocalContext.current
     var headersExpanded by rememberSaveable { mutableStateOf(false) }
+    var gatewayExpanded by rememberSaveable { mutableStateOf(false) }
     var apiKeyVisible by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var testStatus by remember { mutableStateOf<String?>(null) }
@@ -393,6 +394,7 @@ private fun ProviderConfigTab(
                                         anthropicVersion = draft.anthropicVersion,
                                         customHeaders = draft.headers.map { it.header },
                                         balanceOption = draft.balanceOption,
+                                        sessionGatewayJson = draft.encodedSessionGateway(),
                                     )
                                 )
                             } finally {
@@ -403,6 +405,25 @@ private fun ProviderConfigTab(
                 )
             }
         }
+
+        providerSessionGateway(
+            modelPattern = draft.sessionModelPattern,
+            pathPattern = draft.sessionPathPattern,
+            retention = draft.sessionRetention,
+            keySource = draft.sessionKeySource,
+            keyField = draft.sessionKeyField,
+            expanded = gatewayExpanded,
+            onExpandedChange = { gatewayExpanded = it },
+            onChange = { model, path, retention, source, field ->
+                onDraftChange(draft.copy(
+                    sessionModelPattern = model,
+                    sessionPathPattern = path,
+                    sessionRetention = retention,
+                    sessionKeySource = source,
+                    sessionKeyField = field,
+                ))
+            },
+        )
 
         providerHeadersEditor(
             headers = draft.headers,
@@ -439,6 +460,7 @@ private fun ProviderConfigTab(
                         anthropicVersion = draft.anthropicVersion,
                         customHeaders = draft.headers.map { it.header },
                         balanceOption = draft.balanceOption,
+                        sessionGatewayJson = draft.encodedSessionGateway(),
                     ),
                 )
             }
@@ -489,6 +511,7 @@ private fun ProviderConfigTab(
                                 anthropicVersion = draft.anthropicVersion,
                                 customHeaders = draft.headers.map { it.header },
                                 balanceOption = draft.balanceOption,
+                                sessionGatewayJson = draft.encodedSessionGateway(),
                             )
                             try {
                                 if (isNew) {
