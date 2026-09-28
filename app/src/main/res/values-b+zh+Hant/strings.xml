@@ -255,6 +255,8 @@
   <string name="appearance_morph_loading_collapse">收起顯示時機</string>
   <string name="conversation_unnamed">新對話</string>
   <string name="conversation_search_hint">搜尋對話</string>
+  <string name="model_search_hint">搜尋模型</string>
+  <string name="model_search_empty">沒有符合的模型</string>
   <string name="drawer_greeting_morning">早上好👋</string>
   <string name="drawer_greeting_afternoon">下午好👋</string>
   <string name="drawer_greeting_evening">晚上好👋</string>

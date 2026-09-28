@@ -226,6 +226,8 @@
   <string name="appearance_morph_loading_collapse">Hide timing options</string>
   <string name="conversation_unnamed">New conversation</string>
   <string name="conversation_search_hint">Search conversations</string>
+  <string name="model_search_hint">Search models</string>
+  <string name="model_search_empty">No matching models</string>
   <string name="drawer_greeting_morning">Good morning👋</string>
   <string name="drawer_greeting_afternoon">Good afternoon👋</string>
   <string name="drawer_greeting_evening">Good evening👋</string>

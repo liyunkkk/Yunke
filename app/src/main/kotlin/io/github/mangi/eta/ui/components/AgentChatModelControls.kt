@@ -13,8 +13,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Dns
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.runtime.LaunchedEffect
@@ -34,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -96,6 +100,7 @@ internal fun AgentModelPickerButton(
         },
     )
     var expandedProviderIds by remember(owner) { mutableStateOf(emptySet<String>()) }
+    var modelQuery by remember(owner) { mutableStateOf("") }
     val selected = state.selectedModel
     val pickerAvailable = (!isStreaming || isPaused) && state.providerGroups.isNotEmpty()
     LaunchedEffect(pickerAvailable) {
@@ -113,6 +118,7 @@ internal fun AgentModelPickerButton(
             onClick = {
                 if (!pickerAvailable || owner == null) return@ChatInputNonFocusableIconButton
                 expandedProviderIds = defaultExpandedModelProviderIds(state.selectedModel)
+                modelQuery = ""
                 menuState.onAnchorClick()
                 menuTicket = if (menuState.expanded) popup.open() else {
                     popup.dismiss()
@@ -147,13 +153,15 @@ internal fun AgentModelPickerButton(
             },
             alignEnd = true,
             preferAbove = true,
-            focusable = false,
+            focusable = true,
             minWidth = 220.dp,
             maxWidth = 220.dp,
             maxHeight = popupMaxHeight,
         ) {
             ModelPickerPopupContent(
                 state = state,
+                query = modelQuery,
+                onQueryChange = { modelQuery = it },
                 expandedProviderIds = expandedProviderIds,
                 onProviderExpandedChange = { providerId, expanded ->
                     popup.dispatch(capturedMenuTicket, currentPopup) {
@@ -173,6 +181,8 @@ internal fun AgentModelPickerButton(
 @Composable
 private fun ModelPickerPopupContent(
     state: AgentModelPickerUiState,
+    query: String,
+    onQueryChange: (String) -> Unit,
     expandedProviderIds: Set<String>,
     onProviderExpandedChange: (String, Boolean) -> Unit,
     onModelSelected: (String, String) -> Unit,
@@ -185,17 +195,44 @@ private fun ModelPickerPopupContent(
             ProviderBalanceStore.requestRefresh(scope)
         }
     }
-    state.providerGroups.forEachIndexed { groupIndex, group ->
+    ModelPickerSearchField(query = query, onQueryChange = onQueryChange)
+    val needle = query.trim()
+    val groups = if (needle.isEmpty()) {
+        state.providerGroups
+    } else {
+        state.providerGroups.mapNotNull { group ->
+            val providerHit = group.providerName.contains(needle, ignoreCase = true)
+            val models = if (providerHit) {
+                group.models
+            } else {
+                group.models.filter { model ->
+                    model.displayName.contains(needle, ignoreCase = true) ||
+                        model.modelId.contains(needle, ignoreCase = true)
+                }
+            }
+            if (models.isEmpty()) null else group.copy(models = models)
+        }
+    }
+    if (groups.isEmpty()) {
+        Text(
+            text = stringResource(R.string.model_search_empty),
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        )
+        return
+    }
+    groups.forEachIndexed { groupIndex, group ->
             if (groupIndex > 0) {
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 12.dp))
             }
-            val expanded = group.providerId in expandedProviderIds
+            val expanded = needle.isNotEmpty() || group.providerId in expandedProviderIds
             ModelProviderGroupHeader(
                 name = group.providerName,
                 expanded = expanded,
                 balance = balanceStates[group.providerId],
                 onClick = {
-                    onProviderExpandedChange(group.providerId, !expanded)
+                    if (needle.isEmpty()) onProviderExpandedChange(group.providerId, !expanded)
                 },
             )
             if (expanded) {
@@ -207,6 +244,48 @@ private fun ModelPickerPopupContent(
                     )
                 }
             }
+    }
+}
+
+@Composable
+private fun ModelPickerSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MiuixTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Search,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Box(modifier = Modifier.padding(start = 6.dp).weight(1f)) {
+            if (query.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.model_search_hint),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    style = MiuixTheme.textStyles.footnote1,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = MiuixTheme.textStyles.footnote1.copy(color = MiuixTheme.colorScheme.onSurface),
+                cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
     }
 }
 
