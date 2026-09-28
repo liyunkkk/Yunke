@@ -65,6 +65,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -910,11 +912,21 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 底栏（含输入器和 IME）高度只在这里消费一次，缩小真实滚动视口后再裁剪。
-    // 与输入框之间的间距放在裁剪区外而不是列表 contentPadding 里：流式输出时跟底
-    // 滚动总比内容增长晚一帧，若间距在列表内，新长出的正文会先压进间距、贴到
-    // 输入框上沿。放在外面后，正文永远止于输入框上方这条固定线。
-    Box(modifier = modifier.padding(bottom = bottomInset + ConversationComposerGap).clipToBounds()) {
+    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
+    // 跟底输出期间（思考/正文生成、未手动滑动）只把绘制裁到输入框上沿：跟底滚动总比
+    // 内容增长晚几帧，这几帧新长出的文字不能钻进输入框底下。用户一拖动就解除裁剪。
+    Box(
+        modifier = modifier
+            .clipToBounds()
+            .drawWithContent {
+                if (shouldFollowBottom) {
+                    val composerTop = (size.height - bottomInset.toPx()).coerceAtLeast(0f)
+                    clipRect(bottom = composerTop) { this@drawWithContent.drawContent() }
+                } else {
+                    drawContent()
+                }
+            },
+    ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
@@ -950,9 +962,10 @@ internal fun AgentConversationMessages(
                 // Navigation already emits one explicit click/long-press haptic.
                 .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
                 .overScrollVertical(),
+            // 最后一条静止时停在输入框上方 14dp；手动滑动时内容可以滚到输入框后面。
             contentPadding = PaddingValues(
                 top = 14.dp,
-                bottom = 0.dp,
+                bottom = 14.dp + bottomInset,
             ),
             overscrollEffect = null,
         ) {
@@ -1141,7 +1154,8 @@ internal fun AgentConversationMessages(
             onStep = { navigateUserMessage(toEdge = false) },
             onEdge = { navigateUserMessage(toEdge = true) },
             modifier = Modifier
-                .align(Alignment.BottomCenter),
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp + bottomInset),
         )
     }
 }
@@ -1658,6 +1672,3 @@ internal fun shouldStopOrphanSpeechPlayback(
     if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
-
-/** 正文裁剪线到输入框上沿的固定间距；此前是列表底部 contentPadding 的 14dp。 */
-private val ConversationComposerGap = 14.dp
