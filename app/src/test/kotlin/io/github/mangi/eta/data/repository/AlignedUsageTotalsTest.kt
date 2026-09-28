@@ -45,7 +45,7 @@ class AlignedUsageTotalsTest {
         val (current, lifetime) = alignedUsageTotals(snapshot, setOf("live"))
         assertEquals(TokenTotals(100, 10, 40), current)
         assertEquals(TokenTotals(150, 15, 60), lifetime)
-        assertEquals(60L, lifetime.input - lifetime.cached)
+        assertEquals(90L, lifetime.input - lifetime.cached)
         assertEquals(60L, current.input - current.cached)
     }
 }

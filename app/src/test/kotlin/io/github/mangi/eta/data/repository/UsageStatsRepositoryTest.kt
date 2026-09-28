@@ -120,9 +120,10 @@ class UsageStatsRepositoryTest {
         val stats = UsageStatsRepository.load(context)
         assertEquals(2, stats.totalConversations)
         assertEquals(3, stats.totalMessages)
-        assertEquals(15L, stats.totalInputTokens)
-        assertEquals(27L, stats.totalOutputTokens)
-        assertEquals(3L, stats.totalCachedTokens)
+        // Token totals follow the model ledger. These message rows are not a second bill.
+        assertEquals(0L, stats.totalInputTokens)
+        assertEquals(0L, stats.totalOutputTokens)
+        assertEquals(0L, stats.totalCachedTokens)
         assertEquals(2, stats.conversationsPerDay[day])
     }
 
@@ -215,11 +216,11 @@ class UsageStatsRepositoryTest {
         )
         val stats = UsageStatsRepository.load(context)
         assertEquals(0L, stats.currentInputTokens)
-        assertEquals(1500L, stats.lifetimeInputTokens)
+        assertEquals(0L, stats.lifetimeInputTokens)
         assertEquals(0L, stats.currentOutputTokens)
-        assertEquals(40L, stats.lifetimeOutputTokens)
+        assertEquals(0L, stats.lifetimeOutputTokens)
         assertEquals(0L, stats.currentCachedTokens)
-        assertEquals(200L, stats.lifetimeCachedTokens)
+        assertEquals(0L, stats.lifetimeCachedTokens)
         assertEquals(0, stats.currentConversations)
         assertEquals(3, stats.lifetimeConversations)
         assertEquals(0, stats.currentMessages)
