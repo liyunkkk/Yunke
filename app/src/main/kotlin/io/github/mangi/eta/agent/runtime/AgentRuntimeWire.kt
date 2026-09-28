@@ -998,6 +998,7 @@ internal object AgentRuntimeWire {
         usage.outputTokens?.let { putInt("usage_output_tokens", it) }
         usage.reasoningTokens?.let { putInt("usage_reasoning_tokens", it) }
         usage.cachedTokens?.let { putInt("usage_cached_tokens", it) }
+        usage.cacheCreationTokens?.let { putInt("usage_cache_creation_tokens", it) }
     }
 
     private fun Bundle.getTokenUsage(): AgentTokenUsage = AgentTokenUsage(
@@ -1006,6 +1007,7 @@ internal object AgentRuntimeWire {
         outputTokens = if (containsKey("usage_output_tokens")) getInt("usage_output_tokens") else null,
         reasoningTokens = if (containsKey("usage_reasoning_tokens")) getInt("usage_reasoning_tokens") else null,
         cachedTokens = if (containsKey("usage_cached_tokens")) getInt("usage_cached_tokens") else null,
+        cacheCreationTokens = if (containsKey("usage_cache_creation_tokens")) getInt("usage_cache_creation_tokens") else null,
     )
 
     private fun decodeReasoningCapabilities(raw: String?): ModelReasoningCapabilities? =

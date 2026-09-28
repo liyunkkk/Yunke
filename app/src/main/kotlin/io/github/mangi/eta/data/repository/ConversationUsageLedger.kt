@@ -3,9 +3,15 @@ package io.github.mangi.eta.data.repository
 import org.json.JSONObject
 
 /** Lifetime conversation totals survive detail trimming and message deletion. */
-internal data class ConversationUsageTotals(val input: Long = 0, val output: Long = 0, val cached: Long = 0) {
+internal data class ConversationUsageTotals(
+    val input: Long = 0,
+    val output: Long = 0,
+    val cached: Long = 0,
+    val cacheCreation: Long = 0,
+) {
     operator fun plus(other: ConversationUsageTotals) = ConversationUsageTotals(
-        input + other.input, output + other.output, cached + other.cached)
+        input + other.input, output + other.output, cached + other.cached,
+        cacheCreation + other.cacheCreation)
 }
 
 private const val CONVERSATION_TOTALS = "conversationTotalsV1"
@@ -14,7 +20,7 @@ internal fun conversationUsageTotals(raw: String?, id: String?): ConversationUsa
     if (id.isNullOrBlank()) return ConversationUsageTotals()
     val item = runCatching { JSONObject(raw.orEmpty()).optJSONObject(CONVERSATION_TOTALS)?.optJSONObject(id) }.getOrNull()
         ?: return null
-    return ConversationUsageTotals(item.optLong("in"), item.optLong("out"), item.optLong("k"))
+    return ConversationUsageTotals(item.optLong("in"), item.optLong("out"), item.optLong("k"), item.optLong("w"))
 }
 
 /** One-time migration. Old message totals overlap old ledger events; NEVER add the two totals. */
@@ -27,7 +33,7 @@ internal fun seedConversationUsage(raw: String?, legacy: Map<String, Conversatio
         model.events.collapsedByRound().forEach { event ->
             event.conversationId?.takeIf { it.isNotBlank() }?.let { id ->
                 known[id] = (known[id] ?: ConversationUsageTotals()) +
-                    ConversationUsageTotals(event.inputTokens, event.outputTokens, event.cachedTokens)
+                    ConversationUsageTotals(event.inputTokens, event.outputTokens, event.cachedTokens, event.cacheCreationTokens)
             }
         }
     } }
@@ -37,7 +43,8 @@ internal fun seedConversationUsage(raw: String?, legacy: Map<String, Conversatio
             val events = known[id] ?: ConversationUsageTotals()
             // Preserve the largest actually recorded cumulative value per field; missing history is not estimated.
             totals.put(id, JSONObject().put("in", maxOf(messages.input, events.input))
-                .put("out", maxOf(messages.output, events.output)).put("k", maxOf(messages.cached, events.cached)))
+                .put("out", maxOf(messages.output, events.output)).put("k", maxOf(messages.cached, events.cached))
+                .put("w", maxOf(messages.cacheCreation, events.cacheCreation)))
         }
     }
     root.put("conversationTotalsInitialized", true)
@@ -51,4 +58,5 @@ internal fun updateConversationUsage(root: JSONObject, incoming: ModelUsageEvent
     item.put("in", item.optLong("in") + incoming.inputTokens - (previous?.inputTokens ?: 0))
     item.put("out", item.optLong("out") + incoming.outputTokens - (previous?.outputTokens ?: 0))
     item.put("k", item.optLong("k") + incoming.cachedTokens - (previous?.cachedTokens ?: 0))
+    item.put("w", item.optLong("w") + incoming.cacheCreationTokens - (previous?.cacheCreationTokens ?: 0))
 }

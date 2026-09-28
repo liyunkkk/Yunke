@@ -216,7 +216,8 @@ class AnthropicMessagesProviderTest {
             assertEquals(2, usages.size)
             usages.forEach { usage ->
                 assertEquals(122_503, usage.inputTokens)
-                assertEquals(122_500, usage.cachedTokens)
+                assertEquals(120_000, usage.cachedTokens)
+                assertEquals(2_500, usage.cacheCreationTokens)
                 assertEquals(122_503, usage.occupancyTokens())
             }
             assertEquals(42, usages.last().outputTokens)

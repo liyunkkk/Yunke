@@ -115,6 +115,7 @@ internal class SubAgentContextTracker(initial: SubAgentContextStats) {
                     outputTokens = incoming.outputTokens ?: previous?.outputTokens,
                     reasoningTokens = incoming.reasoningTokens ?: previous?.reasoningTokens,
                     cachedTokens = incoming.cachedTokens ?: previous?.cachedTokens,
+                    cacheCreationTokens = incoming.cacheCreationTokens ?: previous?.cacheCreationTokens,
                 )
                 billedRounds[key] = merged
                 val tokens = merged.occupancyTokens()

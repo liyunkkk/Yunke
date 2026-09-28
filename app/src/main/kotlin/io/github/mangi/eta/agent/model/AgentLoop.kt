@@ -234,6 +234,7 @@ internal class AgentLoop(
                                 outputTokens = incoming.outputTokens ?: previous?.outputTokens,
                                 reasoningTokens = incoming.reasoningTokens ?: previous?.reasoningTokens,
                                 cachedTokens = incoming.cachedTokens ?: previous?.cachedTokens,
+                                cacheCreationTokens = incoming.cacheCreationTokens ?: previous?.cacheCreationTokens,
                             )
                             // Partial fields merge only within this request. The separate
                             // silent anchor survives a later usage-less request.

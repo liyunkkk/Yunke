@@ -24,17 +24,11 @@ internal object AnthropicUsageTotals {
         return parts.sumOf { it.coerceAtLeast(0) }
     }
 
-    /**
-     * Both cache subsets count as cache, matching the upstream cache bucket
-     * (creation plus read). `inputTokens` is still the whole prompt, so the
-     * remainder `inputTokens - cachedTokens` is only the uncached prefix.
-     * Stats and the conversation usage popup both read that split.
-     */
-    fun cachedTokens(cacheReadTokens: Int?, cacheCreationTokens: Int? = null): Int? {
-        val parts = listOfNotNull(cacheReadTokens, cacheCreationTokens)
-        if (parts.isEmpty()) return null
-        return parts.sumOf { it.coerceAtLeast(0) }
-    }
+    /** Cache reads only. Writes are [cacheCreationTokens], not hits. */
+    fun cachedTokens(cacheReadTokens: Int?): Int? = cacheReadTokens?.coerceAtLeast(0)
+
+    /** Tokens written into the cache this turn. Already inside the prompt total. */
+    fun cacheCreationTokens(cacheCreationTokens: Int?): Int? = cacheCreationTokens?.coerceAtLeast(0)
 
     /** Builds window-consistent totals from a raw Anthropic `usage` object. */
     fun parse(intOf: (String) -> Int?): AgentTokenUsage? {
@@ -45,7 +39,8 @@ internal object AnthropicUsageTotals {
             inputTokens = promptTokens(intOf("input_tokens"), cacheRead, cacheCreation),
             outputTokens = intOf("output_tokens"),
             reasoningTokens = intOf("thinking_output_tokens"),
-            cachedTokens = cachedTokens(cacheRead, cacheCreation),
+            cachedTokens = cachedTokens(cacheRead),
+            cacheCreationTokens = cacheCreationTokens(cacheCreation),
         ).takeUnless { it.isEmpty }
     }
 }

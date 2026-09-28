@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -257,8 +258,12 @@ private fun ModelUsagePane(
                     style = MiuixTheme.textStyles.headline1,
                 )
                 ModelMetricRow(
-                    // The value excludes cache reads, while the hit rate below divides by the
-                    // full prompt. Labelling both "input" made the two impossible to reconcile.
+                    label = stringResource(R.string.stats_page_token_total),
+                    value = formatTokenCount(filtered.totalTokens),
+                )
+                ModelMetricRow(
+                    // The value excludes cache reads and writes. The hit rate divides by the
+                    // full prompt, so it is not labelled "input".
                     label = stringResource(R.string.stats_page_fresh_input_tokens),
                     value = formatTokenCount(filtered.totalFreshInputTokens),
                 )
@@ -269,6 +274,10 @@ private fun ModelUsagePane(
                 ModelMetricRow(
                     label = stringResource(R.string.stats_page_cached_tokens),
                     value = formatTokenCount(filtered.totalCachedTokens),
+                )
+                ModelMetricRow(
+                    label = stringResource(R.string.stats_page_cache_creation_tokens),
+                    value = formatTokenCount(filtered.totalCacheCreationTokens),
                 )
                 ModelMetricRow(
                     label = stringResource(R.string.stats_model_cache_hit_rate),
@@ -591,6 +600,10 @@ private fun ModelUsageRow(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 ModelMetricRow(
+                    label = stringResource(R.string.stats_page_token_total),
+                    value = formatTokenCount(model.totalTokens),
+                )
+                ModelMetricRow(
                     label = stringResource(R.string.stats_page_fresh_input_tokens),
                     value = formatTokenCount(model.freshInputTokens),
                 )
@@ -601,6 +614,10 @@ private fun ModelUsageRow(
                 ModelMetricRow(
                     label = stringResource(R.string.stats_page_cached_tokens),
                     value = formatTokenCount(model.cachedTokens),
+                )
+                ModelMetricRow(
+                    label = stringResource(R.string.stats_page_cache_creation_tokens),
+                    value = formatTokenCount(model.cacheCreationTokens),
                 )
                 ModelMetricRow(
                     label = stringResource(R.string.stats_model_cache_hit_rate),
@@ -820,6 +837,15 @@ private fun StatsGrid(stats: UsageStatsSnapshot, modifier: Modifier = Modifier) 
                 ),
             )
         }
+        StatCard(
+            modifier = Modifier.fillMaxWidth(),
+            icon = Icons.Rounded.Add,
+            label = stringResource(R.string.stats_page_cache_creation_tokens),
+            value = formatCurrentLifetime(
+                current = formatTokenCount(stats.currentCacheCreationTokens),
+                lifetime = formatTokenCount(stats.lifetimeCacheCreationTokens),
+            ),
+        )
         StatCard(
             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
             icon = Icons.Rounded.RocketLaunch,

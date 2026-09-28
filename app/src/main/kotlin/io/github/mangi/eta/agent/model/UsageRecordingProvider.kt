@@ -26,7 +26,7 @@ internal class UsageRecordingProvider(
         var saved: AgentTokenUsage? = null
         fun persist() {
             val usage = latest ?: return
-            if (usage == saved || (usage.inputTokens == null && usage.outputTokens == null && usage.cachedTokens == null)) return
+            if (usage == saved || (usage.inputTokens == null && usage.outputTokens == null && usage.cachedTokens == null && usage.cacheCreationTokens == null)) return
             val config = request.config
             // An implausible prompt total would be summed into lifetime statistics forever,
             // and the stats page would then contradict the ring for the same traffic.
@@ -43,6 +43,7 @@ internal class UsageRecordingProvider(
                     inputTokens = (billedInput ?: 0).toLong(),
                     outputTokens = (usage.outputTokens ?: 0).toLong(),
                     cachedTokens = (if (billedInput == null) 0 else usage.cachedTokens ?: 0).toLong(),
+                    cacheCreationTokens = (if (billedInput == null) 0 else usage.cacheCreationTokens ?: 0).toLong(),
                     conversationId = request.usageConversationId, requestId = requestId, atMillis = startedAt,
                 ))
             }.onSuccess { saved = usage }
@@ -55,6 +56,7 @@ internal class UsageRecordingProvider(
                         inputTokens = event.usage.inputTokens ?: previous?.inputTokens,
                         outputTokens = event.usage.outputTokens ?: previous?.outputTokens,
                         cachedTokens = event.usage.cachedTokens ?: previous?.cachedTokens,
+                        cacheCreationTokens = event.usage.cacheCreationTokens ?: previous?.cacheCreationTokens,
                     )
                     try { onEvent(event) } finally { persist() }
                 } else {
