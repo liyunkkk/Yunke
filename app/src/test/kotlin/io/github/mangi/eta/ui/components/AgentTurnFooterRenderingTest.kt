@@ -175,7 +175,7 @@ class AgentTurnFooterRenderingTest {
                             scrollState = rememberLazyListState(),
                             isStreaming = streaming.value,
                             isPaused = paused,
-                            bottomInset = 0.dp,
+                            bottomInset = { 0.dp },
                             keepBottomAnchored = false,
                             onBottomAnchorChanged = {},
                             messageActionsEnabled = true,
