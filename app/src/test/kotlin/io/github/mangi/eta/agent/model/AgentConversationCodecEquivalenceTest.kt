@@ -90,8 +90,10 @@ class AgentConversationCodecEquivalenceTest {
             .let { start -> if (start < 0) 0 else bounded.size - start }
         if (protectedCount > 0) {
             val protectedEncoded = json.encodeToString(bounded.takeLast(protectedCount))
-            require(protectedEncoded.length <= maxChars) {
-                "受保护会话超过持久化容量上限；未截断或丢弃原消息，请压缩历史后重试"
+            if (protectedEncoded.length > maxChars) {
+                throw ConversationCheckpointTooLargeException(
+                    AgentConversationCodec.CHECKPOINT_TOO_LARGE_MESSAGE
+                )
             }
         }
 
@@ -109,7 +111,9 @@ class AgentConversationCodecEquivalenceTest {
         if (protectedCount > 0) {
             encoded = json.encodeToString(bounded)
             if (encoded.length <= maxChars) return encoded
-            error("受保护会话超过持久化容量上限；未截断或丢弃原消息，请压缩历史后重试")
+            throw ConversationCheckpointTooLargeException(
+                AgentConversationCodec.CHECKPOINT_TOO_LARGE_MESSAGE
+            )
         }
 
         val last = bounded.lastOrNull() ?: return "[]"

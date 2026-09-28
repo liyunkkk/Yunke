@@ -1,72 +1,54 @@
 package io.github.mangi.eta.ui.components
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import io.github.mangi.eta.agent.runtime.AgentChildRunControl
 
-/** Confirmation is owned by the caller. Dismissing this dialog never sends a stop command. */
+/** The parent is already ending and its captured children are already paused before this opens. */
 @Composable
 internal fun AgentStopTaskDialog(
-    mainRunning: Boolean,
-    childrenRunning: Boolean,
-    onStopMain: () -> Unit,
-    onStopAll: () -> Unit,
+    onPauseChildren: () -> Unit,
+    onStopChildren: () -> Unit,
     onDismiss: () -> Unit,
-    onPause: (() -> Unit)? = null,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("停止任务？") },
+        title = { Text("如何处理子代理？") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    if (mainRunning && childrenRunning) {
-                        "主回复和后台子任务正在运行。请选择要停止的范围。"
-                    } else if (childrenRunning) {
-                        "主回复已结束，但后台子任务仍在运行。"
-                    } else {
-                        "主回复正在运行。"
-                    },
-                )
-                if (mainRunning) {
-                    Text("仅停止主回复不会取消已经派出的子代理，后台任务可能继续产生费用。")
-                }
-            }
+            Text("主回复已结束，未完成的子代理已请求暂停。保留暂停可供之后查询并继续；停止也会保留已有结果。返回或关闭默认保持暂停。")
         },
         confirmButton = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (mainRunning && onPause != null) {
-                    TextButton(onClick = onPause, modifier = Modifier.fillMaxWidth()) {
-                        Text("暂停主回复（可继续）")
-                    }
-                }
-                if (mainRunning) {
-                    TextButton(onClick = onStopMain, modifier = Modifier.fillMaxWidth()) {
-                        Text("仅停止主回复")
-                    }
-                }
-                TextButton(onClick = onStopAll, modifier = Modifier.fillMaxWidth()) {
-                    Text("停止整个任务")
-                }
-            }
+            TextButton(onClick = onStopChildren) { Text("停止子代理") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onPauseChildren) { Text("暂停子代理") }
         },
     )
 }
 
 /**
- * Immutable snapshot for a confirmation. The UI must compare its owner/run and the registry's
- * generation-bearing target again at confirmation time, not read a newly selected run as target.
- * For runs without children [groupTarget] is null; for child-only work [runId] is null.
+ * Mount once in a visible conversation host, not on the old background-task management button.
+ * Absence of this host never resolves a choice. A new turn does not invalidate an old event, and
+ * confirming an old event never captures the current generation or replays a setting change.
  */
+@Composable
+internal fun AgentPendingChildStopDialog(ownerId: String?) {
+    val pending by AgentChildRunControl.pendingSelections.collectAsState()
+    val selection = pending.firstOrNull { choice ->
+        ownerId != null && choice.targets.any { it.ownerId == ownerId }
+    } ?: return
+    AgentStopTaskDialog(
+        onPauseChildren = { AgentChildRunControl.resolve(selection.eventId) },
+        onStopChildren = { AgentChildRunControl.resolve(selection.eventId, stopChildren = true) },
+        onDismiss = { AgentChildRunControl.resolve(selection.eventId) },
+    )
+}
+
+/** Legacy snapshot value retained for callers migrating away from the removed range dialog. */
 internal data class AgentStopSelection<T>(
     val ownerId: String,
     val runId: String?,

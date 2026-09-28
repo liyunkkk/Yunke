@@ -124,7 +124,7 @@ class ChatComposerSendModeTest {
     @Test
     fun compressingWhileStreamingBlocksSteer() {
         assertEquals(
-            "stop",
+            "blocked",
             resolveChatComposerSendMode(
                 isStreaming = true,
                 isPaused = false,
@@ -138,7 +138,7 @@ class ChatComposerSendModeTest {
     @Test
     fun compressingWhilePausedBlocksSteerAndContinue() {
         assertEquals(
-            "stop",
+            "blocked",
             resolveChatComposerSendMode(
                 isStreaming = true,
                 isPaused = true,
@@ -150,9 +150,9 @@ class ChatComposerSendModeTest {
     }
 
     @Test
-    fun compressingIdleHidesSend() {
+    fun compressingIdleWithDraftShowsBlockedSend() {
         assertEquals(
-            "idle",
+            "blocked",
             resolveChatComposerSendMode(
                 isStreaming = false,
                 isPaused = false,
@@ -202,6 +202,20 @@ class ChatComposerSendModeTest {
                 canStartNewSend = false,
                 isCompressingContext = true,
                 canContinueDisconnected = true,
+            ),
+        )
+    }
+
+    @Test
+    fun compressingWhileStreamingWithoutDraftStillStops() {
+        assertEquals(
+            "stop",
+            resolveChatComposerSendMode(
+                isStreaming = true,
+                isPaused = false,
+                hasSteerContent = false,
+                canStartNewSend = true,
+                isCompressingContext = true,
             ),
         )
     }

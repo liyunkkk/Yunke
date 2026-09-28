@@ -18,7 +18,10 @@ class ContextPrecisionContractTest(unittest.TestCase):
         code = self.read('agent/model/AgentLoop.kt')
         self.assertEqual(1, code.count('AgentRequestMediaPolicy.filter('))
         self.assertIn('AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)', code)
-        self.assertIn('filteredMessages, roundTools, sessionId)', code)
+        self.assertRegex(code,
+            r'ProviderRequest\(requestConfigForRound\(\),\s*'
+            r'filteredMessages,\s*roundTools,\s*sessionId'
+            r'(?:,\s*toolDiagnostics\s*=\s*toolDiagnostics)?\)')
         self.assertIn('val preparedRequestTokens = if (publishLocalEstimate)', code)
         self.assertIn('val localEstimate = preparedRequestTokens?.takeIf', code)
 

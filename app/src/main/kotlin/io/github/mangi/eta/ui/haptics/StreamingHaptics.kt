@@ -8,11 +8,31 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 
 /** Main-thread, frame-synchronous feedback. No network-event queue or delayed replay. */
 internal object StreamingHaptics {
-    private var owner: Any? = null
-    private var visibleGate: ((View) -> Boolean)? = null
+    private class Gate(val view: View, val lifecycle: Lifecycle, val enabled: () -> Boolean)
+
+    /**
+     * Several chat hosts observe concurrently (home and chat screens, conversation key changes).
+     * A single slot would be cleared by whichever instance disposes last even though another live
+     * instance still owns the visible view, silencing feedback for the rest of the process.
+     */
+    private val gates = mutableListOf<Gate>()
+
+    /** Test-only counter of allowed advances; never consulted by production paths. */
+    @Volatile internal var allowedAdvances: Long = 0
+        private set
 
     fun onVisibleAdvance(view: View) {
-        if (visibleGate?.invoke(view) == true) TouchHaptics.generationTick(view)
+        val allowed = synchronized(gates) {
+            gates.any { gate ->
+                gate.view === view && gate.enabled() &&
+                    gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            }
+        }
+        // Window focus is intentionally not required: a dialog, notification shade or split-screen
+        // peer takes focus while the streamed text stays visible in this same view.
+        if (!allowed) return
+        allowedAdvances++
+        TouchHaptics.generationTick(view)
     }
 
     @Composable
@@ -21,15 +41,9 @@ internal object StreamingHaptics {
         val lifecycle = LocalLifecycleOwner.current.lifecycle
         val active by rememberUpdatedState(enabled)
         DisposableEffect(view, lifecycle) {
-            val token = Any()
-            owner = token
-            visibleGate = { candidate ->
-                candidate === view && active &&
-                    lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && view.hasWindowFocus()
-            }
-            onDispose {
-                if (owner === token) { owner = null; visibleGate = null }
-            }
+            val gate = Gate(view, lifecycle) { active }
+            synchronized(gates) { gates += gate }
+            onDispose { synchronized(gates) { gates.remove(gate) } }
         }
     }
 }

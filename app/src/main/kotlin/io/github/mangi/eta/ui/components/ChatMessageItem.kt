@@ -69,6 +69,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -760,20 +761,13 @@ private fun AgentMessageBlock(
     modifier: Modifier = Modifier,
     isPaused: Boolean = false,
 ) {
-    @Suppress("DEPRECATION")
-    val clipboardManager = LocalClipboardManager.current
-    val view = LocalView.current
-    var copied by remember(message.id) { mutableStateOf(false) }
     val keepStreamingMarkdown = message.isStreaming || retainedStreamingState != null
     val displayContent = remember(message.content) { NumericCitationMarkup.strip(message.content) }
-    val displaySpeechPreface = remember(speechPreface) { NumericCitationMarkup.strip(speechPreface) }
-    val speechContent = remember(displaySpeechPreface, displayContent) {
-        listOf(displaySpeechPreface.trim(), displayContent)
-            .filter { it.isNotBlank() }
-            .joinToString("\n\n")
-    }
-    var streamingRevealComplete by remember(message.id) {
-        mutableStateOf(!keepStreamingMarkdown)
+    // Completion belongs to an exact source revision. Late text must not inherit
+    // the previous revision's true flag while its parser/reveal effect catches up.
+    var streamingRevealComplete by remember(message.id, message.content) {
+        mutableStateOf(!keepStreamingMarkdown ||
+            (!message.isStreaming && retainedStreamingState?.revealedContent == message.content))
     }
     LaunchedEffect(message.isStreaming) {
         if (message.isStreaming) streamingRevealComplete = false
@@ -785,13 +779,9 @@ private fun AgentMessageBlock(
     } else {
         null
     }
-    LaunchedEffect(retainedStreamingState, streamingRevealComplete, message.content) {
-        retainedStreamingState?.revealedContent = message.content.takeIf { streamingRevealComplete }
-    }
-    LaunchedEffect(copied) {
-        if (copied) {
-            kotlinx.coroutines.delay(1_400)
-            copied = false
+    LaunchedEffect(retainedStreamingState, streamingRevealComplete, message.content, message.isStreaming) {
+        retainedStreamingState?.revealedContent = message.content.takeIf {
+            streamingRevealComplete && !message.isStreaming
         }
     }
 
@@ -846,112 +836,19 @@ private fun AgentMessageBlock(
             message.content.isNotBlank() &&
             (!keepStreamingMarkdown || streamingRevealComplete)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(
-                    onClick = {
-                        TouchHaptics.click(view)
-                        @Suppress("DEPRECATION")
-                        clipboardManager.setText(AnnotatedString(message.content))
-                        copied = true
-                    },
-                    minWidth = 30.dp,
-                    minHeight = 30.dp,
-                ) {
-                    Icon(
-                        imageVector = if (copied) Icons.Rounded.Check
-                            else Icons.Rounded.ContentCopy,
-                        contentDescription = stringResource(
-                            if (copied) R.string.copy_copied else R.string.copy_answer,
-                        ),
-                        modifier = Modifier.size(15.dp),
-                        tint = if (copied) {
-                            MiuixTheme.colorScheme.primary
-                        } else {
-                            MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f)
-                        },
-                    )
-                }
-                if (allowSpeech) {
-                    SpeechPlaybackButton(message.id, speechContent)
-                }
-                if (showMessageActions) {
-                    TooltipBox(text = stringResource(R.string.ui_branch_conversation), enabled = branchEnabled) {
-                        IconButton(
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onBranch()
-                            },
-                            enabled = branchEnabled,
-                            minWidth = 30.dp,
-                            minHeight = 30.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.CallSplit,
-                                contentDescription = stringResource(R.string.ui_branch_conversation),
-                                modifier = Modifier.size(15.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                    TooltipBox(text = stringResource(R.string.ui_regenerate_2e1905), enabled = messageActionsEnabled) {
-                        IconButton(
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onRegenerate()
-                            },
-                            enabled = messageActionsEnabled,
-                            minWidth = 30.dp,
-                            minHeight = 30.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Refresh,
-                                contentDescription = stringResource(R.string.ui_regenerate_reply_84a7d9),
-                                modifier = Modifier.size(15.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                    TooltipBox(text = stringResource(R.string.ui_delete_3755f5), enabled = messageActionsEnabled) {
-                        IconButton(
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onDelete()
-                            },
-                            enabled = messageActionsEnabled,
-                            minWidth = 30.dp,
-                            minHeight = 30.dp,
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Delete,
-                                contentDescription = stringResource(R.string.ui_delete_this_conversation_3f351b),
-                                modifier = Modifier.size(15.dp),
-                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            )
-                        }
-                    }
-                }
-                if (LocalAppearanceSettings.current.messageTimestampsEnabled) {
-                    val timestamp = message.generatedAtMillis?.takeIf { it > 0L }
-                    if (timestamp != null) {
-                        val zone = java.time.ZoneId.systemDefault()
-                        val label = remember(timestamp, zone) { formatMessageTimestamp(timestamp, zone) }
-                        Text(
-                            text = label,
-                            modifier = Modifier.weight(1f).padding(start = 6.dp),
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                            fontSize = 11.sp,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
+            AgentMessageActionRow(
+                messageId = message.id,
+                content = message.content,
+                allowSpeech = allowSpeech,
+                speechPreface = speechPreface,
+                generatedAtMillis = message.generatedAtMillis,
+                showMessageActions = showMessageActions,
+                messageActionsEnabled = messageActionsEnabled,
+                branchEnabled = branchEnabled,
+                onDelete = onDelete,
+                onRegenerate = onRegenerate,
+                onBranch = onBranch,
+            )
         }
     }
 }
@@ -965,6 +862,7 @@ private fun StableMarkdown(
         content = content,
         retainState = true,
     ),
+    progressive: Boolean = false,
 ) {
     val components = remember { chatMarkdownComponents() }
     Markdown(
@@ -998,6 +896,7 @@ private fun StableMarkdown(
                 content = state.content,
                 components = successComponents,
                 modifier = successModifier,
+                progressive = progressive,
             )
         },
     )
@@ -1075,18 +974,24 @@ private fun StreamingMarkdown(
     }
 
     val animationsAllowed = state.restoreState.animationsAllowed(isPaused)
-    LaunchedEffect(revealCoordinator, animationsAllowed, currentContent) {
-        if (animationsAllowed) {
-            revealCoordinator.resumeAnimationsWithoutCatchingUp()
-        } else {
-            if (currentPaused) revealCoordinator.restoreHistoryThrough(currentContent.length)
-            else revealCoordinator.pauseAnimationsAndCatchUp()
-        }
+    // Content is deliberately not a key. A streaming delta must not re-run the gate decision:
+    // while the restore baseline is still pending, animationsAllowed is false, and every delta
+    // would catch the reveal up to the newest text. That drains the pending records, the frame
+    // clock parks on its wakeup channel, and the typewriter plus its haptics stop for the rest
+    // of the message. Only a real gate change may move the coordinator.
+    LaunchedEffect(revealCoordinator, animationsAllowed, isPaused) {
+        if (animationsAllowed) revealCoordinator.resumeAnimationsWithoutCatchingUp()
+        else if (!isPaused) revealCoordinator.pauseAnimationsAndCatchUp()
+    }
+
+    // An explicit user pause does keep following new text, because nothing will animate it later.
+    // The restore baseline case must not take this path: there the reveal has to stay pending.
+    LaunchedEffect(revealCoordinator, isPaused, content) {
+        if (isPaused) revealCoordinator.restoreHistoryThrough(content.length)
     }
 
     LaunchedEffect(revealCoordinator, view) {
         // Drive feedback in the same frame as visible text, including the final drain.
-        // Catch-up/restore does not emit this callback, so history never replays pulses.
         revealCoordinator.setOnRevealAdvanced {
             io.github.mangi.eta.ui.haptics.StreamingHaptics.onVisibleAdvance(view)
         }
@@ -1256,8 +1161,28 @@ private fun ChatMarkdownDocument(
     components: MarkdownComponents,
     modifier: Modifier = Modifier,
     revealCoordinator: SmoothTextRevealCoordinator? = null,
+    progressive: Boolean = false,
 ) {
     val blocks = remember(root) { topLevelMarkdownBlocks(root) }
+    // 用户点击展开长文档时，把整篇的组合与文字测量分摊到连续几帧，避免首帧一次性
+    // 构建全部 AnnotatedString 并测量全文。只在进入组合时决定一次，历史滚入可视区
+    // 的已展开内容仍一次到位，不会在滚动途中改变高度。
+    val progressiveAtEntry = remember { progressive && revealCoordinator == null }
+    val composedBlockLimit = if (progressiveAtEntry) {
+        val lengths = remember(blocks) { blocks.map { (it.endOffset - it.startOffset).coerceAtLeast(0) } }
+        var limit by remember(blocks) {
+            mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
+        }
+        LaunchedEffect(lengths) {
+            while (limit < lengths.size) {
+                withFrameNanos { }
+                limit = nextProgressiveBlockLimit(lengths, limit, PROGRESSIVE_FRAME_CHARS)
+            }
+        }
+        limit
+    } else {
+        Int.MAX_VALUE
+    }
     val startedRevealKeys = rememberStartedRevealKeys(revealCoordinator)
     val nextRevealKey = remember(blocks, startedRevealKeys) {
         blocks.mapNotNull { it.firstRevealBlockKey() }
@@ -1276,7 +1201,8 @@ private fun ChatMarkdownDocument(
     val density = LocalDensity.current
     var previousVisibleType: IElementType? = null
     Column(modifier) {
-        blocks.forEach { node ->
+        blocks.forEachIndexed { index, node ->
+            if (index >= composedBlockLimit) return@forEachIndexed
             val revealKey = node.firstRevealBlockKey()
             val visible = streamingMarkdownBlockVisible(
                 coordinatorActive = revealCoordinator != null,
@@ -1284,7 +1210,7 @@ private fun ChatMarkdownDocument(
                 startedRevealKeys = startedRevealKeys,
                 nextRevealKey = nextRevealKey,
             )
-            if (!visible) return@forEach
+            if (!visible) return@forEachIndexed
             val gap = with(density) {
                 markdownBlockSpacing(previousVisibleType, node.type).toDp()
             }
@@ -1342,6 +1268,24 @@ internal fun shouldFreezeStreamingMarkdownBlock(
 ): Boolean = tailStartOffset != null && blockStartOffset != tailStartOffset
 
 private const val STREAMING_PARSE_PUBLISH_INTERVAL_MS = 90L
+private const val PROGRESSIVE_FIRST_FRAME_CHARS = 1_000
+private const val PROGRESSIVE_FRAME_CHARS = 800
+
+/**
+ * 从 [current] 开始按字符预算继续纳入顶层块。每次至少前进一块，保证单个超长块
+ * 也能在有限帧内完成；返回值不超过块数。
+ */
+internal fun nextProgressiveBlockLimit(blockLengths: List<Int>, current: Int, charBudget: Int): Int {
+    var limit = current.coerceIn(0, blockLengths.size)
+    var used = 0
+    while (limit < blockLengths.size) {
+        val length = blockLengths[limit]
+        if (used > 0 && used + length > charBudget) break
+        used += length
+        limit++
+    }
+    return limit
+}
 
 internal fun streamingMarkdownBlockVisible(
     coordinatorActive: Boolean,
@@ -2381,6 +2325,8 @@ private fun ThinkingRow(
 ) {
     var expanded by rememberSaveable(message.id) { mutableStateOf(!message.collapsed) }
     var manuallyExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    // 仅本次组合内由点击触发的展开才分帧组合正文；不跨配置变更保存。
+    var expandedByTap by remember(message.id) { mutableStateOf(false) }
     // 思考结束后立即切换为与完成态回答相同的稳定 Markdown。工具执行期间 App 可能
     // 处于后台，不能让旧思考保留显现债务，回来后在新回答旁边补播整段内容。
     val streamingState = if (message.isStreaming) {
@@ -2438,6 +2384,7 @@ private fun ThinkingRow(
                 .clip(RoundedCornerShape(10.dp))
                 .clickable {
                     manuallyExpanded = true
+                    expandedByTap = !expanded
                     expanded = !expanded
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
@@ -2523,6 +2470,7 @@ private fun ThinkingRow(
                             tone = ChatMarkdownTone.Thinking,
                             markdownState = checkNotNull(stableMarkdownState),
                             modifier = contentModifier,
+                            progressive = expandedByTap,
                         )
                     }
                 }

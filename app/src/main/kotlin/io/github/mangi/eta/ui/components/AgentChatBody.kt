@@ -66,12 +66,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -95,7 +91,6 @@ import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
-import io.github.mangi.eta.ui.app.LocalBlurEnabled
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.latestBilledContextTokens
 import io.github.mangi.eta.ui.model.canContinueDisconnectedRun
@@ -131,13 +126,6 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.blur.BlendColorEntry
-import top.yukonga.miuix.kmp.blur.BlurDefaults
-import top.yukonga.miuix.kmp.blur.LayerBackdrop
-import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
-import top.yukonga.miuix.kmp.blur.textureBlur
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
@@ -160,6 +148,7 @@ internal fun AgentChatBody(
     livePromptTokens: Int? = null,
     livePromptIsProjected: Boolean = false,
     billedHistoryTokens: Int? = null,
+    activeRunContextWindow: Int? = null,
     childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
     compactingModelName: String = "",
     selectedContextTaskId: String? = null,
@@ -332,6 +321,7 @@ internal fun AgentChatBody(
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
+                activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 isStreaming = isStreaming,
                 isPaused = isPaused,
@@ -412,6 +402,7 @@ private fun AgentChatScaffold(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
+    activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     isStreaming: Boolean,
     isPaused: Boolean = false,
@@ -459,14 +450,6 @@ private fun AgentChatScaffold(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val surfaceColor = MiuixTheme.colorScheme.surface
-    val frostEnabled = hasMessages && LocalBlurEnabled.current && isRuntimeShaderSupported()
-    val messageBackdrop = rememberLayerBackdrop {
-        // Backdrop 必须包含不透明底色，否则文字边缘模糊到透明区域时会出现黑边。
-        drawRect(surfaceColor)
-        drawContent()
-    }
-
     val appearance = LocalAppearanceSettings.current
     val showMorphLoading = shouldShowMorphLoadingIndicator(
         messages = visibleMessages,
@@ -489,7 +472,6 @@ private fun AgentChatScaffold(
         bottomBar = {
             AgentChatBottomBar(
                 collaborationConversationId = collaborationConversationId,
-                messageBackdrop = messageBackdrop.takeIf { frostEnabled },
                 input = input,
                 draftField = draftField,
                 modelPickerState = modelPickerState,
@@ -500,6 +482,7 @@ private fun AgentChatScaffold(
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
+                activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 showContextUsage = hasMessages,
                 isStreaming = isStreaming,
@@ -572,8 +555,7 @@ private fun AgentChatScaffold(
                 scrollToMessageId = scrollToMessageId,
                 onScrollToMessageConsumed = onScrollToMessageConsumed,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .then(if (frostEnabled) Modifier.layerBackdrop(messageBackdrop) else Modifier),
+                    .fillMaxSize(),
             )
         }
     }
@@ -638,14 +620,34 @@ internal fun AgentConversationMessages(
             onScrollToMessageConsumed()
         }
     }
-    // 操作栏只出现在每轮对话的最终结果上，正在输出的正文保持隐藏。
-    // 流式进行中当前这一轮尚未收尾，不把临时的最后一条正文标为最终结果。
-    val finalResultMessageIds = remember(visibleMessages, isStreaming, isCompressingContext) {
-        resolveFinalResultMessageIds(
-            visibleMessages,
+    // Project onto the EXACT rows consumed by LazyColumn. Expansion and late
+    // records move only the footer anchor, never the message or callback owner.
+    val turnFooters = remember(timelineRows, isStreaming, isCompressingContext) {
+        timelineRows.turnFooters(
             isStreaming = isStreaming,
             isCompressingContext = isCompressingContext,
         )
+    }
+    val finalResultMessageIds = remember(turnFooters) {
+        turnFooters.values.mapTo(mutableSetOf()) { it.id }
+    }
+    // Reveal dependencies follow the projection's existing anchors, not a
+    // second ownership heuristic. A stopped notice can own actions while an
+    // earlier answer in that same turn is still revealing. New user boundaries
+    // and completed footer anchors prevent one turn from blocking another.
+    val footerRevealMessages = remember(timelineRows, turnFooters) {
+        buildMap<String, List<AgentMessageUi>> {
+            val answers = mutableListOf<AgentMessageUi>()
+            timelineRows.forEach { row ->
+                val message = (row as? AgentTimelineRow.Message)?.message
+                if (message is UserMessageUi && !message.isSteerSupplement()) answers.clear()
+                if (message is AgentMessageUi && message.content.isNotBlank()) answers.add(message)
+                if (row.key in turnFooters) {
+                    put(row.key, answers.toList())
+                    answers.clear()
+                }
+            }
+        }
     }
     // 流式消息的渲染会话按 id 提升到列表层持有：item 滚出视口被 LazyColumn 销毁后，
     // 滑回时复用同一解析会话与打字机进度，避免整段内容重新解析并重放显现动画。
@@ -910,9 +912,23 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 底栏（含输入器和 IME）高度只在外层消费一次，缩小真实滚动视口。
-    // 先留出底栏空间再裁剪，避免长回复或滚动追赶期间的正文绘制到输入器后面。
-    Box(modifier = modifier.padding(bottom = bottomInset).clipToBounds()) {
+    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
+    // 跟底输出期间（思考/正文生成、未手动滑动）把绘制裁在输入框上方 14dp 的静止线：
+    // 卡片/正文每长一行，跟底滚动要晚几帧才追上，这几帧卡片外框会往下跳一下；
+    // 裁在静止线上，跳动那一下既不会进输入框，也不会越过平时停靠的位置。
+    // 用户一拖动 shouldFollowBottom 即为 false，裁剪解除，内容可以滑到输入框后面。
+    Box(
+        modifier = modifier
+            .clipToBounds()
+            .drawWithContent {
+                if (shouldFollowBottom) {
+                    val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
+                    clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
+                } else {
+                    drawContent()
+                }
+            },
+    ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
@@ -948,9 +964,10 @@ internal fun AgentConversationMessages(
                 // Navigation already emits one explicit click/long-press haptic.
                 .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
                 .overScrollVertical(),
+            // 最后一条静止时停在输入框上方 14dp；手动滑动时内容可以滚到输入框后面。
             contentPadding = PaddingValues(
                 top = 14.dp,
-                bottom = 14.dp,
+                bottom = ConversationComposerGap + bottomInset,
             ),
             overscrollEffect = null,
         ) {
@@ -969,6 +986,16 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
+                // Keep the row key/index and animate its root, including its footer.
+                Column(
+                    modifier = Modifier.fillMaxWidth().then(
+                        if (entry is AgentTimelineRow.Message) Modifier.animateItem(
+                            fadeInSpec = tween(durationMillis = 180),
+                            placementSpec = null,
+                            fadeOutSpec = null,
+                        ) else Modifier,
+                    ),
+                ) {
                 when (entry) {
                     is AgentTimelineRow.Message -> {
                         val message = entry.message
@@ -995,20 +1022,16 @@ internal fun AgentConversationMessages(
                                 message.toolName == "browser_use" &&
                                 message.id == currentBrowserMessageId,
                             enableLivePreview = !isStreaming,
-                            showCopyAction = message !is AgentMessageUi ||
-                                message.id in finalResultMessageIds,
-                            showMessageActions = message.id in finalResultMessageIds,
+                            // UserMessageBubble ignores these switches; its toolbar is unchanged.
+                            showCopyAction = false,
+                            showMessageActions = false,
                             messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                             branchEnabled = branchEnabled,
                             isEditing = message.id == editTargetMessageId,
                             isPaused = isPaused,
                             // Keep this modifier stable. Attaching fadeIn only after the run
                             // ends replays appearance on the already-visible answer.
-                            modifier = Modifier.animateItem(
-                                fadeInSpec = tween(durationMillis = 180),
-                                placementSpec = null,
-                                fadeOutSpec = null,
-                            ),
+                            modifier = Modifier,
                         )
                     }
 
@@ -1047,6 +1070,23 @@ internal fun AgentConversationMessages(
                             )
                         }
                     }
+                }
+                turnFooters[entry.key]?.let { owner ->
+                    val revealPending = footerRevealMessages[entry.key].orEmpty().any { answer ->
+                        val retained = streamingMarkdownStates[answer.id]
+                        answer.isStreaming ||
+                            (retained != null && retained.revealedContent != answer.content) ||
+                            (retained == null && (isStreaming || isPaused) && answer.id !in settledMessageIds)
+                    }
+                    AgentTurnFooter(
+                        message = owner,
+                        actions = messageActions,
+                        revealPending = revealPending,
+                        speechPreface = speechPrefaces[owner.id].orEmpty(),
+                        messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
+                        branchEnabled = branchEnabled,
+                    )
+                }
                 }
             }
             if (compressingItemCount > 0) {
@@ -1117,7 +1157,7 @@ internal fun AgentConversationMessages(
             onEdge = { navigateUserMessage(toEdge = true) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp),
+                .padding(bottom = 12.dp + bottomInset),
         )
     }
 }
@@ -1242,7 +1282,6 @@ internal fun visibleTurnSpeechPreface(
 
 @Composable
 private fun AgentChatBottomBar(
-    messageBackdrop: LayerBackdrop?,
     input: String,
     draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
     modelPickerState: AgentModelPickerUiState,
@@ -1253,6 +1292,7 @@ private fun AgentChatBottomBar(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
+    activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
     isStreaming: Boolean,
@@ -1294,56 +1334,10 @@ private fun AgentChatBottomBar(
             .fillMaxWidth()
             .then(if (drawerBlocksIme) Modifier else Modifier.imePadding()),
     ) {
-        if (messageBackdrop != null) {
-            val blurColors = BlurDefaults.blurColors(
-                blendColors = listOf(
-                    BlendColorEntry(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
-                ),
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(ChatBottomFrostHeight)
-                    // DstIn 让真实磨砂在顶部透明、靠近输入框时逐渐变实，消除硬裁切线。
-                    .graphicsLayer {
-                        compositingStrategy = CompositingStrategy.Offscreen
-                    }
-                    .drawWithContent {
-                        drawContent()
-                        drawRect(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(Color.Transparent, Color.Black),
-                            ),
-                            blendMode = BlendMode.DstIn,
-                        )
-                    }
-                    .textureBlur(
-                        backdrop = messageBackdrop,
-                        shape = RectangleShape,
-                        blurRadius = 20f,
-                        colors = blurColors,
-                    ),
-            )
-        } else {
-            // 空白主页沿用原来的轻微渐隐，不改变主页视觉。
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(16.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                MiuixTheme.colorScheme.surface,
-                            ),
-                        )
-                    ),
-            )
-        }
+        // 输入框周围保持透明：消息列表延伸到底栏之后，只有输入框本体不透明。
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MiuixTheme.colorScheme.surface)
                 .navigationBarsPadding()
                 .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
         ) {
@@ -1359,6 +1353,7 @@ private fun AgentChatBottomBar(
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
+                activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 showContextUsage = showContextUsage,
                 isStreaming = isStreaming,
@@ -1399,7 +1394,6 @@ private fun AgentChatBottomBar(
     }
 }
 
-private val ChatBottomFrostHeight = 24.dp
 internal fun shouldShowMorphLoadingIndicator(
     messages: List<AgentChatMessageUi>,
     isStreaming: Boolean,
@@ -1680,3 +1674,6 @@ internal fun shouldStopOrphanSpeechPlayback(
     if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
+
+/** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
+private val ConversationComposerGap = 14.dp

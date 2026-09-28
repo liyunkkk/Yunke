@@ -6,6 +6,7 @@ import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.isResumeAfterCompress
+import io.github.mangi.eta.ui.model.withTerminalBodiesInOrder
 
 // Bound each eagerly rendered work-process Column without dropping message data.
 private const val WORK_PROCESS_UI_BATCH_LIMIT = 32
@@ -39,7 +40,7 @@ internal fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEnt
         workMessages.clear()
     }
 
-    this@toTimelineEntries.forEach { message ->
+    this@toTimelineEntries.withTerminalBodiesInOrder().forEach { message ->
         if (message is UserMessageUi && message.isResumeAfterCompress()) {
             return@forEach
         }
@@ -62,4 +63,3 @@ internal fun List<AgentTimelineEntry>.userMessageIndices(): List<Int> = mapIndex
 
 private fun AgentChatMessageUi.isWorkProcessMessage(): Boolean =
     this is ThinkingMessageUi || this is ToolActivityMessageUi || this is ToolSummaryMessageUi
-

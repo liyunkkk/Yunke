@@ -189,9 +189,14 @@ class AgentModelPickerProjectorTest {
         assertEquals(0f, contextUsageProgress(0, 100_000) ?: -1f, 0f)
         assertEquals(1f, contextUsageProgress(120_000, 100_000) ?: -1f, 0f)
         assertEquals("1.05M", formatCompactTokenCount(1_050_000))
+        // Unknown occupancy must not be rendered as a measured 0K / 0.0%.
+        assertEquals(
+            "No conversation context yet · 100K tokens",
+            formatContextUsage(AgentContextUsageUi(contextTokens = null, contextWindow = 100_000)),
+        )
         assertEquals(
             "0K / 100K tokens · 0.0%",
-            formatContextUsage(AgentContextUsageUi(contextTokens = null, contextWindow = 100_000)),
+            formatContextUsage(AgentContextUsageUi(contextTokens = 0, contextWindow = 100_000)),
         )
         assertEquals(
             "12K tokens\nThe current model does not provide a context limit",

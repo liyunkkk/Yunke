@@ -84,6 +84,7 @@ internal class AgentRuntimeRunExecutor(
             AgentChildTaskGroups.requestCompact(childSessionId, taskId, keep, model)
         }
         var result = try {
+            runController.throwIfCancelled()
             checkpointRecorder = AgentRunCheckpointRecorder.create(appContext, request)
             entrySurfaceGuard = EntrySurfaceGuard.from(request.handoff, AndroidAgentLogger) {
                 EtaAssistantOverlayService.dismissForForegroundOperation(appContext)
@@ -156,16 +157,12 @@ internal class AgentRuntimeRunExecutor(
             toolsBinding = runController.register { ownership.release() }
             timing.preparationFinished(skillContext.installedSkills.size)
 
-            // Freeze one owner configuration and one isolated model-pool scope for this run.
+            // Retain all exact-selection candidates, including explicit unavailable reasons.
+            // This never re-resolves a retained child's healthy configuration for continue.
             val ownerKey = SubAgentConfigKey.Conversation(request.effectiveModelSessionId)
             val childConfig = ConversationSubAgentPreferences().snapshot(ownerKey)
-            val configuredChildren = if (childConfig.enabled) runBlocking {
-                childConfig.profiles.filter { it.enabled }.mapNotNull { profile ->
-                    runCatching { profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })?.let {
-                        SubAgentPreferences.applyImageResolution(profile, SubAgentPreferences.applyReasoning(profile, it))
-                    } }.getOrNull()?.takeIf { it.apiKey.isNotBlank() && it.baseUrl.isNotBlank() }?.let { profile to it }
-                }
-            } else emptyList()
+            val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig) }
+            val configuredChildren = AgentChildWorkerAvailability.configuredChildren(childCandidates)
             val childModels = configuredChildren.map { it.second }
             val frozenParallelLimits = childModels.map { childConfig.parallelLimit(SubAgentParallelModel(it.providerId, it.model)) }
             val workspaceEnvironment = LinuxEnvironmentSettingsRepository.current(appContext).wireName
@@ -240,13 +237,14 @@ internal class AgentRuntimeRunExecutor(
                         SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = childSessionId)
                     }
                     val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
-                        releaseTools = { ownership.release() }, workspaceEnvironment = workspaceEnvironment, workers = configuredChildren.map { (profile, model) ->
-                            AgentChildTaskGroups.Worker(profile.id, profile.role, model.providerId)
-                        })
+                        releaseTools = { ownership.release() }, workspaceEnvironment = workspaceEnvironment,
+                        workers = AgentChildWorkerAvailability.workers(childCandidates))
                     if (registered == null) error("无法启动子代理前台执行服务，请返回 Eta 后重试")
                     childOwnershipTransferred = true
                     generationForCallback = registered
                     groupGeneration = registered
+                    AgentChildRunControl.registered(session, childSessionId, registered)
+                    runController.throwIfCancelled()
                     SubAgentTools.appendTo(mcpTools, configuredChildren.mapIndexed { i, (slot, model) ->
                         SubAgentPreferences.workerDescription(slot, i + 1, model, frozenParallelLimits[i])
                     }, workspaceEnabled = workspace != null)
@@ -260,6 +258,7 @@ internal class AgentRuntimeRunExecutor(
                 ExistingChildTaskTools.appendTo(mcpTools)
             }
             val delegatedExecutor = AgentModelClient.ToolExecutor { call ->
+                runController.throwIfCancelled()
                 if (call.name == "manage_agent_workspace") {
                     val backend = childWorkspace
                     val payload = try { AgentWorkspaceAccessPolicy.execute(
@@ -283,14 +282,18 @@ internal class AgentRuntimeRunExecutor(
                     }
                     AgentModelClient.ToolResult(payload.toString(), sensitive = true)
                 } else if (call.name in SubAgentTools.names) {
-                    AgentChildTaskGroups.execute(childSessionId, groupGeneration, call)
+                    // Even with no new coordinator, explicit continue adopts into THIS run.
+                    AgentChildTaskGroups.execute(childSessionId, groupGeneration, call, currentRunId = request.runId)
                 } else routingExecutor.execute(call)
             }
             val compactPolicy = runBlocking { AgentCompressionPolicy.resolve(request.config) }
+            val promptWithChildHandoff = AgentChildTaskHandoff.appendToPrompt(
+                AgentChildWorkerAvailability.appendToPrompt(request.prompt, childCandidates), childSessionId)
+            runController.throwIfCancelled()
             val completedResponse = AgentModelClient.complete(
                 config = request.config, sessionId = request.effectiveModelSessionId,
-                capabilitiesProvider = { AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay) },
-                prompt = request.prompt, toolExecutor = delegatedExecutor, images = request.images,
+                capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay) },
+                prompt = promptWithChildHandoff, toolExecutor = delegatedExecutor, images = request.images,
                 history = request.history, skipHistoryTrimming = true,
                 compactionArchive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, request.effectiveModelSessionId),
                 turnId = request.effectiveTurnId, runController = runController,
@@ -326,6 +329,11 @@ internal class AgentRuntimeRunExecutor(
             cancelled = runController.isCancelled || throwable is AgentRunCancelledException
             val modelFailure = throwable as? AgentModelExecutionException
             val message = if (cancelled) "已停止" else throwable.message ?: throwable.javaClass.simpleName
+            // This catch is after the retry loop has given up, not a ModelRetryScheduled event.
+            // Freeze while the original generation is still attached, before terminal delivery.
+            if (AgentParentNetworkFailure.isFinal(throwable, cancelled)) {
+                AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.FINAL_NETWORK_FAILURE)
+            }
             if (cancelled) AndroidAgentLogger.info("Agent runtime stopped") else {
                 val requestFailure = modelFailure?.cause as? AgentModelFailure
                 AndroidAgentLogger.error("Agent runtime failed: type=${throwable.safeLogType()}, " +
@@ -343,6 +351,10 @@ internal class AgentRuntimeRunExecutor(
                 transcript = modelFailure?.transcript ?: (throwable as? AgentRunCancelledException)?.transcript.orEmpty())
         } finally {
             if (modelCompleted && !cancelled && !runController.isCancelled) {
+                // End EVERY successful turn (including a supplemental reply) with children
+                // paused, without a dialog. This is before detach and session.complete; capture
+                // is scoped to this session.runId and registry pause rechecks its control epoch.
+                AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.SUCCESS)
                 try {
                     val receipt = localTools?.completeVirtualDelivery()
                     virtualDeliveryCompleted = session.taskSurfaceMode == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND &&

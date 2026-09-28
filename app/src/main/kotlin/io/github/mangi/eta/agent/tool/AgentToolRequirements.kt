@@ -127,7 +127,8 @@ internal object AgentToolRequirements {
             }
             "run_command" -> {
                 function.put("description",
-                    "通过普通 Android Shell 执行单次非交互命令，以 App UID 运行；只能访问当前应用有权访问的资源。")
+                    "通过普通 Android Shell 执行单次非交互命令，以 App UID 运行；只能访问当前应用有权访问的资源。" +
+                        "不会进入 Linux 环境，Linux 命令使用 terminal(environment=linux)。")
                 properties?.getJSONObject("cwd")?.put("description", "工作目录，默认使用 Eta 私有工作区。")
             }
             "list_directory" -> {

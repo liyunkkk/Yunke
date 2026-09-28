@@ -27,15 +27,14 @@ class FinalDeliveryIntegrationTest(unittest.TestCase):
         self.assertNotIn('cloudHistoryTokens = null', prune)
         self.assertIn('AgentContextCompactionUi.applyMarker(', handler)
 
-    def test_three_horizontal_actions_only_preview_uses_full_preview_entry(self):
+    def test_three_inline_actions_only_preview_uses_full_preview_entry(self):
         controls = self.source('ui/VirtualDisplayRecoveryScreen.kt')
-        row = controls.split('Row(\n            modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)', 1)[1]
-        self.assertEqual(3, row.count('TextButton('))
-        self.assertEqual(3, row.count('Modifier.weight(1f).fillMaxHeight()'))
-        self.assertEqual(1, row.count('VirtualDisplayWebPreview.openWithManualClose(context)'))
-        self.assertNotIn('VirtualDisplayWebPreview.open(context)', row)
-        self.assertIn('onClick = { TouchHaptics.click(view); refresh() }', row)
-        self.assertIn('recover(context.applicationContext)', row)
+        actions = controls.split('FlowRow(', 1)[1]
+        self.assertEqual(3, actions.count('TouchHaptics.click(view)'))
+        self.assertEqual(1, actions.count('VirtualDisplayWebPreview.openWithManualClose(context)'))
+        self.assertNotIn('VirtualDisplayWebPreview.open(context)', actions)
+        self.assertIn('onClick = { TouchHaptics.click(view); refresh() }', actions)
+        self.assertIn('recover(context.applicationContext)', actions)
 
     def test_dynamic_configuration_error_has_explicit_recovery(self):
         editor = self.source('ui/components/ConversationSubAgentEditor.kt')

@@ -102,7 +102,10 @@ class AgentConversationRevisionReducerTest {
                 AgentModelClient.ConversationMessage("user", "mention task", turnId = "run-task"),
             ),
         )
-        assertNull(AgentConversationRevisionReducer.boundary(state, "user-run-task-supplement-2"))
+        // The trailing unrecorded supplement is editable without erasing anything.
+        assertEquals(state.history, AgentConversationRevisionReducer.boundary(state, "user-run-task-supplement-2")!!.historyPrefix)
+        // An earlier missing supplement still fails closed.
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-run-task-supplement-1"))
         assertNull(AgentConversationRevisionReducer.branchPrefix(state, "user-run-task-supplement-2"))
         val boundary = AgentConversationRevisionReducer.boundary(state, "user-run-task")!!
         assertEquals(listOf("earlier"), boundary.historyPrefix.map { it.content })

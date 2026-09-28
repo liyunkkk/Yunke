@@ -131,6 +131,58 @@ class AgentPauseContinuationTest {
         assertEquals(2, calls)
     }
 
+    @Test fun pauseDuringThinkingResumesTheThoughtInsteadOfRereadingTheConversation() {
+        var calls = 0
+        val requests = mutableListOf<JSONArray>()
+        val controller = AgentRunController()
+        val history = JSONArray().put(AgentConversationCodec.userTextMessage("task"))
+        val provider = object : AgentProviderClient {
+            override val id = "thinking-pause"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, false, false, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                requests.add(JSONArray(request.messages.toString()))
+                calls++
+                onEvent(ProviderEvent.RequestStarted)
+                onEvent(ProviderEvent.BlockStart(AssistantBlockKind.THINKING, 0))
+                onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, 0, "half a thought"))
+                if (calls == 1) {
+                    // Paused while thinking: no text was produced yet.
+                    val binding = runController.register(interruptible = true) {}
+                    runController.pause()
+                    runController.resume()
+                    binding.close()
+                    return ProviderResponse(JSONObject().put("role", "assistant").put("content", "")
+                        .put("reasoning_content", "half a thought").put("finish_reason", "stop"))
+                }
+                onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 1, "answer"))
+                return ProviderResponse(JSONObject().put("role", "assistant").put("content", "answer")
+                    .put("reasoning_content", "rest of it").put("finish_reason", "stop"))
+            }
+        }
+        val result = AgentLoop(config(), history, JSONArray(), provider,
+            AgentModelClient.ToolExecutor { error("no tools") }, controller, AgentTraceFormatter(),
+            onEvent = {}, turnId = "same-turn").run()
+        assertEquals(2, calls)
+        assertEquals("answer", result.content)
+        // The resumed request must ask the model to continue its thought, not to re-read the turn.
+        val resumed = requests[1]
+        val texts = (0 until resumed.length()).map { resumed.getJSONObject(it).optString("content") }
+        assertTrue(texts.contains(AgentContextCompactor.SEAMLESS_CONTINUE_THINKING_PROMPT))
+        assertFalse(texts.contains(AgentContextCompactor.SEAMLESS_CONTINUE_PROMPT))
+        // It stays an internal continuation marker, so it cannot open a new compaction turn.
+        val marker = AgentModelClient.ConversationMessage("user", AgentContextCompactor.SEAMLESS_CONTINUE_THINKING_PROMPT)
+        assertTrue(AgentContextCompactor.isSteeringUserMessage(marker))
+        assertEquals(0, AgentContextCompactor.recentKeepStartIndex(AgentTurnIdentity.migrate(listOf(
+            AgentModelClient.ConversationMessage("user", "task", turnId = "original"),
+            AgentModelClient.ConversationMessage("assistant", ""),
+            marker,
+            AgentModelClient.ConversationMessage("assistant", "answer"),
+        )), 1))
+        assertTrue((0 until history.length()).all {
+            history.getJSONObject(it).optString(AgentTurnIdentity.JSON_KEY) == "same-turn"
+        })
+    }
+
     @Test fun resumedThinkingIsHiddenFromEventsResultAndReplayButKeptInModelHistory() {
         for (streaming in listOf(true, false)) {
             var calls = 0

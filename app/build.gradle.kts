@@ -118,6 +118,17 @@ android {
     }
 }
 
+// CI must identify the last started test even if the worker never finishes a report.
+if (providers.environmentVariable("GITHUB_ACTIONS").orNull == "true") {
+    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+        testLogging {
+            events("started", "passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = false
+        }
+    }
+}
+
 dependencies {
     implementation(libs.commons.compress)
     implementation(libs.xz)

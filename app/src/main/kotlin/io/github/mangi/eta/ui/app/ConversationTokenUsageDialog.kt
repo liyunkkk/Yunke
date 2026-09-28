@@ -48,7 +48,7 @@ internal fun ConversationTokenUsageDialog(
                     value = formatTokenCount(usage.totalTokens),
                 )
                 UsageRow(
-                    label = stringResource(R.string.stats_page_input_tokens),
+                    label = stringResource(R.string.stats_page_fresh_input_tokens),
                     value = formatTokenCount(usage.freshInputTokens),
                 )
                 UsageRow(

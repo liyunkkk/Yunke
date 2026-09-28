@@ -35,7 +35,9 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
         run(request, onEvent, isStopRequested = { false })
 
     fun run(request: AgentRuntimeWire.RunRequest, onEvent: (AgentEvent) -> Unit,
-        isStopRequested: () -> Boolean): AgentRuntimeWire.RunResult {
+        isStopRequested: () -> Boolean,
+        mainStopReason: () -> AgentChildControlPolicy.Reason? = { null },
+    ): AgentRuntimeWire.RunResult {
         if (isStopRequested()) return AgentRuntimeWire.RunResult(request.runId, false, "", "已停止")
         val resultLatch = CountDownLatch(1)
         val resultRef = AtomicReference<AgentRuntimeWire.RunResult?>()
@@ -67,19 +69,17 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             msg.data = AgentRuntimeWire.toBundle(request, preparedImages.images, preparedHistory.descriptor)
             serviceMessenger.send(msg)
             if (isStopRequested()) {
-                val cancel = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
-                cancel.data = AgentRuntimeWire.ackBundle(request.runId)
-                serviceMessenger.send(cancel)
+                sendRequestedStop(serviceMessenger, request.runId, mainStopReason())
             }
-            resultLatch.await()
+            if (!awaitRunResult(resultLatch, isStopRequested)) {
+                return AgentRuntimeWire.RunResult(request.runId, false, "", "已停止，但运行时未在限期内返回结果")
+            }
             return resultRef.get() ?: AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 未返回结果")
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
             runCatching {
                 if (isStopRequested()) {
-                    val cancelMessage = Message.obtain(null, AgentRuntimeWire.MSG_CANCEL)
-                    cancelMessage.data = AgentRuntimeWire.ackBundle(request.runId)
-                    serviceMessenger.send(cancelMessage)
+                    sendRequestedStop(serviceMessenger, request.runId, mainStopReason())
                 }
             }
             throw interrupted
@@ -98,7 +98,20 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
         }
     }
 
-    /** Entire captured run, INCLUDING detached or queued children of that run. */
+    private fun sendRequestedStop(
+        messenger: Messenger,
+        runId: String,
+        mainReason: AgentChildControlPolicy.Reason?,
+    ) {
+        // Preserve the captured stop scope if termination races request delivery or interruption.
+        val message = Message.obtain(null, AgentRuntimeStopDispatch.message(mainReason))
+        message.data = AgentRuntimeWire.ackBundle(runId).apply {
+            mainReason?.let { putString("child_stop_reason", it.name) }
+        }
+        messenger.send(message)
+    }
+
+    /** Entire captured run, INCLUDING detached or queued children of that run. Explicit destructive action only. */
     fun cancelRun(runId: String) {
         if (runId.isBlank()) return
         withRuntimeMessenger(Unit) { serviceMessenger ->
@@ -108,12 +121,15 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
         }
     }
 
-    /** Only stop the parent response. A successful return confirms IPC delivery, not task completion. */
-    fun stopMainRun(runId: String): Boolean {
+    /** Stop the parent, freeze its children and retain a one-shot pause/stop choice if needed. */
+    fun stopMainRun(runId: String): Boolean = stopMainRun(runId, AgentChildControlPolicy.Reason.USER_STOP)
+
+    /** Settings must already be applied once by their owner, never saved as a dialog callback. */
+    fun stopMainRun(runId: String, reason: AgentChildControlPolicy.Reason): Boolean {
         if (runId.isBlank()) return false
         return withRuntimeMessenger(false) { serviceMessenger ->
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_STOP_MAIN_RUN)
-            msg.data = AgentRuntimeWire.ackBundle(runId)
+            msg.data = AgentRuntimeWire.ackBundle(runId).apply { putString("child_stop_reason", reason.name) }
             serviceMessenger.send(msg)
             true
         }
@@ -304,7 +320,7 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             }
         }
     }
-    private companion object {
+    internal companion object {
         fun recordDeliveryTiming(data: android.os.Bundle, live: Boolean) {
             StreamDeliveryTiming.delayNs(data.getLong(StreamDeliveryTiming.KEY, 0L),
                 android.os.SystemClock.elapsedRealtimeNanos(), live)?.let {
@@ -312,5 +328,30 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             }
         }
         const val RESPONSE_TIMEOUT_SECONDS = 8L
+        const val RESULT_HEARTBEAT_SECONDS = 1L
+        const val STOP_RESULT_GRACE_SECONDS = 15L
+
+        /**
+         * A run may legitimately take a long time, so only an explicit stop starts the grace
+         * clock: an unresponsive runtime after a stop must still return control to the caller.
+         */
+        fun awaitRunResult(
+            resultLatch: CountDownLatch,
+            isStopRequested: () -> Boolean,
+            heartbeatSeconds: Long = RESULT_HEARTBEAT_SECONDS,
+            stopGraceSeconds: Long = STOP_RESULT_GRACE_SECONDS,
+        ): Boolean {
+            // A running run may legitimately take hours, so block without polling until a stop is
+            // requested; only then does the bounded grace clock start.
+            while (!isStopRequested()) {
+                if (resultLatch.await(heartbeatSeconds, TimeUnit.SECONDS)) return true
+            }
+            var remainingGraceSeconds = stopGraceSeconds
+            while (remainingGraceSeconds > 0) {
+                if (resultLatch.await(heartbeatSeconds, TimeUnit.SECONDS)) return true
+                remainingGraceSeconds -= heartbeatSeconds
+            }
+            return false
+        }
     }
 }

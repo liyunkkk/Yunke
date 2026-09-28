@@ -31,6 +31,7 @@ internal class AgentLoop(
     private val systemCount: Int = 0,
     private val compactionArchive: AgentCompactionArchive? = null,
     private val turnId: String = java.util.UUID.randomUUID().toString(),
+    private val toolDiagnostics: AgentToolCallDiagnostics = AgentToolCallDiagnostics(),
     private val onHistoryCompacted: () -> Unit = {},
     private val compactHistory: ((
         List<AgentModelClient.ConversationMessage>,
@@ -68,7 +69,9 @@ internal class AgentLoop(
 
     private var toolCallValidator = AgentToolCallValidator(tools)
     private val delegationArgumentRepair = AgentDelegationArgumentRepair()
+    private val invalidToolArgumentsGuard = AgentInvalidToolArgumentsGuard()
     private var shellFailureState = AgentShellFailureGuard.State()
+    private var toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null
     private var shellFailureStopMessage: String? = null
     private var delegationRepairNotifiedRound: Int? = null
     private val accumulatedReasoning = StringBuilder()
@@ -116,6 +119,9 @@ internal class AgentLoop(
     private var overflowRecoveryAttempts = 0
     private var lastFailedCompaction: Pair<String, Int>? = null
     private var skipIneffectiveAutoCompact = false
+    /** 上游在输出上限处截断且正文为空时，同一 round 内的自动重发预算，不跨 round 累积。 */
+    private var emptyOutputLimitRetries = 0
+    private var emptyOutputLimitRound = 0
 
     fun reasoningSnapshot(): String = accumulatedReasoning.toString().trim()
 
@@ -213,7 +219,7 @@ internal class AgentLoop(
                 modelRetry.complete(
                     initialRound = round,
                     request = ProviderRequest(requestConfigForRound(),
-                        filteredMessages, roundTools, sessionId),
+                        filteredMessages, roundTools, sessionId, toolDiagnostics = toolDiagnostics),
                     provider = provider,
                     controller = runController,
                     onEvent = onEvent,
@@ -231,7 +237,8 @@ internal class AgentLoop(
                             )
                             // Partial fields merge only within this request. The separate
                             // silent anchor survives a later usage-less request.
-                            silentBudget.measured(lastUsage?.inputTokens)
+                            silentBudget.measured(lastUsage?.inputTokens,
+                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
                         }
                         continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->
                             if (visibleEvent is ProviderEvent.BlockDelta &&
@@ -266,6 +273,7 @@ internal class AgentLoop(
             if (completedRound.round != round) interruptedTextPrefix.setLength(0)
             round = completedRound.round
             val providerResponse = completedRound.response
+            toolDiagnosticAttempt = completedRound.toolDiagnosticAttempt
 
             // Keep a fully returned response before observing a concurrent user stop.
             continuationText.finish().forEach { textEvent ->
@@ -277,11 +285,14 @@ internal class AgentLoop(
                 assistantMessage.put("content", continuationText.normalize(originalContent))
             }
             val toolCalls = AgentConversationCodec.parseToolCalls(assistantMessage)
+            toolCalls.forEachIndexed { index, call -> toolDiagnosticAttempt?.parsed(call, index) }
             toolCalls.filter { AgentSensitiveToolPolicy.isSensitive(it.name) }
                 .forEach { sensitiveToolCallIds += it.id }
             val assistantReasoning = continuationReasoning.visibleCompletedReasoning(
                 assistantMessage.optString("reasoning_content"))
             val content = assistantMessage.optString("content").trim()
+            // 已写出的正文会结束或推进本轮；空正文截断的重发预算只在同一轮内累计。
+            if (content.isNotBlank() && content != "null") emptyOutputLimitRetries = 0
             val hasAssistantPayload = (content.isNotBlank() && content != "null") ||
                 assistantReasoning.isNotBlank() ||
                 toolCalls.isNotEmpty()
@@ -303,8 +314,10 @@ internal class AgentLoop(
                 // reasoning block's UI projection is hidden, not the model's thinking.
                 // 半截正文留在当前轮次历史里，继续时模型才能接着写。
                 // 未完成的工具调用不执行；已经完整给出的 TOOL_USE 在恢复后走正常批次。
+                val interruptedText = assistantMessage.optString("content")
+                    .takeIf { it != "null" }.orEmpty()
                 if (hasAssistantPayload) {
-                    assistantMessage.optString("content").takeIf { it != "null" }?.let(interruptedTextPrefix::append)
+                    interruptedTextPrefix.append(interruptedText)
                     messages.put(
                         AgentConversationCodec.assistantHistoryMessage(
                             source = assistantMessage,
@@ -312,19 +325,26 @@ internal class AgentLoop(
                         ).put(AgentTurnIdentity.JSON_KEY, turnId),
                     )
                     responseStored = true
-                    if (!runController.isCancelled) appendCompactContinueIfNeeded(suppressOptionalThinking = false)
+                }
+                // 思考期暂停没有可续写的正文：这一轮的 reasoning_content 不会回到模型手里，
+                // 只给一条通用续写指令会让它重新读整轮对话，所以换成接续思考的指令。
+                // 完全没有产出时不追加任何指令，恢复后就是原请求重发。
+                if (responseStored && !runController.isCancelled) {
+                    appendContinuePromptAfterInterrupt(thinkingOnly = interruptedText.isBlank())
                 }
                 runController.throwIfCancelled()
                 appendPendingSteeringMessage()
                 continue
             }
+            // 空正文截断重发时要按实例定位这条刚写入的消息，避免删掉别的历史。
+            var storedAssistantMessage: JSONObject? = null
             if (hasAssistantPayload) {
-                messages.put(
-                    AgentConversationCodec.assistantHistoryMessage(
-                        source = assistantMessage,
-                        toolCalls = toolCalls,
-                    ).put(AgentTurnIdentity.JSON_KEY, turnId)
-                )
+                val historyMessage = AgentConversationCodec.assistantHistoryMessage(
+                    source = assistantMessage,
+                    toolCalls = toolCalls,
+                ).put(AgentTurnIdentity.JSON_KEY, turnId)
+                storedAssistantMessage = historyMessage
+                messages.put(historyMessage)
                 responseStored = true
                 onEvent(
                     AgentEvent.AssistantReceived(
@@ -359,7 +379,7 @@ internal class AgentLoop(
                 try {
                     when (providerResponse.stopReason) {
                         AssistantStopReason.TOOL_USE ->
-                            toolCalls.forEach { call -> outcomes += executeTool(round, call) }
+                            toolCalls.forEachIndexed { index, call -> outcomes += executeTool(round, call, index) }
                         AssistantStopReason.OUTPUT_LIMIT ->
                             toolCalls.forEach { call ->
                                 outcomes += rejectedToolOutcome(
@@ -385,12 +405,35 @@ internal class AgentLoop(
                 }
                 // Stop only after every tool result in this batch has been paired.
                 // This is a bounded repair budget, not a limit on legitimate long tasks.
+                invalidToolArgumentsGuard.stopMessage?.let { message ->
+                    throw AgentModelFailure(AgentInvalidToolArgumentsGuard.STOP_CODE, false, message)
+                }
                 shellFailureStopMessage?.let { message ->
                     throw AgentModelFailure(AgentShellFailureGuard.STOP_CODE, false, message)
                 }
                 interruptedTextPrefix.setLength(0)
                 round += 1
                 continue
+                }
+            }
+
+            // 上游在输出上限处截断、只回了思考没有正文：本轮没有任何可续写的内容。
+            // 必须在 steering 封口和自然结束边界之前重发，否则重试期间用户无法再插话。
+            // 同一 round 内重发次数有界；重发是一次全新响应，不走中断续写的前缀投影。
+            val truncatedWithoutBody = (content.isBlank() || content == "null") &&
+                providerResponse.stopReason == AssistantStopReason.OUTPUT_LIMIT &&
+                toolCalls.isEmpty()
+            if (truncatedWithoutBody) {
+                if (emptyOutputLimitRound != round) {
+                    emptyOutputLimitRound = round
+                    emptyOutputLimitRetries = 0
+                }
+                if (emptyOutputLimitRetries < MAX_EMPTY_OUTPUT_LIMIT_RETRIES) {
+                    emptyOutputLimitRetries += 1
+                    // 只回思考的空响应不进历史，也不进累积推理。
+                    discardEmptyOutputLimitAttempt(storedAssistantMessage)
+                    accumulatedReasoning.setLength(reasoningLengthBeforeRound)
+                    continue
                 }
             }
 
@@ -412,6 +455,16 @@ internal class AgentLoop(
 
             if (content.isBlank() || content == "null") {
                 val finishReason = assistantMessage.optString("finish_reason")
+                if (truncatedWithoutBody) {
+                    val outputTokens = lastUsage?.outputTokens
+                    error(
+                        "模型接口第 $round 轮在输出上限处截断且未返回正文" +
+                            "（finish_reason=${finishReason.ifBlank { "unknown" }}" +
+                            "，模型=${config.providerType}/${config.modelDisplayName.trim().ifBlank { config.model }}" +
+                            (outputTokens?.let { "，输出 token=$it" } ?: "") +
+                            "），已自动重试 $emptyOutputLimitRetries 次仍为空",
+                    )
+                }
                 error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
             }
 
@@ -460,7 +513,10 @@ internal class AgentLoop(
             return true
         }
         val window = config.contextWindow?.takeIf { it > 0 } ?: return false
-        val tokens = requestBudgetTokens()
+        // Hard send limit only: correct a measured local under-count so an uncalibrated
+        // request cannot leave above the configured window. Compaction scheduling keeps
+        // using the uncorrected budget, so a purely local estimate still cannot summarize.
+        val tokens = silentBudget.sendLimitTokens(localRequestTokens())
         return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
     }
 
@@ -519,7 +575,10 @@ internal class AgentLoop(
         return runCatching {
             AgentCompressionBoundary.selectStart(history,
                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
-                overflowPending)
+                overflowPending,
+                // Same request in both units: calibrated bill vs cheap local boundary.
+                billedTokens = requestBudgetTokens(),
+                localTokens = localRequestTokens())
         }.getOrDefault(0)
     }
 
@@ -610,7 +669,9 @@ internal class AgentLoop(
         var savedCheckpoint: String? = null
         var compactionStage = "archive"
         runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
-            "运行中压缩开始：round=$round，选中=$cut，保留=${history.size - cut}，保留预算=${AgentCompressionBoundary.continuationRetentionBudget(compactPolicy.contextWindow)}") }
+            "运行中压缩开始：round=$round，选中=$cut，保留=${history.size - cut}，" +
+                "保留估算=${AgentCompressionBoundary.retainedTokens(history, cut)}/${AgentCompressionBoundary.retainedTokens(history, 0)}，" +
+                "保留上限=${AgentCompressionBoundary.continuationRetentionBudget(window, overflowPending)}，决策=$decisionTokens，本地=${localRequestTokens()}") }
         val rewritten = try {
             val prefix = history.take(cut)
             val tail = history.drop(cut)
@@ -724,6 +785,25 @@ internal class AgentLoop(
     private fun steeringPrompt(supplement: String): String =
         AgentContextCompactor.steeringUserContent(supplement)
 
+    /**
+     * 中断后追加续写指令。正文被截断时接在 assistant 之后续写；暂停发生在思考阶段时
+     * 换成接续思考的指令，否则恢复的请求只多了一条通用续写要求，而模型看不到自己的
+     * 思考，只能从头重新分析整轮对话。两种情况都保留用户配置的思考开关。
+     */
+    private fun appendContinuePromptAfterInterrupt(thinkingOnly: Boolean) {
+        if (!thinkingOnly) {
+            appendCompactContinueIfNeeded(suppressOptionalThinking = false)
+            return
+        }
+        val last = messages.optJSONObject(messages.length() - 1) ?: return
+        if (!last.optString("role").equals("assistant", ignoreCase = true)) return
+        messages.put(
+            AgentConversationCodec.userTextMessage(
+                AgentContextCompactor.SEAMLESS_CONTINUE_THINKING_PROMPT,
+            ).put(AgentTurnIdentity.JSON_KEY, turnId),
+        )
+    }
+
     private fun appendCompactContinueIfNeeded(suppressOptionalThinking: Boolean = true) {
         val last = messages.optJSONObject(messages.length() - 1) ?: return
         if (!last.optString("role").equals("assistant", ignoreCase = true)) return
@@ -738,13 +818,16 @@ internal class AgentLoop(
     private fun executeTool(
         round: Int,
         toolCall: AgentModelClient.ToolCall,
+        toolIndex: Int,
     ): ToolOutcome {
         runController.throwIfCancelled()
         if (toolCall.name == AgentDelegationArgumentRepair.TOOL && delegationArgumentRepair.disabled) {
             // Exhaustion was already reported. Complete protocol pairing without another failed card.
             return ToolOutcome(toolCall, delegationArgumentRepair.reject("本轮委派已停用", round))
         }
-        toolCallValidator.validate(toolCall)?.let { validationError ->
+        val validationError = toolCallValidator.validate(toolCall)
+        toolDiagnosticAttempt?.validation(toolCall, validationError == null, toolIndex)
+        validationError?.let { validationError ->
             if (toolCall.name == AgentDelegationArgumentRepair.TOOL && toolCallValidator.declares(toolCall.name)) {
                 val repair = delegationArgumentRepair.reject(validationError, round)
                 sensitiveToolCallIds += toolCall.id
@@ -764,12 +847,20 @@ internal class AgentLoop(
                 return rejectedToolOutcome(round, toolCall, "DELEGATION_ARGUMENT_REPAIR_EXHAUSTED",
                     "委派参数补全失败，本轮已停用新委派；未创建子任务，已有子任务不受影响。请主代理接手。")
             }
+            val rejection = invalidToolArgumentsGuard.reject(
+                toolName = toolCall.name,
+                declared = toolCallValidator.declares(toolCall.name),
+                validationError = validationError,
+            )
             return rejectedToolOutcome(
                 round = round,
                 toolCall = toolCall,
-                code = "INVALID_TOOL_ARGUMENTS",
-                message = validationError,
+                code = rejection.code,
+                message = rejection.message,
             )
+        }
+        if (toolCall.name != AgentDelegationArgumentRepair.TOOL) {
+            invalidToolArgumentsGuard.validated(toolCall.name)
         }
         onEvent(
             AgentEvent.ToolStarted(
@@ -781,6 +872,7 @@ internal class AgentLoop(
             )
         )
 
+        toolDiagnosticAttempt?.dispatch(toolCall, toolIndex)
         val rawResult = try {
             if (toolCall.name == AgentCompactionArchive.TOOL && compactionArchive != null) {
                 compactionArchive.read(toolCall.argumentsJson)
@@ -799,6 +891,8 @@ internal class AgentLoop(
         shellFailureState = shellDecision.state
         if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage
         val result = shellDecision.result
+        // Record what the model actually receives, plus the pre-guard code for comparison.
+        toolDiagnosticAttempt?.result(toolCall, result, toolIndex, rawResult)
         if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(toolCall.name)) {
             sensitiveToolCallIds += toolCall.id
         }
@@ -903,6 +997,18 @@ internal class AgentLoop(
         }
     }
 
+    /** 空正文截断重发前丢弃本轮刚写入的 assistant 消息：历史里不留只回思考的空回合。 */
+    private fun discardEmptyOutputLimitAttempt(storedAssistant: JSONObject?) {
+        val stored = storedAssistant ?: return
+        for (index in messages.length() - 1 downTo 0) {
+            if (messages.optJSONObject(index) === stored) {
+                messages.remove(index)
+                responseStored = false
+                return
+            }
+        }
+    }
+
     private fun ProviderEvent.toAgentEvent(round: Int): AgentEvent? =
         when (this) {
             ProviderEvent.RequestStarted -> AgentEvent.ProviderRequestStarted(round)
@@ -952,4 +1058,8 @@ internal class AgentLoop(
             AssistantBlockKind.TOOL_CALL -> AgentEvent.AssistantBlockKind.TOOL_CALL
         }
 
+    private companion object {
+        /** 上游在输出上限处截断且正文为空时，同一 round 内最多自动重发的次数。 */
+        private const val MAX_EMPTY_OUTPUT_LIMIT_RETRIES = 2
+    }
 }

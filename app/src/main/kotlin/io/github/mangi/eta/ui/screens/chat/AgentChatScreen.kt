@@ -47,6 +47,7 @@ internal fun AgentChatScreen(
             livePromptTokens = state.livePromptTokens,
             livePromptIsProjected = state.livePromptIsProjected,
             billedHistoryTokens = state.cloudHistoryTokens,
+            activeRunContextWindow = state.activeRunContextWindow,
             childContexts = state.childContexts,
             selectedContextTaskId = state.selectedContextTaskId,
             onContextTaskSelected = { onAction(AgentChatAction.ContextTaskSelected(it)) },

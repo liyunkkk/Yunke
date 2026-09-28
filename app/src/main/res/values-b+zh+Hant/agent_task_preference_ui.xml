@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="agent_task_preference_mode_hint_foreground">在主螢幕直接操作</string>
+    <string name="agent_task_preference_mode_hint_background">在後台副螢幕執行，不打擾前台</string>
+    <string name="agent_task_preference_recovery_title">副螢幕恢復</string>
+    <string name="agent_task_preference_recovery_display_id">副螢幕 %1$d</string>
+    <string name="agent_task_preference_recovery_phase_waiting">等待恢復</string>
+    <string name="agent_task_preference_recovery_phase_unknown">狀態未知</string>
+    <string name="agent_task_preference_recovery_raw_phase">原始狀態碼：%1$s</string>
+</resources>

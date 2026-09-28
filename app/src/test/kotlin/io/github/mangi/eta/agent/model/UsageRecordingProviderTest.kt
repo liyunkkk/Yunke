@@ -88,6 +88,46 @@ class UsageRecordingProviderTest {
         assertEquals(listOf("event", "record"), order)
     }
 
+    @Test fun anImpossiblePromptTotalIsNotSummedIntoLifetimeStatistics() {
+        // Observed on the wire: 784267 billed for a request that succeeded on a 500000
+        // window. Recording it would corrupt the totals permanently and make the stats
+        // page disagree with the ring about the same traffic.
+        val records = mutableListOf<ModelUsageDelta>()
+        val windowed = config.copy(contextWindow = 500_000)
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 784_267, outputTokens = 1805, cachedTokens = 270_969)))
+            answer()
+        }) { records += it }
+        decorated.complete(ProviderRequest(windowed, JSONArray(), JSONArray(), "conversation"), AgentRunController()) {}
+        val delta = records.single()
+        assertEquals(0L, delta.inputTokens)
+        // The cache subset belongs to the rejected prompt, so it cannot be kept either.
+        assertEquals(0L, delta.cachedTokens)
+        // Output was genuinely produced and is still billed.
+        assertEquals(1805L, delta.outputTokens)
+    }
+
+    @Test fun aRealOverflowSlightlyAboveTheWindowIsStillRecorded() {
+        val records = mutableListOf<ModelUsageDelta>()
+        val windowed = config.copy(contextWindow = 200_000)
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 220_000, outputTokens = 100, cachedTokens = 50_000)))
+            answer()
+        }) { records += it }
+        decorated.complete(ProviderRequest(windowed, JSONArray(), JSONArray(), "conversation"), AgentRunController()) {}
+        assertEquals(220_000L, records.single().inputTokens)
+        assertEquals(50_000L, records.single().cachedTokens)
+    }
+
+    @Test fun withoutAConfiguredWindowEveryReportedPromptIsStillRecorded() {
+        val records = mutableListOf<ModelUsageDelta>()
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 784_267))); answer()
+        }) { records += it }
+        decorated.complete(request, AgentRunController()) {}
+        assertEquals(784_267L, records.single().inputTokens)
+    }
+
     @Test fun accountingUsesConversationOwnerNotNetworkSession() {
         val records = mutableListOf<ModelUsageDelta>()
         val decorated = UsageRecordingProvider(provider { emit ->

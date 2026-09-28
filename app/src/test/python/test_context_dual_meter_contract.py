@@ -22,7 +22,10 @@ class ContextDualMeterContractTest(unittest.TestCase):
 
     def test_circle_and_send_guard_have_distinct_inputs(self):
         model = self.text('ui/model/AgentModelPickerUiState.kt')
-        self.assertIn('return AgentContextUsageUi(billedContextTokens, selectedModel?.contextWindow)', model)
+        # A validated cloud receipt is shown as-is. The denominator prefers the window the
+        # in-flight run was launched with, so a mid-run limit change cannot restate it.
+        self.assertIn('return AgentContextUsageUi(billedContextTokens, window)', model)
+        self.assertIn("val window = activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow", model)
         self.assertIn('internal fun compressionContextUsage(', model)
         bar = self.text('ui/components/AgentChatInputBar.kt')
         self.assertIn('historyTokenCount = historyTokenCount', bar)
@@ -30,6 +33,9 @@ class ContextDualMeterContractTest(unittest.TestCase):
         app = self.text('ui/app/AgentAppState.kt')
         self.assertEqual(4, app.count('= compressionContextUsage('))
         self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', app)
+        # Only a plausible receipt may become occupancy, judged against the run's own window.
+        self.assertIn('CloudReceiptPlausibility.isOccupancy(', app)
+        self.assertIn('runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)', app)
 
     def test_request_calibration_is_optional_on_the_wire(self):
         wire = self.text('agent/runtime/AgentRuntimeWire.kt')

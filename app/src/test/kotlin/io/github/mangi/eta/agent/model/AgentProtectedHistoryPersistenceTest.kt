@@ -25,7 +25,9 @@ class AgentProtectedHistoryPersistenceTest {
 
     @Test fun protectedOverflowIsExplicitInsteadOfDroppingOldMessages() {
         val history = listOf(AgentModelClient.ConversationMessage("user", "x".repeat(1_100_000), turnId = "turn"))
-        assertThrows(IllegalArgumentException::class.java) { AgentConversationCodec.encodeConversationCheckpoint(history) }
+        assertThrows(ConversationCheckpointTooLargeException::class.java) {
+            AgentConversationCodec.encodeConversationCheckpoint(history)
+        }
         assertEquals(1_100_000, history.single().content.length)
     }
 

@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.withTransaction
 import io.github.mangi.eta.ui.model.CloudUsageReceiptCodec
 import io.github.mangi.eta.agent.model.AgentConversationCodec
+import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.agent.model.ConversationCheckpointTooLargeException
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.db.ConversationContextCheckpointEntity
@@ -33,7 +35,6 @@ import io.github.mangi.eta.ui.model.attachUserImageSources
 import io.github.mangi.eta.ui.model.decodeUserMessageImages
 import io.github.mangi.eta.ui.model.encodeUserMessageImages
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -197,13 +198,20 @@ internal object AgentConversationStore {
             childContexts = emptyList(), childContextRunId = "", selectedContextTaskId = null)
     }
 
+    /**
+     * 只有"受保护回合本身超过容量上限"才允许放弃保护重编：那时保留保护只会让整轮写不进去。
+     * OOM、序列化故障等其它异常必须上抛——过去一律 catch 会把它们也当成容量问题，
+     * 于是清掉全部 turnId 再编一次，保护静默失效、前缀消息被悄悄丢掉。
+     */
     private fun encodeCheckpoint(history: List<AgentModelClient.ConversationMessage>): String =
         try {
             AgentConversationCodec.encodeConversationCheckpoint(history)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            // In particular, do not retry OOM by allocating another full list.
+        } catch (tooLarge: ConversationCheckpointTooLargeException) {
+            AndroidAgentLogger.warn(
+                "Conversation checkpoint exceeded its cap with ${history.size} messages; " +
+                    "retrying without turn protection"
+            )
+            // Do not retry OOM by allocating another full list: only the capacity case lands here.
             AgentConversationCodec.encodeConversationCheckpoint(history.map { it.copy(turnId = "") })
         }
 

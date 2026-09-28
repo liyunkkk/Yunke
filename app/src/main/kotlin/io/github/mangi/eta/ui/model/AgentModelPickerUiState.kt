@@ -272,16 +272,20 @@ internal fun liveContextUsage(
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
     projectedContextTokens: Int? = null,
+    activeRunContextWindow: Int? = null,
 ): AgentContextUsageUi {
+    // An in-flight run keeps the window it was launched with, so a mid-run settings
+    // change must not restate the percentage of a request that never saw the new limit.
+    val window = activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow
     if (billedContextTokens != null && billedContextTokens > 0) {
-        return AgentContextUsageUi(billedContextTokens, selectedModel?.contextWindow)
+        return AgentContextUsageUi(billedContextTokens, window)
     }
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
     val local = projectedContextTokens?.takeIf { it > 0 }?.toLong()
         ?: ((historyTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
             history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
             requestOverheadTokens.coerceAtLeast(0) + uncommittedLiveTokens.coerceAtLeast(0))
-    return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), selectedModel?.contextWindow, estimated = true)
+    return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
 }
 
 /** Decision-only: actual input + locally counted changes since that exact request. */
@@ -298,6 +302,7 @@ internal fun compressionContextUsage(
     billedOverheadTokens: Int? = null,
     billedHistoryTokens: Int? = null,
     localHistoryTokenCount: Int? = null,
+    activeRunContextWindow: Int? = null,
 ): AgentContextUsageUi {
     if (billedContextTokens == null || billedContextTokens <= 0 ||
         billedHistoryTokens == null || billedOverheadTokens == null) {
@@ -305,7 +310,8 @@ internal fun compressionContextUsage(
         // needed for a safe delta. Only the silent budget falls back to a full estimate.
         val local = liveContextUsage(history, currentInput, pendingImages, selectedModel,
             pendingFileReferences, pendingConversationMentions, localHistoryTokenCount,
-            requestOverheadTokens = requestOverheadTokens)
+            requestOverheadTokens = requestOverheadTokens,
+            activeRunContextWindow = activeRunContextWindow)
         val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
             draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
         return local.copy(contextTokens = maxOf(local.contextTokens?.toLong() ?: 0L, floor)
@@ -318,7 +324,8 @@ internal fun compressionContextUsage(
     val fixedDelta = billedOverheadTokens?.let { requestOverheadTokens.toLong() - it } ?: 0L
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
     return AgentContextUsageUi((billedContextTokens.toLong() + delta + fixedDelta + draft)
-        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), selectedModel?.contextWindow, estimated = true)
+        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
+        activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow, estimated = true)
 }
 
 private fun draftContextTokens(
@@ -401,15 +408,22 @@ internal fun contextUsageProgress(contextTokens: Int?, contextWindow: Int?): Flo
     return (contextTokens.toFloat() / contextWindow.toFloat()).coerceIn(0f, 1f)
 }
 
-@Suppress("UNUSED_PARAMETER")
 internal fun formatContextUsage(
     usage: AgentContextUsageUi,
     noUsageText: String = "No conversation context yet",
     noLimitText: String = "The current model does not provide a context limit",
     locale: Locale = Locale.getDefault(),
 ): String {
-    // Zero is a display placeholder, never a fabricated cloud measurement.
-    val tokens = usage.contextTokens?.coerceAtLeast(0) ?: 0
+    // "Not measured yet" and "measured as zero" are different states. Rendering both as
+    // 0K / 0.0% made an unknown occupancy look like a real reading, while the ring stayed
+    // empty because progress is null — one state shown two ways.
+    val measured = usage.contextTokens
+    if (measured == null) {
+        val window = usage.contextWindow
+        return if (window == null || window <= 0) noUsageText
+        else "$noUsageText · ${formatCompactTokenCount(window, locale)} tokens"
+    }
+    val tokens = measured.coerceAtLeast(0)
     val tokenText = (if (usage.estimated) "≈" else "") +
         (if (tokens == 0) "0K" else formatCompactTokenCount(tokens, locale))
     val window = usage.contextWindow

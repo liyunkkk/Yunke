@@ -129,6 +129,7 @@ internal object AgentModelClient {
             memoryContext,
             rootAvailable = initialCapabilities.rootAvailable,
             delegationAvailable = delegationAvailable,
+            shellTools = initialCapabilities.shellTools,
         )
         val systemCount = AgentPromptBuilder.buildSystemMessages(
             config,
@@ -136,6 +137,7 @@ internal object AgentModelClient {
             memoryContext,
             rootAvailable = initialCapabilities.rootAvailable,
             delegationAvailable = delegationAvailable,
+            shellTools = initialCapabilities.shellTools,
         ).length()
         var transcriptStartIndex = messages.length()
         fun toolsFor(
@@ -195,6 +197,7 @@ internal object AgentModelClient {
                 val nextMemoryContext = memoryContextProvider()
                 val systemMessages = AgentPromptBuilder.buildSystemMessages(
                     config, nextSkillContext, nextMemoryContext, capabilities.rootAvailable, delegationAvailable,
+                    capabilities.shellTools,
                 )
                 for (index in 0 until systemMessages.length()) {
                     messages.put(index, systemMessages.getJSONObject(index))

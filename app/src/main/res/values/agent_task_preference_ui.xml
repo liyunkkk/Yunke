@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="agent_task_preference_mode_hint_foreground">Run directly on the main screen</string>
+    <string name="agent_task_preference_mode_hint_background">Run on the background virtual display without interrupting the foreground</string>
+    <string name="agent_task_preference_recovery_title">Virtual display recovery</string>
+    <string name="agent_task_preference_recovery_display_id">Virtual display %1$d</string>
+    <string name="agent_task_preference_recovery_phase_waiting">Waiting to recover</string>
+    <string name="agent_task_preference_recovery_phase_unknown">Status unknown</string>
+    <string name="agent_task_preference_recovery_raw_phase">Raw status code: %1$s</string>
+</resources>
