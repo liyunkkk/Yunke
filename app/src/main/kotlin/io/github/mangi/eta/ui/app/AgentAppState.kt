@@ -2030,7 +2030,7 @@ internal class AgentAppState(
                 pendingImages = images,
                 pendingFileReferences = fileReferences,
                 pendingConversationMentions = parsedPrompt.conversations.map { mentioned ->
-                    PendingConversationMentionUi("mention-${UUID.randomUUID()}", mentioned.id, mentioned.title, mentioned.transcript)
+                    PendingConversationMentionUi("mention-${UUID.randomUUID()}", mentioned.id, mentioned.title, "", mentioned.snapshotPath)
                 },
                 messageEdit = MessageEditUiState(
                     targetMessageId = boundary.userMessage.id,
@@ -2190,7 +2190,7 @@ internal class AgentAppState(
         val supportsVision = generateImage || generateVideo || (modelPickerState.selectedModel?.supportsVision == true) || io.github.mangi.eta.agent.model.ModelFeaturePreferences.visionEnabled()
         if (!generateImage && !generateVideo && rejectSendIfContextWindowExceeded(boundary.historyPrefix, parsed.request, images, parsed.references.mapIndexed { index, reference ->
                 PendingFileReferenceUi(id = "regen-$index", reference = reference)
-            }, parsed.conversations.map { PendingConversationMentionUi(it.id, it.id, it.title, it.transcript) })) {
+            }, parsed.conversations.map { PendingConversationMentionUi(it.id, it.id, it.title, "", it.snapshotPath) })) {
             return
         }
         if (!ignoreCompression && boundary.contextWasCompacted) showCompactedRevisionNotice()
@@ -3222,9 +3222,8 @@ internal class AgentAppState(
         val pending = homeState.pendingConversationMentions
         if (conversationId == selectedConversationId || pending.any { it.conversationId == conversationId }) return false
         val sourceSnapshot = conversationsById[conversationId] ?: return false
-        val budget = minOf(ConversationMention.MAX_TRANSCRIPT_CHARS, ConversationMention.remainingTranscriptBudget(pending))
-        if (pending.size >= ConversationMention.MAX_ATTACHED || budget < 128) {
-            Toast.makeText(appContext, "最多引用 3 个会话，总内容过大时会省略中间记录。", Toast.LENGTH_SHORT).show()
+        if (pending.size >= ConversationMention.MAX_ATTACHED) {
+            Toast.makeText(appContext, "最多引用 3 个会话。", Toast.LENGTH_SHORT).show()
             return false
         }
         val status = if (sourceSnapshot.isStreaming) "[选择时快照：来源会话仍在运行，未包含后续输出]\n" else ""
@@ -3238,16 +3237,19 @@ internal class AgentAppState(
         )))
         scope.launch {
             try {
-                val transcript = withContext(Dispatchers.IO) {
+                val prepared = withContext(Dispatchers.IO) {
                     val source = if (sourceSnapshot.conversationContentLoaded) sourceSnapshot else
                         requireNotNull(AgentConversationStore.loadConversation(appContext, conversationId))
                     val evidence = io.github.mangi.eta.ui.model.ConversationToolEvidence(source.messages)
                     evidence.add(source.history, "source conversation model history")
                     io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, conversationId)
                         .visitForConversationMention(evidence::add)
-                    status + ConversationMention.transcript(
-                        source.messages, budget - status.length, appContext.filesDir, conversationId, evidence,
+                    val body = status + ConversationMention.transcript(
+                        source.messages, ConversationMention.SNAPSHOT_MAX_CHARS - status.length,
+                        appContext.filesDir, conversationId, evidence,
                     )
+                    val snapshot = ConversationMention.writeSnapshot(appContext.filesDir, conversationId, body)
+                    snapshot?.absolutePath.orEmpty() to body
                 }
                 if (ownerVersion != fileAttachmentOwnerVersion) return@launch
                 if (conversationId !in conversationsById) {
@@ -3256,13 +3258,13 @@ internal class AgentAppState(
                 }
                 val current = homeState.pendingConversationMentions
                 if (current.none { it.id == mentionId }) return@launch
-                val remaining = ConversationMention.remainingTranscriptBudget(current.filterNot { it.id == mentionId })
-                if (transcript.isBlank() || transcript.length > remaining) {
+                val (snapshotPath, _) = prepared
+                if (snapshotPath.isBlank()) {
                     removeConversationMention(mentionId)
-                    Toast.makeText(appContext, "会话引用为空或超过总长度限制，请重新选择。", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(appContext, "会话引用为空或快照没写上，请重新选择。", Toast.LENGTH_SHORT).show()
                 } else {
                     updateCurrentConversation(homeState.copy(pendingConversationMentions = current.map {
-                        if (it.id == mentionId) it.copy(transcript = transcript) else it
+                        if (it.id == mentionId) it.copy(transcript = "", snapshotPath = snapshotPath) else it
                     }))
                 }
             } catch (failure: Exception) {

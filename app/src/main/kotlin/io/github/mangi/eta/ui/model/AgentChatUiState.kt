@@ -306,6 +306,7 @@ data class PendingConversationMentionUi(
     val conversationId: String,
     val title: String,
     val transcript: String,
+    val snapshotPath: String = "",
 )
 
 @Immutable

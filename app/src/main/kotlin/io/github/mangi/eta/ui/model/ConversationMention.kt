@@ -12,6 +12,8 @@ internal data class ConversationMentionQuery(
 
 internal object ConversationMention {
     const val MAX_TRANSCRIPT_CHARS = 240_000
+    /** Snapshot file cap. The prompt itself does not carry this text. */
+    const val SNAPSHOT_MAX_CHARS = 1_500_000
     const val MAX_RESULTS = 8
     const val MAX_ATTACHED = 3
     const val MAX_TOTAL_CHARS = 480_000
@@ -137,6 +139,19 @@ internal object ConversationMention {
     fun remainingTranscriptBudget(already: List<PendingConversationMentionUi>): Int =
         (MAX_TOTAL_CHARS - already.sumOf { it.transcript.length }).coerceAtLeast(0)
 
+    /** Full snapshot for on-demand reads. Returns null when the directory cannot be created. */
+    fun writeSnapshot(filesDir: File, conversationId: String, transcript: String): File? {
+        if (transcript.isBlank()) return null
+        val token = sanitizeFileToken(conversationId.ifBlank { "conversation" })
+        val directory = File(TerminalPrivateStorage.workspace(filesDir), "$TOOL_DETAILS_DIRECTORY/$token")
+        if (!runCatching { directory.mkdirs(); directory.isDirectory }.getOrDefault(false)) return null
+        val file = File(directory, "snapshot.txt")
+        return runCatching {
+            file.writeText(transcript)
+            file.takeIf { it.isFile && it.length() > 0L }
+        }.getOrNull()
+    }
+
     private fun formatMessage(message: AgentChatMessageUi, toolDetailsDirectory: File?, toolEvidence: ConversationToolEvidence?): String? {
         return when (message) {
         is UserMessageUi -> {
@@ -175,7 +190,14 @@ internal object ConversationMention {
 }
 
 internal fun List<PendingConversationMentionUi>.toMentionedConversations(): List<MentionedConversation> =
-    map { MentionedConversation(id = it.conversationId, title = it.title, transcript = it.transcript) }
+    map {
+        MentionedConversation(
+            id = it.conversationId,
+            title = it.title,
+            transcript = "",
+            snapshotPath = it.snapshotPath,
+        )
+    }
 
 /** One composer-scoped controller, passed explicitly through both Home and Chat screens. */
 internal data class ConversationMentionInputUi(
