@@ -18,12 +18,13 @@ class VirtualDisplayRecoveryUiContractTest {
         assertTrue(source.contains("VirtualDisplayRecoveryControls("))
     }
 
-    @Test fun inlineRecoveryHasThreeEqualWidthHorizontalActionsAndManualClosePreview() {
+    @Test fun inlineRecoveryHasThreeWrappingMaterialActionsAndManualClosePreview() {
         val source = File(ui, "VirtualDisplayRecoveryScreen.kt").readText()
-        assertEquals(3, Regex("TextButton\\(").findAll(source).count())
-        assertEquals(3, Regex("""Modifier\.weight\(1f\)\.fillMaxHeight\(\)\.heightIn\(min = 56\.dp\)""").findAll(source).count())
-        assertTrue(source.contains("height(IntrinsicSize.Min)"))
-        assertTrue(source.contains("TextAlign.Center"))
+        val actions = source.substring(source.indexOf("FlowRow("))
+        assertEquals(3, Regex("""TouchHaptics\.click\(view\)""").findAll(actions).count())
+        assertEquals(3, Regex("""maxLines = 1""").findAll(actions).count())
+        assertTrue(actions.contains("Button(") && actions.contains("OutlinedButton(") && actions.contains("TextButton("))
+        assertTrue(source.contains("!present -> R.string.vd_recovery_empty"))
         assertTrue(source.contains("VirtualDisplayWebPreview.openWithManualClose(context)"))
         assertFalse(source.contains("VirtualDisplayWebPreview.open(context)"))
         assertTrue(source.contains("vd_preview_open"))

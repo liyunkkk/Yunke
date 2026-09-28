@@ -123,7 +123,8 @@ internal fun VirtualDisplayRecoveryControls(
     val busy = snapshot?.optBoolean("busy") == true
     val phase = snapshot?.optString("phase", RECOVERY_PHASE_PENDING) ?: RECOVERY_PHASE_PENDING
     // 没有恢复记录时不显示这张卡片；读取失败和刚结束的操作仍需可见，便于排查与确认。
-    if (result == null && !(snapshot != null && (!readable || present))) return
+    // 首次读取期间 working=true 会吞掉返回键，此时也显示卡片（带进度），避免“无响应”。
+    if (result == null && !working && !(snapshot != null && (!readable || present))) return
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -156,7 +157,7 @@ internal fun VirtualDisplayRecoveryControls(
                         )
                     }
                     Text(
-                        text = stringResource(recoveryStatusRes(readable, busy, phase)),
+                        text = stringResource(recoveryStatusRes(readable, busy, present, phase)),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -309,9 +310,11 @@ internal fun VirtualDisplayRecoveryControls(
 private const val RECOVERY_PHASE_PENDING = "recovery_pending"
 
 /** 只有"等待恢复"是已确认可读的状态码；其余码显示为状态未知，原始码留在次级文字里。 */
-private fun recoveryStatusRes(readable: Boolean, busy: Boolean, phase: String): Int = when {
+private fun recoveryStatusRes(readable: Boolean, busy: Boolean, present: Boolean, phase: String): Int = when {
     !readable -> R.string.vd_recovery_unknown
     busy -> R.string.vd_recovery_busy
+    // 恢复完成后记录已清空：phase 缺省值不是“等待恢复”。
+    !present -> R.string.vd_recovery_empty
     phase == RECOVERY_PHASE_PENDING -> R.string.agent_task_preference_recovery_phase_waiting
     else -> R.string.agent_task_preference_recovery_phase_unknown
 }
