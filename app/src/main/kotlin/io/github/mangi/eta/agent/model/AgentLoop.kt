@@ -119,6 +119,9 @@ internal class AgentLoop(
     private var overflowRecoveryAttempts = 0
     private var lastFailedCompaction: Pair<String, Int>? = null
     private var skipIneffectiveAutoCompact = false
+    /** 上游在输出上限处截断且正文为空时，同一 round 内的自动重发预算，不跨 round 累积。 */
+    private var emptyOutputLimitRetries = 0
+    private var emptyOutputLimitRound = 0
 
     fun reasoningSnapshot(): String = accumulatedReasoning.toString().trim()
 
@@ -287,6 +290,8 @@ internal class AgentLoop(
             val assistantReasoning = continuationReasoning.visibleCompletedReasoning(
                 assistantMessage.optString("reasoning_content"))
             val content = assistantMessage.optString("content").trim()
+            // 已写出的正文会结束或推进本轮；空正文截断的重发预算只在同一轮内累计。
+            if (content.isNotBlank() && content != "null") emptyOutputLimitRetries = 0
             val hasAssistantPayload = (content.isNotBlank() && content != "null") ||
                 assistantReasoning.isNotBlank() ||
                 toolCalls.isNotEmpty()
@@ -323,13 +328,15 @@ internal class AgentLoop(
                 appendPendingSteeringMessage()
                 continue
             }
+            // 空正文截断重发时要按实例定位这条刚写入的消息，避免删掉别的历史。
+            var storedAssistantMessage: JSONObject? = null
             if (hasAssistantPayload) {
-                messages.put(
-                    AgentConversationCodec.assistantHistoryMessage(
-                        source = assistantMessage,
-                        toolCalls = toolCalls,
-                    ).put(AgentTurnIdentity.JSON_KEY, turnId)
-                )
+                val historyMessage = AgentConversationCodec.assistantHistoryMessage(
+                    source = assistantMessage,
+                    toolCalls = toolCalls,
+                ).put(AgentTurnIdentity.JSON_KEY, turnId)
+                storedAssistantMessage = historyMessage
+                messages.put(historyMessage)
                 responseStored = true
                 onEvent(
                     AgentEvent.AssistantReceived(
@@ -402,6 +409,26 @@ internal class AgentLoop(
                 }
             }
 
+            // 上游在输出上限处截断、只回了思考没有正文：本轮没有任何可续写的内容。
+            // 必须在 steering 封口和自然结束边界之前重发，否则重试期间用户无法再插话。
+            // 同一 round 内重发次数有界；重发是一次全新响应，不走中断续写的前缀投影。
+            val truncatedWithoutBody = (content.isBlank() || content == "null") &&
+                providerResponse.stopReason == AssistantStopReason.OUTPUT_LIMIT &&
+                toolCalls.isEmpty()
+            if (truncatedWithoutBody) {
+                if (emptyOutputLimitRound != round) {
+                    emptyOutputLimitRound = round
+                    emptyOutputLimitRetries = 0
+                }
+                if (emptyOutputLimitRetries < MAX_EMPTY_OUTPUT_LIMIT_RETRIES) {
+                    emptyOutputLimitRetries += 1
+                    // 只回思考的空响应不进历史，也不进累积推理。
+                    discardEmptyOutputLimitAttempt(storedAssistantMessage)
+                    accumulatedReasoning.setLength(reasoningLengthBeforeRound)
+                    continue
+                }
+            }
+
             // Natural completion is not an interrupted reply. Drain queued maintenance
             // at this safe boundary; never insert a continuation or make an extra call.
             maybeCompactBeforeRound(round)
@@ -420,6 +447,16 @@ internal class AgentLoop(
 
             if (content.isBlank() || content == "null") {
                 val finishReason = assistantMessage.optString("finish_reason")
+                if (truncatedWithoutBody) {
+                    val outputTokens = lastUsage?.outputTokens
+                    error(
+                        "模型接口第 $round 轮在输出上限处截断且未返回正文" +
+                            "（finish_reason=${finishReason.ifBlank { "unknown" }}" +
+                            "，模型=${config.providerType}/${config.modelDisplayName.trim().ifBlank { config.model }}" +
+                            (outputTokens?.let { "，输出 token=$it" } ?: "") +
+                            "），已自动重试 $emptyOutputLimitRetries 次仍为空",
+                    )
+                }
                 error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
             }
 
@@ -930,6 +967,18 @@ internal class AgentLoop(
         }
     }
 
+    /** 空正文截断重发前丢弃本轮刚写入的 assistant 消息：历史里不留只回思考的空回合。 */
+    private fun discardEmptyOutputLimitAttempt(storedAssistant: JSONObject?) {
+        val stored = storedAssistant ?: return
+        for (index in messages.length() - 1 downTo 0) {
+            if (messages.optJSONObject(index) === stored) {
+                messages.remove(index)
+                responseStored = false
+                return
+            }
+        }
+    }
+
     private fun ProviderEvent.toAgentEvent(round: Int): AgentEvent? =
         when (this) {
             ProviderEvent.RequestStarted -> AgentEvent.ProviderRequestStarted(round)
@@ -979,4 +1028,8 @@ internal class AgentLoop(
             AssistantBlockKind.TOOL_CALL -> AgentEvent.AssistantBlockKind.TOOL_CALL
         }
 
+    private companion object {
+        /** 上游在输出上限处截断且正文为空时，同一 round 内最多自动重发的次数。 */
+        private const val MAX_EMPTY_OUTPUT_LIMIT_RETRIES = 2
+    }
 }
