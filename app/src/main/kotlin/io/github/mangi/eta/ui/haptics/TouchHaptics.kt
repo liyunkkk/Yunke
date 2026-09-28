@@ -3,6 +3,8 @@ package io.github.mangi.eta.ui.haptics
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
@@ -49,6 +51,19 @@ internal object TouchHaptics {
     private val liveToolTracker = LiveToolHapticTracker()
     private const val GENERATION_TICK_INTERVAL_MS = 32L
     private var lastGenerationTickAt = 0L
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingToolTicks = 0
+    private var toolTickScheduled = false
+    private var toolTickView: View? = null
+    private val toolTick = object : Runnable {
+        override fun run() {
+            toolTickScheduled = false
+            if (pendingToolTicks <= 0) return
+            pendingToolTicks--
+            playGenerationTick(toolTickView)
+            if (pendingToolTicks > 0) scheduleToolTick()
+        }
+    }
 
     @Volatile
     private var cachedIntensity: HapticIntensity? = null
@@ -91,16 +106,35 @@ internal object TouchHaptics {
         val now = SystemClock.uptimeMillis()
         if (now - lastGenerationTickAt < GENERATION_TICK_INTERVAL_MS) return
         lastGenerationTickAt = now
+        playGenerationTick(view)
+    }
+
+    private fun playGenerationTick(view: View?) {
         if (view != null && tick(view)) return
         // A stopped window reports the system tick as ignored. The run is still in the
         // foreground service, so play the same tick on the vibrator.
         view?.context?.let(::vibrateSystemTick)
     }
 
-    /** 推理、终端、读图、网页搜索等标签首次出现时轻触一次。 */
+    /**
+     * 推理、终端、读图、网页搜索等标签首次出现时轻触一次。
+     * 打字 tick 可以因为 32ms 间隔被丢掉；工具标签不行，错过这一次就不会再出现。
+     * 间隔还没到就排进队列，等当前 tick 结束再补上。
+     */
     fun onLiveToolActivity(view: View?, toolId: String) {
         if (!liveToolTracker.markIfNew(toolId)) return
-        generationTick(view)
+        if (!isMessageGenerationEnabled()) return
+        pendingToolTicks++
+        if (view != null) toolTickView = view
+        scheduleToolTick()
+    }
+
+    private fun scheduleToolTick() {
+        if (toolTickScheduled) return
+        val wait = (GENERATION_TICK_INTERVAL_MS - (SystemClock.uptimeMillis() - lastGenerationTickAt))
+            .coerceAtLeast(0L)
+        toolTickScheduled = true
+        mainHandler.postDelayed(toolTick, wait)
     }
 
     fun click(view: View?) {

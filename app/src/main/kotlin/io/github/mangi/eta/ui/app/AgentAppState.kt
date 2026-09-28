@@ -4357,7 +4357,11 @@ internal class AgentAppState(
             }
 
             is AgentEvent.ToolStarted -> {
-                io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(1)
+                if (!replaying) {
+                    io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
+                        "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                    )
+                }
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking =
                         runMessageProjector.finalizeThinkingRound(runId, event.round, messages)
@@ -4373,7 +4377,11 @@ internal class AgentAppState(
             }
 
             is AgentEvent.HostedToolStarted -> {
-                io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(1)
+                if (!replaying) {
+                    io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
+                        "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                    )
+                }
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking =
                         runMessageProjector.finalizeThinkingRound(runId, event.round, messages)

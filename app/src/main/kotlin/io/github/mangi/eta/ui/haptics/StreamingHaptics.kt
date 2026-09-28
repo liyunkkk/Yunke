@@ -52,6 +52,17 @@ internal object StreamingHaptics {
      * Text and tool steps keep arriving after the activity stops, but the reveal clock does not.
      * Pulse the same generation tick directly so leaving the app does not cut the vibration.
      */
+    /** 前台也走这条：工具标签只出现一次，不能等界面刚好在 32ms 的打字间隔里把这次丢掉。 */
+    fun noteToolAppeared(toolId: String) {
+        if (toolId.isBlank()) return
+        val view = synchronized(gates) {
+            gates.firstOrNull { gate ->
+                gate.enabled() && gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)
+            }?.view
+        }
+        TouchHaptics.onLiveToolActivity(view, toolId)
+    }
+
     fun noteBackgroundOutput(graphemes: Int) {
         if (graphemes <= 0) return
         val view = synchronized(gates) {
