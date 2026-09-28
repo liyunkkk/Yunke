@@ -19,13 +19,14 @@ internal object ProviderRequestHeaders {
             builder.set("User-Agent", "codex_cli_rs/${OpenAiCodexOAuth.CLIENT_VERSION} (Android; arm64)")
             builder.set("Originator", "codex_cli_rs")
             builder.set("Version", OpenAiCodexOAuth.CLIENT_VERSION)
-            if (sessionId.isNotBlank()) {
-                builder.set("session-id", sessionId)
-            }
         } else {
             builder.set("User-Agent", "Eta")
         }
         CustomHeaderFilter.mergeInto(builder, customHeaders)
+        if (sessionId.isNotBlank()) {
+            builder.set("session-id", sessionId)
+            builder.set("thread-id", sessionId)
+        }
         if (baseUrl.toHttpUrlOrNull()?.host == "opencode.ai") {
             // 会话头由 Runtime 持有，避免固定自定义值把所有对话合并到同一路由。
             builder.set(

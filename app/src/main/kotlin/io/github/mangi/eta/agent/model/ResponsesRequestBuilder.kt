@@ -55,15 +55,14 @@ internal object ResponsesRequestBuilder {
                     .put("effort", effort)
                     .put("summary", "auto"),
             )
-            if (sessionId.isNotBlank()) {
-                request.put("prompt_cache_key", sessionId)
-            }
             if (responseTools.length() > 0 && !request.has("parallel_tool_calls")) {
                 request.put("parallel_tool_calls", true)
             }
         }
         // Apply after custom-body and Codex defaults: a correction must never request parallel calls.
         if (singleToolCall && responseTools.length() > 0) request.put("parallel_tool_calls", false)
+        // Same conversation keeps one cache identity, including gateways that read prompt_cache_key.
+        if (sessionId.isNotBlank()) request.put("prompt_cache_key", sessionId)
         return request
     }
 
