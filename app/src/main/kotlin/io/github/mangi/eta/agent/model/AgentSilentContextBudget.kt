@@ -6,6 +6,24 @@ internal class AgentSilentContextBudget {
     private var measuredInput: Int? = null
     private var measuredLocal: Int = 0
 
+    /**
+     * Ratio between what the provider billed and what the local heuristic counted for
+     * the same request, learned from accepted receipts and deliberately kept across
+     * [contextReplaced].
+     *
+     * The local count is a character heuristic (CJK 1.5/char, latin 0.25/char). On this
+     * device's own traffic it measured billed/local ≈ 0.83..0.87 for ordinary rounds, so
+     * it usually *over*-counts; but the ratio is content-dependent and punctuation-dense
+     * code tokenizes far worse than 4 chars/token. When the ratio shows the heuristic
+     * under-counting, an uncalibrated request configured for 200k can really leave at
+     * ~220k, because the send limit compares against that under-count.
+     *
+     * Only values above 1 are retained, and only for the send limit: correcting a
+     * known under-count is safe, while trusting an over-count would shrink the window
+     * for no reason.
+     */
+    private var underCountScale: Double = 1.0
+
     fun requestStarted(localTokens: Int) { requestLocal = localTokens.coerceAtLeast(0) }
 
     /**
@@ -36,11 +54,19 @@ internal class AgentSilentContextBudget {
         if (!isPlausible(inputTokens, contextWindow)) return
         measuredInput = inputTokens
         measuredLocal = requestLocal
+        learnScale(inputTokens)
+    }
+
+    private fun learnScale(inputTokens: Int) {
+        if (requestLocal < MIN_SCALE_BASIS) return
+        val observed = inputTokens.toDouble() / requestLocal
+        if (observed <= 1.0) return
+        underCountScale = maxOf(underCountScale, observed.coerceAtMost(MAX_SCALE))
     }
 
     private fun isPlausible(inputTokens: Int, contextWindow: Int?): Boolean {
         val window = contextWindow?.takeIf { it > 0 }
-        if (window != null && inputTokens.toLong() * 100 > window.toLong() * MAX_WINDOW_PERCENT) return false
+        if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) return false
         val previous = measuredInput?.takeIf { it > 0 } ?: return true
         val billedGrowth = inputTokens.toLong() - previous
         if (billedGrowth <= 0) return true
@@ -57,9 +83,24 @@ internal class AgentSilentContextBudget {
     }
 
     /**
-     * False while the only basis is the local character heuristic, and send limits must
-     * widen their reserve in that case: the heuristic under-counts dense code and mixed
-     * CJK, which is how a run configured for 200k can still leave with ~220k.
+     * Same value as [tokens], but with a known under-count corrected.
+     *
+     * Used only by the hard send limit. While a cloud anchor exists the anchor already
+     * carries the provider's own number, so this returns [tokens] unchanged; the
+     * correction matters exactly in the uncalibrated window right after a context
+     * replacement, which is where an under-counted prompt used to slip out above the
+     * configured limit. With no receipt ever observed the scale stays 1.0 and the
+     * behaviour is bit-for-bit the previous one.
+     */
+    fun sendLimitTokens(currentLocal: Int): Int {
+        val base = tokens(currentLocal)
+        if (measuredInput != null || underCountScale <= 1.0) return base
+        return (base * underCountScale).coerceIn(0.0, Int.MAX_VALUE.toDouble()).toInt()
+    }
+
+    /**
+     * False while the only basis is the local character heuristic. Callers that must
+     * not act on a purely local estimate check this first.
      */
     fun isCalibrated(): Boolean = measuredInput != null
 
@@ -67,16 +108,20 @@ internal class AgentSilentContextBudget {
         measuredInput = null
         measuredLocal = 0
         requestLocal = 0
+        // underCountScale is a property of the model's tokenizer, not of this context.
     }
 
     private companion object {
-        /** A prompt may exceed its window, but not by an unbounded factor. */
-        const val MAX_WINDOW_PERCENT = 130
-
         /** Absolute slack for cache accounting and per-round request scaffolding. */
         const val GROWTH_SLACK_TOKENS = 8_192
 
         /** Extra slack proportional to the window, for large-context models. */
         const val GROWTH_SLACK_WINDOW_PERCENT = 5
+
+        /** Below this a ratio is dominated by fixed per-request overhead. */
+        const val MIN_SCALE_BASIS = 2_000
+
+        /** Never let one odd receipt inflate the correction without bound. */
+        const val MAX_SCALE = 2.0
     }
 }

@@ -513,7 +513,10 @@ internal class AgentLoop(
             return true
         }
         val window = config.contextWindow?.takeIf { it > 0 } ?: return false
-        val tokens = requestBudgetTokens()
+        // Hard send limit only: correct a measured local under-count so an uncalibrated
+        // request cannot leave above the configured window. Compaction scheduling keeps
+        // using the uncorrected budget, so a purely local estimate still cannot summarize.
+        val tokens = silentBudget.sendLimitTokens(localRequestTokens())
         return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
     }
 

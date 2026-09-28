@@ -28,26 +28,19 @@ package io.github.mangi.eta.ui.model
  */
 internal object CloudReceiptPlausibility {
 
-    /**
-     * A prompt may legitimately exceed a configured window (the provider decides),
-     * but not by an unbounded factor. Past this multiple the number is an aggregate,
-     * not an occupancy: a real request that far over the limit is rejected upstream
-     * with CONTEXT_WINDOW_EXCEEDED instead of returning a bill.
-     */
-    private const val MAX_WINDOW_PERCENT = 130
-
     /** Absolute slack for cache accounting and per-round request scaffolding. */
     private const val GROWTH_SLACK_TOKENS = 8_192
 
     /** Extra slack proportional to the window, for large-context models. */
     private const val GROWTH_SLACK_WINDOW_PERCENT = 5
 
-    /** True when [tokens] can describe the prompt that occupied [contextWindow]. */
-    fun fitsWindow(tokens: Int, contextWindow: Int?): Boolean {
-        if (tokens <= 0) return false
-        val window = contextWindow?.takeIf { it > 0 } ?: return true
-        return tokens.toLong() * 100 <= window.toLong() * MAX_WINDOW_PERCENT
-    }
+    /**
+     * True when [tokens] can describe the prompt that occupied [contextWindow]. Shares
+     * one definition with accounting, so the ring and the statistics page cannot
+     * disagree about whether the very same receipt was possible.
+     */
+    fun fitsWindow(tokens: Int, contextWindow: Int?): Boolean =
+        io.github.mangi.eta.agent.model.AgentBilledPromptPlausibility.fitsWindow(tokens, contextWindow)
 
     /**
      * True when the step from the previously accepted receipt is consistent with how

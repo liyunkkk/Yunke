@@ -99,6 +99,51 @@ class AgentSilentContextBudgetTest {
         assertEquals(220000, budget.tokens(196000))
     }
 
+    @Test fun sendLimitCorrectsAKnownLocalUnderCountOnlyWhileUncalibrated() {
+        val budget = AgentSilentContextBudget()
+        // A receipt shows the heuristic counted 100000 for a prompt really worth 120000.
+        budget.requestStarted(100_000)
+        budget.measured(120_000, 200_000)
+        // While the anchor exists the provider's own number is already authoritative.
+        assertEquals(120_000, budget.sendLimitTokens(100_000))
+        assertEquals(budget.tokens(100_000), budget.sendLimitTokens(100_000))
+        // After compaction there is no anchor, and the raw local count would understate
+        // the prompt; the send limit must use the corrected value.
+        budget.contextReplaced()
+        assertEquals(80_000, budget.tokens(80_000))
+        assertEquals(96_000, budget.sendLimitTokens(80_000))
+    }
+
+    @Test fun anOverCountingHeuristicIsNeverScaledDown() {
+        val budget = AgentSilentContextBudget()
+        // Measured on this device: billed/local ~0.86 for ordinary rounds.
+        budget.requestStarted(45_112)
+        budget.measured(38_880, 200_000)
+        budget.contextReplaced()
+        // Shrinking the window for no reason is not allowed.
+        assertEquals(40_000, budget.sendLimitTokens(40_000))
+    }
+
+    @Test fun withoutAnyReceiptTheSendLimitIsUnchanged() {
+        val budget = AgentSilentContextBudget()
+        assertEquals(45_000, budget.sendLimitTokens(45_000))
+        assertEquals(budget.tokens(45_000), budget.sendLimitTokens(45_000))
+    }
+
+    @Test fun theCorrectionIsBoundedAndIgnoresTinyRequests() {
+        val budget = AgentSilentContextBudget()
+        // A 300-token request is dominated by fixed overhead: not a tokenizer ratio.
+        budget.requestStarted(300)
+        budget.measured(9_000, 200_000)
+        budget.contextReplaced()
+        assertEquals(50_000, budget.sendLimitTokens(50_000))
+        // An extreme but plausible ratio is capped at 2x.
+        budget.requestStarted(10_000)
+        budget.measured(100_000, 1_000_000)
+        budget.contextReplaced()
+        assertEquals(100_000, budget.sendLimitTokens(50_000))
+    }
+
     @Test fun aDecreasingBillIsAlwaysAccepted() {
         val budget = AgentSilentContextBudget()
         budget.requestStarted(9714)

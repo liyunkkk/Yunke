@@ -28,14 +28,21 @@ internal class UsageRecordingProvider(
             val usage = latest ?: return
             if (usage == saved || (usage.inputTokens == null && usage.outputTokens == null && usage.cachedTokens == null)) return
             val config = request.config
+            // An implausible prompt total would be summed into lifetime statistics forever,
+            // and the stats page would then contradict the ring for the same traffic.
+            // Observed: 784267 billed against a 500000 window on a request that succeeded.
+            // Output and cache are still recorded; only the impossible prompt is dropped.
+            val billedInput = usage.inputTokens?.takeIf { input ->
+                AgentBilledPromptPlausibility.fitsWindow(input, config.contextWindow)
+            }
             // Statistics failure must not suppress a completed model response or its error.
             runCatching {
                 record(ModelUsageDelta(
                     providerId = config.providerId, providerName = config.providerName,
                     modelId = config.model, modelDisplayName = config.modelDisplayName.ifBlank { config.model },
-                    inputTokens = (usage.inputTokens ?: 0).toLong(),
+                    inputTokens = (billedInput ?: 0).toLong(),
                     outputTokens = (usage.outputTokens ?: 0).toLong(),
-                    cachedTokens = (usage.cachedTokens ?: 0).toLong(),
+                    cachedTokens = (if (billedInput == null) 0 else usage.cachedTokens ?: 0).toLong(),
                     conversationId = request.usageConversationId, requestId = requestId, atMillis = startedAt,
                 ))
             }.onSuccess { saved = usage }
