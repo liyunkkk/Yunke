@@ -527,7 +527,10 @@ internal class AgentLoop(
         return runCatching {
             AgentCompressionBoundary.selectStart(history,
                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
-                overflowPending)
+                overflowPending,
+                // Same request in both units: calibrated bill vs cheap local boundary.
+                billedTokens = requestBudgetTokens(),
+                localTokens = localRequestTokens())
         }.getOrDefault(0)
     }
 
@@ -618,7 +621,9 @@ internal class AgentLoop(
         var savedCheckpoint: String? = null
         var compactionStage = "archive"
         runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
-            "运行中压缩开始：round=$round，选中=$cut，保留=${history.size - cut}，保留预算=${AgentCompressionBoundary.continuationRetentionBudget(compactPolicy.contextWindow)}") }
+            "运行中压缩开始：round=$round，选中=$cut，保留=${history.size - cut}，" +
+                "保留估算=${AgentCompressionBoundary.retainedTokens(history, cut)}/${AgentCompressionBoundary.retainedTokens(history, 0)}，" +
+                "保留上限=${AgentCompressionBoundary.continuationRetentionBudget(window, overflowPending)}，决策=$decisionTokens，本地=${localRequestTokens()}") }
         val rewritten = try {
             val prefix = history.take(cut)
             val tail = history.drop(cut)

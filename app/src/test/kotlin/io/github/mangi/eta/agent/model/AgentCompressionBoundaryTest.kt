@@ -58,6 +58,39 @@ class AgentCompressionBoundaryTest {
         assertEquals(1, AgentCompressionBoundary.continuationRetentionBudget(500_000, overflow = true))
     }
 
+    @Test fun shortHistoryUnderOverheadPressureKeepsTheNewerHalfNotOnlyTheLastUnit() {
+        // Field case: 500K window, 80K verbatim ceiling, ~35K local history, pressure from
+        // request overhead/media. The old fallback kept 2 of 50 messages (~4%).
+        val history = mutableListOf(message("user", "task"))
+        repeat(24) { i ->
+            history += message("assistant", calls = "[{\"id\":\"c$i\"}]")
+            history += message("tool", "r".repeat(4_000), id = "c$i")
+        }
+        val cut = AgentCompressionBoundary.selectStart(history, 500_000)
+        val kept = AgentCompressionBoundary.retainedTokens(history, cut)
+        val total = AgentCompressionBoundary.retainedTokens(history, 0)
+        assertTrue(cut in AgentCompressionBoundary.balancedCuts(history))
+        assertTrue("kept=$kept total=$total", kept * 2 >= total)
+        assertTrue(cut > 0 && cut < history.size - 2)
+        // Confirmed overflow still collapses to the newest complete unit.
+        assertEquals(history.size - 2, AgentCompressionBoundary.selectStart(history, 500_000, overflow = true))
+    }
+
+    @Test fun billedToLocalRatioScalesTheVerbatimBudgetDown() {
+        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, null, 40_000))
+        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, 30_000, 40_000))
+        assertEquals(10_000, AgentCompressionBoundary.localRetentionBudget(80_000, 400_000, 50_000))
+        val history = mutableListOf(message("user", "task"))
+        repeat(40) { i ->
+            history += message("assistant", calls = "[{\"id\":\"c$i\"}]")
+            history += message("tool", "r".repeat(4_000), id = "c$i")
+        }
+        val plain = AgentCompressionBoundary.selectStart(history, 100_000)
+        val billed = AgentCompressionBoundary.selectStart(history, 100_000, billedTokens = 400_000, localTokens = 40_000)
+        assertTrue(billed > plain)
+        assertTrue(billed in AgentCompressionBoundary.balancedCuts(history))
+    }
+
     @Test fun continuationUsesTheSameTokenTailInIdleAndActiveRuns() {
         val history = listOf(message("user", "one long task"),
             message("assistant", calls = """[{"id":"old"}]"""),

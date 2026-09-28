@@ -74,23 +74,51 @@ internal object AgentCompressionBoundary {
         return cuts
     }
 
-    /** Shared token-tail selection. Every cut remains at a complete tool-batch boundary. */
+    /**
+     * Shared token-tail selection. Every cut remains at a complete tool-batch boundary.
+     *
+     * [billedTokens]/[localTokens] describe the same request in provider-billed and
+     * local-estimate units. Relays that bill inline images as base64 text can make the
+     * bill 5-10x the local estimate; the 16% budget is then converted to local units so
+     * the retained tail targets 16% of the *billed* window instead of swallowing it all.
+     */
     fun selectStart(
         history: List<AgentModelClient.ConversationMessage>,
         contextWindow: Int,
         overflow: Boolean = false,
+        billedTokens: Int? = null,
+        localTokens: Int? = null,
     ): Int {
         if (contextWindow <= 0) return 0
-        val cut = continuationStart(history, continuationRetentionBudget(contextWindow, overflow))
-        // Billed pressure includes request overhead. A short local history can still
-        // need compaction; retain the newest complete unit if the full budget cannot cut.
-        return if (cut > 0) cut else continuationStart(history, 1)
+        val budget = localRetentionBudget(continuationRetentionBudget(contextWindow, overflow), billedTokens, localTokens)
+        val cut = continuationStart(history, budget)
+        if (cut > 0 || overflow) return if (cut > 0) cut else continuationStart(history, 1)
+        // The whole local history fits in the verbatim budget, so the pressure comes from
+        // request overhead. Collapsing to the newest unit here discarded ~98% of a live
+        // run; keep the newer half instead. Confirmed overflow still uses the 1-token path.
+        val total = retainedTokens(history, 0)
+        val halfCut = continuationStart(history, (total / 2).coerceIn(1L, Int.MAX_VALUE.toLong()).toInt())
+        return if (halfCut > 0) halfCut else continuationStart(history, 1)
     }
 
+    /** Scale a billed-unit budget into local-estimate units; never enlarges it. */
+    internal fun localRetentionBudget(budget: Int, billedTokens: Int?, localTokens: Int?): Int {
+        val billed = billedTokens?.takeIf { it > 0 } ?: return budget
+        val local = localTokens?.takeIf { it > 0 } ?: return budget
+        if (billed <= local) return budget
+        return (budget.toLong() * local / billed).coerceIn(1L, budget.toLong()).toInt()
+    }
+
+    /** Local-estimate tokens of history[start..]; used for diagnostics only. */
+    fun retainedTokens(history: List<AgentModelClient.ConversationMessage>, start: Int): Long =
+        history.drop(start.coerceIn(0, history.size)).sumOf { AgentContextBudget.countMessage(it).toLong() }
+
     /**
-     * Keep a priced recent tail for continued execution, matching DeepSeek harness
-     * retainRatio=0.16. Overflow recovery may shrink this to a single token so
-     * the newest complete tool batch can still be selected.
+     * Upper bound of the verbatim recent tail (16% of the window, DeepSeek harness
+     * retainRatio=0.16). It is a ceiling, not a guarantee: when the history is shorter
+     * than this, selectStart keeps the newer half. Callers with a calibrated bill
+     * convert it to local units through [localRetentionBudget]. Overflow recovery may shrink this to a
+     * single token so the newest complete tool batch can still be selected.
      */
     internal fun continuationRetentionBudget(contextWindow: Int, overflow: Boolean = false): Int {
         if (overflow) return 1
