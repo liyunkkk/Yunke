@@ -11,6 +11,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.CompositionLocalProvider
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -62,7 +63,7 @@ class StreamingHapticsGateTest {
     }
 
     @Test
-    fun windowFocusIsNotConsultedButStoppedLifecycleStops() {
+    fun foregroundAdvanceStopsWhenHiddenButRuntimeOutputContinues() {
         val owner = Owner().apply { resume() }
         lateinit var view: android.view.View
         compose.setContent {
@@ -71,11 +72,12 @@ class StreamingHapticsGateTest {
                 StreamingHaptics.Observe(enabled = true)
             }
         }
-        // Feedback must depend on lifecycle only. Window focus is asserted structurally below,
-        // because a host environment may report either focus state for an attached view.
+        // Visible ticks still follow the resumed host. Window focus is asserted structurally below.
         compose.runOnIdle { assertTrue(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
         compose.runOnIdle { owner.stop() }
         compose.runOnIdle { assertFalse(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
+        compose.runOnIdle { assertTrue(ticked { StreamingHaptics.noteBackgroundOutput(4) }) }
+        compose.runOnIdle { assertEquals(4, backgroundPulseCount(4)) }
     }
 
     /** The gate must not read window focus at all: a dialog or shade steals focus mid-stream. */

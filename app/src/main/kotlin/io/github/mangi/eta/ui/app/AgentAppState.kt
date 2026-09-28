@@ -4256,6 +4256,11 @@ internal class AgentAppState(
                         AgentEvent.AssistantBlockKind.TOOL_CALL -> messages
                     }
                 }
+                if (event.kind != AgentEvent.AssistantBlockKind.TOOL_CALL) {
+                    io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(
+                        event.deltaChars.coerceAtLeast(event.delta.length),
+                    )
+                }
             }
 
             is AgentEvent.AssistantBlockEnd -> {
@@ -4352,6 +4357,7 @@ internal class AgentAppState(
             }
 
             is AgentEvent.ToolStarted -> {
+                io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(1)
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking =
                         runMessageProjector.finalizeThinkingRound(runId, event.round, messages)
@@ -4367,6 +4373,7 @@ internal class AgentAppState(
             }
 
             is AgentEvent.HostedToolStarted -> {
+                io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(1)
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking =
                         runMessageProjector.finalizeThinkingRound(runId, event.round, messages)

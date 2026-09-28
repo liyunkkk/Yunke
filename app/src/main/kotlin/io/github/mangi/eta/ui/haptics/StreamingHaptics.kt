@@ -1,5 +1,7 @@
 package io.github.mangi.eta.ui.haptics
 
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalView
@@ -16,23 +18,81 @@ internal object StreamingHaptics {
      * instance still owns the visible view, silencing feedback for the rest of the process.
      */
     private val gates = mutableListOf<Gate>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingBackgroundTicks = 0
+    private var backgroundTickScheduled = false
+    private var backgroundView: View? = null
 
     /** Test-only counter of allowed advances; never consulted by production paths. */
     @Volatile internal var allowedAdvances: Long = 0
         private set
 
-    fun onVisibleAdvance(view: View) {
-        val allowed = synchronized(gates) {
-            gates.any { gate ->
-                gate.view === view && gate.enabled() &&
-                    gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+    private val backgroundTick = object : Runnable {
+        override fun run() {
+            backgroundTickScheduled = false
+            val view = backgroundView
+            if (view == null || pendingBackgroundTicks <= 0 || !backgroundGate(view)) {
+                pendingBackgroundTicks = 0
+                backgroundView = null
+                return
             }
+            pendingBackgroundTicks--
+            TouchHaptics.generationTick(view)
+            if (pendingBackgroundTicks > 0) scheduleBackgroundTick()
         }
-        // Window focus is intentionally not required: a dialog, notification shade or split-screen
-        // peer takes focus while the streamed text stays visible in this same view.
-        if (!allowed) return
+    }
+
+    fun onVisibleAdvance(view: View) {
+        if (!foregroundGate(view)) return
         allowedAdvances++
         TouchHaptics.generationTick(view)
+    }
+
+    /**
+     * Text and tool steps keep arriving after the activity stops, but the reveal clock does not.
+     * Pulse the same generation tick directly so leaving the app does not cut the vibration.
+     */
+    fun noteBackgroundOutput(graphemes: Int) {
+        if (graphemes <= 0) return
+        val view = synchronized(gates) {
+            gates.firstOrNull { gate ->
+                gate.enabled() && gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED) &&
+                    !gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            }?.view
+        } ?: return
+        allowedAdvances++
+        pendingBackgroundTicks = (pendingBackgroundTicks + backgroundPulseCount(graphemes))
+            .coerceAtMost(MAX_BACKGROUND_TICKS)
+        backgroundView = view
+        scheduleBackgroundTick()
+    }
+
+    private fun scheduleBackgroundTick() {
+        if (backgroundTickScheduled) return
+        backgroundTickScheduled = true
+        mainHandler.postDelayed(backgroundTick, BACKGROUND_TICK_INTERVAL_MS)
+    }
+
+    private fun foregroundGate(view: View): Boolean = synchronized(gates) {
+        gates.any { gate ->
+            gate.view === view && gate.enabled() &&
+                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        }
+    }
+
+    private fun backgroundGate(view: View): Boolean = synchronized(gates) {
+        gates.any { gate ->
+            gate.view === view && gate.enabled() &&
+                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED) &&
+                !gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        }
+    }
+
+    private fun cancelBackgroundTicks() {
+        pendingBackgroundTicks = 0
+        backgroundView = null
+        backgroundTickScheduled = false
+        mainHandler.removeCallbacks(backgroundTick)
     }
 
     @Composable
@@ -43,7 +103,16 @@ internal object StreamingHaptics {
         DisposableEffect(view, lifecycle) {
             val gate = Gate(view, lifecycle) { active }
             synchronized(gates) { gates += gate }
-            onDispose { synchronized(gates) { gates.remove(gate) } }
+            onDispose {
+                synchronized(gates) { gates.remove(gate) }
+                if (synchronized(gates) { gates.isEmpty() }) cancelBackgroundTicks()
+            }
         }
     }
+
+    private const val BACKGROUND_TICK_INTERVAL_MS = 32L
+    private const val MAX_BACKGROUND_TICKS = 36
 }
+
+/** One light tick per grapheme of hidden output, capped so a large chunk cannot buzz for long. */
+internal fun backgroundPulseCount(graphemes: Int): Int = graphemes.coerceIn(1, 36)
