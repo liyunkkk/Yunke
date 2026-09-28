@@ -910,9 +910,11 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 底栏（含输入器和 IME）高度只在这里消费一次，缩小真实滚动视口后再裁剪：
-    // 输入框周围虽然透明，正文也必须止于输入框上沿，不能绘制到输入框后面或两侧。
-    Box(modifier = modifier.padding(bottom = bottomInset).clipToBounds()) {
+    // 底栏（含输入器和 IME）高度只在这里消费一次，缩小真实滚动视口后再裁剪。
+    // 与输入框之间的间距放在裁剪区外而不是列表 contentPadding 里：流式输出时跟底
+    // 滚动总比内容增长晚一帧，若间距在列表内，新长出的正文会先压进间距、贴到
+    // 输入框上沿。放在外面后，正文永远止于输入框上方这条固定线。
+    Box(modifier = modifier.padding(bottom = bottomInset + ConversationComposerGap).clipToBounds()) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
@@ -950,7 +952,7 @@ internal fun AgentConversationMessages(
                 .overScrollVertical(),
             contentPadding = PaddingValues(
                 top = 14.dp,
-                bottom = 14.dp,
+                bottom = 0.dp,
             ),
             overscrollEffect = null,
         ) {
@@ -1139,8 +1141,7 @@ internal fun AgentConversationMessages(
             onStep = { navigateUserMessage(toEdge = false) },
             onEdge = { navigateUserMessage(toEdge = true) },
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp),
+                .align(Alignment.BottomCenter),
         )
     }
 }
@@ -1657,3 +1658,6 @@ internal fun shouldStopOrphanSpeechPlayback(
     if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
+
+/** 正文裁剪线到输入框上沿的固定间距；此前是列表底部 contentPadding 的 14dp。 */
+private val ConversationComposerGap = 14.dp

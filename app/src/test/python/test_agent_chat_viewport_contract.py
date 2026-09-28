@@ -85,7 +85,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertEqual(len(boxes), 1, "Expected one outer messages Box")
         self.assertRegex(
             boxes[0],
-            r"\bmodifier\s*=\s*modifier\s*\.padding\s*\(\s*bottom\s*=\s*bottomInset\s*\)\s*\.clipToBounds\s*\(\s*\)",
+            r"\bmodifier\s*=\s*modifier\s*\.padding\s*\(\s*bottom\s*=\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\s*\.clipToBounds\s*\(\s*\)",
         )
 
     def test_inset_is_consumed_once_by_the_viewport(self):
@@ -96,15 +96,18 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertEqual(len(lists), 1, "Expected one messages LazyColumn")
         paddings = list(calls(lists[0], "PaddingValues"))
         self.assertEqual(len(paddings), 1)
-        self.assertRegex(paddings[0], r"\bbottom\s*=\s*14\.dp\s*(?:,|$)")
+        # The composer gap lives outside the clip, so streaming growth that the
+        # follow scroll has not caught up with yet is clipped at the gap line
+        # instead of drawing down to the composer's top edge.
+        self.assertRegex(paddings[0], r"\bbottom\s*=\s*0\.dp\s*(?:,|$)")
+        self.assertRegex(self.source, r"private\s+val\s+ConversationComposerGap\s*=\s*14\.dp")
 
     def test_navigation_stays_above_composer(self):
         buttons = list(calls(self.messages, "ConversationTurnNavigationButton"))
         self.assertEqual(len(buttons), 1, "Expected the messages navigation button")
         self.assertRegex(
             buttons[0],
-            r"\.align\s*\(\s*Alignment\.BottomCenter\s*\)\s*"
-            r"\.padding\s*\(\s*bottom\s*=\s*12\.dp\s*,?\s*\)",
+            r"\.align\s*\(\s*Alignment\.BottomCenter\s*\)\s*,",
         )
 
     def test_composer_surround_is_transparent(self):
