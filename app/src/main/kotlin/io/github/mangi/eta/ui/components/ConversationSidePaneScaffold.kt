@@ -897,21 +897,23 @@ private fun ConversationTextRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (conversation.isActiveRun) {
+                Box(
+                    modifier = Modifier
+                        .padding(start = if (conversation.isPinned) 0.dp else DrawerMetrics.ActiveDotGap)
+                        .size(DrawerMetrics.ActiveDotSize)
+                        .clip(CircleShape)
+                        .background(MiuixTheme.colorScheme.primary),
+                )
+            }
             if (conversation.isPinned) {
                 Icon(
                     imageVector = Icons.Rounded.PushPin,
                     contentDescription = null,
-                    modifier = Modifier.size(14.dp),
+                    modifier = Modifier.padding(
+                        start = if (conversation.isActiveRun) DrawerMetrics.ActiveDotGap else 0.dp,
+                    ).size(14.dp),
                     tint = MiuixTheme.colorScheme.primary,
-                )
-            }
-            if (conversation.isActiveRun) {
-                Box(
-                    modifier = Modifier
-                        .padding(start = DrawerMetrics.ActiveDotGap)
-                        .size(DrawerMetrics.ActiveDotSize)
-                        .clip(CircleShape)
-                        .background(MiuixTheme.colorScheme.primary),
                 )
             }
         }
