@@ -59,10 +59,10 @@ class AgentChatViewportContractTest(unittest.TestCase):
         cls.call_sites = cls.source[:declaration.start()] + cls.source[body_end + 1:]
 
     def test_measured_bottom_inset_reaches_messages_without_caller_padding(self):
-        self.assertRegex(self.parameters, r"\bbottomInset\s*:\s*\(\)\s*->\s*Dp\b")
+        self.assertRegex(self.parameters, r"\bbottomInset\s*:\s*Dp\b")
         self.assertRegex(
             self.source,
-            r"\bval\s+bottomPadding\s*=\s*\{\s*innerPadding\.calculateBottomPadding\s*\(\s*\)\s*\}",
+            r"\bval\s+bottomPadding\s*=\s*innerPadding\.calculateBottomPadding\s*\(\s*\)",
         )
         message_calls = list(calls(self.call_sites, "AgentConversationMessages"))
         self.assertEqual(len(message_calls), 1, "Expected the Scaffold messages call")
@@ -85,13 +85,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertEqual(len(boxes), 1, "Expected one outer messages Box")
         self.assertRegex(
             boxes[0],
-            r"\bmodifier\s*=\s*modifier\s*\.composerViewport\s*\(\s*bottomInset\s*\)",
-        )
-        # The inset is read in the layout/draw phase, so a composer height
-        # change while streaming never lets text overlap for a frame.
-        self.assertRegex(self.source, r"fun\s+Modifier\.composerViewport\s*\(\s*bottomInset\s*:\s*\(\)\s*->\s*Dp\s*\)")
-        self.assertRegex(self.source, r"\.layout\s*\{[^}]*bottomInset\(\)")
-        self.assertRegex(self.source, r"clipRect\s*\(\s*bottom\s*=",
+            r"\bmodifier\s*=\s*modifier\s*\.padding\s*\(\s*bottom\s*=\s*bottomInset\s*\)\s*\.clipToBounds\s*\(\s*\)",
         )
 
     def test_inset_is_consumed_once_by_the_viewport(self):

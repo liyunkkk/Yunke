@@ -65,9 +65,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -520,16 +517,14 @@ private fun AgentChatScaffold(
             )
         },
     ) { innerPadding ->
-        // 只在布局阶段读取底栏高度：流式输出期间输入器高度变化不会滞后一帧再重组，
-        // 正文始终止于输入框上沿。
-        val bottomPadding = { innerPadding.calculateBottomPadding() }
+        val bottomPadding = innerPadding.calculateBottomPadding()
         if (!hasMessages) {
             EmptyChatState(
                 showSuggestions = showEmptySuggestions,
                 onSuggestionClick = onSuggestionClick,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(bottom = bottomPadding()),
+                    .padding(bottom = bottomPadding),
             )
         } else {
             AgentConversationMessages(
@@ -573,7 +568,7 @@ internal fun AgentConversationMessages(
     isPaused: Boolean = false,
     isCompressingContext: Boolean = false,
     isWaitingForCompression: Boolean = false,
-    bottomInset: () -> Dp,
+    bottomInset: Dp,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
     onSuggestionClick: (String) -> Unit = {},
@@ -917,7 +912,7 @@ internal fun AgentConversationMessages(
 
     // 底栏（含输入器和 IME）高度只在这里消费一次，缩小真实滚动视口后再裁剪：
     // 输入框周围虽然透明，正文也必须止于输入框上沿，不能绘制到输入框后面或两侧。
-    Box(modifier = modifier.composerViewport(bottomInset)) {
+    Box(modifier = modifier.padding(bottom = bottomInset).clipToBounds()) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
@@ -1662,29 +1657,3 @@ internal fun shouldStopOrphanSpeechPlayback(
     if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
-
-/**
- * 把视口缩短到输入器上沿再裁剪。高度在 measure 时读取（不经重组），
- * 因而输入器在思考/输出中改变高度的同一帧，正文就不会越过输入框。
- */
-private fun Modifier.composerViewport(bottomInset: () -> Dp): Modifier = this
-    .layout { measurable, constraints ->
-        val inset = bottomInset().roundToPx().coerceAtLeast(0)
-        val maxHeight = if (constraints.hasBoundedHeight) {
-            (constraints.maxHeight - inset).coerceAtLeast(0)
-        } else {
-            constraints.maxHeight
-        }
-        val placeable = measurable.measure(
-            constraints.copy(
-                minHeight = constraints.minHeight.coerceAtMost(maxHeight),
-                maxHeight = maxHeight,
-            ),
-        )
-        val height = if (constraints.hasBoundedHeight) constraints.maxHeight else placeable.height + inset
-        layout(placeable.width, height) { placeable.place(0, 0) }
-    }
-    .drawWithContent {
-        val inset = bottomInset().toPx().coerceAtLeast(0f)
-        clipRect(bottom = (size.height - inset).coerceAtLeast(0f)) { this@drawWithContent.drawContent() }
-    }
