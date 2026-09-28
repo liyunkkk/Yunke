@@ -15,13 +15,39 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertIn("VirtualDisplayRecoveryControls(", task)
         self.assertIn("moduleInstalled != true", task)
 
-    def test_recovery_is_inline_horizontal_controls_not_separate_page(self):
+    def test_task_preference_page_is_material3_with_radio_group(self):
+        task = (UI / "AgentTaskPreferenceScreen.kt").read_text()
+        for text in (
+            "import androidx.compose.material3.Scaffold",
+            "import androidx.compose.material3.TopAppBar",
+            "import androidx.compose.material3.ListItem",
+            "import androidx.compose.material3.RadioButton",
+            "Scaffold(",
+            "TopAppBar(",
+            "Icons.AutoMirrored.Rounded.ArrowBack",
+            "selectableGroup()",
+            "Modifier.selectable(",
+            "role = Role.RadioButton",
+            "verticalScroll(",
+        ):
+            self.assertIn(text, task)
+        self.assertNotIn("MiuixScaffoldPage", task)
+        # 选择语义不变：可选项仍由 allowsPersist 决定，整行点击仍写同一份持久化值。
+        self.assertIn("AgentTaskSurface.allowsPersist(mode)", task)
+        self.assertIn("AgentTaskSurface.save(mode)", task)
+        self.assertIn("AgentTaskSurface.stored()", task)
+
+    def test_recovery_is_inline_controls_not_separate_page(self):
         page = (UI / "VirtualDisplayRecoveryScreen.kt").read_text()
         self.assertNotIn("Scaffold(", page)
         self.assertNotIn("TopAppBar(", page)
         self.assertIn("Row(", page)
-        self.assertEqual(3, page.count("Modifier.weight(1f).fillMaxHeight()"))
+        self.assertIn("FlowRow(", page)
+        # 三个操作各只有一个入口；按钮文字不允许折行。
+        self.assertEqual(3, page.count("TouchHaptics.click(view)"))
+        self.assertEqual(3, page.count("maxLines = 1"))
         self.assertIn("VirtualDisplayWebPreview.openWithManualClose(context)", page)
+        self.assertNotIn("VirtualDisplayWebPreview.open(context)", page)
         self.assertNotIn("vd_preview_control_open", page)
         self.assertNotIn("WindowDialog", page)
         self.assertNotIn("AlertDialog", page)

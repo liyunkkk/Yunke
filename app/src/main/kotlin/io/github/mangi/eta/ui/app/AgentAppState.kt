@@ -208,6 +208,8 @@ internal class AgentAppState(
     )
     private val pendingSteerDrafts = mutableMapOf<String, PendingSteerDraft>()
     private var compressionJob: Job? = null
+    /** Conversation the active [compressionJob] belongs to; null for none/unknown. */
+    private var compressionJobConversationId: String? = null
     private var pendingManualCompress: PendingManualCompress? = null
     private val pendingInRunCompactConversationIds = mutableSetOf<String>()
     private var pendingRetiredUsage = ConversationTokenUsageUi()
@@ -2363,6 +2365,16 @@ internal class AgentAppState(
         modelPickerState.selectedModel?.contextWindow?.takeIf { it > 0 }
             ?: fallback?.takeIf { it > 0 }
 
+    /** Window of the model the conversation is bound to; the picker may show another model. */
+    private fun boundCompressionWindow(state: AgentChatHomeUiState): Int? =
+        AgentModelPickerProjector.project(selectionProviders, state.providerId, state.modelId).selectedModel
+            ?.takeIf { it.providerId == state.providerId && it.id == state.modelId }?.contextWindow?.takeIf { it > 0 }
+            ?: compressionContextWindow()
+
+    /** Same fallback AgentLoop uses when a model has no configured window. */
+    private fun compressionBoundaryWindow(window: Int?): Int =
+        window?.takeIf { it > 0 } ?: io.github.mangi.eta.agent.model.AgentLoop.CompactPolicy.Disabled.contextWindow
+
     private fun shouldAutoCompress(
         history: List<AgentModelClient.ConversationMessage>,
         contextWindow: Int?,
@@ -2387,6 +2399,8 @@ internal class AgentAppState(
         keepRecent: Int? = null,
         conversationId: String? = null,
         contextWindow: Int? = null,
+        billedTokens: Int? = null,
+        localTokens: Int? = null,
     ): List<AgentModelClient.ConversationMessage> {
         val resolvedKeepRecent = keepRecent ?: keepRecentFor()
         val archive = conversationId?.let {
@@ -2401,12 +2415,13 @@ internal class AgentAppState(
         return try {
             var summaryFailure: String? = null
             val compressed = runInterruptible {
-                val window = contextWindow?.takeIf { it > 0 } ?: 0
+                val window = compressionBoundaryWindow(contextWindow)
+                // billed/local lets the 16% tail target the provider's bill, as in AgentLoop.
                 val initialCut = io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(
-                    history, window)
+                    history, window, billedTokens = billedTokens, localTokens = localTokens)
                 val working = AgentContextCompactor.pruneOversizedToolResults(history, archive, initialCut)
                 val cut = io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(
-                    working, window)
+                    working, window, billedTokens = billedTokens, localTokens = localTokens)
                 if (cut <= 0 || cut >= working.size) return@runInterruptible working
                 val boundArchive = archive ?: error("缺少会话身份，无法保存压缩原文")
                 val prefix = working.take(cut)
@@ -2629,16 +2644,22 @@ internal class AgentAppState(
                 p.toOutboundModelImage(supportsVideo).copy(source = "user_attach")
             }
             val compressModelConfig = resolveCompressModelConfig(config)
+            val billedForCompression = if (history == state.history) billedPromptTokens(state) else null
             val estimatedTokens = compressionContextUsage(
                 history = history,
                 currentInput = prompt,
                 pendingImages = images,
                 selectedModel = runModelOption,
-                billedContextTokens = if (history == state.history) billedPromptTokens(state) else null,
+                billedContextTokens = billedForCompression,
                 requestOverheadTokens = runOverhead,
                 billedOverheadTokens = state.cloudRequestOverheadTokens,
                 billedHistoryTokens = state.cloudHistoryTokens,
             ).contextTokens
+            // Same request in local units, so the retained tail can be scaled to the bill.
+            val localForCompression = billedForCompression?.let {
+                compressionContextUsage(history = history, currentInput = prompt, pendingImages = images,
+                    selectedModel = runModelOption, requestOverheadTokens = runOverhead).contextTokens
+            }
             val pendingInRunCompact = withContext(Dispatchers.Main) {
                 pendingInRunCompactConversationIds.remove(conversationId)
             }
@@ -2661,6 +2682,8 @@ internal class AgentAppState(
                     compressModelConfig = compressModelConfig,
                     conversationId = conversationId,
                     contextWindow = config.contextWindow,
+                    billedTokens = estimatedTokens.takeIf { billedForCompression != null },
+                    localTokens = localForCompression,
                 )
                 withContext(Dispatchers.Main) {
                     applyCompressedHistoryToConversation(
@@ -2676,6 +2699,20 @@ internal class AgentAppState(
             } else {
                 history
             }
+            // Pre-send compaction can outlive the 20s stop seal: the watchdog then settles the
+            // run and drops it from runJobs. Re-check before handing anything to Runtime, or a
+            // stopped run would start executing tools with no UI left to stop it.
+            val stillWanted = withContext(Dispatchers.Main.immediate) {
+                when {
+                    stoppingRuns.containsKey(runId) -> {
+                        applyRunResult(runId, AgentRuntimeWire.RunResult(runId, false, "", "已停止"))
+                        false
+                    }
+                    runId !in runJobs -> false
+                    else -> true
+                }
+            }
+            if (!stillWanted) return@launch
             val result = runInterruptible {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).run(
                     request = AgentRuntimeWire.RunRequest(
@@ -3591,7 +3628,9 @@ internal class AgentAppState(
 
     fun continuePausedGeneration() {
         if (rejectConversationArchiveMutation()) return
-        if (rejectSendIfCompressing()) return
+        // Resuming a paused run only releases Runtime's pause gate; an in-run compaction that
+        // was interrupted by the pause must be allowed to finish, not block its own resume.
+        if (!homeState.isPaused && rejectSendIfCompressing()) return
         if (!homeState.isPaused) {
             continueDisconnectedGeneration()
             return
@@ -4537,26 +4576,40 @@ internal class AgentAppState(
             billedHistoryTokens = state.cloudHistoryTokens,
         ).contextTokens
         if (!shouldAutoCompress(state.history, contextWindow, estimatedTokens)) return
+        val billed = billedPromptTokens(state)
+        val local = billed?.let {
+            compressionContextUsage(history = state.history, currentInput = "", pendingImages = emptyList(),
+                selectedModel = boundModel,
+                requestOverheadTokens = if (conversationId == selectedConversationId) requestOverheadTokens else state.cloudRequestOverheadTokens ?: 0,
+            ).contextTokens
+        }
         if (runId != null && !allowRepeat) {
             runCompressedDuringRun.add(runId)
         }
         setConversationCompressing(conversationId, true)
         val previous = compressionJob
+        compressionJobConversationId = conversationId
         compressionJob = scope.launch(Dispatchers.IO) {
             previous?.join()
             try {
-                compressSubmittedHistory(conversationId)
+                compressSubmittedHistory(conversationId, estimatedTokens.takeIf { billed != null }, local)
             } finally {
                 withContext(Dispatchers.Main) {
-                    if (pendingManualCompress == null) {
+                    // Only a manual request queued for *this* conversation keeps its indicator.
+                    if (pendingManualCompress?.conversationId != conversationId) {
                         setConversationCompressing(conversationId, false)
                     }
+                    startPendingManualCompress()
                 }
             }
         }
     }
 
-    private suspend fun compressSubmittedHistory(conversationId: String) {
+    private suspend fun compressSubmittedHistory(
+        conversationId: String,
+        billedTokens: Int? = null,
+        localTokens: Int? = null,
+    ) {
         val snapshot = withContext(Dispatchers.Main) {
             conversationState(conversationId)
         } ?: return
@@ -4565,7 +4618,8 @@ internal class AgentAppState(
             ?: return
         val compressModelConfig = resolveCompressModelConfig(fallback)
         val compressed = tryCompressHistory(originalHistory, compressModelConfig,
-            conversationId = conversationId, contextWindow = fallback.contextWindow)
+            conversationId = conversationId, contextWindow = fallback.contextWindow,
+            billedTokens = billedTokens, localTokens = localTokens)
         if (compressed == originalHistory) return
         withContext(Dispatchers.Main) {
             val latest = conversationState(conversationId) ?: return@withContext
@@ -5349,7 +5403,9 @@ internal class AgentAppState(
         }
         persistCompressPreferences(providerId, modelId)
         val runInFlight = homeState.isStreaming || homeState.isPaused
-        if (compressionJob?.isActive == true) {
+        val busyWithOtherConversation = compressionJob?.isActive == true &&
+            compressionJobConversationId != selectedConversationId
+        if (compressionJob?.isActive == true && !busyWithOtherConversation) {
             onFinished(true)
             return
         }
@@ -5359,7 +5415,8 @@ internal class AgentAppState(
         }
         val keepRecentMessages = keepRecentFor()
         if (!runInFlight &&
-            io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(homeState.history, compressionContextWindow() ?: 0) <= 0
+            io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(homeState.history,
+                compressionBoundaryWindow(boundCompressionWindow(homeState))) <= 0
         ) {
             Toast.makeText(
                 appContext,
@@ -5473,10 +5530,12 @@ internal class AgentAppState(
 
     private fun startPendingManualCompress() {
         val request = pendingManualCompress ?: return
-        if (compressionJob?.isActive == true) return
+        // A running job may be another conversation's auto compaction (or the caller's own
+        // finally block); the new job joins it below, so queue behind it instead of dropping.
         pendingManualCompress = null
         val resumeAfter = request.resumeAfter
         val previous = compressionJob
+        compressionJobConversationId = request.conversationId
         compressionJob = scope.launch(Dispatchers.IO) {
             previous?.join()
             try {
@@ -5514,7 +5573,7 @@ internal class AgentAppState(
                     return@launch
                 }
                 if (io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(originalHistory,
-                        fallback?.contextWindow ?: 0) <= 0) {
+                        compressionBoundaryWindow(fallback?.contextWindow)) <= 0) {
                     withContext(Dispatchers.Main) {
                         Toast.makeText(appContext, appContext.getString(
                             R.string.compress_conversation_nothing_to_compress), Toast.LENGTH_SHORT).show()

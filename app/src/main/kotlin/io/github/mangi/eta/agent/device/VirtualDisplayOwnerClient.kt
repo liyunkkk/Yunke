@@ -49,8 +49,14 @@ internal class VirtualDisplayOwnerClient private constructor(
     private val closed = AtomicBoolean(false)
     private val lock = java.util.concurrent.locks.ReentrantLock()
 
-    /** owner 进程是否仍在运行且本客户端未关闭。 */
-    val isAlive: Boolean get() = !closed.get() && (process?.isAlive ?: (socket.isConnected && !socket.isClosed))
+    /**
+     * owner 进程是否仍在运行且本客户端未关闭。
+     *
+     * 重连客户端没有 [process]。android.net.LocalSocket.isClosed() 在框架里直接
+     * throw UnsupportedOperationException，不能调用；关闭状态由 [closed] 记录
+     * （本类 close() 与 IO 失败路径都会置位），这里只再看 isConnected。
+     */
+    val isAlive: Boolean get() = !closed.get() && (process?.isAlive ?: socket.isConnected)
 
     /**
      * 发送一次串行请求。payload 的键会被扁平并入请求顶层，禁止覆盖 `v`/`op`/`token`。
