@@ -98,7 +98,8 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(
             boxes[0],
             r"drawWithContent\s*\{\s*if\s*\(\s*shouldFollowBottom\s*\)\s*\{[^}]*"
-            r"size\.height\s*-\s*bottomInset\.toPx\(\)[^}]*clipRect\s*\(\s*bottom\s*=\s*composerTop",
+            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)[^}]*"
+            r"clipRect\s*\(\s*bottom\s*=\s*restLine",
         )
 
     def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
@@ -109,7 +110,9 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertEqual(len(lists), 1, "Expected one messages LazyColumn")
         paddings = list(calls(lists[0], "PaddingValues"))
         self.assertEqual(len(paddings), 1)
-        self.assertRegex(paddings[0], r"\bbottom\s*=\s*14\.dp\s*\+\s*bottomInset\b")
+        # The resting line and the streaming clip line are the same constant.
+        self.assertRegex(paddings[0], r"\bbottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset\b")
+        self.assertRegex(self.source, r"private\s+val\s+ConversationComposerGap\s*=\s*14\.dp")
 
     def test_navigation_stays_above_composer(self):
         buttons = list(calls(self.messages, "ConversationTurnNavigationButton"))

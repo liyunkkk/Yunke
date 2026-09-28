@@ -913,15 +913,17 @@ internal fun AgentConversationMessages(
     }
 
     // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
-    // 跟底输出期间（思考/正文生成、未手动滑动）只把绘制裁到输入框上沿：跟底滚动总比
-    // 内容增长晚几帧，这几帧新长出的文字不能钻进输入框底下。用户一拖动就解除裁剪。
+    // 跟底输出期间（思考/正文生成、未手动滑动）把绘制裁在输入框上方 14dp 的静止线：
+    // 卡片/正文每长一行，跟底滚动要晚几帧才追上，这几帧卡片外框会往下跳一下；
+    // 裁在静止线上，跳动那一下既不会进输入框，也不会越过平时停靠的位置。
+    // 用户一拖动 shouldFollowBottom 即为 false，裁剪解除，内容可以滑到输入框后面。
     Box(
         modifier = modifier
             .clipToBounds()
             .drawWithContent {
                 if (shouldFollowBottom) {
-                    val composerTop = (size.height - bottomInset.toPx()).coerceAtLeast(0f)
-                    clipRect(bottom = composerTop) { this@drawWithContent.drawContent() }
+                    val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
+                    clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
                 } else {
                     drawContent()
                 }
@@ -965,7 +967,7 @@ internal fun AgentConversationMessages(
             // 最后一条静止时停在输入框上方 14dp；手动滑动时内容可以滚到输入框后面。
             contentPadding = PaddingValues(
                 top = 14.dp,
-                bottom = 14.dp + bottomInset,
+                bottom = ConversationComposerGap + bottomInset,
             ),
             overscrollEffect = null,
         ) {
@@ -1672,3 +1674,6 @@ internal fun shouldStopOrphanSpeechPlayback(
     if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
+
+/** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
+private val ConversationComposerGap = 14.dp
