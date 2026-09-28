@@ -95,25 +95,20 @@ class AgentChatViewportContractTest(unittest.TestCase):
         lists = list(calls(self.messages, "LazyColumn"))
         self.assertRegex(
             lists[0],
-            r"graphicsLayer\s*\{[^}]*if\s*\(\s*shouldLiftTail\s*\)\s*\{[^}]*"
-            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
+            r"graphicsLayer\s*\{[^}]*translationY\s*=\s*-\s*resolveFollowTailLag\s*\(\s*"
+            r"shouldLiftTail\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
         )
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
-        draw = boxes[0]
-        self.assertRegex(draw, r"if\s*\(\s*shouldLiftTail\s*\)")
         self.assertRegex(
-            draw,
-            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)",
+            boxes[0],
+            r"drawWithContent\s*\{[^}]*resolveFollowTailLag\s*\(\s*shouldLiftTail\b[^}]*"
+            r"if\s*\(\s*lag\s*==\s*FollowTailLag\.Unknown\s*\)\s*\{[^}]*"
+            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)[^}]*"
+            r"clipRect\s*\(\s*bottom\s*=\s*restLine",
         )
-        self.assertRegex(draw, r"if\s*\(\s*lag\s*==\s*FollowTailLag\.Unknown\s*\)")
-        self.assertRegex(
-            draw,
-            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",
-        )
-        self.assertRegex(draw, r"clipRect\s*\(\s*bottom\s*=\s*restLine")
 
     def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
         self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 3)

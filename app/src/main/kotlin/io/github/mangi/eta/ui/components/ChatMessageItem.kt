@@ -5,8 +5,6 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -15,10 +13,12 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -73,6 +73,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.animation.expandIn
+import androidx.compose.animation.shrinkOut
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -287,29 +289,8 @@ internal class ChatMessageActions {
     var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
 }
 
-/** 仅最底部那一行非空。展开时通知列表先停掉跟底上提。 */
+/** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
 internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
-
-/** 手指滑动或惯性期间为 true。长文展开不再继续加高，短动画照常播放。 */
-internal val LocalPauseExpandLayout = staticCompositionLocalOf { false }
-
-@Composable
-private fun AnimatedDetails(
-    visible: Boolean,
-    content: @Composable () -> Unit,
-) {
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(tween(160)) + expandVertically(
-            animationSpec = tween(180, easing = FastOutSlowInEasing),
-            expandFrom = Alignment.Top,
-        ),
-        exit = shrinkVertically(
-            animationSpec = tween(160, easing = FastOutSlowInEasing),
-            shrinkTowards = Alignment.Top,
-        ) + fadeOut(tween(100)),
-    ) { content() }
-}
 
 @Composable
 internal fun ChatMessageItem(
@@ -1198,9 +1179,7 @@ private fun ChatMarkdownDocument(
         var limit by remember(blocks) {
             mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
         }
-        val pauseExpand = LocalPauseExpandLayout.current
-        LaunchedEffect(lengths, pauseExpand) {
-            if (pauseExpand) return@LaunchedEffect
+        LaunchedEffect(lengths) {
             while (limit < lengths.size) {
                 withFrameNanos { }
                 limit = nextProgressiveBlockLimit(lengths, limit, PROGRESSIVE_FRAME_CHARS)
@@ -2463,7 +2442,11 @@ private fun ThinkingRow(
             )
         }
 
-        AnimatedDetails(visible = expanded && message.content.isNotBlank()) {
+        AnimatedVisibility(
+            visible = expanded && message.content.isNotBlank(),
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             HapticSelectionContainer {
                 Column {
                     if (!compact) {
@@ -2509,6 +2492,26 @@ private fun ThinkingRow(
 }
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
+
+@Composable
+private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition {
+    val tail = LocalTailResize.current != null
+    return if (tail) {
+        fadeIn(tween(160)) + expandVertically(animationSpec = tween(180), expandFrom = Alignment.Top)
+    } else {
+        fadeIn() + expandIn()
+    }
+}
+
+@Composable
+private fun tailDetailsExit(): androidx.compose.animation.ExitTransition {
+    val tail = LocalTailResize.current != null
+    return if (tail) {
+        shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Top) + fadeOut(tween(120))
+    } else {
+        shrinkOut() + fadeOut()
+    }
+}
 
 @Composable
 private fun ToolActivityInline(
@@ -2686,7 +2689,11 @@ private fun ToolActivityInline(
             }
         }
 
-        AnimatedDetails(visible = isExpanded && hasDetails) {
+        AnimatedVisibility(
+            visible = isExpanded && hasDetails,
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

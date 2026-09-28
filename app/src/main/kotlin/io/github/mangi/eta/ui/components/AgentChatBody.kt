@@ -933,12 +933,7 @@ internal fun AgentConversationMessages(
         modifier = modifier
             .clipToBounds()
             .drawWithContent {
-                // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
-                val lag = if (shouldLiftTail) {
-                    resolveFollowTailLag(true, scrollState.followTailOverflow())
-                } else {
-                    FollowTailLag.None
-                }
+                val lag = resolveFollowTailLag(shouldLiftTail, scrollState.followTailOverflow())
                 if (lag == FollowTailLag.Unknown) {
                     val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
                     clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
@@ -979,12 +974,8 @@ internal fun AgentConversationMessages(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    // 只在跟底时读取布局结果。滑动或展开期间不读，避免每帧把列表重新提交绘制。
-                    translationY = if (shouldLiftTail) {
-                        -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
-                    } else {
-                        0f
-                    }
+                    // 只在绘制层读取布局结果：跟底滚动每消费一段，上提量同帧减少，尾部不动。
+                    translationY = -resolveFollowTailLag(shouldLiftTail, scrollState.followTailOverflow()).liftPx
                 }
                 .nestedScroll(userScrollConnection)
                 // Navigation already emits one explicit click/long-press haptic.
@@ -1026,15 +1017,23 @@ internal fun AgentConversationMessages(
                 // Keep the row key/index and animate its root, including its footer.
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalTailResize provides if (reportsTailResize) ({ holdTailLift = true }) else null,
-                    LocalPauseExpandLayout provides isUserScrolling,
                 ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
-                        if (entry is AgentTimelineRow.Message) Modifier.animateItem(
-                            fadeInSpec = tween(durationMillis = 180),
-                            placementSpec = null,
-                            fadeOutSpec = null,
-                        ) else Modifier,
+                        when {
+                            entry is AgentTimelineRow.Message -> Modifier.animateItem(
+                                fadeInSpec = tween(durationMillis = 180),
+                                placementSpec = null,
+                                fadeOutSpec = null,
+                            )
+                            entry is AgentTimelineRow.WorkStep && entry.groupKey == tailGroupKey ->
+                                Modifier.animateItem(
+                                    fadeInSpec = null,
+                                    placementSpec = tween(durationMillis = 180),
+                                    fadeOutSpec = null,
+                                )
+                            else -> Modifier
+                        },
                     ),
                 ) {
                 when (entry) {
