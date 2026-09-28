@@ -2030,7 +2030,7 @@ internal class AgentAppState(
                 pendingImages = images,
                 pendingFileReferences = fileReferences,
                 pendingConversationMentions = parsedPrompt.conversations.map { mentioned ->
-                    PendingConversationMentionUi("mention-${UUID.randomUUID()}", mentioned.id, mentioned.title, "", mentioned.snapshotPath)
+                    PendingConversationMentionUi("mention-${UUID.randomUUID()}", mentioned.id, mentioned.title, "", mentioned.snapshotPath, mentioned.toolsIndexPath)
                 },
                 messageEdit = MessageEditUiState(
                     targetMessageId = boundary.userMessage.id,
@@ -2190,7 +2190,7 @@ internal class AgentAppState(
         val supportsVision = generateImage || generateVideo || (modelPickerState.selectedModel?.supportsVision == true) || io.github.mangi.eta.agent.model.ModelFeaturePreferences.visionEnabled()
         if (!generateImage && !generateVideo && rejectSendIfContextWindowExceeded(boundary.historyPrefix, parsed.request, images, parsed.references.mapIndexed { index, reference ->
                 PendingFileReferenceUi(id = "regen-$index", reference = reference)
-            }, parsed.conversations.map { PendingConversationMentionUi(it.id, it.id, it.title, "", it.snapshotPath) })) {
+            }, parsed.conversations.map { PendingConversationMentionUi(it.id, it.id, it.title, "", it.snapshotPath, it.toolsIndexPath) })) {
             return
         }
         if (!ignoreCompression && boundary.contextWasCompacted) showCompactedRevisionNotice()
@@ -3244,12 +3244,14 @@ internal class AgentAppState(
                     evidence.add(source.history, "source conversation model history")
                     io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, conversationId)
                         .visitForConversationMention(evidence::add)
+                    val toolFiles = mutableListOf<String>()
                     val body = status + ConversationMention.transcript(
                         source.messages, ConversationMention.SNAPSHOT_MAX_CHARS - status.length,
-                        appContext.filesDir, conversationId, evidence,
+                        appContext.filesDir, conversationId, evidence, toolFiles,
                     )
                     val snapshot = ConversationMention.writeSnapshot(appContext.filesDir, conversationId, body)
-                    snapshot?.absolutePath.orEmpty() to body
+                    val index = snapshot?.let { ConversationMention.writeToolIndex(it, toolFiles) }
+                    Triple(snapshot?.absolutePath.orEmpty(), index?.absolutePath.orEmpty(), body)
                 }
                 if (ownerVersion != fileAttachmentOwnerVersion) return@launch
                 if (conversationId !in conversationsById) {
@@ -3258,13 +3260,13 @@ internal class AgentAppState(
                 }
                 val current = homeState.pendingConversationMentions
                 if (current.none { it.id == mentionId }) return@launch
-                val (snapshotPath, _) = prepared
+                val (snapshotPath, toolsIndexPath, _) = prepared
                 if (snapshotPath.isBlank()) {
                     removeConversationMention(mentionId)
                     Toast.makeText(appContext, "会话引用为空或快照没写上，请重新选择。", Toast.LENGTH_SHORT).show()
                 } else {
                     updateCurrentConversation(homeState.copy(pendingConversationMentions = current.map {
-                        if (it.id == mentionId) it.copy(transcript = "", snapshotPath = snapshotPath) else it
+                        if (it.id == mentionId) it.copy(transcript = "", snapshotPath = snapshotPath, toolsIndexPath = toolsIndexPath) else it
                     }))
                 }
             } catch (failure: Exception) {
