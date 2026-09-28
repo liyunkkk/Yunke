@@ -72,6 +72,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.animation.expandIn
+import androidx.compose.animation.shrinkOut
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -287,6 +290,9 @@ internal class ChatMessageActions {
 }
 
 @Composable
+/** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
+internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
+
 internal fun ChatMessageItem(
     message: AgentChatMessageUi,
     actions: ChatMessageActions,
@@ -2386,6 +2392,7 @@ private fun ThinkingRow(
                     manuallyExpanded = true
                     expandedByTap = !expanded
                     expanded = !expanded
+                    LocalTailResize.current?.invoke()
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2434,7 +2441,11 @@ private fun ThinkingRow(
             )
         }
 
-        AnimatedVisibility(visible = expanded && message.content.isNotBlank()) {
+        AnimatedVisibility(
+            visible = expanded && message.content.isNotBlank(),
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             HapticSelectionContainer {
                 Column {
                     if (!compact) {
@@ -2480,6 +2491,26 @@ private fun ThinkingRow(
 }
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
+
+@Composable
+private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition {
+    val tail = LocalTailResize.current != null
+    return if (tail) {
+        fadeIn(tween(160)) + expandVertically(animationSpec = tween(180), expandFrom = Alignment.Top)
+    } else {
+        fadeIn() + expandIn()
+    }
+}
+
+@Composable
+private fun tailDetailsExit(): androidx.compose.animation.ExitTransition {
+    val tail = LocalTailResize.current != null
+    return if (tail) {
+        shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Top) + fadeOut(tween(120))
+    } else {
+        shrinkOut() + fadeOut()
+    }
+}
 
 @Composable
 private fun ToolActivityInline(
@@ -2540,7 +2571,10 @@ private fun ToolActivityInline(
             .clip(RoundedCornerShape(10.dp))
             .then(
                 if (hasDetails) {
-                    Modifier.clickable { isExpanded = !isExpanded }
+                    Modifier.clickable {
+                        isExpanded = !isExpanded
+                        LocalTailResize.current?.invoke()
+                    }
                 } else {
                     Modifier
                 }
@@ -2653,7 +2687,11 @@ private fun ToolActivityInline(
             }
         }
 
-        AnimatedVisibility(visible = isExpanded && hasDetails) {
+        AnimatedVisibility(
+            visible = isExpanded && hasDetails,
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

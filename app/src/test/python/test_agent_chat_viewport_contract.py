@@ -96,7 +96,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(
             lists[0],
             r"graphicsLayer\s*\{[^}]*translationY\s*=\s*-\s*resolveFollowTailLag\s*\(\s*"
-            r"shouldFollowBottom\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
+            r"shouldLiftTail\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
         )
         boxes = [
             call for call in calls(self.messages, "Box")
@@ -104,7 +104,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         ]
         self.assertRegex(
             boxes[0],
-            r"drawWithContent\s*\{[^}]*resolveFollowTailLag\s*\(\s*shouldFollowBottom\b[^}]*"
+            r"drawWithContent\s*\{[^}]*resolveFollowTailLag\s*\(\s*shouldLiftTail\b[^}]*"
             r"if\s*\(\s*lag\s*==\s*FollowTailLag\.Unknown\s*\)\s*\{[^}]*"
             r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)[^}]*"
             r"clipRect\s*\(\s*bottom\s*=\s*restLine",

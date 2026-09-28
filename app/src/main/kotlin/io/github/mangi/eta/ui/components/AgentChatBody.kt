@@ -119,6 +119,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
@@ -786,6 +787,15 @@ internal fun AgentConversationMessages(
             isBottomSettling = isBottomSettling,
         )
     )
+    // 最底部工具展开的那一两百毫秒里不能跟底上提：上提按整段新增高度瞬间把列表抬走，
+    // 和展开动画叠在一起就是弹一下。跟底滚动本身不动。
+    var holdTailLift by remember { mutableStateOf(false) }
+    val shouldLiftTail = shouldLiftStreamingTail(shouldFollowBottom, holdTailLift)
+    LaunchedEffect(holdTailLift) {
+        if (!holdTailLift) return@LaunchedEffect
+        delay(220)
+        holdTailLift = false
+    }
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
     val bottomFollowDecisions = remember(scrollState) {
         Channel<BottomFollowDecision>(Channel.CONFLATED)
@@ -923,7 +933,7 @@ internal fun AgentConversationMessages(
         modifier = modifier
             .clipToBounds()
             .drawWithContent {
-                val lag = resolveFollowTailLag(shouldFollowBottom, scrollState.followTailOverflow())
+                val lag = resolveFollowTailLag(shouldLiftTail, scrollState.followTailOverflow())
                 if (lag == FollowTailLag.Unknown) {
                     val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
                     clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
@@ -965,7 +975,7 @@ internal fun AgentConversationMessages(
                 .fillMaxSize()
                 .graphicsLayer {
                     // 只在绘制层读取布局结果：跟底滚动每消费一段，上提量同帧减少，尾部不动。
-                    translationY = -resolveFollowTailLag(shouldFollowBottom, scrollState.followTailOverflow()).liftPx
+                    translationY = -resolveFollowTailLag(shouldLiftTail, scrollState.followTailOverflow()).liftPx
                 }
                 .nestedScroll(userScrollConnection)
                 // Navigation already emits one explicit click/long-press haptic.
@@ -993,14 +1003,37 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
+                val tailRow = timelineRows.lastOrNull()
+                val tailGroupKey = when (tailRow) {
+                    is AgentTimelineRow.WorkStep -> tailRow.groupKey
+                    is AgentTimelineRow.WorkHeader -> tailRow.key
+                    else -> null
+                }
+                val reportsTailResize = when (entry) {
+                    is AgentTimelineRow.WorkHeader -> entry.key == tailGroupKey
+                    is AgentTimelineRow.WorkStep -> entry.groupKey == tailGroupKey
+                    is AgentTimelineRow.Message -> entry.key == tailRow?.key
+                }
                 // Keep the row key/index and animate its root, including its footer.
+                androidx.compose.runtime.CompositionLocalProvider(
+                    LocalTailResize provides if (reportsTailResize) ({ holdTailLift = true }) else null,
+                ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
-                        if (entry is AgentTimelineRow.Message) Modifier.animateItem(
-                            fadeInSpec = tween(durationMillis = 180),
-                            placementSpec = null,
-                            fadeOutSpec = null,
-                        ) else Modifier,
+                        when {
+                            entry is AgentTimelineRow.Message -> Modifier.animateItem(
+                                fadeInSpec = tween(durationMillis = 180),
+                                placementSpec = null,
+                                fadeOutSpec = null,
+                            )
+                            entry is AgentTimelineRow.WorkStep && entry.groupKey == tailGroupKey ->
+                                Modifier.animateItem(
+                                    fadeInSpec = null,
+                                    placementSpec = tween(durationMillis = 180),
+                                    fadeOutSpec = null,
+                                )
+                            else -> Modifier
+                        },
                     ),
                 ) {
                 when (entry) {
@@ -1048,6 +1081,7 @@ internal fun AgentConversationMessages(
                             isPaused = isPaused,
                             expanded = entry.expanded,
                             onToggle = {
+                                if (entry.key == tailGroupKey) holdTailLift = true
                                 workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
                             },
                         )
@@ -1093,6 +1127,7 @@ internal fun AgentConversationMessages(
                         messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                         branchEnabled = branchEnabled,
                     )
+                }
                 }
                 }
             }
@@ -1556,6 +1591,10 @@ internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = fals
  * 跟底输出时，跟底滚动尚未追上的尾部超出量改为绘制上提，让尾部停在静止线上。
  * 不跟底（用户拖动、浏览历史、输出结束）时不做任何处理；尾部不可见时交给静止线裁剪兜底。
  */
+/** 用户正在展开最底部工具时不上提，避免整段高度在一帧里把列表抬走。 */
+internal fun shouldLiftStreamingTail(followingOutput: Boolean, holdingUserExpansion: Boolean): Boolean =
+    followingOutput && !holdingUserExpansion
+
 internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
     !following -> FollowTailLag.None
     tailOverflowPx == null -> FollowTailLag.Unknown

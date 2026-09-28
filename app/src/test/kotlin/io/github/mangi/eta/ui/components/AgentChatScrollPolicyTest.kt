@@ -348,4 +348,11 @@ class AgentChatScrollPolicyTest {
         assertTrue(lag.unknown)
         assertEquals(0f, lag.liftPx, 0f)
     }
+
+    @Test
+    fun userExpansionOfTheTailDoesNotLift() {
+        assertFalse(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = true))
+        assertTrue(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = false))
+        assertFalse(shouldLiftStreamingTail(followingOutput = false, holdingUserExpansion = false))
+    }
 }
