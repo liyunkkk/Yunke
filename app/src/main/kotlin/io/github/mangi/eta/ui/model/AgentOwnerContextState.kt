@@ -93,22 +93,27 @@ internal class AgentOwnerContextState(
             val id = incoming.stats.taskId
             if (id.isBlank()) continue
             val old = entries[id]
+            val live = incoming.stats.status in LIVE_STATUS
             if (old != null) {
                 if (incoming.revision <= old.snapshot.revision) continue
-                if (incoming.statusVersion < old.snapshot.statusVersion) continue
-                // A status change with the old token is an incoherent/late observation.
-                if (incoming.statusVersion == old.snapshot.statusVersion &&
+                // A resumed task must reappear even if its status token was reset or reused.
+                // Other backwards or same-token status changes stay incoherent.
+                if (!live && incoming.statusVersion < old.snapshot.statusVersion) continue
+                if (!live && incoming.statusVersion == old.snapshot.statusVersion &&
                     incoming.stats.status != old.snapshot.stats.status) continue
             }
             val snapshot = incoming.copy(stats = incoming.stats.measuredOnly())
             val sameStatusVersion = old != null && snapshot.statusVersion == old.snapshot.statusVersion
-            val token = if (sameStatusVersion) old?.hideToken else {
-                if (snapshot.stats.status in HIDE_AFTER_DELAY) {
+            val token = when {
+                live -> null
+                sameStatusVersion -> old?.hideToken
+                snapshot.stats.status in HIDE_AFTER_DELAY -> {
                     val enteredAt = (snapshot.statusChangedAtMs ?: now).coerceAtMost(now)
                     HideToken(ownerId, id, snapshot.statusVersion, enteredAt + HIDE_AFTER_MS)
-                } else null
+                }
+                else -> null
             }
-            entries[id] = Entry(snapshot, token, hidden = sameStatusVersion && old?.hidden == true)
+            entries[id] = Entry(snapshot, token, hidden = !live && sameStatusVersion && old?.hidden == true)
             changed = true
         }
         return changed
@@ -169,5 +174,6 @@ internal class AgentOwnerContextState(
         const val HIDE_AFTER_MS = 30_000L
         // Preserve the existing terminal grace period; awaiting_decision is confirmed pause.
         val HIDE_AFTER_DELAY = setOf("completed", "cancelled", "timed_out", "failed", "awaiting_decision", "paused")
+        val LIVE_STATUS = setOf("queued", "running", "pausing")
     }
 }

@@ -152,6 +152,20 @@ class AgentOwnerContextStateTest {
         assertNull(state.projection().selectedTaskId)
     }
 
+    @Test fun hiddenPauseReappearsWhenContinuationReusesTheStatusToken() {
+        val state = state()
+        state.refresh(owner, listOf(TaskSnapshot(stats("A", "awaiting_decision"), 1, 4)))
+        now = 30_000
+        assertTrue(state.expire(state.pendingHides().single()))
+        assertTrue(state.ids().isEmpty())
+        val resumed = stats("A", "running", 2_345).copy(statusVersion = 4)
+        assertTrue(state.refresh(owner, listOf(TaskSnapshot(resumed, 2, 4))))
+        assertEquals(listOf("A"), state.ids())
+        assertEquals("running", state.latest("A")!!.status)
+        assertEquals(2_345, state.latest("A")!!.contextTokens)
+        assertTrue(state.pendingHides().isEmpty())
+    }
+
     @Test fun hiddenPauseResumesWithRealUsageWithoutStealingSelection() {
         val state = state()
         state.refresh(owner, 1, listOf(stats("A", "awaiting_decision"), stats("B")))
