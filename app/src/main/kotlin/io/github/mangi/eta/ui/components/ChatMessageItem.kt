@@ -13,12 +13,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -73,8 +71,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.animation.expandIn
-import androidx.compose.animation.shrinkOut
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -2494,24 +2490,10 @@ private fun ThinkingRow(
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
 
 @Composable
-private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition {
-    val tail = LocalTailResize.current != null
-    return if (tail) {
-        fadeIn(tween(160)) + expandVertically(animationSpec = tween(180), expandFrom = Alignment.Top)
-    } else {
-        fadeIn() + expandIn()
-    }
-}
+private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition = fadeIn(tween(120))
 
 @Composable
-private fun tailDetailsExit(): androidx.compose.animation.ExitTransition {
-    val tail = LocalTailResize.current != null
-    return if (tail) {
-        shrinkVertically(animationSpec = tween(160), shrinkTowards = Alignment.Top) + fadeOut(tween(120))
-    } else {
-        shrinkOut() + fadeOut()
-    }
-}
+private fun tailDetailsExit(): androidx.compose.animation.ExitTransition = fadeOut(tween(80))
 
 @Composable
 private fun ToolActivityInline(
