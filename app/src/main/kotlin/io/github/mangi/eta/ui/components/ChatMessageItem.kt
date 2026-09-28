@@ -4,7 +4,6 @@ import io.github.mangi.eta.ui.markdown.ChatSelectableText
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -285,8 +284,11 @@ internal class ChatMessageActions {
     var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
 }
 
-/** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
+/** 仅最底部那一行非空。展开时通知列表先停掉跟底上提。 */
 internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
+
+/** 手指滑动或惯性期间为 true。展开中的内容停在当前高度，不再逐帧长高。 */
+internal val LocalPauseExpandLayout = staticCompositionLocalOf { false }
 
 @Composable
 internal fun ChatMessageItem(
@@ -1175,7 +1177,9 @@ private fun ChatMarkdownDocument(
         var limit by remember(blocks) {
             mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
         }
-        LaunchedEffect(lengths) {
+        val pauseExpand = LocalPauseExpandLayout.current
+        LaunchedEffect(lengths, pauseExpand) {
+            if (pauseExpand) return@LaunchedEffect
             while (limit < lengths.size) {
                 withFrameNanos { }
                 limit = nextProgressiveBlockLimit(lengths, limit, PROGRESSIVE_FRAME_CHARS)
@@ -2438,11 +2442,7 @@ private fun ThinkingRow(
             )
         }
 
-        AnimatedVisibility(
-            visible = expanded && message.content.isNotBlank(),
-            enter = tailDetailsEnter(),
-            exit = tailDetailsExit(),
-        ) {
+        if (expanded && message.content.isNotBlank()) {
             HapticSelectionContainer {
                 Column {
                     if (!compact) {
@@ -2488,12 +2488,6 @@ private fun ThinkingRow(
 }
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
-
-@Composable
-private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition = fadeIn(tween(120))
-
-@Composable
-private fun tailDetailsExit(): androidx.compose.animation.ExitTransition = fadeOut(tween(80))
 
 @Composable
 private fun ToolActivityInline(
@@ -2671,11 +2665,7 @@ private fun ToolActivityInline(
             }
         }
 
-        AnimatedVisibility(
-            visible = isExpanded && hasDetails,
-            enter = tailDetailsEnter(),
-            exit = tailDetailsExit(),
-        ) {
+        if (isExpanded && hasDetails) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
