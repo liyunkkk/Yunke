@@ -134,26 +134,26 @@ final class LaunchTargetOccupancy {
     }
 
     /**
-     * True only when a name carried on the root's own marker exactly echoes the root's own readable
-     * identity: the name must equal every non-empty identity field, and at least one identity field
-     * must be readable.
+     * True when a name carried on the root's own marker echoes one of the root's own readable
+     * identity fields. At least one identity field must be readable, and the name must equal one of
+     * them.
      *
-     * <p>The platform echoes the root's own package in the {@code childTaskNames} slot that pairs with
-     * the root's own id, so a self-marker name is only ever consistent when it merely restates the
-     * root's own package. A partial match, a field that disagrees with the name, or an identity-free
-     * root is a conflict that must fail closed: a named self marker can never invent an identity the
-     * root itself did not report.
+     * <p>The platform echoes a package it already reported for this root into the
+     * {@code childTaskNames} slot that pairs with the root's own id. A task can legitimately host
+     * more than one package (the caller's activity plus a system activity such as the photo picker
+     * started for a result in the same task), so the slot only repeats one of those packages. Matching
+     * any readable field is an echo of this root. A name that matches none of them, or a name on an
+     * identity-free root, is a conflict and must fail closed: the marker can never invent an identity
+     * the root itself did not report. A field that actually is the launch target is rejected earlier
+     * by {@link #contains} and never reaches this check.
      */
     private static boolean selfMarkerNameEchoesRoot(Root root, String name) {
-        boolean anyReadable = false;
         String[] identities = {root.base, root.baseActivity, root.topActivity, root.realActivity,
                 root.origActivity};
         for (String identity : identities) {
-            if (identity == null) continue;
-            anyReadable = true;
-            if (!identity.equals(name)) return false;
+            if (identity != null && identity.equals(name)) return true;
         }
-        return anyReadable;
+        return false;
     }
 
     /** Organizer evidence that every foreign child is an identity-free empty task. */
