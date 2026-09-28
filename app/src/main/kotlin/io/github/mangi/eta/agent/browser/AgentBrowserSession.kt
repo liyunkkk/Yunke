@@ -183,6 +183,29 @@ internal object AgentBrowserSession {
         }
     }
 
+    private fun publishSnapshot() {
+        val browser = pool ?: return
+        val manager = browser.activeManager
+        val url = manager?.currentURL?.value.orEmpty()
+        val loading = manager?.isLoading?.value == true
+        val profile = browser.currentUserAgentProfile.value
+        mutableSnapshots.value = BrowserSessionSnapshot(
+            tabId = browser.selectedTabId.value.takeIf { manager != null },
+            tabCount = browser.tabs.value.size,
+            available = manager != null && url.isNotBlank(),
+            url = url, displayUrl = url, host = Uri.parse(url).host.orEmpty(),
+            title = manager?.pageTitle?.value.orEmpty().take(160),
+            isLoading = loading, isPageVisible = !loading && url.isNotBlank(),
+            hasCommittedPage = url.isNotBlank(), progress = if (loading) 0 else 100,
+            canGoBack = manager?.canGoBack?.value == true,
+            canGoForward = manager?.canGoForward?.value == true,
+            isUserControlling = isUserControlling,
+            lastAgentRunId = lastRunId, lastAgentToolCallId = lastCallId,
+            desktopMode = profile == UserAgentProfile.DESKTOP_CHROME,
+            userAgent = profile.value,
+        )
+    }
+
     fun execute(
         context: Context,
         args: JSONObject,
