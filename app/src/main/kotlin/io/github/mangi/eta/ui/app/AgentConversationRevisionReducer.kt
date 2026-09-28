@@ -39,8 +39,20 @@ internal object AgentConversationRevisionReducer {
         } ?: return null
         val userMessage = state.messages[userMessageIndex] as UserMessageUi
         val historyIndex = historyUserIndex(state, userMessageIndex)
-        // Missing supplements must not be mistaken for the preceding original question.
-        if (historyIndex == null && userMessage.isSteerSupplement()) return null
+        val laterUsers = state.messages.drop(userMessageIndex + 1).any { it is UserMessageUi }
+        if (historyIndex == null && userMessage.isSteerSupplement()) {
+            // 停止时尚未写进历史的最后一条追加：它之后没有任何内容可被抹掉，
+            // 以完整历史为前缀替换它是安全的；其它缺失的追加仍拒绝，避免误认成原问题。
+            val owner = userMessage.id.removePrefix("user-").substringBefore("-supplement-")
+            if (laterUsers || state.history.none { it.turnId == owner }) return null
+            return Boundary(
+                userMessage = userMessage,
+                userMessageIndex = userMessageIndex,
+                historyPrefix = state.history,
+                laterTurnCount = 0,
+                contextWasCompacted = false,
+            )
+        }
         val laterTurnCount = state.messages.drop(userMessageIndex + 1).count {
             it is UserMessageUi && !it.isSteerSupplement()
         }
