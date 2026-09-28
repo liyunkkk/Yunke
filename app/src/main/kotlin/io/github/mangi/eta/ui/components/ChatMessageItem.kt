@@ -5,7 +5,6 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -291,7 +290,7 @@ internal class ChatMessageActions {
 /** 仅最底部那一行非空。展开时通知列表先停掉跟底上提。 */
 internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
 
-/** 手指滑动或惯性期间为 true。展开动画立刻停在最终高度，不再和滚动抢帧。 */
+/** 手指滑动或惯性期间为 true。长文展开不再继续加高，短动画照常播放。 */
 internal val LocalPauseExpandLayout = staticCompositionLocalOf { false }
 
 @Composable
@@ -299,24 +298,12 @@ private fun AnimatedDetails(
     visible: Boolean,
     content: @Composable () -> Unit,
 ) {
-    val scrolling = LocalPauseExpandLayout.current
-    var suppressEnter by remember { mutableStateOf(false) }
-    if (scrolling && visible) suppressEnter = true
-    if (!visible) suppressEnter = false
-    if (scrolling) {
-        if (visible) content()
-        return
-    }
     AnimatedVisibility(
         visible = visible,
-        enter = if (suppressEnter) {
-            EnterTransition.None
-        } else {
-            fadeIn(tween(160)) + expandVertically(
-                animationSpec = tween(180, easing = FastOutSlowInEasing),
-                expandFrom = Alignment.Top,
-            )
-        },
+        enter = fadeIn(tween(160)) + expandVertically(
+            animationSpec = tween(180, easing = FastOutSlowInEasing),
+            expandFrom = Alignment.Top,
+        ),
         exit = shrinkVertically(
             animationSpec = tween(160, easing = FastOutSlowInEasing),
             shrinkTowards = Alignment.Top,
