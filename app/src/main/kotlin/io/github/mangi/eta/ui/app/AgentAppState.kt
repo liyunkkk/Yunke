@@ -2634,6 +2634,20 @@ internal class AgentAppState(
             } else {
                 history
             }
+            // Pre-send compaction can outlive the 20s stop seal: the watchdog then settles the
+            // run and drops it from runJobs. Re-check before handing anything to Runtime, or a
+            // stopped run would start executing tools with no UI left to stop it.
+            val stillWanted = withContext(Dispatchers.Main.immediate) {
+                when {
+                    stoppingRuns.containsKey(runId) -> {
+                        applyRunResult(runId, AgentRuntimeWire.RunResult(runId, false, "", "已停止"))
+                        false
+                    }
+                    runId !in runJobs -> false
+                    else -> true
+                }
+            }
+            if (!stillWanted) return@launch
             val result = runInterruptible {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).run(
                     request = AgentRuntimeWire.RunRequest(
@@ -3533,7 +3547,9 @@ internal class AgentAppState(
 
     fun continuePausedGeneration() {
         if (rejectConversationArchiveMutation()) return
-        if (rejectSendIfCompressing()) return
+        // Resuming a paused run only releases Runtime's pause gate; an in-run compaction that
+        // was interrupted by the pause must be allowed to finish, not block its own resume.
+        if (!homeState.isPaused && rejectSendIfCompressing()) return
         if (!homeState.isPaused) {
             continueDisconnectedGeneration()
             return

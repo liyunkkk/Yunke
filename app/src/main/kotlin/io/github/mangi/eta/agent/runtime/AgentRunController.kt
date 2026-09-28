@@ -183,8 +183,10 @@ internal class AgentRunController {
     }
     private companion object {
         const val MAX_PENDING_STEERING = 16
-        const val MAX_STEERING_CHARS = 4000
-        const val MAX_STEERING_TOTAL_CHARS = 16000
+        // Matches AgentRuntimeClient.steerRun's 64K wire cap: formatted file references pushed
+        // ordinary supplements past the old 4000 and they were refused without a reason.
+        const val MAX_STEERING_CHARS = 64_000
+        const val MAX_STEERING_TOTAL_CHARS = 192_000
     }
 }
 
