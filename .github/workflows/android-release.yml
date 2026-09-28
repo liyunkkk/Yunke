@@ -36,6 +36,9 @@ jobs:
 
       - name: 配置 Android SDK 工具
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+        with:
+          # 旧的 tools 包已从 SDK 仓库移除，默认安装会让 sdkmanager 直接失败。
+          packages: platform-tools
 
       - name: 安装 Android SDK 37
         run: sdkmanager --channel=3 "platforms;android-37.0"
