@@ -91,7 +91,10 @@ internal object TouchHaptics {
         val now = SystemClock.uptimeMillis()
         if (now - lastGenerationTickAt < GENERATION_TICK_INTERVAL_MS) return
         lastGenerationTickAt = now
-        tick(view)
+        if (view != null && tick(view)) return
+        // A stopped window reports the system tick as ignored. The run is still in the
+        // foreground service, so play the same tick on the vibrator.
+        view?.context?.let(::vibrateSystemTick)
     }
 
     /** 推理、终端、读图、网页搜索等标签首次出现时轻触一次。 */
@@ -121,13 +124,13 @@ internal object TouchHaptics {
         perform(view, HapticFeedbackConstants.LONG_PRESS)
     }
 
-    fun tick(view: View?) {
+    fun tick(view: View?): Boolean {
         val constant = if (Build.VERSION.SDK_INT >= 34) {
             HapticFeedbackConstants.SEGMENT_FREQUENT_TICK
         } else {
             HapticFeedbackConstants.CLOCK_TICK
         }
-        perform(view, constant)
+        return perform(view, constant)
     }
 
     fun gestureThreshold(view: View?) {
@@ -153,13 +156,13 @@ internal object TouchHaptics {
         constant: Int,
         intensity: HapticIntensity = currentIntensity(),
         ignoreAppSwitch: Boolean = false,
-    ) {
-        if (view == null) return
-        if (!ignoreAppSwitch && !isTouchEnabled()) return
+    ): Boolean {
+        if (view == null) return false
+        if (!ignoreAppSwitch && !isTouchEnabled()) return false
         if (intensity == HapticIntensity.DEFAULT) {
             // ColorOS / HyperOS 单参数入口会走线性马达主题；带 flags=0 的双参数
             // 会再检查 View.isHapticFeedbackEnabled，升级后这个标志经常是关的。
-            if (ignoreAppSwitch) {
+            return if (ignoreAppSwitch) {
                 view.performHapticFeedback(
                     constant,
                     HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING,
@@ -167,18 +170,47 @@ internal object TouchHaptics {
             } else {
                 view.performHapticFeedback(constant)
             }
-            return
         }
-        vibrateScaled(view, constant, intensity)
+        return vibrateScaled(view, constant, intensity)
     }
 
-    private fun vibrateScaled(view: View, constant: Int, intensity: HapticIntensity) {
-        val context = view.context
+    private fun vibrateSystemTick(context: Context) {
         if (!isSystemHapticEnabled(context)) return
         val vibrator = context.getSystemService(VibratorManager::class.java)
             ?.defaultVibrator
             ?: return
         if (!vibrator.hasVibrator()) return
+        val intensity = currentIntensity()
+        runCatching {
+            val effect = if (intensity == HapticIntensity.DEFAULT) {
+                VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+            } else {
+                val primitiveId = VibrationEffect.Composition.PRIMITIVE_TICK
+                val supported = vibrator.arePrimitivesSupported(primitiveId).firstOrNull() == true
+                if (supported) {
+                    VibrationEffect.startComposition()
+                        .addPrimitive(primitiveId, intensity.tickScale)
+                        .compose()
+                } else {
+                    VibrationEffect.createOneShot(10L, intensity.tickAmplitude)
+                }
+            }
+            vibrator.vibrate(
+                effect,
+                VibrationAttributes.Builder()
+                    .setUsage(VibrationAttributes.USAGE_TOUCH)
+                    .build(),
+            )
+        }
+    }
+
+    private fun vibrateScaled(view: View, constant: Int, intensity: HapticIntensity): Boolean {
+        val context = view.context
+        if (!isSystemHapticEnabled(context)) return false
+        val vibrator = context.getSystemService(VibratorManager::class.java)
+            ?.defaultVibrator
+            ?: return false
+        if (!vibrator.hasVibrator()) return false
         val isTick = constant == HapticFeedbackConstants.CLOCK_TICK ||
             constant == HapticFeedbackConstants.SEGMENT_FREQUENT_TICK
         val primitiveId = if (isTick) {
@@ -189,7 +221,7 @@ internal object TouchHaptics {
         val scale = if (isTick) intensity.tickScale else intensity.clickScale
         val amplitude = if (isTick) intensity.tickAmplitude else intensity.clickAmplitude
         val durationMs = if (isTick) 10L else 16L
-        runCatching {
+        return runCatching {
             val supportsPrimitive = vibrator
                 .arePrimitivesSupported(primitiveId)
                 .firstOrNull() == true
@@ -208,7 +240,8 @@ internal object TouchHaptics {
                     .setUsage(VibrationAttributes.USAGE_TOUCH)
                     .build(),
             )
-        }
+            true
+        }.getOrDefault(false)
     }
 
     @Suppress("DEPRECATION")
