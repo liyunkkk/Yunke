@@ -59,10 +59,10 @@ class AgentChatViewportContractTest(unittest.TestCase):
         cls.call_sites = cls.source[:declaration.start()] + cls.source[body_end + 1:]
 
     def test_measured_bottom_inset_reaches_messages_without_caller_padding(self):
-        self.assertRegex(self.parameters, r"\bbottomInset\s*:\s*Dp\b")
+        self.assertRegex(self.parameters, r"\bbottomInset\s*:\s*\(\)\s*->\s*Dp\b")
         self.assertRegex(
             self.source,
-            r"\bval\s+bottomPadding\s*=\s*innerPadding\.calculateBottomPadding\s*\(\s*\)",
+            r"\bval\s+bottomPadding\s*=\s*\{\s*innerPadding\.calculateBottomPadding\s*\(\s*\)\s*\}",
         )
         message_calls = list(calls(self.call_sites, "AgentConversationMessages"))
         self.assertEqual(len(message_calls), 1, "Expected the Scaffold messages call")
@@ -85,8 +85,23 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertEqual(len(boxes), 1, "Expected one outer messages Box")
         self.assertRegex(
             boxes[0],
-            r"\bmodifier\s*=\s*modifier\s*\.padding\s*\(\s*bottom\s*=\s*bottomInset\s*\)\s*\.clipToBounds\s*\(\s*\)",
+            r"\bmodifier\s*=\s*modifier\s*\.composerViewport\s*\(\s*bottomInset\s*\)",
         )
+        # The inset is read in the layout phase so a composer height change
+        # while streaming cannot leak text over the composer for one frame,
+        # and it is subtracted exactly once so no blank band appears.
+        self.assertRegex(
+            self.source,
+            r"fun\s+Modifier\.composerViewport\s*\(\s*bottomInset\s*:\s*\(\)\s*->\s*Dp\s*\)",
+        )
+        viewport = self.source.split("fun Modifier.composerViewport", 1)[1]
+        self.assertRegex(viewport, r"bottomInset\(\)\.roundToPx\(\)")
+        self.assertRegex(
+            viewport,
+            r"layout\s*\(\s*placeable\.width\s*,\s*placeable\.height\s*\)",
+            "Shrinking the child but reporting the full height would consume the inset twice",
+        )
+        self.assertRegex(viewport, r"\.clipToBounds\s*\(\s*\)")
 
     def test_inset_is_consumed_once_by_the_viewport(self):
         self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 1)
@@ -128,7 +143,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         message_calls = list(calls(voice_source, "AgentConversationMessages"))
         self.assertEqual(len(message_calls), 1, "Expected the voice panel messages call")
-        self.assertRegex(message_calls[0], r"\bbottomInset\s*=\s*8\.dp\s*,")
+        self.assertRegex(message_calls[0], r"\bbottomInset\s*=\s*\{\s*8\.dp\s*\}\s*,")
         self.assertRegex(
             message_calls[0],
             r"\bmodifier\s*=\s*Modifier\.fillMaxSize\s*\(\s*\)\s*,?\s*$",
