@@ -4,6 +4,10 @@ import io.github.mangi.eta.ui.markdown.ChatSelectableText
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -287,8 +291,38 @@ internal class ChatMessageActions {
 /** 仅最底部那一行非空。展开时通知列表先停掉跟底上提。 */
 internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
 
-/** 手指滑动或惯性期间为 true。展开中的内容停在当前高度，不再逐帧长高。 */
+/** 手指滑动或惯性期间为 true。展开动画立刻停在最终高度，不再和滚动抢帧。 */
 internal val LocalPauseExpandLayout = staticCompositionLocalOf { false }
+
+@Composable
+private fun AnimatedDetails(
+    visible: Boolean,
+    content: @Composable () -> Unit,
+) {
+    val scrolling = LocalPauseExpandLayout.current
+    var suppressEnter by remember { mutableStateOf(false) }
+    if (scrolling && visible) suppressEnter = true
+    if (!visible) suppressEnter = false
+    if (scrolling) {
+        if (visible) content()
+        return
+    }
+    AnimatedVisibility(
+        visible = visible,
+        enter = if (suppressEnter) {
+            EnterTransition.None
+        } else {
+            fadeIn(tween(160)) + expandVertically(
+                animationSpec = tween(180, easing = FastOutSlowInEasing),
+                expandFrom = Alignment.Top,
+            )
+        },
+        exit = shrinkVertically(
+            animationSpec = tween(160, easing = FastOutSlowInEasing),
+            shrinkTowards = Alignment.Top,
+        ) + fadeOut(tween(100)),
+    ) { content() }
+}
 
 @Composable
 internal fun ChatMessageItem(
@@ -2442,7 +2476,7 @@ private fun ThinkingRow(
             )
         }
 
-        if (expanded && message.content.isNotBlank()) {
+        AnimatedDetails(visible = expanded && message.content.isNotBlank()) {
             HapticSelectionContainer {
                 Column {
                     if (!compact) {
@@ -2665,7 +2699,7 @@ private fun ToolActivityInline(
             }
         }
 
-        if (isExpanded && hasDetails) {
+        AnimatedDetails(visible = isExpanded && hasDetails) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
