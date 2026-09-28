@@ -173,6 +173,56 @@ class AnthropicMessagesProviderTest {
         }
     }
 
+    @Test
+    fun completeReportsCacheInclusivePromptTokensFromStreamUsage() {
+        val body = buildString {
+            append(event("message_start", JSONObject()
+                .put("type", "message_start")
+                .put("message", JSONObject().put("usage", JSONObject()
+                    .put("input_tokens", 3)
+                    .put("cache_read_input_tokens", 120_000)
+                    .put("cache_creation_input_tokens", 2_500)
+                    .put("output_tokens", 1)))))
+            append(event("message_delta", JSONObject()
+                .put("type", "message_delta")
+                .put("delta", JSONObject().put("stop_reason", "end_turn"))
+                .put("usage", JSONObject()
+                    .put("input_tokens", 3)
+                    .put("cache_read_input_tokens", 120_000)
+                    .put("cache_creation_input_tokens", 2_500)
+                    .put("output_tokens", 42))))
+            append(event("message_stop", JSONObject().put("type", "message_stop")))
+        }
+
+        withAnthropicServer(body, onRequest = {}) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            AnthropicMessagesProvider.complete(
+                request = ProviderRequest(
+                    config = AgentModelClient.ModelConfig(
+                        providerType = ProviderTypes.ANTHROPIC,
+                        baseUrl = baseUrl,
+                        apiKey = "key",
+                        model = "claude-sonnet-5",
+                        systemPrompt = "system"
+                    ),
+                    messages = JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
+                    tools = JSONArray(),
+                ),
+                runController = AgentRunController(),
+                onEvent = events::add,
+            )
+
+            val usages = events.filterIsInstance<ProviderEvent.Usage>().map { it.usage }
+            assertEquals(2, usages.size)
+            usages.forEach { usage ->
+                assertEquals(122_503, usage.inputTokens)
+                assertEquals(120_000, usage.cachedTokens)
+                assertEquals(122_503, usage.occupancyTokens())
+            }
+            assertEquals(42, usages.last().outputTokens)
+        }
+    }
+
     private fun event(name: String, data: JSONObject): String =
         "event: $name\ndata: $data\n\n"
 

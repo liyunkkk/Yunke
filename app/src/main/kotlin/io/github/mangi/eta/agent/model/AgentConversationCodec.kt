@@ -8,6 +8,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 
+/**
+ * 受保护回合本身就超过持久化容量上限。
+ * 单独成型，好让调用方把"内容太大"与 OOM、序列化故障区分开，不把后者也当成可以降级处理的情况。
+ */
+internal class ConversationCheckpointTooLargeException(message: String) : IllegalStateException(message)
+
 /** Provider JSON 与 Eta 稳定会话 DTO 之间的唯一转换和容量边界。 */
 internal object AgentConversationCodec {
     internal const val MAX_DRAIN_TRANSCRIPT_CHARS = 16_000
@@ -26,6 +32,8 @@ internal object AgentConversationCodec {
     internal const val VIDEO_FILE_TYPE = "video_file"
     private const val SENSITIVE_TOOL_OMITTED_TEXT =
         "[敏感工具参数与原始结果仅供当前回合使用，未写入持久会话]"
+    internal const val CHECKPOINT_TOO_LARGE_MESSAGE =
+        "受保护会话超过持久化容量上限；未截断或丢弃原消息，请压缩历史后重试"
     private const val COMPACTION_NOTICE =
         "[YUNKe 上下文提示：此前部分 assistant/tool 记录因跨进程或持久化容量上限已压缩，请勿假定缺失步骤未执行。]"
 
@@ -388,10 +396,8 @@ internal object AgentConversationCodec {
         val protectedTurnId = bounded.lastOrNull { it.turnId.isNotBlank() }?.turnId.orEmpty()
         val protectedCount = if (protectedTurnId.isBlank()) 0 else bounded.indexOfFirst { it.turnId == protectedTurnId }
             .let { start -> if (start < 0) 0 else bounded.size - start }
-        if (protectedCount > 0) {
-            require(suffixLength(bounded.size - protectedCount) <= maxChars) {
-                "受保护会话超过持久化容量上限；未截断或丢弃原消息，请压缩历史后重试"
-            }
+        if (protectedCount > 0 && suffixLength(bounded.size - protectedCount) > maxChars) {
+            throw ConversationCheckpointTooLargeException(CHECKPOINT_TOO_LARGE_MESSAGE)
         }
 
         val notice = AgentModelClient.ConversationMessage(role = "system", content = COMPACTION_NOTICE)
@@ -407,7 +413,7 @@ internal object AgentConversationCodec {
         }
         if (protectedCount > 0) {
             if (suffixLength(start) <= maxChars) return json.encodeToString(bounded.subList(start, bounded.size))
-            error("受保护会话超过持久化容量上限；未截断或丢弃原消息，请压缩历史后重试")
+            throw ConversationCheckpointTooLargeException(CHECKPOINT_TOO_LARGE_MESSAGE)
         }
 
         val last = bounded.lastOrNull() ?: return "[]"

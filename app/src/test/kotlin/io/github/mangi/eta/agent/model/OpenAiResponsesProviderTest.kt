@@ -597,8 +597,13 @@ class OpenAiResponsesProviderTest {
         )) {
             assertEquals(terminal, toolArgumentsFromStream(terminal, terminalOutput = true))
         }
-        assertEquals("{}", toolArgumentsFromStream(null, terminalOutput = true))
-        assertEquals("null", toolArgumentsFromStream(JSONObject.NULL, terminalOutput = true))
+        for (missingArguments in listOf<Any?>(null, JSONObject.NULL)) {
+            val failure = runCatching { toolArgumentsFromStream(missingArguments, terminalOutput = true) }
+                .exceptionOrNull()
+            assertTrue(failure is AgentModelFailure)
+            assertEquals("RESPONSES_TOOL_ARGUMENTS_INCOMPLETE", (failure as AgentModelFailure).code)
+            assertFalse(failure.retryable)
+        }
     }
 
     @Test fun emptyTerminalOutputUsesDoneArgumentsWithoutFieldLevelMerging() {

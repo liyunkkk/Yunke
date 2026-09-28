@@ -40,6 +40,9 @@ internal data class ProviderRequest(
     val usageConversationId: String = sessionId,
     // Request-scoped compatibility after a confirmed pre-delivery envelope rejection.
     val singleToolCall: Boolean = false,
+    // Local-only diagnostic handles. Request builders never serialize these fields.
+    val toolDiagnostics: AgentToolCallDiagnostics? = null,
+    val toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null,
 )
 
 internal data class ProviderResponse(

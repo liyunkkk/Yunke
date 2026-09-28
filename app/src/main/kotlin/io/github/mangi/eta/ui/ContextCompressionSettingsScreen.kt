@@ -36,8 +36,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.model.AgentCompressionEndpoint
+import io.github.mangi.eta.config.AutoCompressPreference
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.rememberAutoCompressEnabled
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
@@ -51,8 +53,9 @@ import top.yukonga.miuix.kmp.preference.SwitchPreference
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ContextCompressionSettingsScreen(context: Context, onBack: () -> Unit) {
-    val prefs = remember(context) { Prefs.localAgentPreferences() }
-    var enabled by remember { mutableStateOf(prefs?.getBoolean(Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED, false) ?: false) }
+    val prefs = Prefs.localAgentPreferences()
+    val autoCompressPreference = remember(prefs) { AutoCompressPreference(prefs) }
+    val enabled by rememberAutoCompressEnabled(autoCompressPreference)
     var endpointMode by remember {
         mutableStateOf(
             AgentCompressionEndpoint.parse(prefs?.getString(Prefs.Keys.AGENT_COMPRESS_ENDPOINT_MODE, null)),
@@ -85,7 +88,6 @@ internal fun ContextCompressionSettingsScreen(context: Context, onBack: () -> Un
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             when (key) {
                 Prefs.Keys.AGENT_COMPRESS_ENDPOINT_MODE -> endpointMode = AgentCompressionEndpoint.parse(prefs?.getString(key, null))
-                Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED -> enabled = prefs?.getBoolean(key, false) ?: false
                 Prefs.Keys.AGENT_COMPRESS_MODEL_PROVIDER_ID,
                 Prefs.Keys.AGENT_COMPRESS_MODEL_ID -> {
                     prefs?.let { currentPrefs ->
@@ -129,10 +131,10 @@ internal fun ContextCompressionSettingsScreen(context: Context, onBack: () -> Un
                     }
                     Switch(
                         checked = enabled,
+                        enabled = autoCompressPreference.isWritable,
                         onCheckedChange = { value ->
                             TouchHaptics.click(view)
-                            prefs?.edit()?.putBoolean(Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED, value)?.apply()
-                            enabled = value
+                            autoCompressPreference.setEnabled(value)
                         }
                     )
                 }

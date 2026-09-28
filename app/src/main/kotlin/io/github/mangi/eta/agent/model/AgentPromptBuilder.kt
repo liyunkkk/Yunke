@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
+import io.github.mangi.eta.agent.tool.AgentShellToolAvailability
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -16,8 +17,9 @@ internal object AgentPromptBuilder {
         memoryContext: AgentMemoryContext = AgentMemoryContext.DISABLED,
         rootAvailable: Boolean = false,
         delegationAvailable: Boolean = false,
+        shellTools: AgentShellToolAvailability.Snapshot? = null,
     ): JSONArray {
-        val messages = buildSystemMessages(config, skillContext, memoryContext, rootAvailable, delegationAvailable)
+        val messages = buildSystemMessages(config, skillContext, memoryContext, rootAvailable, delegationAvailable, shellTools)
         history.forEach { item ->
             runCatching { AgentConversationCodec.toJsonObject(item) }.getOrNull()?.let(messages::put)
         }
@@ -31,7 +33,14 @@ internal object AgentPromptBuilder {
         memoryContext: AgentMemoryContext,
         rootAvailable: Boolean,
         delegationAvailable: Boolean = false,
+        shellTools: AgentShellToolAvailability.Snapshot? = null,
     ): JSONArray {
+        // Only point at the detection section when this round actually carries one.
+        val environmentRule = if (shellTools != null) {
+            "environment 按下方本机命令检测选择"
+        } else {
+            "environment 按命令所需程序实际所在的环境选择"
+        }
         val messages = JSONArray()
         if (config.systemPrompt.isNotBlank()) {
             messages.put(systemMessage(config.systemPrompt))
@@ -117,9 +126,9 @@ internal object AgentPromptBuilder {
                         "准确告知用户在 Linux 工具环境页面安装“APK 分析”，不要自行下载不受校验的工具。" +
                         "当前 Apktool 只支持解码与检查，不支持 build/回编译；不要绕过该限制或宣称已经生成可安装 APK。" +
                         (if (rootAvailable) {
-                            "用户说‘执行命令 xxx’且未指定环境时，首轮调用 terminal，action=open_and_exec，environment=android，command=xxx；Android 可使用 root 身份，Linux 身份由已选择的后端决定；"
+                            "用户说‘执行命令 xxx’且未指定环境时，首轮调用 terminal，action=open_and_exec，command=xxx，" + environmentRule + "；Android 可使用 root 身份，Linux 身份由已选择的后端决定；"
                         } else {
-                            "当前终端只支持 identity=user，以 YUNKe 的 App UID 执行；Linux 内模拟 root 不授予 Android 特权。用户未指定环境的命令使用 terminal 的 environment=android、action=open_and_exec；"
+                            "当前终端只支持 identity=user，以 YUNKe 的 App UID 执行；Linux 内模拟 root 不授予 Android 特权。用户未指定环境的命令使用 terminal 的 action=open_and_exec，" + environmentRule + "；"
                         }) +
                         "连续多步 shell 工作先 action=open 获取 session_id，再 action=exec 复用会话；" +
                         "长时间命令使用 async=true 启动后用 read_async_result 轮询，完成后 close；" +
@@ -133,6 +142,7 @@ internal object AgentPromptBuilder {
                         "read_image 对视频会抽取封面帧作为视觉输入，并返回时长等信息。" +
                         "同一轮模型回复最多调用一次 read_image；需要查看多张或更多帧时，" +
                         "必须等待当前结果返回并观察内容，再在下一轮调用下一张，禁止在同一轮并行或批量调用多个 read_image。" +
+                        (shellTools?.let(AgentShellToolAvailability::promptNote) ?: "") +
                         (if (delegationAvailable) TERMINAL_DELEGATION_NOTE else "")
                 )
             )

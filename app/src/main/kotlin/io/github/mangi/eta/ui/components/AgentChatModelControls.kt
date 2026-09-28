@@ -317,14 +317,19 @@ internal fun AgentContextUsageButton(
     val menuState = rememberEtaMenuState()
     val selectorState = rememberEtaMenuState()
     val telemetry = LocalAgentContextTelemetry.current
-    var localSelectedTaskId by remember { mutableStateOf<String?>(null) }
+    val owner = LocalConversationSubAgentEditor.current?.owner
+    var localSelectedTaskId by remember(owner) { mutableStateOf<String?>(null) }
     val selectedTaskId = if (telemetry.onTaskSelected != null) telemetry.selectedTaskId else localSelectedTaskId
     fun selectTask(id: String?) {
         if (telemetry.onTaskSelected != null) telemetry.onTaskSelected.invoke(id) else localSelectedTaskId = id
     }
     val child = telemetry.children.firstOrNull { it.taskId == selectedTaskId }
-    LaunchedEffect(telemetry.children) {
-        if (selectedTaskId != null && child == null) selectTask(null)
+    LaunchedEffect(telemetry.children, selectedTaskId, owner) {
+        // Controlled selection belongs to the owner reducer: a refresh effect must not
+        // replay an old null selection over a newer explicit user choice.
+        if (telemetry.onTaskSelected == null && selectedTaskId != null && child == null) {
+            localSelectedTaskId = null
+        }
     }
     val displayedUsage = child?.cloudContextUsage() ?: usage
     val selectedLabel = child?.contextLabel() ?: telemetry.mainModelName.ifBlank { "主代理" }
@@ -336,7 +341,7 @@ internal fun AgentContextUsageButton(
         else -> MiuixTheme.colorScheme.primary
     }
     val locale = LocalConfiguration.current.locales[0]
-    val summary = formatContextUsage(
+    val summary = child?.cloudContextSummary(locale) ?: formatContextUsage(
         usage = displayedUsage,
         noUsageText = stringResource(R.string.context_no_previous_usage),
         noLimitText = stringResource(R.string.context_no_model_limit),

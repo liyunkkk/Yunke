@@ -43,7 +43,7 @@ android {
         minSdk = 34
         targetSdk = 36
         // versionCode 规则：yyyyMMdd + 两位当日序号（01 起），发版时随 versionName 一起手动递增。
-        versionCode = 2026092701
+        versionCode = 2026092801
         versionName = "5.3.3"
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -120,6 +120,17 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+    }
+}
+
+// CI must identify the last started test even if the worker never finishes a report.
+if (providers.environmentVariable("GITHUB_ACTIONS").orNull == "true") {
+    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+        testLogging {
+            events("started", "passed", "skipped", "failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStandardStreams = false
+        }
     }
 }
 

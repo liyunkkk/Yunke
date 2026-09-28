@@ -157,7 +157,7 @@
   <string name="app_press_back_again_to_exit">Press back again to exit</string>
   <string name="settings_diagnostics">Diagnostics</string>
   <string name="settings_file_logging">Record diagnostic logs</string>
-  <string name="settings_file_logging_summary">When enabled, runtime logs are saved on-device. Turning it off stops writing and keeps existing logs.</string>
+  <string name="settings_file_logging_summary">When enabled, runtime logs and redacted tool-call diagnostics are saved on-device. Tool diagnostics record structure and fingerprints, not commands, argument values or keys. Turning it off stops writing and keeps existing logs.</string>
   <string name="settings_export_logs">Export logs</string>
   <string name="settings_export_logs_summary">Export app logs, including redacted voice diagnostics, as a ZIP file</string>
   <string name="settings_export_logs_working">Working…</string>
@@ -1391,6 +1391,7 @@
     <string name="stats_page_total_conversations">Conversations</string>
     <string name="stats_page_total_messages">Messages</string>
     <string name="stats_page_input_tokens">Input tokens</string>
+    <string name="stats_page_fresh_input_tokens">Input tokens (excl. cache)</string>
     <string name="stats_page_output_tokens">Output tokens</string>
     <string name="stats_page_cached_tokens">Cached tokens</string>
     <string name="stats_page_launch_count">App launches</string>
@@ -1490,11 +1491,11 @@
   <string name="tool_get_task_result">Get task result</string>
   <string name="tool_cancel_task">Cancel task</string>
   <string name="vd_recovery_title">Virtual display recovery</string>
-  <string name="vd_recovery_empty">No pending Eta display session</string>
+  <string name="vd_recovery_empty">No pending YUNKe display session</string>
   <string name="vd_recovery_record">Recovery record: display %1$d · %2$s</string>
   <string name="vd_recovery_unknown">Recovery state is unknown; no display will be created</string>
   <string name="vd_recovery_busy">An agent run is still active. Stop it before recovery.</string>
-  <string name="vd_recovery_scope">This page manages Eta session displays. Port 3070 belongs to a separate module and does not report these displays.</string>
+  <string name="vd_recovery_scope">This page manages YUNKe session displays. Port 3070 belongs to a separate module and does not report these displays.</string>
   <string name="vd_recovery_action">Preserve tasks and close</string>
   <string name="vd_recovery_working">Checking or recovering…</string>
   <string name="vd_recovery_success">Session recovered and display released</string>

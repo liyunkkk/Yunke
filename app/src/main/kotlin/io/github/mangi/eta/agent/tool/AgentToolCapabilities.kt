@@ -23,6 +23,8 @@ internal data class AgentToolCapabilities(
     val locationAllowed: Boolean = true,
     val colorOs: Boolean = true,
     val virtualDisplay: Boolean = false,
+    /** Per-round read-only command detection; null when unknown (tests, detection failure). */
+    val shellTools: AgentShellToolAvailability.Snapshot? = null,
 ) {
     fun unavailableCode(name: String): String? {
         val requirement = AgentToolRequirements.find(name) ?: return "UNKNOWN_TOOL"
@@ -72,5 +74,12 @@ internal data class AgentToolCapabilities(
                     context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED),
             colorOs = isColorOsDevice(),
         )
+
+        /**
+         * Capabilities for an agent round, including read-only command detection. Performs file
+         * metadata IO, so call it only from the runtime worker thread, never from UI composition.
+         */
+        fun captureForRound(context: Context): AgentToolCapabilities =
+            capture(context).copy(shellTools = AgentShellToolAvailability.detect(context))
     }
 }

@@ -12,17 +12,11 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
@@ -33,9 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -71,6 +63,7 @@ import io.github.mangi.eta.ui.ContextCompressionSettingsScreen
 import io.github.mangi.eta.ui.SettingsScreen
 import io.github.mangi.eta.ui.components.AppUpdateDialog
 import io.github.mangi.eta.ui.components.MiuixDialogActions
+import io.github.mangi.eta.ui.components.AgentPendingChildStopDialog
 import io.github.mangi.eta.ui.model.AgentChatAction
 import io.github.mangi.eta.ui.model.AgentHomeAction
 import io.github.mangi.eta.ui.model.AgentMemoryAction
@@ -113,10 +106,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
 import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
@@ -142,16 +132,11 @@ fun AgentAppRoot(
     val agentState = appViewModel.state
     val subAgentOwner = agentState.subAgentConfigOwner
     val subAgentEditor = remember(agentState, subAgentOwner) { agentState.subAgentEditor(subAgentOwner) }
-    val childGroupsRevision by io.github.mangi.eta.agent.runtime.AgentChildTaskGroups.revision.collectAsState()
-    val hasBackgroundChildren = remember(subAgentOwner, childGroupsRevision) {
-        (subAgentOwner as? io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Conversation)?.let {
-            io.github.mangi.eta.agent.runtime.AgentChildTaskGroups.hasActive(it.value)
-        } ?: false
-    }
-    var stopRequest by remember { mutableStateOf<AgentAppState.StopRequest?>(null) }
-    LaunchedEffect(subAgentOwner) { stopRequest = null }
-    fun reportStopSelectionChanged() {
-        android.widget.Toast.makeText(context, "任务状态已变化，请重新选择要停止的任务。", android.widget.Toast.LENGTH_SHORT).show()
+    fun stopMainReply() {
+        val captured = agentState.captureStopRequest() ?: return
+        if (!agentState.stopMainReply(captured)) {
+            Toast.makeText(context, "任务状态已变化，请重新选择要停止的任务。", Toast.LENGTH_SHORT).show()
+        }
     }
     val usageConversationId = agentState.conversationPaneState.selectedConversationId
     val recordedUsageState by remember(usageConversationId) {
@@ -579,12 +564,12 @@ fun AgentAppRoot(
                             when (action) {
                                 is AgentHomeAction.ReasoningEffortChanged ->
                                     agentState.updateReasoningEffort(action.effort)
-                                is AgentHomeAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId)
+                                is AgentHomeAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId, usageConversationId)
                                 is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId, action.providerId)
                                 is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                AgentHomeAction.StopRun -> { stopRequest = agentState.captureStopRequest() }
+                                AgentHomeAction.StopRun -> agentState.pauseCurrentRun()
                                 AgentHomeAction.ContinueRun -> agentState.continuePausedGeneration()
-                                AgentHomeAction.AbortPausedRun -> { stopRequest = agentState.captureStopRequest() }
+                                AgentHomeAction.AbortPausedRun -> stopMainReply()
                                 is AgentHomeAction.AssistantSelected -> agentState.selectAssistant(action.id)
                                 is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
                                 is AgentHomeAction.VideoAttached -> agentState.attachVideo(action.uri)
@@ -648,12 +633,12 @@ fun AgentAppRoot(
                                 AgentChatAction.NavigateBack -> popRoute()
                                 is AgentChatAction.ReasoningEffortChanged ->
                                     agentState.updateReasoningEffort(action.effort)
-                                is AgentChatAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId)
+                                is AgentChatAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId, usageConversationId)
                                 is AgentChatAction.ModelSelected -> agentState.selectModel(action.modelId, action.providerId)
                                 is AgentChatAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                AgentChatAction.StopRun -> { stopRequest = agentState.captureStopRequest() }
+                                AgentChatAction.StopRun -> agentState.pauseCurrentRun()
                                 AgentChatAction.ContinueRun -> agentState.continuePausedGeneration()
-                                AgentChatAction.AbortPausedRun -> { stopRequest = agentState.captureStopRequest() }
+                                AgentChatAction.AbortPausedRun -> stopMainReply()
                                 is AgentChatAction.AssistantSelected -> agentState.selectAssistant(action.id)
                                 AgentChatAction.OpenBrowser -> pushRoute(AppRoute.Browser)
                                 is AgentChatAction.EditAssistant -> pushRoute(AppRoute.AssistantEdit(action.id))
@@ -1042,33 +1027,7 @@ fun AgentAppRoot(
             }
     }
 
-    if (hasBackgroundChildren && !agentState.homeState.isStreaming &&
-        (backStack.lastOrNull() == AppRoute.Home || backStack.lastOrNull() == AppRoute.Chat)) {
-        androidx.compose.material3.FilledTonalButton(
-            onClick = { stopRequest = agentState.captureStopRequest() },
-            modifier = Modifier.align(Alignment.TopEnd).padding(top = 72.dp, end = 16.dp),
-        ) { androidx.compose.material3.Text("后台子任务 · 管理") }
-    }
-
-    stopRequest?.let { captured ->
-        io.github.mangi.eta.ui.components.AgentStopTaskDialog(
-            mainRunning = captured.mainRunning,
-            childrenRunning = captured.childrenRunning,
-            onStopMain = {
-                stopRequest = null
-                if (!agentState.stopMainReply(captured)) reportStopSelectionChanged()
-            },
-            onStopAll = {
-                stopRequest = null
-                if (!agentState.stopEntireTask(captured)) reportStopSelectionChanged()
-            },
-            onDismiss = { stopRequest = null },
-            onPause = if (agentState.canPauseStopRequest(captured)) ({
-                stopRequest = null
-                if (!agentState.pauseStopRequest(captured)) reportStopSelectionChanged()
-            }) else null,
-        )
-    }
+    AgentPendingChildStopDialog(agentState.conversationPaneState.selectedConversationId)
 
     if (browserSheetVisible) {
         AgentBrowserScreen(onDismiss = { browserSheetVisible = false })
@@ -1110,7 +1069,7 @@ fun AgentAppRoot(
             reason = prompt.reason,
             onDismiss = agentState::dismissContextBudgetPrompt,
             onCompactThisRun = { agentState.allowCurrentRunCompaction(prompt.runId) },
-            onStop = { stopRequest = agentState.captureStopRequest() },
+            onStop = { stopMainReply() },
         )
     }
 
@@ -1279,45 +1238,6 @@ fun AgentAppRoot(
     }
     } // task controls overlay
     } // selected conversation settings context
-}
-
-
-
-@Composable
-private fun MoveFolderOption(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Icon(
-            imageVector = Icons.Rounded.Folder,
-            contentDescription = null,
-            tint = if (selected) {
-                MiuixTheme.colorScheme.primary
-            } else {
-                MiuixTheme.colorScheme.onSurface
-            },
-        )
-        Text(
-            text = label,
-            color = if (selected) {
-                MiuixTheme.colorScheme.primary
-            } else {
-                MiuixTheme.colorScheme.onSurface
-            },
-            modifier = Modifier.weight(1f),
-        )
-    }
 }
 
 private data class MessageMutationTarget(

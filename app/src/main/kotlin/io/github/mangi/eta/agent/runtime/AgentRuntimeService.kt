@@ -145,8 +145,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     override fun onDestroy() {
-        // Do not enqueue a future global stop: a replacement service may already own new groups.
-        retireChildTargets(AgentChildTaskGroups.captureActiveStopTargets())
+        // Losing the presentation/service is not consent to stop children. Keep their snapshots
+        // and pending choices; a replacement service must not receive a deferred global stop.
+        sessions.snapshot().forEach { AgentChildRunControl.terminate(it, AgentChildControlPolicy.Reason.USER_CANCEL) }
         failPendingStarts("Agent Runtime 服务已停止")
         sessions.cancelAll("Agent Runtime 服务已停止")
         overlaySession = null
@@ -208,8 +209,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
 
                 AgentRuntimeWire.MSG_STOP_MAIN_RUN -> {
-                    val runId = msg.data?.let(AgentRuntimeWire::runIdFromBundle).orEmpty()
-                    if (runId.isNotBlank()) stopMainRun(runId)
+                    val data = msg.data ?: return
+                    val runId = AgentRuntimeWire.runIdFromBundle(data)
+                    val reason = if (data.getString("child_stop_reason") == AgentChildControlPolicy.Reason.SETTINGS_CHANGED.name) {
+                        AgentChildControlPolicy.Reason.SETTINGS_CHANGED
+                    } else AgentChildControlPolicy.Reason.USER_STOP
+                    if (runId.isNotBlank()) stopMainRun(runId, reason)
                 }
 
                 AgentRuntimeWire.MSG_ACK_RESULT -> {
@@ -333,7 +338,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         request: AgentRuntimeWire.RunRequest,
         replyTo: Messenger? = null,
     ) {
-        sessions.get(request.runId)?.cancel("已被同一任务的新请求替换")
+        sessions.get(request.runId)?.let { previous ->
+            AgentChildRunControl.terminate(previous, AgentChildControlPolicy.Reason.SETTINGS_CHANGED)
+            previous.cancel("已被同一任务的新请求替换")
+        }
         val session = AgentRuntimeSession(
             runId = request.runId,
             eventSink = { event -> sendEventTo(replyTo, event, request.runId) },
@@ -357,6 +365,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             )) {}
             return
         }
+        AgentChildRunControl.begin(session)
         sessions.put(session)
         if (overlayRunId == request.runId) {
             if (AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)) {
@@ -415,10 +424,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         executionNotificationTracker = null
                     }
                     AgentExecutionService.resetExecutionState()
+                    AgentChildRunControl.finish(session)
                     AgentExecutionService.release(runLease.id)
                 }
             }
         } catch (failure: Throwable) {
+            AgentChildRunControl.finish(session)
             AgentExecutionService.release(runLease.id)
             val result = AgentRuntimeWire.RunResult(
                 runId = request.runId, ok = false, content = "", error = "Agent Runtime 无法启动执行线程",
@@ -513,7 +524,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun persistRunArtifacts(
         request: AgentRuntimeWire.RunRequest,
         result: AgentRuntimeWire.RunResult,
-        events: List<AgentEvent>,
+        events: List<AgentEvent>
     ) {
         // outbox 是终态与在途 checkpoint 之间的提交点；失败时保留 checkpoint 供下次恢复。
         persistCompletedRun(request, result)
@@ -778,13 +789,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             dismissAndStop()
             return
         }
-        cancelRun(runId)
+        stopMainRun(runId)
     }
 
-    private fun stopMainRun(runId: String) {
+    private fun stopMainRun(
+        runId: String,
+        reason: AgentChildControlPolicy.Reason = AgentChildControlPolicy.Reason.USER_STOP,
+    ) {
         if (runId.isBlank()) return
         pendingStartRequests.remove(runId)?.let { pending -> failPendingStart(pending, "已停止") }
         val session = sessions.get(runId) ?: return
+        if (session.isTerminal) return
+        AgentChildRunControl.terminate(session, reason)
         if (session.requestStop() && overlaySession === session) {
             state.value = state.value.copy(status = AgentOverlayStatus.Stopping)
         }
@@ -793,7 +809,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun cancelRun(runId: String) {
         if (runId.isBlank()) return
         val targets = AgentChildTaskGroups.captureRunStopTargets(runId)
-        stopMainRun(runId)
+        // Explicit whole-task cancellation is not a terminal network failure or a second choice.
+        stopMainRun(runId, AgentChildControlPolicy.Reason.USER_CANCEL)
         retireChildTargets(targets)
     }
 
@@ -819,8 +836,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun requestPause(runId: String) {
         if (runId.isBlank()) return
-        sessions.get(runId)?.controller?.pause()
-        if (overlayRunId == runId) {
+        val session = sessions.get(runId)?.takeUnless { it.isTerminal || it.controller.isCancelled } ?: return
+        AgentChildRunControl.pause(session)
+        if (overlaySession === session) {
             state.value = state.value.copy(
                 phase = AgentOverlayPhase.PAUSED,
                 status = AgentOverlayStatus.Paused,
@@ -844,8 +862,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun requestResume(runId: String) {
         if (runId.isBlank()) return
-        sessions.get(runId)?.controller?.resume()
-        if (overlayRunId == runId) {
+        val session = sessions.get(runId)?.takeUnless { it.isTerminal || it.controller.isCancelled } ?: return
+        AgentChildRunControl.resume(session)
+        if (overlaySession === session) {
             state.value = state.value.copy(
                 phase = AgentOverlayPhase.RUNNING,
                 status = AgentOverlayStatus.Continuing,
@@ -885,6 +904,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     return
                 }
             } else {
+                AgentChildRunControl.resume(session)
                 AndroidAgentLogger.info(
                     "Agent runtime supplement received: index=${event.index}, chars=${event.text.length}"
                 )

@@ -186,7 +186,7 @@
   <string name="app_press_back_again_to_exit">再按一次返回即可離開應用</string>
   <string name="settings_diagnostics">診斷</string>
   <string name="settings_file_logging">記錄診斷日誌</string>
-  <string name="settings_file_logging_summary">開啟後記錄執行日誌到本機。關閉後停止寫入，既有日誌保留，方便排查問題。</string>
+  <string name="settings_file_logging_summary">開啟後記錄執行日誌和去識別化工具呼叫診斷到本機。工具診斷僅記錄結構與指紋，不記錄命令、參數值或金鑰。關閉後停止寫入，既有日誌保留。</string>
   <string name="settings_export_logs">匯出日誌</string>
   <string name="settings_export_logs_summary">匯出軟體日誌（含去識別化語音診斷）為 ZIP 檔案</string>
   <string name="settings_export_logs_working">處理中…</string>
@@ -1364,6 +1364,7 @@
     <string name="stats_page_total_conversations">總對話數</string>
     <string name="stats_page_total_messages">總訊息數</string>
     <string name="stats_page_input_tokens">輸入 Token</string>
+    <string name="stats_page_fresh_input_tokens">輸入 Token（不含快取）</string>
     <string name="stats_page_output_tokens">輸出 Token</string>
     <string name="stats_page_cached_tokens">快取 Token</string>
     <string name="stats_page_launch_count">應用啟動次數</string>

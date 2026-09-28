@@ -3,7 +3,9 @@ package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.agent.device.AgentTaskSurface
 import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
+import io.github.mangi.eta.core.AndroidAgentLogger
 import java.util.ArrayDeque
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 
 /**
@@ -258,10 +260,46 @@ internal class AgentRuntimeSession(
             terminalAfterChildCompactions = action
         } else {
             afterUnlock += {
-                withSessionLock {
-                    while (childCompactions != 0) childCompactionsFinished.awaitUninterruptibly()
-                }
+                awaitChildCompactions()
                 action()
+            }
+        }
+    }
+
+    /**
+     * A pending child compaction must never block the terminal seal. The wait releases
+     * the session lock between timeouts, so child callbacks and isTerminal stay usable,
+     * and it proceeds to the seal once the budget runs out or the thread is interrupted
+     * instead of waiting forever on an unrunnable child.
+     */
+    private fun awaitChildCompactions() {
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(CHILD_COMPACTION_SEAL_TIMEOUT_MS)
+        var interrupted = false
+        var pending = 0
+        try {
+            withSessionLock {
+                while (childCompactions != 0) {
+                    val remainingNanos = deadlineNanos - System.nanoTime()
+                    if (remainingNanos <= 0) break
+                    try {
+                        childCompactionsFinished.awaitNanos(remainingNanos)
+                    } catch (interruptedWait: InterruptedException) {
+                        // An interrupt is a stop signal, not a reason to keep waiting out the budget.
+                        interrupted = true
+                        break
+                    }
+                }
+                pending = childCompactions
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt()
+        }
+        if (interrupted || pending != 0) {
+            // Diagnostics must never decide whether the terminal result is published.
+            runCatching {
+                AndroidAgentLogger.warn(
+                    "Runtime terminal seal wait ended: pending_child_compactions=$pending interrupted=$interrupted"
+                )
             }
         }
     }
@@ -358,5 +396,10 @@ internal class AgentRuntimeSession(
                 }
             }
         }
+    }
+
+    internal companion object {
+        /** Upper bound on waiting for admitted child compactions before sealing the terminal. */
+        const val CHILD_COMPACTION_SEAL_TIMEOUT_MS = 10_000L
     }
 }

@@ -52,7 +52,7 @@ internal object AgentTerminalToolCatalog {
                                     "command",
                                     JSONObject()
                                         .put("type", "string")
-                                        .put("description", "Android shell command to execute. Required for exec/open_and_exec.")
+                                        .put("description", "Shell command to execute in the selected environment. Required for exec/open_and_exec.")
                                 )
                                 .put(
                                     "cwd",

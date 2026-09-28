@@ -8,5 +8,7 @@ internal fun formatCacheHitRate(cachedTokens: Long, inputTokens: Long, locale: L
     return NumberFormat.getPercentInstance(locale).apply {
         minimumFractionDigits = 1
         maximumFractionDigits = 1
-    }.format(cachedTokens.coerceAtLeast(0L).toDouble() / inputTokens.toDouble())
+        // cachedTokens is a subset of inputTokens in every provider's normalized usage, so a
+        // ratio above 1 means the data is inconsistent; clamp instead of printing 380%.
+    }.format((cachedTokens.coerceIn(0L, inputTokens).toDouble() / inputTokens.toDouble()))
 }
