@@ -2329,6 +2329,7 @@ private fun ThinkingRow(
     compact: Boolean = false,
     isPaused: Boolean = false,
 ) {
+    val reportTailResize = LocalTailResize.current
     var expanded by rememberSaveable(message.id) { mutableStateOf(!message.collapsed) }
     var manuallyExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     // 仅本次组合内由点击触发的展开才分帧组合正文；不跨配置变更保存。
@@ -2392,7 +2393,7 @@ private fun ThinkingRow(
                     manuallyExpanded = true
                     expandedByTap = !expanded
                     expanded = !expanded
-                    LocalTailResize.current?.invoke()
+                    reportTailResize?.invoke()
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2521,6 +2522,7 @@ private fun ToolActivityInline(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
+    val reportTailResize = LocalTailResize.current
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     // 只有「当前浏览器」卡片订阅实时会话快照，避免每个工具行都跟随快照重组
     val browserSnapshot = if (showBrowserShortcut) {
@@ -2573,7 +2575,7 @@ private fun ToolActivityInline(
                 if (hasDetails) {
                     Modifier.clickable {
                         isExpanded = !isExpanded
-                        LocalTailResize.current?.invoke()
+                        reportTailResize?.invoke()
                     }
                 } else {
                     Modifier
