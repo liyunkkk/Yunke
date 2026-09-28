@@ -40,7 +40,8 @@ class AnthropicUsageTotalsTest {
     }
 
     @Test
-    fun cachedTokensCountsReadsOnlyBecauseCreationIsFreshlyProcessed() {
+    fun cachedTokensIncludesCreationAndReads() {
+        assertEquals(186_000, AnthropicUsageTotals.cachedTokens(180_000, 6_000))
         assertEquals(180_000, AnthropicUsageTotals.cachedTokens(180_000))
         assertNull(AnthropicUsageTotals.cachedTokens(null))
     }
@@ -55,9 +56,9 @@ class AnthropicUsageTotalsTest {
         )
         val usage = requireNotNull(AnthropicUsageTotals.parse { raw[it] })
         assertEquals(190_000, usage.inputTokens)
-        assertEquals(180_000, usage.cachedTokens)
-        // Cache writes stay in the non-cached remainder shown as "input".
-        assertEquals(10_000, usage.inputTokens!! - usage.cachedTokens!!)
+        assertEquals(186_000, usage.cachedTokens)
+        // Only the uncached prefix remains outside the cache bucket.
+        assertEquals(4_000, usage.inputTokens!! - usage.cachedTokens!!)
         assertEquals(512, usage.outputTokens)
         assertNull(usage.contextTokens)
         // Occupancy must reflect the whole prompt, not just the uncached prefix.

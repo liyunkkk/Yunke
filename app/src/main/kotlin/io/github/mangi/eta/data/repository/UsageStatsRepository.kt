@@ -56,24 +56,28 @@ internal object UsageStatsRepository {
                 runCatching { LocalDate.parse(entry.day) to entry.count }.getOrNull()
             }
             .toMap()
-        val tokenTotals = aggregateVisibleTokens(dao.usageContentRows())
         val retired = SettingsDataStore.retiredUsage()
         val liveConversations = dao.conversationCount()
         val liveMessages = dao.totalMessageCount()
+        val modelUsage = decodeModelUsageSnapshot(SettingsDataStore.modelUsageJson())
+        // Same bills as the model tab. Message rows are a second book: compaction
+        // markers and prompts the ledger rejected must not be added again.
+        val liveIds = dao.conversations().map { it.id }.toSet()
+        val (currentTokens, lifetimeTokens) = alignedUsageTotals(modelUsage, liveIds)
         return UsageStatsSnapshot(
             currentConversations = liveConversations,
             lifetimeConversations = liveConversations + retired.conversations,
             currentMessages = liveMessages,
             lifetimeMessages = liveMessages + retired.messages,
-            currentInputTokens = tokenTotals.input,
-            lifetimeInputTokens = tokenTotals.input + retired.inputTokens,
-            currentOutputTokens = tokenTotals.output,
-            lifetimeOutputTokens = tokenTotals.output + retired.outputTokens,
-            currentCachedTokens = tokenTotals.cached,
-            lifetimeCachedTokens = tokenTotals.cached + retired.cachedTokens,
+            currentInputTokens = currentTokens.input,
+            lifetimeInputTokens = lifetimeTokens.input,
+            currentOutputTokens = currentTokens.output,
+            lifetimeOutputTokens = lifetimeTokens.output,
+            currentCachedTokens = currentTokens.cached,
+            lifetimeCachedTokens = lifetimeTokens.cached,
             conversationsPerDay = mergeHeatmap(perDay, retired.heatmap, startDate),
             launchCount = SettingsDataStore.launchCount(),
-            modelUsage = decodeModelUsageSnapshot(SettingsDataStore.modelUsageJson()),
+            modelUsage = modelUsage,
         )
     }
 
@@ -99,6 +103,36 @@ internal object UsageStatsRepository {
     }
 }
 
+
+
+/** Lifetime matches the model ledger. Current is the part still tied to a live conversation. */
+internal fun alignedUsageTotals(
+    snapshot: ModelUsageSnapshot,
+    liveConversationIds: Set<String>,
+): Pair<TokenTotals, TokenTotals> {
+    var currentInput = 0L
+    var currentOutput = 0L
+    var currentCached = 0L
+    var lifetimeInput = 0L
+    var lifetimeOutput = 0L
+    var lifetimeCached = 0L
+    snapshot.providers.forEach { provider ->
+        provider.models.forEach { model ->
+            lifetimeInput += model.inputTokens
+            lifetimeOutput += model.outputTokens
+            lifetimeCached += model.cachedTokens
+            model.events.collapsedByRound().forEach { event ->
+                val id = event.conversationId ?: return@forEach
+                if (id !in liveConversationIds) return@forEach
+                currentInput += event.inputTokens
+                currentOutput += event.outputTokens
+                currentCached += event.cachedTokens
+            }
+        }
+    }
+    return TokenTotals(currentInput, currentOutput, currentCached) to
+        TokenTotals(lifetimeInput, lifetimeOutput, lifetimeCached)
+}
 
 internal fun aggregateVisibleTokens(rows: List<UsageContentRow>): TokenTotals {
     var input = 0L
