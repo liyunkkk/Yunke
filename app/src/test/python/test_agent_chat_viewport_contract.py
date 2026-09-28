@@ -134,7 +134,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8"))
         message_calls = list(calls(voice_source, "AgentConversationMessages"))
         self.assertEqual(len(message_calls), 1, "Expected the voice panel messages call")
-        self.assertRegex(message_calls[0], r"\bbottomInset\s*=\s*\{\s*8\.dp\s*\}\s*,")
+        self.assertRegex(message_calls[0], r"\bbottomInset\s*=\s*8\.dp\s*,")
         self.assertRegex(
             message_calls[0],
             r"\bmodifier\s*=\s*Modifier\.fillMaxSize\s*\(\s*\)\s*,?\s*$",
