@@ -40,6 +40,7 @@ internal data class AgentChatUiState(
      */
     val activeRunContextWindow: Int? = null,
     val childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
+    val childStatusRoster: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
     val childContextRunId: String = "",
     val selectedContextTaskId: String? = null,
     /** False means metadata/preview only; persistence must not replace its stored content. */

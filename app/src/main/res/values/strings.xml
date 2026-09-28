@@ -47,6 +47,9 @@
   <string name="token_usage_empty">No token usage in this conversation yet</string>
   <string name="action_browse_workspace_files">Browse workspace files</string>
   <string name="action_launch_kimi_web">Launch Kimi Web</string>
+  <string name="action_sub_agent_status">Sub-agent status</string>
+  <string name="sub_agent_status_empty">This conversation has no sub-agents</string>
+  <string name="sub_agent_status_close">Close</string>
   <string name="route_chat">Chat</string>
   <string name="route_browser">Agent browser</string>
   <string name="route_tools">Tools</string>

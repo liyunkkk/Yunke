@@ -1504,9 +1504,11 @@ internal class AgentAppState(
         check(state.conversationContentLoaded)
         fileAttachmentOwnerVersion += 1
         selectedConversationId = conversationId
-        val view = ownerContext(conversationId).projection()
+        val owner = ownerContext(conversationId)
+        val view = owner.projection()
         val ordered = orderedTerminalState(state).copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
+            childStatusRoster = owner.roster(),
         )
         conversationsById = conversationsById + (conversationId to ordered)
         homeState = ordered
@@ -4945,9 +4947,11 @@ internal class AgentAppState(
                 cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
             else -> state
         }
-        val view = ownerContexts[conversationId]?.projection()
-        val current = if (view == null) projected else projected.copy(
+        val ownerContext = ownerContexts[conversationId]
+        val view = ownerContext?.projection()
+        val current = if (view == null || ownerContext == null) projected else projected.copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
+            childStatusRoster = ownerContext.roster(),
         )
         conversationsById = conversationsById + (conversationId to current)
         if (updateTimestamp) {

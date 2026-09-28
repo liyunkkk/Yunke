@@ -76,6 +76,9 @@
   <string name="context_compacted_summary_title">壓縮摘要</string>
   <string name="context_compacted_summary_action">查看摘要</string>
   <string name="action_launch_kimi_web">啟動 Kimi Web</string>
+  <string name="action_sub_agent_status">子代理狀態</string>
+  <string name="sub_agent_status_empty">這個工作階段還沒有子代理</string>
+  <string name="sub_agent_status_close">關閉</string>
   <string name="route_chat">對話</string>
   <string name="route_browser">Agent 瀏覽器</string>
   <string name="route_tools">工具</string>

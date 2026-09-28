@@ -7,6 +7,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Language
@@ -37,6 +38,7 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.components.EtaDropdownMenu
 import io.github.mangi.eta.ui.components.rememberEtaMenuState
+import io.github.mangi.eta.agent.delegation.SubAgentContextStats
 import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import io.github.mangi.eta.ui.CompressConversationDialog
@@ -68,12 +70,14 @@ internal fun TopBarOverflowMenu(
     onSearchHistory: suspend (String) -> List<MessageSearchHit> = { emptyList() },
     onOpenHistoryHit: (MessageSearchHit) -> Unit = {},
     tokenUsage: ConversationTokenUsageUi = ConversationTokenUsageUi(),
+    subAgentStatuses: List<SubAgentContextStats> = emptyList(),
 ) {
     val menuState = rememberEtaMenuState()
     val view = LocalView.current
     var showCompressDialog by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
     var showTokenUsageDialog by remember { mutableStateOf(false) }
+    var showSubAgentStatusDialog by remember { mutableStateOf(false) }
 
     androidx.compose.foundation.layout.Box {
         IconButton(
@@ -164,6 +168,19 @@ internal fun TopBarOverflowMenu(
             DropdownMenuItem(
                 modifier = CompactMenuItemModifier,
                 contentPadding = CompactMenuItemPadding,
+                text = { Text(stringResource(R.string.action_sub_agent_status)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.AccountTree,
+                        contentDescription = null,
+                        modifier = Modifier.size(TopBarMenuIconSize),
+                    )
+                },
+                onClick = { TouchHaptics.click(view); menuState.dismiss(); showSubAgentStatusDialog = true },
+            )
+            DropdownMenuItem(
+                modifier = CompactMenuItemModifier,
+                contentPadding = CompactMenuItemPadding,
                 text = { Text(kimiWebLabel) },
                 leadingIcon = {
                     Icon(
@@ -250,6 +267,11 @@ internal fun TopBarOverflowMenu(
         show = showTokenUsageDialog,
         usage = tokenUsage,
         onDismiss = { showTokenUsageDialog = false },
+    )
+    SubAgentStatusDialog(
+        show = showSubAgentStatusDialog,
+        agents = subAgentStatuses,
+        onDismiss = { showSubAgentStatusDialog = false },
     )
     }
 

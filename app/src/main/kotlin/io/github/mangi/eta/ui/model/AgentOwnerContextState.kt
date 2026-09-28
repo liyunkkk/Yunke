@@ -145,6 +145,9 @@ internal class AgentOwnerContextState(
     /** Retained telemetry is available for inspection; hiding never discards this record. */
     fun latest(taskId: String): SubAgentContextStats? = entries[taskId]?.snapshot?.stats
 
+    /** Every retained child, including ones hidden from the context ring. */
+    fun roster(): List<SubAgentContextStats> = entries.values.map { it.snapshot.stats }
+
     /** Schedule each token once. An already due token can be expired immediately. */
     fun pendingHides(): List<HideToken> = entries.values.filterNot { it.hidden }.mapNotNull { it.hideToken }
 
