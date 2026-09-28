@@ -72,6 +72,9 @@ internal interface ConversationDao {
     @Query("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = :conversationId")
     suspend fun messageCount(conversationId: String): Int
 
+    @Query("SELECT COUNT(*) FROM conversation_messages")
+    suspend fun storedMessageCount(): Int
+
     @Query("SELECT COUNT(*) FROM conversations")
     suspend fun conversationCount(): Int
 
