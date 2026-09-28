@@ -75,6 +75,7 @@ class ExecutionLeaseRegistryTest {
         registry.release("run:chat:replacement-uuid")
         registry.release("user:daemon")
         assertEquals(0, registry.executingSessionCount())
-        assertEquals(1, registry.count())
+        // 子代理和闲置终端不计入正在执行，但租约本身还在。
+        assertEquals(2, registry.count())
     }
 }
