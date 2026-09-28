@@ -2526,8 +2526,10 @@ internal class AgentAppState(
             state.copy(
                 isStreaming = true,
                 isPaused = false,
-                livePromptTokens = if (history == state.history) state.livePromptTokens else null,
-                livePromptIsProjected = if (history == state.history) state.livePromptIsProjected else false,
+                // 估算只属于还没有云端账单的第一轮，以及压缩清掉账单后的第一轮。
+                // 普通发消息会把可见回复写进 history，不能因此丢掉上一轮实测。
+                livePromptTokens = state.livePromptTokens,
+                livePromptIsProjected = state.livePromptIsProjected,
                 isCompressingContext = willCompress,
                 history = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(history) + taggedUserHistoryMessage,
                 messages = runMessages,
