@@ -119,7 +119,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
@@ -787,13 +786,24 @@ internal fun AgentConversationMessages(
             isBottomSettling = isBottomSettling,
         )
     )
-    // 最底部工具展开的那一两百毫秒里不能跟底上提：上提按整段新增高度瞬间把列表抬走，
-    // 和展开动画叠在一起就是弹一下。跟底滚动本身不动。
+    // 展开最底部工具时先不上提，让跟底滚动把新增高度吃掉。
+    // 固定 220ms 后如果还没吃完，上提会把剩下的高度一次抬走，所以偶尔还会卡一下。
+    // 改成尾部回到静止线再放开；不跟底或等太久也放开，避免一直压着。
     var holdTailLift by remember { mutableStateOf(false) }
     val shouldLiftTail = shouldLiftStreamingTail(shouldFollowBottom, holdTailLift)
     LaunchedEffect(holdTailLift) {
         if (!holdTailLift) return@LaunchedEffect
-        delay(220)
+        val started = System.nanoTime()
+        while (currentCoroutineContext().isActive) {
+            if (shouldReleaseTailLiftHold(
+                    following = shouldFollowBottom,
+                    overflowPx = scrollState.followTailOverflow(),
+                    elapsedNanos = System.nanoTime() - started,
+                    maxNanos = TAIL_LIFT_HOLD_MAX_NANOS,
+                )
+            ) break
+            withFrameNanos { }
+        }
         holdTailLift = false
     }
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
@@ -1594,6 +1604,16 @@ internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = fals
 /** 用户正在展开最底部工具时不上提，避免整段高度在一帧里把列表抬走。 */
 internal fun shouldLiftStreamingTail(followingOutput: Boolean, holdingUserExpansion: Boolean): Boolean =
     followingOutput && !holdingUserExpansion
+
+private const val TAIL_LIFT_HOLD_MAX_NANOS = 1_500_000_000L
+
+/** 尾部已经回到静止线，或已经不在跟底，才结束上提抑制。超时只是兜底。 */
+internal fun shouldReleaseTailLiftHold(
+    following: Boolean,
+    overflowPx: Int?,
+    elapsedNanos: Long,
+    maxNanos: Long,
+): Boolean = !following || (overflowPx != null && overflowPx <= 1) || elapsedNanos >= maxNanos
 
 internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
     !following -> FollowTailLag.None

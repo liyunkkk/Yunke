@@ -355,4 +355,13 @@ class AgentChatScrollPolicyTest {
         assertTrue(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = false))
         assertFalse(shouldLiftStreamingTail(followingOutput = false, holdingUserExpansion = false))
     }
+
+    @Test
+    fun tailLiftHoldWaitsUntilTheTailIsBackOnTheRestLine() {
+        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
+        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = null, elapsedNanos = 0L, maxNanos = 100L))
+        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 1, elapsedNanos = 0L, maxNanos = 100L))
+        assertTrue(shouldReleaseTailLiftHold(following = false, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
+        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 100L, maxNanos = 100L))
+    }
 }
