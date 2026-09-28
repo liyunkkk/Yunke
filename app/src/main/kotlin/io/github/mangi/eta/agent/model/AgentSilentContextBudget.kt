@@ -13,16 +13,23 @@ internal class AgentSilentContextBudget {
      * prompt that was just sent.
      *
      * Some gateways sum a retried or multi-leg request into one usage object: on the
-     * wire we saw `input_tokens = 784267` for a request whose local boundary was
-     * ~34000 on a 500000 window, and a later round billing 267917 while the local
-     * transcript had grown by ~1100. Anchoring on such a number makes every
-     * subsequent decision believe the context is nearly full, which is how
-     * auto-compaction fired far below its threshold and then compacted again
-     * immediately without occupancy ever really being that high.
+     * wire we saw `input_tokens = 784267` for a request that succeeded on a 500000
+     * window, and a later round billing 267917 right after 38880 while the local
+     * transcript had grown by ~1100. Anchoring on such a number makes every later
+     * decision believe the context is nearly full, which is how auto-compaction fired
+     * far below its threshold and then immediately compacted a second time.
      *
-     * Rejecting the outlier keeps the previous anchor (or the local boundary). That is
+     * Only two things are checked, both one-directional refusals:
+     *  - the value cannot exceed the window by an unbounded factor;
+     *  - its step above the previous anchor cannot far exceed the local growth since
+     *    that anchor.
+     * The absolute ratio between a bill and the local estimate is deliberately *not*
+     * checked: a first bill can legitimately be several times the local count, so that
+     * test would reject correct receipts.
+     *
+     * Rejecting an outlier keeps the previous anchor (or the local boundary), which is
      * conservative in the safe direction: a genuine overflow still surfaces as a
-     * provider CONTEXT_WINDOW_EXCEEDED failure rather than as a silent wrong anchor.
+     * provider CONTEXT_WINDOW_EXCEEDED failure rather than as a silently wrong anchor.
      */
     fun measured(inputTokens: Int?, contextWindow: Int? = null) {
         if (inputTokens == null || inputTokens <= 0) return
@@ -34,8 +41,13 @@ internal class AgentSilentContextBudget {
     private fun isPlausible(inputTokens: Int, contextWindow: Int?): Boolean {
         val window = contextWindow?.takeIf { it > 0 }
         if (window != null && inputTokens.toLong() * 100 > window.toLong() * MAX_WINDOW_PERCENT) return false
-        val local = requestLocal.takeIf { it >= MIN_LOCAL_BASIS } ?: return true
-        return inputTokens.toLong() <= local.toLong() * MAX_LOCAL_GROWTH_MULTIPLE
+        val previous = measuredInput?.takeIf { it > 0 } ?: return true
+        val billedGrowth = inputTokens.toLong() - previous
+        if (billedGrowth <= 0) return true
+        val localGrowth = (requestLocal.toLong() - measuredLocal).coerceAtLeast(0L)
+        val slack = GROWTH_SLACK_TOKENS.toLong() +
+            (window?.toLong() ?: 0L) * GROWTH_SLACK_WINDOW_PERCENT / 100
+        return billedGrowth <= localGrowth + slack
     }
 
     fun tokens(currentLocal: Int): Int {
@@ -45,9 +57,9 @@ internal class AgentSilentContextBudget {
     }
 
     /**
-     * False while the only basis is the local character heuristic. Send limits must
-     * widen their reserve in that case: the heuristic under-counts dense code and
-     * mixed CJK, which is how a run configured for 200k can still leave with ~220k.
+     * False while the only basis is the local character heuristic, and send limits must
+     * widen their reserve in that case: the heuristic under-counts dense code and mixed
+     * CJK, which is how a run configured for 200k can still leave with ~220k.
      */
     fun isCalibrated(): Boolean = measuredInput != null
 
@@ -61,10 +73,10 @@ internal class AgentSilentContextBudget {
         /** A prompt may exceed its window, but not by an unbounded factor. */
         const val MAX_WINDOW_PERCENT = 130
 
-        /** One round cannot bill this multiple of what was locally counted for it. */
-        const val MAX_LOCAL_GROWTH_MULTIPLE = 8
+        /** Absolute slack for cache accounting and per-round request scaffolding. */
+        const val GROWTH_SLACK_TOKENS = 8_192
 
-        /** Below this the ratio test is noise, so only the window test applies. */
-        const val MIN_LOCAL_BASIS = 2_000
+        /** Extra slack proportional to the window, for large-context models. */
+        const val GROWTH_SLACK_WINDOW_PERCENT = 5
     }
 }

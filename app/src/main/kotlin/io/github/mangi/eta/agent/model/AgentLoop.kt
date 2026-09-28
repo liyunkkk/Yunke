@@ -514,8 +514,7 @@ internal class AgentLoop(
         }
         val window = config.contextWindow?.takeIf { it > 0 } ?: return false
         val tokens = requestBudgetTokens()
-        return tokens > AgentCompressionBoundary.inputLimit(window,
-            AgentCompressionBoundary.outputReserve(config), silentBudget.isCalibrated())
+        return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
     }
 
     private fun maybeCompactBeforeRound(round: Int, pressureRetry: Boolean = false) {
@@ -585,8 +584,7 @@ internal class AgentLoop(
         // Storage pressure alone is not a server context measurement.
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
         if (!manualBudgetAttempt && !overflowPending &&
-            requestBudgetTokens() <= AgentCompressionBoundary.inputLimit(window,
-                AgentCompressionBoundary.outputReserve(config), silentBudget.isCalibrated())) return false
+            requestBudgetTokens() <= AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))) return false
         val history = historyForCompaction()
         val cut = compactionStart(history)
         if (cut <= 0) return false

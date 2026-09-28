@@ -4286,11 +4286,16 @@ internal class AgentAppState(
                     val localBasis = event.requestHistoryTokens?.let { history ->
                         history + (event.requestOverheadTokens ?: 0)
                     }
-                    val window = conversationIdForRun(runId)?.let(::conversationState)
-                        ?.let(::boundCompressionWindow)
+                    val conversation = conversationIdForRun(runId)?.let(::conversationState)
+                    val window = conversation?.let(::boundCompressionWindow)
                     val measured = occupancy.takeIf {
                         io.github.mangi.eta.ui.model.CloudReceiptPlausibility.isOccupancy(
-                            tokens = it, contextWindow = window, localTokens = localBasis)
+                            tokens = it, contextWindow = window,
+                            previousTokens = conversation?.let(::billedPromptTokens),
+                            localTokens = localBasis,
+                            previousLocalTokens = conversation?.cloudHistoryTokens?.let { history ->
+                                history + (conversation.cloudRequestOverheadTokens ?: 0)
+                            })
                     }
                     if (measured != null) {
                         updateLivePromptTokens(runId, measured, projected = false,
