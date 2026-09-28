@@ -4279,9 +4279,26 @@ internal class AgentAppState(
                     }
                 } else if (!isStaleUsageAfterCompact(runId, event.round)) {
                     val occupancy = io.github.mangi.eta.ui.model.windowTokensFromUsage(event.usage.toUi())
+                    // The bill is always recorded; only a plausible receipt may become occupancy.
+                    // Aggregated gateway usage (a retried or multi-leg request summed into one
+                    // object) otherwise makes the ring max out and trips auto-compaction early.
                     updateAssistantUsage(runId, event.round, event.usage.toUi())
-                    updateLivePromptTokens(runId, occupancy, projected = false,
-                        historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens)
+                    val localBasis = event.requestHistoryTokens?.let { history ->
+                        history + (event.requestOverheadTokens ?: 0)
+                    }
+                    val window = conversationIdForRun(runId)?.let(::conversationState)
+                        ?.let(::boundCompressionWindow)
+                    val measured = occupancy.takeIf {
+                        io.github.mangi.eta.ui.model.CloudReceiptPlausibility.isOccupancy(
+                            tokens = it, contextWindow = window, localTokens = localBasis)
+                    }
+                    if (measured != null) {
+                        updateLivePromptTokens(runId, measured, projected = false,
+                            historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens)
+                    } else if (localBasis != null && localBasis > 0) {
+                        // Keep a usable, self-consistent basis instead of an implausible bill.
+                        updateLivePromptTokens(runId, localBasis, projected = true)
+                    }
                 }
             }
 

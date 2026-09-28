@@ -237,7 +237,8 @@ internal class AgentLoop(
                             )
                             // Partial fields merge only within this request. The separate
                             // silent anchor survives a later usage-less request.
-                            silentBudget.measured(lastUsage?.inputTokens)
+                            silentBudget.measured(lastUsage?.inputTokens,
+                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
                         }
                         continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->
                             if (visibleEvent is ProviderEvent.BlockDelta &&
@@ -513,7 +514,8 @@ internal class AgentLoop(
         }
         val window = config.contextWindow?.takeIf { it > 0 } ?: return false
         val tokens = requestBudgetTokens()
-        return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
+        return tokens > AgentCompressionBoundary.inputLimit(window,
+            AgentCompressionBoundary.outputReserve(config), silentBudget.isCalibrated())
     }
 
     private fun maybeCompactBeforeRound(round: Int, pressureRetry: Boolean = false) {
@@ -583,7 +585,8 @@ internal class AgentLoop(
         // Storage pressure alone is not a server context measurement.
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
         if (!manualBudgetAttempt && !overflowPending &&
-            requestBudgetTokens() <= AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))) return false
+            requestBudgetTokens() <= AgentCompressionBoundary.inputLimit(window,
+                AgentCompressionBoundary.outputReserve(config), silentBudget.isCalibrated())) return false
         val history = historyForCompaction()
         val cut = compactionStart(history)
         if (cut <= 0) return false

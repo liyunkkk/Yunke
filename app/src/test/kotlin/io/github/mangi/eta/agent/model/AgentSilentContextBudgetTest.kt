@@ -58,4 +58,48 @@ class AgentSilentContextBudgetTest {
         budget.measured(Int.MAX_VALUE)
         assertEquals(Int.MAX_VALUE, budget.tokens(Int.MAX_VALUE))
     }
+
+    @Test fun aggregatedGatewayBillCannotBecomeTheAnchor() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(34185)
+        // Observed on the wire: one usage object summing a retried multi-leg request.
+        budget.measured(784267, 500000)
+        assertFalse(budget.isCalibrated())
+        assertEquals(34185, budget.tokens(34185))
+    }
+
+    @Test fun billFarAboveTheLocalBasisIsRejectedEvenInsideTheWindow() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(22194)
+        // round 14 -> 15: +229037 billed while the transcript grew ~1100.
+        budget.measured(267917, 1000000)
+        assertFalse(budget.isCalibrated())
+        assertEquals(22194, budget.tokens(22194))
+    }
+
+    @Test fun genuineOverflowSlightlyAboveTheWindowStaysVisible() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(196000)
+        budget.measured(220000, 200000)
+        assertTrue(budget.isCalibrated())
+        assertEquals(220000, budget.tokens(196000))
+    }
+
+    @Test fun aRejectedBillKeepsThePreviousValidAnchor() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(50000)
+        budget.measured(60000, 200000)
+        budget.requestStarted(52000)
+        budget.measured(900000, 200000)
+        assertTrue(budget.isCalibrated())
+        assertEquals(62000, budget.tokens(52000))
+    }
+
+    @Test fun smallRequestsSkipTheRatioTestSoShortPromptsStayCalibrated() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(300)
+        budget.measured(9000, 200000)
+        assertTrue(budget.isCalibrated())
+        assertEquals(9000, budget.tokens(300))
+    }
 }

@@ -124,6 +124,19 @@ class AgentCompressionBoundaryTest {
         assertEquals(6000, AgentCompressionBoundary.outputReserve(config().copy(extraBodyJson = "{\"max_tokens\":6000}")))
     }
 
+    @Test fun anUncalibratedLimitReservesExtraRoomForLocalUnderCounting() {
+        // 200k configured: the calibrated limit allows what a cloud receipt measured,
+        // while the local-heuristic path must stop earlier so the real prompt that
+        // the heuristic under-counted still fits inside the window.
+        val calibrated = AgentCompressionBoundary.inputLimit(200_000, 4096)
+        val uncalibrated = AgentCompressionBoundary.inputLimit(200_000, 4096, calibrated = false)
+        assertEquals(185_904, calibrated)
+        assertEquals(161_904, uncalibrated)
+        assertTrue(uncalibrated < calibrated)
+        // A tiny window cannot go negative.
+        assertEquals(0, AgentCompressionBoundary.inputLimit(100, 4096, calibrated = false))
+    }
+
     @Test fun summaryInputKeepsToolArgumentsCorrelationAndStructuredTextNotHiddenReasoning() {
         val input = message("assistant", calls = "[{\"id\":\"c1\",\"function\":{\"name\":\"terminal\",\"arguments\":\"exact command\"}}]")
             .copy(contentJson = "[{\"type\":\"text\",\"text\":\"structured evidence\"}]", reasoningContent = "PRIVATE_REASONING")
