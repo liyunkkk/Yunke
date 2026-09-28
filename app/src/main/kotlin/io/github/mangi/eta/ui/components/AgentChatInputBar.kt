@@ -160,6 +160,7 @@ internal fun AgentChatInputBar(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
+    activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
     isStreaming: Boolean,
@@ -219,6 +220,7 @@ internal fun AgentChatInputBar(
         pendingFileReferences,
         conversationMentions.pending,
         modelPickerState.selectedModel,
+        activeRunContextWindow,
     ) {
         liveContextUsage(
             history = emptyList(),
@@ -233,11 +235,12 @@ internal fun AgentChatInputBar(
             requestOverheadTokens = requestOverheadTokens,
             billedOverheadTokens = billedOverheadTokens,
             uncommittedLiveTokens = uncommittedLiveTokens,
+            activeRunContextWindow = activeRunContextWindow,
         )
     }
     val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
         conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
-        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens) {
+        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, activeRunContextWindow) {
         io.github.mangi.eta.ui.model.compressionContextUsage(
             history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
             selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
@@ -245,6 +248,7 @@ internal fun AgentChatInputBar(
             pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
             billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
+            activeRunContextWindow = activeRunContextWindow,
         )
     }
     val contextSendBlocked = shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)

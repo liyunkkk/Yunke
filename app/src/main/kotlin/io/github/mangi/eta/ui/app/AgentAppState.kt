@@ -189,6 +189,16 @@ internal class AgentAppState(
     private val mainStopReasons = java.util.concurrent.ConcurrentHashMap<String, AgentChildControlPolicy.Reason>()
     private val modelRetryState = AgentRunRetryState()
     private val runOverheadTokens = mutableMapOf<String, Int>()
+
+    /**
+     * Window the run was actually launched with.
+     *
+     * A run keeps the config it snapshotted at send time, so changing the maximum
+     * context mid-run does not affect the request already in flight. The picker,
+     * however, immediately reports the new window, and judging an in-flight run
+     * against it made the percentage jump for reasons the run never saw.
+     */
+    private val runContextWindows = mutableMapOf<String, Int>()
     private val runMessageProjector = AgentRunMessageProjector()
     private val runReplayBatch = AgentRunReplayBatch()
     private val runEventCoalescer = AgentRunEventCoalescer()
@@ -1214,7 +1224,7 @@ internal class AgentAppState(
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         conversationUpdatedAt = conversationUpdatedAt +
             (conversationId to checkpoint.updatedAt)
         return true
@@ -2478,6 +2488,7 @@ internal class AgentAppState(
         val taggedUserHistoryMessage = userHistoryMessage.copy(turnId = logicalTurnId)
         bindUsageRun(runId, conversationId)
         runOverheadTokens[runId] = requestOverheadTokens
+        runConfig.contextWindow?.takeIf { it > 0 }?.let { runContextWindows[runId] = it }
         val generateVideo = runModel.supportsVideoGeneration
         val generateImage = !generateVideo && runModel.supportsImageGeneration
         val mediaController = if (generateImage || generateVideo) {
@@ -2893,7 +2904,7 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -2912,7 +2923,7 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3424,7 +3435,7 @@ internal class AgentAppState(
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
-            runOverheadTokens.remove(runId)
+            runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             runCompressedDuringRun.remove(runId)
         }
         refreshConversationSummaries()
@@ -3496,7 +3507,7 @@ internal class AgentAppState(
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
-            runOverheadTokens.remove(runId)
+            runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             runCompressedDuringRun.remove(runId)
         }
         if (conversationId == null) {
@@ -4287,7 +4298,9 @@ internal class AgentAppState(
                         history + (event.requestOverheadTokens ?: 0)
                     }
                     val conversation = conversationIdForRun(runId)?.let(::conversationState)
-                    val window = conversation?.let(::boundCompressionWindow)
+                    // Judge the receipt against the window this run was launched with,
+                    // not against a limit the user may have changed mid-run.
+                    val window = runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)
                     val measured = occupancy.takeIf {
                         io.github.mangi.eta.ui.model.CloudReceiptPlausibility.isOccupancy(
                             tokens = it, contextWindow = window,
@@ -4635,7 +4648,7 @@ internal class AgentAppState(
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations(
@@ -4955,6 +4968,9 @@ internal class AgentAppState(
                 childContexts = state.childContexts,
                 isWaitingForCompression = isStreaming && state.isWaitingForCompression,
                 isPaused = if (isStreaming) state.isPaused else false,
+                // Show the percentage against the window this run actually flies with;
+                // a settled run releases the override back to the picker's window.
+                activeRunContextWindow = if (isStreaming) runContextWindows[runId] else null,
                 isCompressingContext = when {
                     isStreaming -> state.isCompressingContext
                     shouldKeepCompressingIndicator(conversationId) -> true

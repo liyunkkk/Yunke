@@ -79,4 +79,30 @@ class AgentContextMeterPolicyTest {
         assertEquals(AgentContextBudget.countCurrentTurn("watch", listOf(attachment.toOutboundModelImage(true))), usage.contextTokens)
     }
 
+    @Test fun anInFlightRunKeepsTheWindowItWasLaunchedWith() {
+        // The picker already reports the new 500k limit, but the running request was
+        // built against 200k: the percentage must stay on the window it really uses.
+        val model = AgentModelOptionUi("m", "p", "P", "custom", "m", "M", 500_000)
+        val ring = liveContextUsage(emptyList(), "", emptyList(), model,
+            billedContextTokens = 100_000, activeRunContextWindow = 200_000)
+        assertEquals(200_000, ring.contextWindow)
+        assertEquals(100_000, ring.contextTokens)
+
+        val budget = compressionContextUsage(emptyList(), "", emptyList(), model,
+            historyTokenCount = 1_200, billedContextTokens = 100_000, requestOverheadTokens = 700,
+            billedHistoryTokens = 1_000, billedOverheadTokens = 500,
+            activeRunContextWindow = 200_000)
+        assertEquals(200_000, budget.contextWindow)
+    }
+
+    @Test fun withoutAnInFlightRunThePickerWindowIsUsed() {
+        val model = AgentModelOptionUi("m", "p", "P", "custom", "m", "M", 500_000)
+        assertEquals(500_000,
+            liveContextUsage(emptyList(), "", emptyList(), model, billedContextTokens = 100_000).contextWindow)
+        // A non-positive override is ignored rather than hiding the real window.
+        assertEquals(500_000,
+            liveContextUsage(emptyList(), "", emptyList(), model,
+                billedContextTokens = 100_000, activeRunContextWindow = 0).contextWindow)
+    }
+
 }
