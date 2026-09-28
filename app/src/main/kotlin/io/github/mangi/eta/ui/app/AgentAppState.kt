@@ -3954,6 +3954,13 @@ internal class AgentAppState(
     }
 
     private fun enqueueRunEvent(runId: String, event: AgentEvent) {
+        // Runtime delivers events on the run's IO job. Publishing from that thread races
+        // with selecting another conversation on the main thread: the title can already be
+        // the new conversation while homeState is still overwritten with this run's text.
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            scope.launch(Dispatchers.Main.immediate) { enqueueRunEvent(runId, event) }
+            return
+        }
         if (event is AgentEvent.AssistantBlockDelta) {
             StreamPerformanceDiagnostics.record("ui.delta.received", value = event.delta.length.toLong())
         }
