@@ -54,6 +54,9 @@ class AgentSilentContextBudgetTest {
         budget.requestStarted(10000)
         budget.measured(1000)
         assertEquals(0, budget.tokens(1000))
+        // A fresh context has no anchor to grow from, so an extreme bill is only
+        // bounded, not rejected; arithmetic must stay inside Int.
+        budget.contextReplaced()
         budget.requestStarted(0)
         budget.measured(Int.MAX_VALUE)
         assertEquals(Int.MAX_VALUE, budget.tokens(Int.MAX_VALUE))
