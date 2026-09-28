@@ -222,10 +222,16 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         presentedEntryGeneration = -1L
         screenContextAttachment = null
         inputText = ""
+        // 语音态唤起 = 新对话；输入态唤起 = 沿用上次会话。
+        // 判定与 presentEntry 的入口态 when 保持一致：有录音权限且非 input 强制时，本次会进入语音态。
+        val entryHasAudioPermission =
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val startFreshConversation =
+            entryHasAudioPermission && pendingEntryMode != ENTRY_MODE_INPUT
         uiState = EtaVoiceUiState(
-            messages = uiState.messages,
-            conversationId = currentConversationId,
-            conversationTitle = uiState.conversationTitle,
+            messages = if (startFreshConversation) emptyList() else uiState.messages,
+            conversationId = if (startFreshConversation) null else currentConversationId,
+            conversationTitle = if (startFreshConversation) "" else uiState.conversationTitle,
             historyConversations = uiState.historyConversations,
             isHistoryMenuVisible = false,
             screenContext = EtaScreenContextUiState(
@@ -236,7 +242,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             availableReasoningEfforts = uiState.availableReasoningEfforts,
         )
         scope.launch {
-            loadInitialConversation()
+            loadInitialConversation(startFresh = startFreshConversation)
         }
         hiddenForForegroundOperation = false
         handoffInProgress = false
@@ -1360,8 +1366,13 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         )
     }
 
-    private suspend fun loadInitialConversation() {
-        val convData = AgentConversationStore.loadAssistantConversation(this, currentConversationId)
+    private suspend fun loadInitialConversation(startFresh: Boolean = false) {
+        // startFresh=true 用于语音态唤起：跳过「上次选中的会话」恢复，直接开一个全新会话。
+        val convData = if (startFresh) {
+            null
+        } else {
+            AgentConversationStore.loadAssistantConversation(this, currentConversationId)
+        }
         val recent = AgentConversationStore.loadRecentConversations(this)
         withContext(Dispatchers.Main.immediate) {
             if (convData != null) {
@@ -1384,6 +1395,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             } else {
                 val newId = "conv-${UUID.randomUUID()}"
                 currentConversationId = newId
+                conversationHistory = emptyList()
                 val items = recent.map { meta ->
                     AssistantConversationItem(
                         id = meta.id,
