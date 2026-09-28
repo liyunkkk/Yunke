@@ -555,7 +555,7 @@ private fun BoxScope.AssistantPanel(
                         visibleMessages = state.messages,
                         scrollState = listState,
                         isStreaming = state.phase == EtaVoicePhase.PROCESSING,
-                        bottomInset = { 8.dp },
+                        bottomInset = 8.dp,
                         keepBottomAnchored = keepBottomAnchored,
                         onBottomAnchorChanged = { keepBottomAnchored = it },
                         modifier = Modifier.fillMaxSize(),
