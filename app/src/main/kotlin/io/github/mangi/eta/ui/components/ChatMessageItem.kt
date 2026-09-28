@@ -289,10 +289,10 @@ internal class ChatMessageActions {
     var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
 }
 
-@Composable
 /** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
 internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
 
+@Composable
 internal fun ChatMessageItem(
     message: AgentChatMessageUi,
     actions: ChatMessageActions,
