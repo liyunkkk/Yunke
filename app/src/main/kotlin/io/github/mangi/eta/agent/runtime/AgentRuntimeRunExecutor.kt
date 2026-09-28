@@ -121,6 +121,9 @@ internal class AgentRuntimeRunExecutor(
             val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
             val executor = AgentLocalTools(
                 context = appContext, logger = AndroidAgentLogger, browserRunId = request.runId,
+                browserConversationId = request.handoff?.takeIf {
+                    it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE
+                }?.let { AgentUiHandoffPayload.from(it.payload).conversationId }.orEmpty(),
                 frozenSurface = runSurface,
                 browserToolsEnabled = { allowBrowser && currentPermissions().browserTools },
                 terminalToolsEnabled = { allowTerminal && currentPermissions().terminalTools },

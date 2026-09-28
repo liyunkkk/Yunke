@@ -63,6 +63,7 @@ internal class AgentLocalTools(
     private val context: Context,
     private val logger: AgentLogger,
     private val browserRunId: String = "",
+    private val browserConversationId: String = "",
     private val browserToolsEnabled: () -> Boolean = {
         Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS)
     },
@@ -426,6 +427,7 @@ internal class AgentLocalTools(
             args = args,
             runId = browserRunId,
             toolCallId = toolCallId,
+            conversationId = browserConversationId,
         )
         return AgentModelClient.ToolResult(
             content = result.content,

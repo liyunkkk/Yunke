@@ -971,7 +971,7 @@ fun AgentAppRoot(
     AgentPendingChildStopDialog(agentState.conversationPaneState.selectedConversationId)
 
     if (browserSheetVisible) {
-        AgentBrowserScreen(onDismiss = { browserSheetVisible = false })
+        AgentBrowserScreen(onDismiss = { browserSheetVisible = false }, conversationId = agentState.conversationPaneState.selectedConversationId)
     }
 
     conversationRenameTarget?.let { conversation ->
