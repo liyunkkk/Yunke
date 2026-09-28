@@ -166,6 +166,19 @@ class AgentOwnerContextStateTest {
         assertTrue(state.pendingHides().isEmpty())
     }
 
+    @Test fun hiddenPauseStaysHiddenUntilExecuting() {
+        val state = state()
+        state.refresh(owner, listOf(TaskSnapshot(stats("A", "awaiting_decision"), 1, 4)))
+        now = 30_000
+        assertTrue(state.expire(state.pendingHides().single()))
+        assertTrue(state.refresh(owner, listOf(TaskSnapshot(stats("A", "queued"), 2, 5))))
+        assertTrue(state.ids().isEmpty())
+        assertTrue(state.refresh(owner, listOf(TaskSnapshot(stats("A", "pausing"), 3, 6))))
+        assertTrue(state.ids().isEmpty())
+        assertTrue(state.refresh(owner, listOf(TaskSnapshot(stats("A", "running"), 4, 7))))
+        assertEquals(listOf("A"), state.ids())
+    }
+
     @Test fun hiddenPauseResumesWithRealUsageWithoutStealingSelection() {
         val state = state()
         state.refresh(owner, 1, listOf(stats("A", "awaiting_decision"), stats("B")))
