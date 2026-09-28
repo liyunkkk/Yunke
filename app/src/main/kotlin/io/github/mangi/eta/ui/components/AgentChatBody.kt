@@ -944,17 +944,14 @@ internal fun AgentConversationMessages(
             .clipToBounds()
             .drawWithContent {
                 // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
-                val lag = if (shouldLiftTail) {
-                    resolveFollowTailLag(true, scrollState.followTailOverflow())
-                } else {
-                    FollowTailLag.None
-                }
-                if (lag == FollowTailLag.Unknown) {
-                    val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
-                    clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
-                } else {
+                // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
+                // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
+                if (!shouldLiftTail) {
                     drawContent()
+                    return@drawWithContent
                 }
+                val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
+                clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
             },
     ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {

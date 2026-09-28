@@ -88,10 +88,9 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(head, r"\.clipToBounds\s*\(\s*\)")
 
     def test_following_output_lifts_the_tail_instead_of_clipping_it(self):
-        # While following streamed output, the part the follow scroll has not
-        # caught up with yet is lifted in the draw layer so the tail rests at the
-        # 14dp line above the composer, with its card edge visible. Clipping at
-        # the rest line remains only as the fallback when the tail is not visible.
+        # While following streamed output, the tail is lifted to the 14dp line and
+        # also clipped there. Fast output can draw a new line past the measured
+        # tail before the lift catches it; the clip keeps that line out of the composer.
         lists = list(calls(self.messages, "LazyColumn"))
         self.assertRegex(
             lists[0],
@@ -103,12 +102,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         draw = boxes[0]
-        self.assertRegex(draw, r"if\s*\(\s*shouldLiftTail\s*\)")
-        self.assertRegex(
-            draw,
-            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)",
-        )
-        self.assertRegex(draw, r"if\s*\(\s*lag\s*==\s*FollowTailLag\.Unknown\s*\)")
+        self.assertRegex(draw, r"if\s*\(\s*!shouldLiftTail\s*\)")
         self.assertRegex(
             draw,
             r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",
