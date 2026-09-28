@@ -67,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -913,15 +914,17 @@ internal fun AgentConversationMessages(
     }
 
     // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
-    // 跟底输出期间（思考/正文生成、未手动滑动）把绘制裁在输入框上方 14dp 的静止线：
-    // 卡片/正文每长一行，跟底滚动要晚几帧才追上，这几帧卡片外框会往下跳一下；
-    // 裁在静止线上，跳动那一下既不会进输入框，也不会越过平时停靠的位置。
-    // 用户一拖动 shouldFollowBottom 即为 false，裁剪解除，内容可以滑到输入框后面。
+    // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
+    // 才追上。这几帧不裁剪（裁剪会把卡片底边和半行字切掉），而是在绘制阶段把整个列表
+    // 上提尚未追上的距离：尾部始终停在输入框上方 14dp 的静止线，底边和间距都完整可见。
+    // 只有尾部不在视口内（一次性长出超过一屏）时才退回裁在静止线上。
+    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除，内容可以滑到输入框后面。
     Box(
         modifier = modifier
             .clipToBounds()
             .drawWithContent {
-                if (shouldFollowBottom) {
+                val lag = resolveFollowTailLag(shouldFollowBottom, scrollState.followTailOverflow())
+                if (lag == FollowTailLag.Unknown) {
                     val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
                     clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
                 } else {
@@ -960,6 +963,10 @@ internal fun AgentConversationMessages(
             },
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    // 只在绘制层读取布局结果：跟底滚动每消费一段，上提量同帧减少，尾部不动。
+                    translationY = -resolveFollowTailLag(shouldFollowBottom, scrollState.followTailOverflow()).liftPx
+                }
                 .nestedScroll(userScrollConnection)
                 // Navigation already emits one explicit click/long-press haptic.
                 .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
@@ -1529,6 +1536,31 @@ private suspend fun snapListToBottom(
         if (decision.requestIndex == null && decision.scrollByPx == 0) return
         withFrameNanos { }
     }
+}
+
+/** 尾部哨兵超出静止线的像素；哨兵不在可见项中时返回 null（尾部位置未知）。 */
+private fun LazyListState.followTailOverflow(): Int? {
+    val info = layoutInfo
+    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey } ?: return null
+    return sentinel.offset + sentinel.size - (info.viewportEndOffset - info.afterContentPadding)
+}
+
+internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = false) {
+    companion object {
+        val None = FollowTailLag(0f)
+        val Unknown = FollowTailLag(0f, unknown = true)
+    }
+}
+
+/**
+ * 跟底输出时，跟底滚动尚未追上的尾部超出量改为绘制上提，让尾部停在静止线上。
+ * 不跟底（用户拖动、浏览历史、输出结束）时不做任何处理；尾部不可见时交给静止线裁剪兜底。
+ */
+internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
+    !following -> FollowTailLag.None
+    tailOverflowPx == null -> FollowTailLag.Unknown
+    tailOverflowPx <= 0 -> FollowTailLag.None
+    else -> FollowTailLag(tailOverflowPx.toFloat())
 }
 
 private fun LazyListState.isConversationAtBottom(): Boolean {

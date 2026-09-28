@@ -87,17 +87,25 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertNotRegex(head, r"\.padding\s*\(")
         self.assertRegex(head, r"\.clipToBounds\s*\(\s*\)")
 
-    def test_following_output_is_clipped_at_the_composer_top(self):
-        # While following streamed output, text that the follow scroll has not
-        # caught up with yet must not draw under the composer; a manual drag
-        # (shouldFollowBottom == false) lifts the clip.
+    def test_following_output_lifts_the_tail_instead_of_clipping_it(self):
+        # While following streamed output, the part the follow scroll has not
+        # caught up with yet is lifted in the draw layer so the tail rests at the
+        # 14dp line above the composer, with its card edge visible. Clipping at
+        # the rest line remains only as the fallback when the tail is not visible.
+        lists = list(calls(self.messages, "LazyColumn"))
+        self.assertRegex(
+            lists[0],
+            r"graphicsLayer\s*\{[^}]*translationY\s*=\s*-\s*resolveFollowTailLag\s*\(\s*"
+            r"shouldFollowBottom\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
+        )
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         self.assertRegex(
             boxes[0],
-            r"drawWithContent\s*\{\s*if\s*\(\s*shouldFollowBottom\s*\)\s*\{[^}]*"
+            r"drawWithContent\s*\{[^}]*resolveFollowTailLag\s*\(\s*shouldFollowBottom\b[^}]*"
+            r"if\s*\(\s*lag\s*==\s*FollowTailLag\.Unknown\s*\)\s*\{[^}]*"
             r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)[^}]*"
             r"clipRect\s*\(\s*bottom\s*=\s*restLine",
         )
