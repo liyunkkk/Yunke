@@ -59,6 +59,7 @@ internal class AgentRuntimeRunExecutor(
         var entrySurfaceGuard: EntrySurfaceGuard? = null
         var localTools: AgentLocalTools? = null
         var deliveryFailure: String? = null
+        var cleanupFailure: String? = null
         var modelCompleted = false
         var virtualDeliveryCompleted = false
         var toolsBinding: AgentRunController.ResourceBinding? = null
@@ -367,6 +368,12 @@ internal class AgentRuntimeRunExecutor(
                         deliveryFailure = receipt.optString("error", "AUTO_FINISH_FAILED")
                     }
                 } catch (_: Exception) { deliveryFailure = "AUTO_FINISH_FAILED" }
+            } else {
+                // No automatic delivery after provider failure or user stop. Owner IPC is not
+                // attached to the cancelled controller; this path verifies cleanup or reports it.
+                cleanupFailure = io.github.mangi.eta.agent.device.VirtualDisplayAbortCleanup.failureCode {
+                    localTools?.cleanupAbortedVirtualSession()
+                }
             }
             session.childCompactor = null
             childContextSink.set(null)
@@ -378,6 +385,11 @@ internal class AgentRuntimeRunExecutor(
         deliveryFailure?.let { code ->
             val message = "副屏自动回迁/释放未完成（$code）；会话已保留，不能视为交付成功。"
             result = result.copy(ok = false, content = result.content + "\n\n" + message, error = message)
+        }
+        cleanupFailure?.let { code ->
+            val message = "副屏清理/释放未确认（$code）；已保留恢复状态，不会强制关闭或重放操作。"
+            result = result.copy(ok = false, content = listOf(result.content, message).filter { it.isNotBlank() }.joinToString("\n\n"),
+                error = listOfNotNull(result.error?.takeIf { it.isNotBlank() }, message).joinToString("\n"))
         }
         result = result.copy(virtualDeliveryCompleted = result.ok && virtualDeliveryCompleted && !cancelled && !runController.isCancelled)
         val completedRequest = runCatching { snapshotRequest(request) }.getOrElse { throwable ->

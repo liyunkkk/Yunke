@@ -19,6 +19,7 @@ internal object VirtualDisplaySession {
         val previewExcludedPackages = linkedSetOf<String>()
         var closedRun = false
         var cleanupOnly = false
+        var abortCleanupAttempted = false
         var persisted = false
         var receipt: JSONObject? = null
         /** Shared across finish/onRunClosed for this run so automatic retries cannot multiply. */
@@ -494,6 +495,7 @@ internal object VirtualDisplaySession {
 
     @Synchronized fun keep(runId: String, args: JSONObject): JSONObject {
         val s = sessions[runId] ?: return reply(false, "NO_VIRTUAL_SESSION")
+        if (s.abortCleanupAttempted) return reply(false, "SESSION_NOT_ACTIVE")
         if (s.phase != "active" && !s.cleanupOnly) return reply(false, "SESSION_NOT_ACTIVE")
         val wanted = linkedSetOf<Int>()
         if (args.has("task_ids")) wanted.addAll(ids(args.optJSONArray("task_ids"))
@@ -694,12 +696,48 @@ internal object VirtualDisplaySession {
         }
         return receipt.withHandoffAttempts(s).also { s.receipt = it }
     }
+    /** Finalize only this failed/cancelled run, never adopt a different run's recovery owner. */
+    @Synchronized fun onRunAborted(context: Context, runId: String): JSONObject? {
+        val s = sessions[runId] ?: return null
+        s.closedRun = true
+        if (s.phase == "finished") return s.receipt
+            ?: reply(false, "ABORT_CLEANUP_UNVERIFIED").put("released", false)
+        if (s.abortCleanupAttempted) return s.receipt
+            ?: reply(false, "ABORT_CLEANUP_UNVERIFIED").put("released", false)
+        // start() can bind a held/recovered owner from another run to this runId. Do not
+        // erase that owner's marks or remove its tasks merely because this later run failed.
+        if (s.cleanupOnly) return reply(false, "RECOVERY_REQUIRED").put("released", false)
+        s.abortCleanupAttempted = true
+        // A failed/ambiguous previous handoff must not be replayed or get a different selection.
+        if (s.handoffBudget.blocked || s.handoffState != null || s.handoffSelection != null)
+            return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
+        if (!s.persisted) return fail(s, "RECOVERY_STATE_UNWRITABLE")
+        val c = s.client ?: return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
+        val observed = freshHandoffState(c) ?: return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
+        val f = observed.flags
+        if (f.finishing || f.handoffComplete || f.releaseAttempted || f.mutationUncertain)
+            return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
+        // Explicit keep is a delivery selection, not authorization to deliver an unfinished run.
+        // Persist empty selection before cleanup so process recovery cannot re-promote it.
+        val cleared = runCatching { recoveryPrefs(context).edit()
+            .putString("kept", "[]").commit() }.getOrDefault(false)
+        if (!cleared) return fail(s, "RECOVERY_STATE_UNWRITABLE")
+        s.kept.clear()
+        s.cleanupOnly = true
+        s.phase = "held"
+        return try { finish(runId, context) }
+        catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            fail(s, "AUTO_CLEANUP_INTERRUPTED")
+        } catch (_: Exception) { fail(s, "AUTO_CLEANUP_FAILED") }
+    }
+
     /** Called once when the owning run closes; explicit delivery choices are preserved. */
     @Synchronized fun onRunClosed(context: Context, runId: String) {
         val s = sessions[runId] ?: return
         s.closedRun = true
         if (s.phase == "finished") return
-        if (s.kept.isEmpty()) {
+        if (s.kept.isEmpty() && !s.cleanupOnly) {
             // Only tasks this run launched and that status still shows as live are delivery tasks.
             // An unknown live inventory must not promote every package task.
             val live = s.client?.let { freshHandoffState(it)?.liveTaskIds }
