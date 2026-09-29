@@ -5,7 +5,6 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -291,8 +290,6 @@ internal class ChatMessageActions {
 /** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
 internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
 
-/** 模型输出中用户已经开始滑动。展开不再逐帧改高度，避免和滚动、输出叠在一起掉帧。 */
-internal val LocalPauseExpandLayout = staticCompositionLocalOf { false }
 
 @Composable
 internal fun ChatMessageItem(
@@ -2444,7 +2441,11 @@ private fun ThinkingRow(
             )
         }
 
-        TailDetailsVisibility(visible = expanded && message.content.isNotBlank()) {
+        AnimatedVisibility(
+            visible = expanded && message.content.isNotBlank(),
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             HapticSelectionContainer {
                 Column {
                     if (!compact) {
@@ -2490,26 +2491,6 @@ private fun ThinkingRow(
 }
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
-
-@Composable
-private fun TailDetailsVisibility(
-    visible: Boolean,
-    content: @Composable () -> Unit,
-) {
-    val pause = LocalPauseExpandLayout.current
-    var suppressEnter by remember { mutableStateOf(false) }
-    if (pause && visible) suppressEnter = true
-    if (!visible) suppressEnter = false
-    if (pause) {
-        if (visible) content()
-        return
-    }
-    AnimatedVisibility(
-        visible = visible,
-        enter = if (suppressEnter) EnterTransition.None else tailDetailsEnter(),
-        exit = tailDetailsExit(),
-    ) { content() }
-}
 
 private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition =
     fadeIn(tween(160)) + expandVertically(
@@ -2699,7 +2680,11 @@ private fun ToolActivityInline(
             }
         }
 
-        TailDetailsVisibility(visible = isExpanded && hasDetails) {
+        AnimatedVisibility(
+            visible = isExpanded && hasDetails,
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
