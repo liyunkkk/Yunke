@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -1075,9 +1076,17 @@ internal fun AgentConversationMessages(
                 motion.reset()
                 remainingDistancePx
             } else {
-                motion.step(remainingDistancePx, frameNanos, densityScale)
+                val smoothStep = motion.step(remainingDistancePx, frameNanos, densityScale)
+                val layout = scrollState.layoutInfo
+                // 绘制上提不能超过列表底部留白。先用真实滚动补掉超出缓冲的差额，
+                // 其余仍由原速度控制器平滑追赶；不能靠扩大裁剪或移走已被裁空的列表。
+                resolveBottomFollowViewportStep(
+                    smoothStepPx = smoothStep,
+                    measuredOverflowPx = layout.measuredTailOverflow(),
+                    afterContentPaddingPx = layout.afterContentPadding,
+                )
             }
-            // First frame establishes real timing; zero movement is not a failed scroll.
+            // Within the draw buffer, the first frame still only establishes timing.
             if (step <= 0f) continue
             var consumedStep = 0f
             try {
@@ -1773,16 +1782,21 @@ private suspend fun snapListToBottom(
 /** 尾部哨兵超出静止线的像素；哨兵不在可见项中时返回 null（尾部位置未知）。 */
 private fun LazyListState.followTailOverflow(): Int? {
     val info = layoutInfo
-    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
-    val last = info.visibleItemsInfo.lastOrNull()
+    // 列表自身在布局边界裁剪；上提超过尾部留白只会在输入框上方露出空白，最多上提到留白为止。
+    return info.measuredTailOverflow()?.coerceAtMost(info.afterContentPadding)
+}
+
+/** 未经过绘制上限截断的真实布局差额，供实际滚动消化超出缓冲的部分。 */
+private fun LazyListLayoutInfo.measuredTailOverflow(): Int? {
+    val sentinel = visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
+    val last = visibleItemsInfo.lastOrNull()
     val bottom = resolveTailBottomPx(
         sentinelBottom = sentinel?.let { it.offset + it.size },
         lastVisibleIndex = last?.index,
         lastVisibleBottom = last?.let { it.offset + it.size },
-        totalItems = info.totalItemsCount,
+        totalItems = totalItemsCount,
     ) ?: return null
-    // 列表自身在布局边界裁剪；上提超过尾部留白只会在输入框上方露出空白，最多上提到留白为止。
-    return (bottom - (info.viewportEndOffset - info.afterContentPadding)).coerceAtMost(info.afterContentPadding)
+    return bottom - (viewportEndOffset - afterContentPadding)
 }
 
 private data class TailBreachSample(

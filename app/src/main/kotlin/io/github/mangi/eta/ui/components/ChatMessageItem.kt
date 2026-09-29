@@ -1718,6 +1718,7 @@ private fun ChatMarkdownList(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .streamingListItemLayout(visible = firstRevealKey == null || markerVisible)
                         .semantics { isTraversalGroup = true }
                         .padding(
                             top = padding.listItemTop,
