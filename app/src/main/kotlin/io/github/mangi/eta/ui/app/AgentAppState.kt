@@ -2611,6 +2611,9 @@ internal class AgentAppState(
             }
             val compressModelConfig = resolveCompressModelConfig(config)
             val billedForCompression = if (history == state.history) billedPromptTokens(state) else null
+            // compressionContextUsage 只有三项校准都齐时才按「实测 + 增量」算，否则退回本地估算。
+            val calibratedForCompression = billedForCompression != null && billedForCompression > 0 &&
+                state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null
             val estimatedTokens = compressionContextUsage(
                 history = history,
                 currentInput = prompt,
@@ -2691,6 +2694,10 @@ internal class AgentAppState(
                         history = historyToSend,
                         // UI owns context via auto-compress / 99% send block; Runtime must not trimHistory.
                         historyAlreadyCompacted = true,
+                        // 只在估算确实以同一段历史的云端回执为底、且没有在发送前压缩时传。
+                        calibratedInputTokens = estimatedTokens?.takeIf {
+                            !shouldCompress && calibratedForCompression && it > 0
+                        },
                         modelSessionId = conversationId,
                         handoff = AgentRuntimeWire.EntryHandoff(
                             id = runId,

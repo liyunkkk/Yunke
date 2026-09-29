@@ -72,6 +72,28 @@ class AgentAutomaticCompactionTest {
         assertEquals(1, events.filterIsInstance<AgentEvent.ContextCompacted>().count { it.applied })
     }
 
+    @Test fun seededCloudAnchorKeepsAnOverCountingLocalEstimateFromCompacting() {
+        // 本地估算已过 80%，但 UI 带来的上一张回执远低于阈值：不压缩。
+        val messages = largeHistory()
+        assertTrue(requestTokens(messages) >= AUTO_PRESSURE)
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }))
+        assertEquals("done", runLoop(messages, provider, events, calibratedInputTokens = AUTO_PRESSURE / 2,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(1, provider.requests.size)
+        assertEquals(0, summaries)
+        assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+
+        // 锚点本身过了阈值时照常压缩。
+        val over = mutableListOf<AgentEvent>()
+        var overSummaries = 0
+        runLoop(smallHistory(), ScriptedProvider(listOf({ _, _ -> assistant() })), over,
+            calibratedInputTokens = AUTO_PRESSURE,
+            compactHistory = { source, policy -> overSummaries++; summarize(source, policy) })
+        assertEquals(1, overSummaries)
+    }
+
     @Test fun calibratedUsageAndSmallIncrementBelowThresholdDoNotCompact() {
         val messages = smallHistory()
         assertTrue(requestTokens(messages) < AUTO_PRESSURE)
@@ -555,6 +577,7 @@ class AgentAutomaticCompactionTest {
         compressor: AgentModelClient.ModelConfig? = config,
         onBlocked: (AgentRunController) -> Unit = { it.cancel() },
         compactHistory: (List<AgentModelClient.ConversationMessage>, AgentLoop.CompactPolicy) -> List<AgentModelClient.ConversationMessage> = ::summarize,
+        calibratedInputTokens: Int? = null,
     ): AgentLoop.Result = AgentLoop(
         config = config, messages = messages, tools = tools(), provider = provider,
         toolExecutor = toolExecutor, runController = controller, traceFormatter = AgentTraceFormatter(),
@@ -565,6 +588,7 @@ class AgentAutomaticCompactionTest {
         },
         compactPolicy = AgentLoop.CompactPolicy(enabled, WINDOW, 2, compressor),
         compactionArchive = archive, turnId = "current-turn", compactHistory = compactHistory,
+        calibratedInputTokens = calibratedInputTokens,
     ).run()
 
     private fun storedChars(messages: JSONArray): Long = AgentConversationCodec.transcript(messages, 0)

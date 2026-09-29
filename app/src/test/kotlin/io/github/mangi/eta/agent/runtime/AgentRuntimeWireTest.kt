@@ -690,6 +690,11 @@ class AgentRuntimeWireTest {
             AgentRuntimeWire.toLegacyBundle(compacted, emptyHistoryDescriptor()),
         )
         assertTrue(compactedRoundTrip.historyAlreadyCompacted)
+        assertEquals(null, compactedRoundTrip.calibratedInputTokens)
+        val seeded = AgentRuntimeWire.runRequestFromBundle(
+            AgentRuntimeWire.toLegacyBundle(compacted.copy(calibratedInputTokens = 284_260), emptyHistoryDescriptor()),
+        )
+        assertEquals(284_260, seeded.calibratedInputTokens)
 
         val missingKey = AgentRuntimeWire.toLegacyBundle(
             compacted.copy(runId = "run-legacy"),

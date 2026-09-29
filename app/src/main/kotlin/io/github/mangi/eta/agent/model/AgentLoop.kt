@@ -32,6 +32,8 @@ internal class AgentLoop(
     private val compactionArchive: AgentCompactionArchive? = null,
     private val turnId: String = java.util.UUID.randomUUID().toString(),
     private val toolDiagnostics: AgentToolCallDiagnostics = AgentToolCallDiagnostics(),
+    /** 会话上一张可信云端回执折算到本次请求的输入量；只作为第一个锚点，本轮回执到达后被替换。 */
+    private val calibratedInputTokens: Int? = null,
     private val onHistoryCompacted: () -> Unit = {},
     private val compactHistory: ((
         List<AgentModelClient.ConversationMessage>,
@@ -130,6 +132,12 @@ internal class AgentLoop(
     fun run(): Result {
         // Only annotate messages created by this run. The current user entry is initially last.
         messages.optJSONObject(messages.length() - 1)?.put(AgentTurnIdentity.JSON_KEY, turnId)
+        // 新 run 的第一个决策点还没有本轮回执。UI 手里有上一张可信回执时用它做锚点：
+        // 本地字符估算在中文长会话里常常比实测高四成以上，单靠它会在远没到 80% 时误压缩。
+        calibratedInputTokens?.takeIf { it > 0 }?.let { seed ->
+            silentBudget.requestStarted(localRequestTokens())
+            silentBudget.measured(seed, config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
+        }
         var round = 1
 
         roundLoop@ while (true) {

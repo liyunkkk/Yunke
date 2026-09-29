@@ -104,6 +104,7 @@ internal object AgentModelClient {
         compactPolicy: AgentLoop.CompactPolicy = AgentLoop.CompactPolicy.Disabled,
         compactionArchive: AgentCompactionArchive? = null,
         turnId: String = java.util.UUID.randomUUID().toString(),
+        calibratedInputTokens: Int? = null,
     ): ModelResponse.Text {
         config.validate()
         val initialCapabilities = capabilitiesProvider()
@@ -190,6 +191,7 @@ internal object AgentModelClient {
             systemCount = systemCount,
             compactionArchive = compactionArchive,
             turnId = turnId,
+            calibratedInputTokens = calibratedInputTokens,
             onHistoryCompacted = { transcriptStartIndex = messages.length() },
             toolsForRound = {
                 val capabilities = capabilitiesProvider()
