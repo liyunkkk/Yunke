@@ -9,6 +9,9 @@ import io.github.mangi.eta.data.model.AppearanceThemeMode
 
 /** 用标准 activity-alias 切换桌面图标。vivo 启动器认这个，不依赖厂商私有接口。 */
 internal object LauncherIconSync {
+    private const val PREFS = "launcher_icon"
+    private const val KEY_RES = "res"
+
     val swatches: IntArray = intArrayOf(
         0xFFF27A1A.toInt(),
         0xFF7B61FF.toInt(),
@@ -48,10 +51,15 @@ internal object LauncherIconSync {
         val background = if (darkUi) settings.iconDarkColor else settings.iconLightColor
         val bg = nearest(background) and 0xFFFFFF
         val ink = nearest(settings.iconCatColor) and 0xFFFFFF
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_RES, "launcher_%06x_%06x".format(bg, ink)).apply()
         val packageName = context.packageName
         val target = ComponentName(packageName, "$packageName.icon.L_%06X_%06X".format(bg, ink))
         val pm = context.packageManager
-        if (isLauncherEnabled(pm, target)) return
+        val changed = !isLauncherEnabled(pm, target)
+        if (!changed) {
+            io.github.mangi.eta.agent.runtime.AgentExecutionService.refreshIcon()
+            return
+        }
         pm.setComponentEnabledSetting(
             target,
             PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
@@ -74,7 +82,11 @@ internal object LauncherIconSync {
                 )
             }
         }
+        io.github.mangi.eta.agent.runtime.AgentExecutionService.refreshIcon()
     }
+
+    fun currentIconResName(context: Context): String? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_RES, null)
 
     private fun isLauncherEnabled(pm: PackageManager, component: ComponentName): Boolean {
         val state = pm.getComponentEnabledSetting(component)

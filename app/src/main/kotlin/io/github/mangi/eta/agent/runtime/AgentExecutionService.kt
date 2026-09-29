@@ -7,6 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
 import android.content.pm.ServiceInfo
 import android.os.Handler
 import android.os.IBinder
@@ -95,15 +98,32 @@ internal class AgentExecutionService : Service() {
             this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        return Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+        val icon = currentLauncherBitmap()
+        val builder = Notification.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_cat)
             .setContentTitle(getString(R.string.execution_title))
             .setContentText(if (leases.executingSessionCount() == 0) getString(R.string.execution_summary_idle) else getString(R.string.execution_summary, leases.executingSessionCount()))
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
-            .build()
+        if (icon != null) builder.setLargeIcon(icon)
+        return builder.build()
+    }
+
+    private fun currentLauncherBitmap(): Bitmap? {
+        val name = io.github.mangi.eta.ui.LauncherIconSync.currentIconResName(this) ?: return null
+        val id = resources.getIdentifier(name, "drawable", packageName)
+        if (id == 0) return null
+        val drawable = getDrawable(id) ?: return null
+        if (drawable is BitmapDrawable && drawable.bitmap != null) return drawable.bitmap
+        val width = drawable.intrinsicWidth.coerceAtLeast(1)
+        val height = drawable.intrinsicHeight.coerceAtLeast(1)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, width, height)
+        drawable.draw(canvas)
+        return bitmap
     }
 
     companion object {
@@ -117,6 +137,10 @@ internal class AgentExecutionService : Service() {
 
         @Volatile var backupMaintenance: Boolean = false
             private set
+
+        fun refreshIcon() {
+            mainHandler.post { instance?.refreshNotification() }
+        }
 
         @Synchronized fun beginBackupMaintenance() {
             check(!backupMaintenance && leases.count() == 0) { "请先停止 Agent 任务并关闭终端会话，再备份或恢复" }
