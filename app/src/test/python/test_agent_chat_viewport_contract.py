@@ -37,16 +37,6 @@ def calls(source, name):
         yield source[start + 1:end]
 
 
-def calls_without_declaration(source, name):
-    # Drop the `fun <name>(...)` declaration so only real call sites remain.
-    declaration = re.search(rf"\bfun\s+{re.escape(name)}\s*\(", source)
-    if declaration is not None:
-        start = source.index("(", declaration.start())
-        end = balanced_end(source, start, "(", ")")
-        source = source[:declaration.start()] + source[end + 1:]
-    return list(calls(source, name))
-
-
 class AgentChatViewportContractTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -67,20 +57,6 @@ class AgentChatViewportContractTest(unittest.TestCase):
         cls.messages = cls.source[body_start + 1:body_end]
         # Exclude the declaration, so only real call sites are inspected.
         cls.call_sites = cls.source[:declaration.start()] + cls.source[body_end + 1:]
-        # The rest-line clip moved out of the outer Box into this helper.
-        helper = re.search(
-            r"\binternal\s+fun\s+Modifier\.chatTailViewport\s*\(", cls.source
-        )
-        if helper is None:
-            raise AssertionError("Modifier.chatTailViewport declaration missing")
-        helper_start = cls.source.index("(", helper.start())
-        helper_end = balanced_end(cls.source, helper_start, "(", ")")
-        cls.helper_parameters = cls.source[helper_start + 1:helper_end]
-        helper_body_start = cls.source.index("{", helper_end)
-        helper_body_end = balanced_end(cls.source, helper_body_start, "{", "}")
-        cls.helper_head = cls.source[helper.start():helper_body_start]
-        cls.helper_body = cls.source[helper_body_start + 1:helper_body_end]
-        cls.helper = cls.helper_head + cls.helper_body
 
     def test_measured_bottom_inset_reaches_messages_without_caller_padding(self):
         self.assertRegex(self.parameters, r"\bbottomInset\s*:\s*Dp\b")
@@ -107,69 +83,31 @@ class AgentChatViewportContractTest(unittest.TestCase):
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         self.assertEqual(len(boxes), 1, "Expected one outer messages Box")
-        outer = boxes[0]
-        head = outer.split("{", 1)[0]
+        head = boxes[0].split("{", 1)[0]
         self.assertNotRegex(head, r"\.padding\s*\(")
-        # The outer Box no longer inlines the clip; it delegates to the helper.
-        self.assertNotIn("clipToBounds", outer)
-        self.assertNotIn("drawWithContent", outer)
-        self.assertNotIn("keepBottomAnchored", outer)
-        self.assertNotIn("isStreaming", outer)
-        helper_calls = list(calls(outer, "chatTailViewport"))
-        self.assertEqual(
-            len(helper_calls), 1, "Expected the outer Box to call chatTailViewport"
-        )
-        # The helper only receives the interaction-derived clip flag and inset.
-        self.assertRegex(helper_calls[0], r"\bshouldClipTail\b")
-        self.assertRegex(helper_calls[0], r"\bbottomInset\b")
-        self.assertNotRegex(helper_calls[0], r"\bkeepBottomAnchored\b")
-        self.assertNotRegex(helper_calls[0], r"\bisStreaming\b")
+        self.assertRegex(head, r"\.clipToBounds\s*\(\s*\)")
 
-    def test_chat_tail_viewport_owns_the_rest_line_clip(self):
-        # The helper is the single place that clips to the resting line.
-        self.assertRegex(
-            self.helper_head, r"\binternal\s+fun\s+Modifier\.chatTailViewport\s*\("
-        )
-        self.assertRegex(self.helper_parameters, r"\bshouldClipTail\s*:\s*Boolean\b")
-        self.assertRegex(self.helper_parameters, r"\bbottomInset\s*:\s*Dp\b")
-        self.assertRegex(self.helper_head, r":\s*Modifier\b")
-        self.assertRegex(self.helper, r"\bclipToBounds\s*\(\s*\)")
-        self.assertRegex(self.helper, r"if\s*\(\s*!shouldClipTail\s*\)")
-        self.assertRegex(
-            self.helper,
-            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",
-        )
-        self.assertRegex(self.helper, r"clipRect\s*\(\s*bottom\s*=\s*restLine\b")
-
-    def test_chat_tail_viewport_has_no_follow_or_stream_dependency(self):
-        # The clip is decided purely by interaction state: the helper must not
-        # read the anchor / streaming / follow-resolution inputs any more.
-        for token in (
-            "keepBottomAnchored",
-            "isStreaming",
-            "shouldLiftTail",
-            "resolveFollowTailLag",
-            "resolveBottomFollowEnabled",
-            "resolveKeepBottomAnchored",
-        ):
-            self.assertNotIn(token, self.helper)
-
-    def test_should_clip_chat_tail_is_decided_without_anchor_or_stream_input(self):
-        decisions = calls_without_declaration(self.source, "shouldClipChatTail")
-        self.assertTrue(decisions, "Expected a shouldClipChatTail decision call")
-        for decision in decisions:
-            self.assertNotRegex(decision, r"\bkeepBottomAnchored\b")
-            self.assertNotRegex(decision, r"\bisStreaming\b")
-
-    def test_following_output_lifts_the_tail_to_the_rest_line(self):
-        # While following streamed output the tail is lifted to the 14dp line;
-        # the helper above keeps that line out of the composer.
+    def test_following_output_lifts_the_tail_instead_of_clipping_it(self):
+        # While following streamed output, the tail is lifted to the 14dp line and
+        # also clipped there. Fast output can draw a new line past the measured
+        # tail before the lift catches it; the clip keeps that line out of the composer.
         lists = list(calls(self.messages, "LazyColumn"))
         self.assertRegex(
             lists[0],
             r"graphicsLayer\s*\{[^}]*if\s*\(\s*shouldLiftTail\s*\)\s*\{[^}]*"
             r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
         )
+        boxes = [
+            call for call in calls(self.messages, "Box")
+            if re.search(r"\bmodifier\s*=\s*modifier\b", call)
+        ]
+        draw = boxes[0]
+        self.assertRegex(draw, r"if\s*\(\s*!shouldClipTail\s*\)")
+        self.assertRegex(
+            draw,
+            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",
+        )
+        self.assertRegex(draw, r"clipRect\s*\(\s*bottom\s*=\s*restLine")
 
     def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
         self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 3)
