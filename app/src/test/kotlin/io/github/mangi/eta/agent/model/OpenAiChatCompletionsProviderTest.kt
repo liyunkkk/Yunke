@@ -599,6 +599,39 @@ class OpenAiChatCompletionsProviderTest {
         }
     }
 
+    @Test(timeout = 10000)
+    fun identicalReasoningDeltasAreNotSwallowedAndRetryGuardStopsTheRealSse() {
+        val body = sseChunk(JSONObject().put("reasoning_content", "Write.\n")).repeat(2000)
+        var requests = 0
+        withSseServer(body, onRequest = { requests++ }) { baseUrl ->
+            val failure = org.junit.Assert.assertThrows(AgentModelFailure::class.java) {
+                AgentModelRetry { _, _ -> org.junit.Assert.fail("must not replay") }.complete(
+                    initialRound = 1,
+                    request = providerRequest(baseUrl),
+                    provider = OpenAiChatCompletionsProvider,
+                    controller = AgentRunController(),
+                    onEvent = {},
+                    onProviderEvent = { _, _ -> },
+                    discardAttemptReasoning = {},
+                )
+            }
+            assertEquals("MODEL_REPETITIVE_REASONING", failure.code)
+            assertTrue(!failure.retryable)
+            assertEquals(1, requests)
+        }
+    }
+
+    @Test fun shortIdenticalDeltasAppendButFinalSnapshotIsNotDuplicated() {
+        val body = sseChunk(JSONObject().put("reasoning_content", "Check. ")).repeat(2) +
+            sseChunk(null, finishReason = "stop", message = JSONObject()
+                .put("reasoning_content", "Check. Check. ").put("content", "ok")) +
+            "data: [DONE]\n\n"
+        withSseServer(body) { baseUrl ->
+            val response = OpenAiChatCompletionsProvider.complete(providerRequest(baseUrl), AgentRunController())
+            assertEquals("Check. Check. ", response.assistantMessage.getString("reasoning_content"))
+        }
+    }
+
     private fun providerRequest(
         baseUrl: String,
         configTransform: (AgentModelClient.ModelConfig) -> AgentModelClient.ModelConfig = { it }

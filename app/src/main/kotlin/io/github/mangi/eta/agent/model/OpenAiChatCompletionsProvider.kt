@@ -182,8 +182,15 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 val delta = choice.optJSONObject("delta")
                 val snapshot = choice.optJSONObject("message")
                 if (delta == null && snapshot == null) return@sseEvent
-                fun appendReasoning(text: String) {
+                fun appendReasoning(text: String, isSnapshot: Boolean = false) {
                     if (text.isEmpty()) return
+                    // A real delta is never a cumulative snapshot. Deduplicating repeated deltas
+                    // hides degenerate generation from the request's repetition guard.
+                    if (!isSnapshot) {
+                        reasoningContent.append(text)
+                        appendVisibleDelta(AssistantBlockKind.THINKING, text)
+                        return
+                    }
                     val already = reasoningContent.toString()
                     when {
                         already.isEmpty() -> {
@@ -215,7 +222,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                     }
                 }
                 if (snapshot != null) {
-                    appendReasoning(snapshot.optReasoningContent())
+                    appendReasoning(snapshot.optReasoningContent(), isSnapshot = true)
                     if (content.isEmpty() && snapshot.has("content") && !snapshot.isNull("content")) {
                         val text = snapshot.optString("content")
                         if (text.isNotEmpty()) {
