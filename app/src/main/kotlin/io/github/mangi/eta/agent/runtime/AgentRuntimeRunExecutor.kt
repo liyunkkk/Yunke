@@ -301,6 +301,7 @@ internal class AgentRuntimeRunExecutor(
                 history = request.history, skipHistoryTrimming = true,
                 compactionArchive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, request.effectiveModelSessionId),
                 turnId = request.effectiveTurnId, runController = runController,
+                calibratedInputTokens = request.calibratedInputTokens,
                 skillContext = skillContext, memoryContext = memoryContext,
                 skillContextProvider = {
                     check(AssistantRepository.currentProfile(assistant.id) != null) { "任务所属助手已删除" }

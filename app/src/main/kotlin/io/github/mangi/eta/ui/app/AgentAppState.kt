@@ -109,6 +109,7 @@ import io.github.mangi.eta.ui.model.liveContextUsage
 import io.github.mangi.eta.ui.model.compressionContextUsage
 import io.github.mangi.eta.ui.model.cacheDisplayName
 import io.github.mangi.eta.ui.model.toOutboundModelImage
+import io.github.mangi.eta.ui.model.visibleFileReferences
 import io.github.mangi.eta.ui.model.shouldBlockSendForContextWindow
 import io.github.mangi.eta.ui.model.AgentSkillsUiState
 import io.github.mangi.eta.ui.model.AgentToolsUiState
@@ -1928,11 +1929,9 @@ internal class AgentAppState(
                     val outbound = pendingImages.filter { image ->
                         if (image.isVideo) supportsVideo || supportsVision else supportsVision
                     }
-                    val extraFiles = pendingImages.mapIndexedNotNull { index, image ->
-                        val file = staged.getOrNull(index) ?: return@mapIndexedNotNull null
-                        val asFile = (image.isVideo && !supportsVideo) || (!image.isVideo && !supportsVision)
-                        file.takeIf { asFile }
-                    }
+                    // 视觉模型看得到画面，但也要拿到落盘路径：否则改图标、转存这类文件操作
+                    // 只能去猜路径，曾因此在别的会话缓存里挑中旧截图。气泡按媒体路径去重，不会多出文件卡片。
+                    val extraFiles = staged.filterNotNull()
                     startPreparedSend(
                         prompt = prompt,
                         uiImages = pendingImages,
@@ -2085,7 +2084,9 @@ internal class AgentAppState(
             )
         }
         val parsedPrompt = AgentFileReferencePromptCodec.parse(boundary.userMessage.content)
-        val fileReferences = parsedPrompt.references.mapIndexed { index, reference ->
+        // 图片自己的落盘路径也写在消息的文件段里（给模型用）。编辑时它们已经作为图片回填，
+        // 再当文件卡片回填会重复，重发时还会发两次。
+        val fileReferences = boundary.userMessage.visibleFileReferences(parsedPrompt.references).mapIndexed { index, reference ->
             PendingFileReferenceUi(
                 id = "edit-${boundary.userMessage.id}-file-$index",
                 reference = reference,
@@ -2273,7 +2274,7 @@ internal class AgentAppState(
                 }
                 val runtimePrompt = AgentFileReferencePromptCodec.format(
                     parsed.request,
-                    if (supportsVision) parsed.references else parsed.references + extra,
+                    parsed.references + extra,
                     parsed.conversations,
                 )
                 val persisted = extra.ifEmpty { parsed.references }.map { reference ->
@@ -2289,6 +2290,21 @@ internal class AgentAppState(
                         rejectSendIfModelUnavailable()) return@withContext
                     if (homeState.isStreaming || rejectSendIfCompressing()) return@withContext
                     val runId = "run-${UUID.randomUUID()}"
+                    // 这次补了落盘路径（旧消息的信封里没有），历史里的用户消息文本随之变化。
+                    // 界面里的同一条消息也要改成同样的内容和路径，否则之后编辑、重生成、分支、删除
+                    // 都按文本对不上历史，这一轮就改不动了。
+                    val retainedMessages = homeState.messages.take(boundary.userMessageIndex + 1)
+                    val messages = if (extra.isEmpty()) retainedMessages else {
+                        retainedMessages.mapIndexed { index, message ->
+                            if (index != boundary.userMessageIndex || message !is UserMessageUi) message
+                            else message.copy(
+                                content = runtimePrompt,
+                                imageSources = if (extra.size == message.images.size) {
+                                    extra.map { it.absolutePath }
+                                } else message.imageSources,
+                            )
+                        }
+                    }
                     launchConversationRun(
                         conversationId = conversationId,
                         runId = runId,
@@ -2299,7 +2315,7 @@ internal class AgentAppState(
                             text = runtimePrompt,
                             persistedImages = persisted,
                         ),
-                        messages = homeState.messages.take(boundary.userMessageIndex + 1),
+                        messages = messages,
                         state = homeState,
                         reasoningEffort = homeState.reasoningEffort,
                         skipAutoCompress = ignoreCompression,
@@ -2563,19 +2579,11 @@ internal class AgentAppState(
             directMediaRuns.start(runId)
         } else null
 
+        // 自动压缩只看圆环：同一段历史的云端实测。没有实测（首次请求、压缩后、换模型）不压缩。
         val willCompress = !generateImage && !generateVideo && !skipAutoCompress && shouldAutoCompress(
             history = history,
             contextWindow = runConfig.contextWindow,
-            estimatedTokens = compressionContextUsage(
-                history = history,
-                currentInput = prompt,
-                pendingImages = images,
-                selectedModel = runModelOption,
-                billedContextTokens = if (history == state.history) billedPromptTokens(state) else null,
-                requestOverheadTokens = runOverhead,
-                billedOverheadTokens = state.cloudRequestOverheadTokens,
-                billedHistoryTokens = state.cloudHistoryTokens,
-            ).contextTokens,
+            estimatedTokens = if (history == state.history) billedPromptTokens(state) else null,
         )
         val runMessages = if (generateImage || generateVideo) {
             messages + AgentMessageUi(
@@ -2660,6 +2668,9 @@ internal class AgentAppState(
             }
             val compressModelConfig = resolveCompressModelConfig(config)
             val billedForCompression = if (history == state.history) billedPromptTokens(state) else null
+            // compressionContextUsage 只有三项校准都齐时才按「实测 + 增量」算，否则退回本地估算。
+            val calibratedForCompression = billedForCompression != null && billedForCompression > 0 &&
+                state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null
             val estimatedTokens = compressionContextUsage(
                 history = history,
                 currentInput = prompt,
@@ -2683,7 +2694,8 @@ internal class AgentAppState(
                     shouldAutoCompress(
                         history,
                         config.contextWindow,
-                        estimatedTokens,
+                        // 与圆环同一个数；estimatedTokens 只用于压缩时按账单缩放保留尾部。
+                        billedForCompression,
                     )
             )
             if (shouldCompress != willCompress) {
@@ -2740,6 +2752,10 @@ internal class AgentAppState(
                         history = historyToSend,
                         // UI owns context via auto-compress / 99% send block; Runtime must not trimHistory.
                         historyAlreadyCompacted = true,
+                        // 只在估算确实以同一段历史的云端回执为底、且没有在发送前压缩时传。
+                        calibratedInputTokens = estimatedTokens?.takeIf {
+                            !shouldCompress && calibratedForCompression && it > 0
+                        },
                         modelSessionId = conversationId,
                         handoff = AgentRuntimeWire.EntryHandoff(
                             id = runId,
@@ -4145,7 +4161,7 @@ internal class AgentAppState(
             delay(STREAM_UI_UPDATE_INTERVAL_MS)
             StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
             runEventFlushJobs.remove(runId)
-            flushPendingRunDelta(runId)
+            StreamPerformanceDiagnostics.measure("ui.flush") { flushPendingRunDelta(runId) }
         }
     }
 
@@ -4313,6 +4329,21 @@ internal class AgentAppState(
         persistSupplement: Boolean = true,
         replaying: Boolean = false,
     ) {
+        // 只加计时：流式增量（value=1）和其它事件分开看单次耗时。
+        StreamPerformanceDiagnostics.measure(
+            "ui.runEvent",
+            if (event is AgentEvent.AssistantBlockDelta) 1L else 0L,
+        ) {
+            applyRunEventNow(runId, event, persistSupplement, replaying)
+        }
+    }
+
+    private fun applyRunEventNow(
+        runId: String,
+        event: AgentEvent,
+        persistSupplement: Boolean,
+        replaying: Boolean,
+    ) {
         modelRetryState.accept(runId, event)
         when (event) {
             is AgentEvent.AssistantBlockStart -> {
@@ -4348,6 +4379,7 @@ internal class AgentAppState(
                 if (event.kind != AgentEvent.AssistantBlockKind.TOOL_CALL) {
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(
                         event.deltaChars.coerceAtLeast(event.delta.length),
+                        conversationIdForRun(runId),
                     )
                 }
             }
@@ -4391,9 +4423,8 @@ internal class AgentAppState(
                     }
                 } else if (!isStaleUsageAfterCompact(runId, event.round)) {
                     val occupancy = io.github.mangi.eta.ui.model.windowTokensFromUsage(event.usage.toUi())
-                    // The bill is always recorded; only a plausible receipt may become occupancy.
-                    // Aggregated gateway usage (a retried or multi-leg request summed into one
-                    // object) otherwise makes the ring max out and trips auto-compaction early.
+                    // Record the bill and advance occupancy independently of local token growth.
+                    // A local estimate cannot invalidate a cloud receipt or pin the ring to an old bill.
                     updateAssistantUsage(runId, event.round, event.usage.toUi())
                     val localBasis = event.requestHistoryTokens?.let { history ->
                         history + (event.requestOverheadTokens ?: 0)
@@ -4404,12 +4435,7 @@ internal class AgentAppState(
                     val window = runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)
                     val measured = occupancy.takeIf {
                         io.github.mangi.eta.ui.model.CloudReceiptPlausibility.isOccupancy(
-                            tokens = it, contextWindow = window,
-                            previousTokens = conversation?.let(::billedPromptTokens),
-                            localTokens = localBasis,
-                            previousLocalTokens = conversation?.cloudHistoryTokens?.let { history ->
-                                history + (conversation.cloudRequestOverheadTokens ?: 0)
-                            })
+                            tokens = it, contextWindow = window)
                     }
                     if (measured != null) {
                         updateLivePromptTokens(runId, measured, projected = false,
@@ -4449,6 +4475,7 @@ internal class AgentAppState(
                 if (!replaying) {
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
                         "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                        conversationIdForRun(runId),
                     )
                 }
                 updateRunTrace(runId) { messages ->
@@ -4469,6 +4496,7 @@ internal class AgentAppState(
                 if (!replaying) {
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
                         "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                        conversationIdForRun(runId),
                     )
                 }
                 updateRunTrace(runId) { messages ->
@@ -4640,7 +4668,8 @@ internal class AgentAppState(
             billedOverheadTokens = state.cloudRequestOverheadTokens,
             billedHistoryTokens = state.cloudHistoryTokens,
         ).contextTokens
-        if (!shouldAutoCompress(state.history, contextWindow, estimatedTokens)) return
+        // 与圆环同一个数：云端实测。estimatedTokens 只用于压缩时按账单缩放保留尾部。
+        if (!shouldAutoCompress(state.history, contextWindow, billedPromptTokens(state))) return
         val billed = billedPromptTokens(state)
         val local = billed?.let {
             compressionContextUsage(history = state.history, currentInput = "", pendingImages = emptyList(),

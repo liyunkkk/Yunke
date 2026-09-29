@@ -13,9 +13,11 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
@@ -259,10 +261,10 @@ fun AITypingIndicator(modifier: Modifier = Modifier) {
 private fun rememberActivePulse(
     active: Boolean,
     label: String,
-): Float {
-    if (!active) return 1f
+): () -> Float {
+    if (!active) return StaticPulseAlpha
     val transition = rememberInfiniteTransition(label = label)
-    val alpha by transition.animateFloat(
+    val alpha = transition.animateFloat(
         initialValue = 0.58f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -271,8 +273,12 @@ private fun rememberActivePulse(
         ),
         label = "${label}_alpha",
     )
-    return alpha
+    // 只把读取交给 graphicsLayer 的绘制块：每帧的透明度变化只重画图标，
+    // 不再让整行思考、工具或工作过程标题跟着重组。
+    return remember(alpha) { { alpha.value } }
 }
+
+private val StaticPulseAlpha: () -> Float = { 1f }
 
 @Stable
 internal class ChatMessageActions {
@@ -285,8 +291,13 @@ internal class ChatMessageActions {
     var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
 }
 
-/** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
-internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
+/**
+ * 点开时这一行的下沿会不会被钉住：跟底输出时尾部停在静止线，或内容不满一屏贴底。
+ * 钉住时展开从下沿长出、收起收向下沿，内容在屏幕上不动，只有标签移动；
+ * 没钉住时标签不动，内容向下长。只在点击回调里调用，不参与组合。
+ */
+internal val LocalExpansionHoldsBottom = staticCompositionLocalOf<() -> Boolean> { { false } }
+
 
 @Composable
 internal fun ChatMessageItem(
@@ -449,7 +460,7 @@ internal fun AgentWorkProcessHeader(
                     contentDescription = null,
                     modifier = Modifier
                         .size(15.dp)
-                        .graphicsLayer(alpha = if (running && !isPaused) pulseAlpha else 1f),
+                        .graphicsLayer { alpha = if (running && !isPaused) pulseAlpha() else 1f },
                     tint = if (running && !isPaused) {
                         MiuixTheme.colorScheme.primary
                     } else {
@@ -855,6 +866,9 @@ private fun AgentMessageBlock(
     }
 }
 
+/** 当前点开的推理把分帧组合进度和 loading 回退记进同一个点击窗口。 */
+private val LocalToggleProbe = staticCompositionLocalOf<ToggleProbeRef?> { null }
+
 @Composable
 private fun StableMarkdown(
     content: String,
@@ -876,6 +890,9 @@ private fun StableMarkdown(
         components = components,
         modifier = modifier,
         loading = {
+            LocalToggleProbe.current?.let { ref ->
+                SideEffect { StreamPerformanceDiagnostics.probeEvent(ref.token, "markdown", "state=loading chars=${content.length}") }
+            }
             // 保留与最终正文接近的高度，避免历史消息异步解析完成后越界绘制。
             Text(
                 text = content,
@@ -1049,10 +1066,13 @@ private fun StreamingMarkdown(
                 continue
             }
 
-            nextStreamingSnapshot(state.snapshot, parsed)?.let { published ->
-                StreamPerformanceDiagnostics.record("markdown.targetToPublish", System.nanoTime() - target.queuedAtNs)
-                StreamPerformanceDiagnostics.record("markdown.publish", value = published.originalSource.length.toLong())
-                state.snapshot = published
+            val publishTarget = target
+            StreamPerformanceDiagnostics.measure("markdown.publishBlock", publishTarget.content.length.toLong()) {
+                nextStreamingSnapshot(state.snapshot, parsed)?.let { published ->
+                    StreamPerformanceDiagnostics.record("markdown.targetToPublish", System.nanoTime() - publishTarget.queuedAtNs)
+                    StreamPerformanceDiagnostics.record("markdown.publish", value = published.originalSource.length.toLong())
+                    state.snapshot = published
+                }
             }
             if (target.isStreaming) {
                 delay(STREAMING_PARSE_PUBLISH_INTERVAL_MS)
@@ -1175,10 +1195,19 @@ private fun ChatMarkdownDocument(
         var limit by remember(blocks) {
             mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
         }
+        val probeRef = LocalToggleProbe.current
         LaunchedEffect(lengths) {
+            probeRef?.let { ref ->
+                StreamPerformanceDiagnostics.probeEvent(
+                    ref.token, "progressive", "blocks=$limit/${lengths.size} chars=${lengths.sum()}",
+                )
+            }
             while (limit < lengths.size) {
                 withFrameNanos { }
                 limit = nextProgressiveBlockLimit(lengths, limit, PROGRESSIVE_FRAME_CHARS)
+                probeRef?.let { ref ->
+                    StreamPerformanceDiagnostics.probeEvent(ref.token, "progressive", "blocks=$limit/${lengths.size}")
+                }
             }
         }
         limit
@@ -2325,11 +2354,14 @@ private fun ThinkingRow(
     compact: Boolean = false,
     isPaused: Boolean = false,
 ) {
-    val reportTailResize = LocalTailResize.current
+    val expansionHoldsBottom = LocalExpansionHoldsBottom.current
+    // 这一次展开或收起朝哪边长；点击时定，动画期间不变。
+    var anchorBottom by remember(message.id) { mutableStateOf(false) }
     var expanded by rememberSaveable(message.id) { mutableStateOf(!message.collapsed) }
     var manuallyExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     // 仅本次组合内由点击触发的展开才分帧组合正文；不跨配置变更保存。
     var expandedByTap by remember(message.id) { mutableStateOf(false) }
+    val toggleProbeRef = remember(message.id) { ToggleProbeRef() }
     // 思考结束后立即切换为与完成态回答相同的稳定 Markdown。工具执行期间 App 可能
     // 处于后台，不能让旧思考保留显现债务，回来后在新回答旁边补播整段内容。
     val streamingState = if (message.isStreaming) {
@@ -2339,6 +2371,8 @@ private fun ThinkingRow(
     }
     LaunchedEffect(message.isStreaming) {
         if (manuallyExpanded) return@LaunchedEffect
+        // 输出结束时的自动收起沿用原来的上沿方向。
+        anchorBottom = false
         expanded = message.isStreaming
     }
 
@@ -2386,10 +2420,17 @@ private fun ThinkingRow(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
                 .clickable {
+                    anchorBottom = expansionHoldsBottom()
                     manuallyExpanded = true
                     expandedByTap = !expanded
                     expanded = !expanded
-                    reportTailResize?.invoke()
+                    toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("thinking", expanded)
+                    StreamPerformanceDiagnostics.probeEvent(
+                        toggleProbeRef.token,
+                        "item",
+                        "chars=${message.content.length} streaming=${message.isStreaming} " +
+                            "anchor=${if (anchorBottom) "bottom" else "top"}",
+                    )
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2399,7 +2440,7 @@ private fun ThinkingRow(
                 contentDescription = null,
                 modifier = Modifier
                     .size(15.dp)
-                    .graphicsLayer(alpha = if (message.isStreaming && !isPaused) pulseAlpha else 1f),
+                    .graphicsLayer { alpha = if (message.isStreaming && !isPaused) pulseAlpha() else 1f },
                 tint = if (message.isStreaming && !isPaused) {
                     MiuixTheme.colorScheme.primary
                 } else {
@@ -2440,10 +2481,11 @@ private fun ThinkingRow(
 
         AnimatedVisibility(
             visible = expanded && message.content.isNotBlank(),
-            enter = tailDetailsEnter(),
-            exit = tailDetailsExit(),
+            enter = tailDetailsEnter(anchorBottom),
+            exit = tailDetailsExit(anchorBottom),
+            modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
-            HapticSelectionContainer {
+            HapticSelectionContainer(modifier = Modifier.toggleProbe(toggleProbeRef, "content")) {
                 Column {
                     if (!compact) {
                         Box(
@@ -2473,13 +2515,15 @@ private fun ThinkingRow(
                             modifier = contentModifier,
                         )
                     } else {
-                        StableMarkdown(
-                            content = message.content,
-                            tone = ChatMarkdownTone.Thinking,
-                            markdownState = checkNotNull(stableMarkdownState),
-                            modifier = contentModifier,
-                            progressive = expandedByTap,
-                        )
+                        androidx.compose.runtime.CompositionLocalProvider(LocalToggleProbe provides toggleProbeRef) {
+                            StableMarkdown(
+                                content = message.content,
+                                tone = ChatMarkdownTone.Thinking,
+                                markdownState = checkNotNull(stableMarkdownState),
+                                modifier = contentModifier,
+                                progressive = expandedByTap,
+                            )
+                        }
                     }
                 }
             }
@@ -2489,11 +2533,21 @@ private fun ThinkingRow(
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
 
-@Composable
-private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition = fadeIn(tween(120))
+/**
+ * 展开和收起的时长、缓动不变，只换生长方向：下沿被钉住时从下沿长出，
+ * 让已经排好的内容停在原处、由标签往上让开；否则从上沿往下长。
+ */
+internal fun tailDetailsEnter(fromBottom: Boolean): androidx.compose.animation.EnterTransition =
+    fadeIn(tween(160)) + expandVertically(
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        expandFrom = if (fromBottom) Alignment.Bottom else Alignment.Top,
+    )
 
-@Composable
-private fun tailDetailsExit(): androidx.compose.animation.ExitTransition = fadeOut(tween(80))
+internal fun tailDetailsExit(toBottom: Boolean): androidx.compose.animation.ExitTransition =
+    shrinkVertically(
+        animationSpec = tween(160, easing = FastOutSlowInEasing),
+        shrinkTowards = if (toBottom) Alignment.Bottom else Alignment.Top,
+    ) + fadeOut(tween(100))
 
 @Composable
 private fun ToolActivityInline(
@@ -2504,8 +2558,10 @@ private fun ToolActivityInline(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
-    val reportTailResize = LocalTailResize.current
+    val expansionHoldsBottom = LocalExpansionHoldsBottom.current
+    var anchorBottom by remember(message.id) { mutableStateOf(false) }
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    val toggleProbeRef = remember(message.id) { ToggleProbeRef() }
     // 只有「当前浏览器」卡片订阅实时会话快照，避免每个工具行都跟随快照重组
     val browserSnapshot = if (showBrowserShortcut) {
         AgentBrowserSession.snapshots.collectAsState().value
@@ -2556,8 +2612,16 @@ private fun ToolActivityInline(
             .then(
                 if (hasDetails) {
                     Modifier.clickable {
+                        anchorBottom = expansionHoldsBottom()
                         isExpanded = !isExpanded
-                        reportTailResize?.invoke()
+                        toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("tool", isExpanded)
+                        StreamPerformanceDiagnostics.probeEvent(
+                            toggleProbeRef.token,
+                            "item",
+                            "status=${message.status} commandChars=${message.command?.length ?: 0} " +
+                                "resultChars=${message.resultSummary?.length ?: 0} " +
+                                "browser=$showBrowserShortcut anchor=${if (anchorBottom) "bottom" else "top"}",
+                        )
                     }
                 } else {
                     Modifier
@@ -2641,9 +2705,9 @@ private fun ToolActivityInline(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.graphicsLayer(
-                                alpha = if (status == ToolActivityStatusUi.Running) pulseAlpha else 1f
-                            ),
+                            modifier = Modifier.graphicsLayer {
+                                alpha = if (status == ToolActivityStatusUi.Running) pulseAlpha() else 1f
+                            },
                         ) {
                             Box(
                                 modifier = Modifier
@@ -2673,11 +2737,13 @@ private fun ToolActivityInline(
 
         AnimatedVisibility(
             visible = isExpanded && hasDetails,
-            enter = tailDetailsEnter(),
-            exit = tailDetailsExit(),
+            enter = tailDetailsEnter(anchorBottom),
+            exit = tailDetailsExit(anchorBottom),
+            modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             Column(
                 modifier = Modifier
+                    .toggleProbe(toggleProbeRef, "content")
                     .fillMaxWidth()
                     .padding(start = 27.dp, top = 2.dp, bottom = 6.dp)
                     .squircleSurface(

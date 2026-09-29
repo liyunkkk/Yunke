@@ -159,6 +159,7 @@ internal object AgentRuntimeWire {
         "handoff_dismiss_entry_surface_on_foreground_operation"
     private const val LEGACY_BREENO_HANDOFF_SOURCE = "breeno"
     private const val KEY_HISTORY_ALREADY_COMPACTED = "history_already_compacted"
+    private const val KEY_CALIBRATED_INPUT_TOKENS = "calibrated_input_tokens"
     private const val KEY_CREATED_AT = "created_at"
     private const val KEY_RESULTS = "results"
     private const val KEY_VIRTUAL_DELIVERY_COMPLETED = "virtual_delivery_completed"
@@ -180,6 +181,12 @@ internal object AgentRuntimeWire {
         val modelSessionId: String = "",
         val assistantId: String = config.assistantId,
         val turnId: String = "",
+        /**
+         * 会话上一次云端实测折算到这次请求的输入量（实测 + 之后本地增量）。只在 UI 手里有
+         * 同一段历史的可信回执时才给；Runtime 用它作为新 run 的第一个锚点，避免在收到本轮
+         * 第一张回执之前用本地字符估算决定自动压缩。
+         */
+        val calibratedInputTokens: Int? = null,
     ) {
         val effectiveTurnId: String get() = turnId.ifBlank { runId }
         // 旧入口沿用会话 handoff；无持久会话的入口以首个 run 为会话起点。
@@ -326,6 +333,7 @@ internal object AgentRuntimeWire {
         putString(KEY_SESSION_PATH_PATTERN, request.config.sessionPathPattern)
         putString(KEY_SESSION_KEY_FIELD, request.config.sessionKeyField)
         putBoolean(KEY_HISTORY_ALREADY_COMPACTED, request.historyAlreadyCompacted)
+        request.calibratedInputTokens?.takeIf { it > 0 }?.let { putInt(KEY_CALIBRATED_INPUT_TOKENS, it) }
         request.handoff?.let { putBundle(KEY_HANDOFF, toBundle(it)) }
         putParcelable(KEY_HISTORY_FD, historyDescriptor)
         putParcelableArrayList(
@@ -462,7 +470,8 @@ internal object AgentRuntimeWire {
                 bundle.getBoolean(KEY_HISTORY_ALREADY_COMPACTED)
             } else {
                 false
-            }
+            },
+            calibratedInputTokens = bundle.optionalInt(KEY_CALIBRATED_INPUT_TOKENS)?.takeIf { it > 0 },
         )
 
     fun toBundle(handoff: EntryHandoff): Bundle = Bundle().apply {

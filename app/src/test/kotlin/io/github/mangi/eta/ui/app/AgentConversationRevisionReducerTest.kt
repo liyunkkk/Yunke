@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.app
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.model.AgentChatUiState
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.TokenUsageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
@@ -191,6 +192,27 @@ class AgentConversationRevisionReducerTest {
         )
         assertEquals(listOf("user", "assistant", "tool", "assistant"), revised.history.map { it.role })
         assertEquals(listOf("run-1", "run-2"), revised.appliedRuntimeRunIds)
+    }
+
+    @Test
+    fun deleteKeepsRetainedCloudBillInsteadOfOpeningAnEstimate() {
+        val state = conversationState().copy(
+            messages = conversationState().messages.map { message ->
+                if (message.id == "assistant-1") {
+                    (message as AgentMessageUi).copy(usage = TokenUsageUi(inputTokens = 120_000))
+                } else {
+                    message
+                }
+            },
+            livePromptTokens = 180_000,
+            cloudHistoryTokens = 90_000,
+            cloudRequestOverheadTokens = 4_000,
+        )
+        val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-2")!!
+        assertEquals(120_000, revised.livePromptTokens)
+        assertFalse(revised.livePromptIsProjected)
+        assertNull(revised.cloudHistoryTokens)
+        assertNull(revised.cloudRequestOverheadTokens)
     }
 
     @Test

@@ -124,7 +124,12 @@ internal class AgentLocalTools(
         root = rootCommandExecutor,
         rootAvailable = rootAvailable,
     )
-    private val imageTools = AgentImageTools(context, rootCommandExecutor, rootAvailable)
+    private val imageTools = AgentImageTools(
+        context,
+        rootCommandExecutor,
+        rootAvailable,
+        conversationId = browserConversationId,
+    )
     private val detachedTaskSupervisor = DetachedTaskSupervisor(
         skillsDirectoryProvider = { runSkillsRoot },
         logger = logger,

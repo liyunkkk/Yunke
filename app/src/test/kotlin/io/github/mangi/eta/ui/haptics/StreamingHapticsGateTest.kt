@@ -69,14 +69,15 @@ class StreamingHapticsGateTest {
         compose.setContent {
             CompositionLocalProvider(LocalLifecycleOwner provides owner) {
                 view = LocalView.current
-                StreamingHaptics.Observe(enabled = true)
+                StreamingHaptics.Observe(enabled = true, conversationId = "conv-current")
             }
         }
         // Visible ticks still follow the resumed host. Window focus is asserted structurally below.
         compose.runOnIdle { assertTrue(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
         compose.runOnIdle { owner.stop() }
         compose.runOnIdle { assertFalse(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
-        compose.runOnIdle { assertTrue(ticked { StreamingHaptics.noteBackgroundOutput(4) }) }
+        compose.runOnIdle { assertFalse(ticked { StreamingHaptics.noteBackgroundOutput(4, "conv-other") }) }
+        compose.runOnIdle { assertTrue(ticked { StreamingHaptics.noteBackgroundOutput(4, "conv-current") }) }
         compose.runOnIdle { assertEquals(4, backgroundPulseCount(4)) }
     }
 

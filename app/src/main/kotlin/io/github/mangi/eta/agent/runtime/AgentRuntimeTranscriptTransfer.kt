@@ -47,7 +47,7 @@ internal object AgentRuntimeTranscriptTransfer {
         cleanupStaleFiles(cacheDirectory)
 
         val file = File(cacheDirectory, "transcript-${UUID.randomUUID()}.json")
-        val encoded = AgentConversationCodec.encodeTranscriptForIpc(transcript)
+        val encoded = AgentConversationCodec.encodeTranscriptForTransfer(transcript)
         val bytes = encoded.toByteArray(Charsets.UTF_8)
         if (bytes.size > MAX_TRANSCRIPT_FILE_BYTES) {
             throw AgentRuntimeWire.PayloadTooLargeException(encoded.length)

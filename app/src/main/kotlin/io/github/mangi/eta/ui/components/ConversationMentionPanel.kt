@@ -47,20 +47,9 @@ internal fun ConversationMentionPanel(
                         .background(MiuixTheme.colorScheme.surfaceContainerHigh).padding(start = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(modifier = Modifier.weight(1f, fill = false)) {
-                        Text("@${mention.title}", maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.body2)
-                        Text(
-                            text = when {
-                                mention.transcript.contains("[已截取：") -> "已截取中间记录 · ${mention.transcript.length} 字符"
-                                mention.transcript.startsWith("[选择时快照：") -> "运行中会话快照 · ${mention.transcript.length} 字符"
-                                else -> "选择时快照 · ${mention.transcript.length} 字符"
-                            },
-                            style = MiuixTheme.textStyles.body2,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            maxLines = 1,
-                        )
-                    }
+                    Text("@${mention.title}", modifier = Modifier.weight(1f, fill = false),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = MiuixTheme.colorScheme.primary, style = MiuixTheme.textStyles.body2)
                     IconButton(onClick = { state.onRemove(mention.id) }, minWidth = 40.dp, minHeight = 48.dp) {
                         Icon(Icons.Rounded.Close, contentDescription = "移除会话引用 ${mention.title}", modifier = Modifier.size(18.dp))
                     }

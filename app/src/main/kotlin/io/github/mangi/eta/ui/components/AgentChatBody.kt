@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -50,6 +52,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
@@ -65,6 +69,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -204,7 +210,10 @@ internal fun AgentChatBody(
     modifier: Modifier = Modifier,
 ) {
     StreamPerformanceMonitor(isStreaming)
-    io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(!isPaused && !isDrawerOpen)
+    io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
+        enabled = !isPaused,
+        conversationId = collaborationConversationId,
+    )
     SideEffect { StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong()) }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -696,10 +705,28 @@ internal fun AgentConversationMessages(
     var isUserScrolling by remember { mutableStateOf(false) }
     // Observe user motion synchronously, before the asynchronous drag collector
     // and before another scheduled follow frame can mutate the list position.
+    // 手指是否按在列表上。只观察、不消费事件。
+    val pointerDown = remember { BooleanArray(1) }
+    var programmaticUserScrolls by remember { mutableIntStateOf(0) }
     val userScrollConnection = remember(scrollState, directionTracker) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    // 有些滚动也用 UserInput 来源，但手指根本没按下：把某块内容带进可视区
+                    // （BringIntoView，例如取得焦点的选区）、无障碍滚动。它们不算用户滑动，
+                    // 不能关掉跟底；否则快速输出时跟底一断，已经落后的那截一帧画进输入框。
+                    if (!isUserScrollGesture(pointerDown[0])) {
+                        if (StreamPerformanceDiagnostics.enabled && programmaticUserScrolls < 6) {
+                            programmaticUserScrolls++
+                            val frames = Throwable().stackTrace
+                            StreamPerformanceDiagnostics.note("scroll") {
+                                // 跟底状态在后面才声明；同一时刻的 follow 行已由越线诊断记录。
+                                "source=userInputWithoutPointer dy=${available.y.toInt()} " +
+                                    "userScroll=$isUserScrolling stack=${compactStack(frames)}"
+                            }
+                        }
+                        return Offset.Zero
+                    }
                     messageNavigationJob?.cancel()
                     isUserScrolling = true
                     navigationDirection = directionTracker.onScroll(available.y, userInput = true)
@@ -791,25 +818,149 @@ internal fun AgentConversationMessages(
             isBottomSettling = isBottomSettling,
         )
     )
-    // 展开最底部工具时先不上提，让跟底滚动把新增高度吃掉。
-    // 固定 220ms 后如果还没吃完，上提会把剩下的高度一次抬走，所以偶尔还会卡一下。
-    // 改成尾部回到静止线再放开；不跟底或等太久也放开，避免一直压着。
-    var holdTailLift by remember { mutableStateOf(false) }
-    val shouldLiftTail = shouldLiftStreamingTail(shouldFollowBottom, holdTailLift)
-    LaunchedEffect(holdTailLift) {
-        if (!holdTailLift) return@LaunchedEffect
-        val started = System.nanoTime()
-        while (currentCoroutineContext().isActive) {
-            if (shouldReleaseTailLiftHold(
-                    following = shouldFollowBottom,
-                    overflowPx = scrollState.followTailOverflow(),
-                    elapsedNanos = System.nanoTime() - started,
-                    maxNanos = TAIL_LIFT_HOLD_MAX_NANOS,
-                )
-            ) break
-            withFrameNanos { }
+    // 跟底时上提让尾部一直停在静止线上：列表变高多少，同一帧就上提多少，下沿不动。
+    // 以前点开最底部一行时先暂停上提，让内容从上沿往下长过静止线、再由跟底滚动追回来，
+    // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
+    // 上提照常，标签随动画一帧一帧往上让开。
+    val shouldLiftTail = shouldFollowBottom
+    val shouldClipTail = shouldClipChatTail(
+        isUserScrolling = isUserScrolling,
+        isUserDragging = isUserDragging,
+        navigationActive = messageNavigationJob != null,
+    )
+    val isListScrollable by remember {
+        derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
+    }
+    var streamFilledViewport by remember { mutableStateOf(false) }
+    LaunchedEffect(isStreaming, isListScrollable) {
+        streamFilledViewport = if (isStreaming) streamFilledViewport || isListScrollable else false
+    }
+    // 点击回调里问一次：这一行下面的内容会不会停在原处。只读 State，不参与组合；
+    // remember 后引用不变，作为 CompositionLocal 提供时不会让整页重组。
+    val expansionPinnedNow: () -> Boolean = remember(scrollState) {
+        {
+            resolveExpansionHoldsBottom(
+                following = shouldFollowBottom,
+                arrangedToBottom = shouldPinConversationToBottom(currentStreaming.value, streamFilledViewport),
+                listScrollable = isListScrollable,
+            )
         }
-        holdTailLift = false
+    }
+    // 下沿被钉住的展开期间，跟底滚动每帧把新增高度一次吃掉，不走平滑加速。
+    // 平滑跟底第一帧不动、之后慢慢加速，其余全靠绘制上提；上提一旦超过列表尾部留白，
+    // 尾部哨兵被挤出可视区，上提归零，内容一帧掉下去三百多像素。展开动画本身已经是平滑的，
+    // 这段时间里标签随动画逐帧上移即可。只在协程里读，写入不触发重组。
+    var bottomSnapUntilNanos by remember { mutableLongStateOf(0L) }
+    val expansionHoldsBottom: () -> Boolean = remember(scrollState) {
+        {
+            expansionPinnedNow().also { pinned ->
+                if (pinned) bottomSnapUntilNanos = System.nanoTime() + EXPANSION_BOTTOM_SNAP_NANOS
+            }
+        }
+    }
+    // 点开工作过程时新插入的步骤行从 0 高度展开（只在下沿被钉住时）。
+    // 滚动进可视区、或过了这段时间才组合的行不播放。只在步骤行首次组合时读，
+    // 用普通 Map，写入不触发任何重组。
+    val workExpandStarts = remember { HashMap<String, Long>() }
+    // 点开工具或推理后，逐帧记下列表状态：跟底、上提、暂停上提、哨兵相对静止线的位置、
+    // 用户是否在拖动。只在点击窗口内运行，读 layoutInfo 不参与组合。
+    LaunchedEffect(scrollState) {
+        snapshotFlow { StreamPerformanceDiagnostics.probeRequests.intValue }
+            .collectLatest { request ->
+                if (request == 0) return@collectLatest
+                while (StreamPerformanceDiagnostics.probing) {
+                    val frameNanos = withFrameNanos { it }
+                    StreamPerformanceDiagnostics.probeListSample(frameNanos) {
+                        val info = scrollState.layoutInfo
+                        // shouldLiftTail 是组合时的快照，这里按当前的跟底状态重新算。
+                        val liftingNow = shouldFollowBottom
+                        val lift = if (liftingNow) {
+                            resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
+                        } else 0
+                        "follow=$shouldFollowBottom lift=$liftingNow liftPx=$lift pinned=${expansionPinnedNow()} snap=${System.nanoTime() < bottomSnapUntilNanos} " +
+                            "userScroll=$isUserScrolling overflowPx=${scrollState.followTailOverflow()} " +
+                            "first=${scrollState.firstVisibleItemIndex}:${scrollState.firstVisibleItemScrollOffset} " +
+                            "visible=${info.visibleItemsInfo.size} total=${info.totalItemsCount}"
+                    }
+                }
+            }
+    }
+    // 快速输出时尾部越过静止线、画进输入框的诊断。只在布局或跟底状态变化时取样（snapshotFlow），
+    // 不额外请求帧。跟底上提时列表裁在静止线上，真正画进输入框的只能是没在上提的时候；
+    // 上提时越线的部分被裁掉，只计数。跟底的各个条件变化、越线开始和结束各记一行。
+    LaunchedEffect(scrollState) {
+        snapshotFlow { currentStreaming.value || isBottomSettling }
+            .distinctUntilChanged()
+            .collectLatest { active ->
+                if (!active) return@collectLatest
+                var lastState = ""
+                var breachSamples = 0
+                var breachMaxPx = 0
+                snapshotFlow {
+                    val info = scrollState.layoutInfo
+                    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
+                    val last = info.visibleItemsInfo.lastOrNull()
+                    val tailBottom = resolveTailBottomPx(
+                        sentinelBottom = sentinel?.let { it.offset + it.size },
+                        lastVisibleIndex = last?.index,
+                        lastVisibleBottom = last?.let { it.offset + it.size },
+                        totalItems = info.totalItemsCount,
+                    )
+                    val restLine = info.viewportEndOffset - info.afterContentPadding
+                    val lifting = shouldFollowBottom
+                    val lift = if (lifting) {
+                        resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
+                    } else 0
+                    TailBreachSample(
+                        overPx = resolveTailDrawnOverflow(tailBottom, restLine, lift),
+                        tailBottomPx = tailBottom,
+                        restLinePx = restLine,
+                        padPx = info.afterContentPadding,
+                        sentinelVisible = sentinel != null,
+                        lastIndex = last?.index ?: -1,
+                        totalItems = info.totalItemsCount,
+                        lifting = lifting,
+                        state = "follow=$lifting streaming=${currentStreaming.value} " +
+                            "anchored=${currentAnchor.value} userScroll=$isUserScrolling " +
+                            "settling=$isBottomSettling initialPending=$initialBottomPositionPending " +
+                            "nav=${messageNavigationJob != null}",
+                    )
+                }
+                    .distinctUntilChanged()
+                    .collect { sample ->
+                        if (!StreamPerformanceDiagnostics.enabled) return@collect
+                        val over = sample.overPx
+                        if (sample.state != lastState) {
+                            StreamPerformanceDiagnostics.note("follow") {
+                                "${sample.state} tailVisible=${sample.sentinelVisible} overPx=$over padPx=${sample.padPx}"
+                            }
+                            lastState = sample.state
+                        }
+                        if (over != null && over > 1) {
+                            StreamPerformanceDiagnostics.record(
+                                if (sample.lifting) "tail.clippedPx" else "tail.breachPx", value = over.toLong(),
+                            )
+                        }
+                        if (!sample.lifting && over != null && over > 1) {
+                            if (breachSamples == 0) {
+                                StreamPerformanceDiagnostics.note("breach") {
+                                    "state=start overPx=$over tailBottomPx=${sample.tailBottomPx} " +
+                                        "restLinePx=${sample.restLinePx} padPx=${sample.padPx} " +
+                                        "sentinel=${sample.sentinelVisible} last=${sample.lastIndex}/${sample.totalItems} " +
+                                        sample.state
+                                }
+                            }
+                            breachSamples++
+                            breachMaxPx = maxOf(breachMaxPx, over)
+                        } else if (breachSamples > 0) {
+                            StreamPerformanceDiagnostics.note("breach") {
+                                "state=end samples=$breachSamples maxOverPx=$breachMaxPx ${sample.state}"
+                            }
+                            breachSamples = 0
+                            breachMaxPx = 0
+                        }
+                    }
+            }
     }
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
     val bottomFollowDecisions = remember(scrollState) {
@@ -848,10 +999,17 @@ internal fun AgentConversationMessages(
             val sentinel = layoutInfo.visibleItemsInfo.firstOrNull { item ->
                 item.key == ChatBottomSentinelKey
             }
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
             BottomFollowLayout(
                 enabled = shouldFollowBottom,
                 bottomItemIndex = currentBottomItemIndex,
-                sentinelBottom = sentinel?.let { it.offset + it.size },
+                // 哨兵被挤出可视区、但最后一段内容还可见时，用它的下沿，不再按整屏估算。
+                sentinelBottom = resolveTailBottomPx(
+                    sentinelBottom = sentinel?.let { it.offset + it.size },
+                    lastVisibleIndex = lastVisible?.index,
+                    lastVisibleBottom = lastVisible?.let { it.offset + it.size },
+                    totalItems = layoutInfo.totalItemsCount,
+                ),
                 // 视口已扣除底栏高度；这里只扣列表自身的尾部留白。
                 // 跟底目标仍是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
@@ -916,7 +1074,13 @@ internal fun AgentConversationMessages(
                 reset()
                 continue
             }
-            val step = motion.step(remainingDistancePx, frameNanos, densityScale)
+            val snapping = System.nanoTime() < bottomSnapUntilNanos
+            val step = if (snapping) {
+                motion.reset()
+                remainingDistancePx
+            } else {
+                motion.step(remainingDistancePx, frameNanos, densityScale)
+            }
             // First frame establishes real timing; zero movement is not a failed scroll.
             if (step <= 0f) continue
             var consumedStep = 0f
@@ -924,6 +1088,12 @@ internal fun AgentConversationMessages(
                 scrollState.scroll {
                     if (!isUserScrolling && messageNavigationJob == null && shouldFollowBottom) {
                         consumedStep = StreamPerformanceDiagnostics.measure("follow.scroll") { scrollBy(step) }
+                        if (StreamPerformanceDiagnostics.probing) {
+                            StreamPerformanceDiagnostics.probeNote("follow") {
+                                "stepPx=${"%.1f".format(step)} consumedPx=${"%.1f".format(consumedStep)} " +
+                                    "remainingPx=${"%.1f".format(remainingDistancePx - consumedStep)}"
+                            }
+                        }
                         StreamPerformanceDiagnostics.record("follow.step", value = (consumedStep * 1000).toLong())
                     }
                 }
@@ -938,38 +1108,16 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
-    // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
-    // 才追上。这几帧不裁剪（裁剪会把卡片底边和半行字切掉），而是在绘制阶段把整个列表
-    // 上提尚未追上的距离：尾部始终停在输入框上方 14dp 的静止线，底边和间距都完整可见。
-    // 只有尾部不在视口内（一次性长出超过一屏）时才退回裁在静止线上。
-    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除，内容可以滑到输入框后面。
+    // 输入器周围透明，手动拖动、惯性和消息导航时允许内容从后面经过。
+    // 静止线保护与跟底解耦：轻拖停止跟底后，松手仍须挡住继续增长的正文/卡片。
+    // 这里只改变绘制范围，不恢复锚点、不上提内容，也不把历史阅读位置拉回底部。
     Box(
-        modifier = modifier
-            .clipToBounds()
-            .drawWithContent {
-                // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
-                // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
-                // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
-                if (!shouldLiftTail) {
-                    drawContent()
-                    return@drawWithContent
-                }
-                val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
-                clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
-            },
+        modifier = modifier.chatTailViewport(shouldClipTail, bottomInset),
     ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
             }
-        }
-        val isListScrollable by remember {
-            derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
-        }
-        var streamFilledViewport by remember { mutableStateOf(false) }
-        LaunchedEffect(isStreaming, isListScrollable) {
-            streamFilledViewport = if (isStreaming) streamFilledViewport || isListScrollable else false
         }
         val messageActions = remember { ChatMessageActions() }
         SideEffect {
@@ -991,11 +1139,18 @@ internal fun AgentConversationMessages(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    // 只在跟底时读取布局结果。滑动或展开期间不读，避免每帧把列表重新提交绘制。
                     translationY = if (shouldLiftTail) {
                         -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
                     } else {
                         0f
+                    }
+                }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            pointerDown[0] = event.changes.any { it.pressed }
+                        }
                     }
                 }
                 .nestedScroll(userScrollConnection)
@@ -1024,20 +1179,9 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
-                val tailRow = timelineRows.lastOrNull()
-                val tailGroupKey = when (tailRow) {
-                    is AgentTimelineRow.WorkStep -> tailRow.groupKey
-                    is AgentTimelineRow.WorkHeader -> tailRow.key
-                    else -> null
-                }
-                val reportsTailResize = when (entry) {
-                    is AgentTimelineRow.WorkHeader -> entry.key == tailGroupKey
-                    is AgentTimelineRow.WorkStep -> entry.groupKey == tailGroupKey
-                    is AgentTimelineRow.Message -> entry.key == tailRow?.key
-                }
                 // Keep the row key/index and animate its root, including its footer.
                 androidx.compose.runtime.CompositionLocalProvider(
-                    LocalTailResize provides if (reportsTailResize) ({ holdTailLift = true }) else null,
+                    LocalExpansionHoldsBottom provides expansionHoldsBottom,
                 ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
@@ -1093,7 +1237,15 @@ internal fun AgentConversationMessages(
                             isPaused = isPaused,
                             expanded = entry.expanded,
                             onToggle = {
-                                if (entry.key == tailGroupKey) holdTailLift = true
+                                val pinned = expansionHoldsBottom()
+                                if (!entry.expanded && pinned) workExpandStarts[entry.key] = System.nanoTime()
+                                else workExpandStarts.remove(entry.key)
+                                val token = StreamPerformanceDiagnostics.markToggle("work", !entry.expanded)
+                                StreamPerformanceDiagnostics.probeEvent(
+                                    token,
+                                    "item",
+                                    "steps=${entry.group.messages.size} anchor=${if (pinned) "bottom" else "top"}",
+                                )
                                 workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
                             },
                         )
@@ -1104,6 +1256,18 @@ internal fun AgentConversationMessages(
                             (message.isStreaming || streamingMarkdownStates.containsKey(message.id))) {
                             streamingMarkdownStates.getOrPut(message.id) { StreamingMarkdownState() }
                         } else null
+                        val appearStartedAt = workExpandStarts[entry.groupKey]
+                        val appear = remember {
+                            val animate = appearStartedAt != null &&
+                                System.nanoTime() - appearStartedAt < WORK_STEP_APPEAR_WINDOW_NANOS
+                            MutableTransitionState(!animate).apply { targetState = true }
+                        }
+                        // 与工具、推理展开同一套时长和缓动；下沿被钉住，从下沿长出，标签随之上移。
+                        AnimatedVisibility(
+                            visibleState = appear,
+                            enter = tailDetailsEnter(fromBottom = true),
+                            exit = ExitTransition.None,
+                        ) {
                         WorkProcessCardSlice(
                             part = if (entry.isLast) WorkProcessCardPart.Last else WorkProcessCardPart.Middle,
                         ) {
@@ -1121,6 +1285,7 @@ internal fun AgentConversationMessages(
                                     bottom = if (entry.isLast) 8.dp else 0.dp,
                                 ),
                             )
+                        }
                         }
                     }
                 }
@@ -1530,6 +1695,25 @@ internal fun resolveBottomFollowEnabled(
     isBottomSettling: Boolean = false,
 ): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
 
+/** 静止时保护输入框，与跟底/网络输出状态无关；用户滚动和导航期间解除。 */
+internal fun shouldClipChatTail(
+    isUserScrolling: Boolean,
+    isUserDragging: Boolean,
+    navigationActive: Boolean,
+): Boolean = !isUserScrolling && !isUserDragging && !navigationActive
+
+/** 外层裁剪不随内层列表的 translationY 移动；直接使用当前布局的输入器高度。 */
+internal fun Modifier.chatTailViewport(shouldClipTail: Boolean, bottomInset: Dp): Modifier =
+    clipToBounds().drawWithContent {
+        // 不读取 layoutInfo，避免手动滚动时逐帧使静止线绘制层失效。
+        if (!shouldClipTail) {
+            drawContent()
+            return@drawWithContent
+        }
+        val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
+        clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
+    }
+
 internal fun shouldRequestInitialBottom(
     isStreaming: Boolean,
     keepBottomAnchored: Boolean,
@@ -1588,8 +1772,60 @@ private suspend fun snapListToBottom(
 /** 尾部哨兵超出静止线的像素；哨兵不在可见项中时返回 null（尾部位置未知）。 */
 private fun LazyListState.followTailOverflow(): Int? {
     val info = layoutInfo
-    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey } ?: return null
-    return sentinel.offset + sentinel.size - (info.viewportEndOffset - info.afterContentPadding)
+    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
+    val last = info.visibleItemsInfo.lastOrNull()
+    val bottom = resolveTailBottomPx(
+        sentinelBottom = sentinel?.let { it.offset + it.size },
+        lastVisibleIndex = last?.index,
+        lastVisibleBottom = last?.let { it.offset + it.size },
+        totalItems = info.totalItemsCount,
+    ) ?: return null
+    // 列表自身在布局边界裁剪；上提超过尾部留白只会在输入框上方露出空白，最多上提到留白为止。
+    return (bottom - (info.viewportEndOffset - info.afterContentPadding)).coerceAtMost(info.afterContentPadding)
+}
+
+private data class TailBreachSample(
+    val overPx: Int?,
+    val tailBottomPx: Int?,
+    val restLinePx: Int,
+    val padPx: Int,
+    val sentinelVisible: Boolean,
+    val lastIndex: Int,
+    val totalItems: Int,
+    val lifting: Boolean,
+    val state: String,
+)
+
+/** UserInput 来源的滚动只有在手指按着时才算用户滑动；惯性走的是 SideEffect 来源，不经过这里。 */
+internal fun isUserScrollGesture(pointerDown: Boolean): Boolean = pointerDown
+
+/** 只保留类名和方法名（与主线程消息日志同一套截断规则），跳过本文件与协程、Compose 调度的帧。 */
+internal fun compactStack(frames: Array<StackTraceElement>, limit: Int = 14): String =
+    frames.asSequence()
+        .drop(1)
+        .map { "${toggleProbeClassName(it.className)}.${toggleProbeClassName(it.methodName)}" }
+        .filterNot { it.startsWith("kotlin.") || it.startsWith("java.") }
+        .take(limit)
+        .joinToString("<")
+
+/** 尾部画出来的位置越过静止线多少像素（上提之后）；尾部位置未知时为 null。 */
+internal fun resolveTailDrawnOverflow(tailBottomPx: Int?, restLinePx: Int, liftPx: Int): Int? =
+    tailBottomPx?.let { it - restLinePx - liftPx }
+
+/**
+ * 尾部下沿。哨兵是最后一项；它被挤出可视区、但紧挨着它的最后一段内容仍可见时，
+ * 用那一段的下沿代替（相差哨兵自身 1dp）。两者都看不到时返回 null。
+ */
+internal fun resolveTailBottomPx(
+    sentinelBottom: Int?,
+    lastVisibleIndex: Int?,
+    lastVisibleBottom: Int?,
+    totalItems: Int,
+): Int? = when {
+    sentinelBottom != null -> sentinelBottom
+    lastVisibleIndex != null && lastVisibleBottom != null && totalItems >= 2 &&
+        lastVisibleIndex == totalItems - 2 -> lastVisibleBottom
+    else -> null
 }
 
 internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = false) {
@@ -1603,19 +1839,19 @@ internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = fals
  * 跟底输出时，跟底滚动尚未追上的尾部超出量改为绘制上提，让尾部停在静止线上。
  * 不跟底（用户拖动、浏览历史、输出结束）时不做任何处理；尾部不可见时交给静止线裁剪兜底。
  */
-/** 用户正在展开最底部工具时不上提，避免整段高度在一帧里把列表抬走。 */
-internal fun shouldLiftStreamingTail(followingOutput: Boolean, holdingUserExpansion: Boolean): Boolean =
-    followingOutput && !holdingUserExpansion
-
-private const val TAIL_LIFT_HOLD_MAX_NANOS = 1_500_000_000L
-
-/** 尾部已经回到静止线，或已经不在跟底，才结束上提抑制。超时只是兜底。 */
-internal fun shouldReleaseTailLiftHold(
+/**
+ * 点开一行时，它下面的内容会不会停在屏幕原处。跟底时上提让尾部停在静止线；
+ * 内容不满一屏且贴底排列时，列表变高也是往上长。两种情况下展开都该从下沿长出。
+ */
+internal fun resolveExpansionHoldsBottom(
     following: Boolean,
-    overflowPx: Int?,
-    elapsedNanos: Long,
-    maxNanos: Long,
-): Boolean = !following || (overflowPx != null && overflowPx <= 1) || elapsedNanos >= maxNanos
+    arrangedToBottom: Boolean,
+    listScrollable: Boolean,
+): Boolean = following || (arrangedToBottom && !listScrollable)
+
+private const val WORK_STEP_APPEAR_WINDOW_NANOS = 500_000_000L
+// 180ms 展开动画加淡入，再留一点给最后一帧布局。
+private const val EXPANSION_BOTTOM_SNAP_NANOS = 400_000_000L
 
 internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
     !following -> FollowTailLag.None
@@ -1803,3 +2039,4 @@ internal fun shouldStopOrphanSpeechPlayback(
 
 /** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
 private val ConversationComposerGap = 14.dp
+

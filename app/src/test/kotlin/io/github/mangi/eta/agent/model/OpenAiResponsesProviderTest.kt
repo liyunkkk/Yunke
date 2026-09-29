@@ -317,7 +317,7 @@ class OpenAiResponsesProviderTest {
                     .put("input_tokens", 10)
                     .put("output_tokens", 8)
                     .put("total_tokens", 18)
-                    .put("input_tokens_details", JSONObject().put("cached_tokens", 3))
+                    .put("input_tokens_details", JSONObject().put("cached_tokens", 3).put("cache_creation_tokens", 2))
                     .put("output_tokens_details", JSONObject().put("reasoning_tokens", 5)),
             )
         val body = buildString {
@@ -364,6 +364,7 @@ class OpenAiResponsesProviderTest {
             val usage = events.filterIsInstance<ProviderEvent.Usage>().single().usage
             assertEquals(18, usage.contextTokens)
             assertEquals(3, usage.cachedTokens)
+            assertEquals(2, usage.cacheCreationTokens)
             assertEquals(5, usage.reasoningTokens)
         }
     }

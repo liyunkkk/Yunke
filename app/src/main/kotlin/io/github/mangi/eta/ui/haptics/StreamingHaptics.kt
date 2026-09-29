@@ -6,11 +6,17 @@ import android.view.View
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 
 /** Main-thread, frame-synchronous feedback. No network-event queue or delayed replay. */
 internal object StreamingHaptics {
-    private class Gate(val view: View, val lifecycle: Lifecycle, val enabled: () -> Boolean)
+    private class Gate(
+        val view: View,
+        val lifecycle: Lifecycle,
+        val conversationId: String?,
+        val enabled: () -> Boolean,
+    )
 
     /**
      * Several chat hosts observe concurrently (home and chat screens, conversation key changes).
@@ -22,6 +28,8 @@ internal object StreamingHaptics {
     private var pendingBackgroundTicks = 0
     private var backgroundTickScheduled = false
     private var backgroundView: View? = null
+    private var foregroundConversationId: String? = null
+    private var foregroundView: View? = null
 
     /** Test-only counter of allowed advances; never consulted by production paths. */
     @Volatile internal var allowedAdvances: Long = 0
@@ -43,6 +51,7 @@ internal object StreamingHaptics {
     }
 
     fun onVisibleAdvance(view: View) {
+        synchronized(gates) { rememberForeground() }
         if (!foregroundGate(view)) return
         allowedAdvances++
         TouchHaptics.generationTick(view)
@@ -53,29 +62,41 @@ internal object StreamingHaptics {
      * Pulse the same generation tick directly so leaving the app does not cut the vibration.
      */
     /** 前台也走这条：工具标签只出现一次，不能等界面刚好在 32ms 的打字间隔里把这次丢掉。 */
-    fun noteToolAppeared(toolId: String) {
+    fun noteToolAppeared(toolId: String, conversationId: String? = null) {
         if (toolId.isBlank()) return
-        val view = synchronized(gates) {
-            gates.firstOrNull { gate ->
-                gate.enabled() && gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)
-            }?.view
-        }
+        val view = currentConversationView(conversationId) ?: return
         TouchHaptics.onLiveToolActivity(view, toolId)
     }
 
-    fun noteBackgroundOutput(graphemes: Int) {
+    fun noteBackgroundOutput(graphemes: Int, conversationId: String? = null) {
         if (graphemes <= 0) return
-        val view = synchronized(gates) {
-            gates.firstOrNull { gate ->
-                gate.enabled() && gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED) &&
-                    !gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-            }?.view
-        } ?: return
+        // 当前页还在打字时由可见打字机震动。离开页面、展开侧栏或退到后台仍补震，直到换成另一条会话。
+        val view = currentConversationView(conversationId) ?: return
+        if (foregroundGate(view)) return
         allowedAdvances++
         pendingBackgroundTicks = (pendingBackgroundTicks + backgroundPulseCount(graphemes))
             .coerceAtMost(MAX_BACKGROUND_TICKS)
         backgroundView = view
         scheduleBackgroundTick()
+    }
+
+    private fun rememberForeground() {
+        val resumed = gates.firstOrNull { gate ->
+            !gate.conversationId.isNullOrBlank() && gate.enabled() &&
+                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        } ?: return
+        if (resumed.conversationId != foregroundConversationId) cancelBackgroundTicks()
+        foregroundConversationId = resumed.conversationId
+        foregroundView = resumed.view
+    }
+
+    private fun currentConversationView(conversationId: String?): View? {
+        if (conversationId.isNullOrBlank()) return null
+        return synchronized(gates) {
+            rememberForeground()
+            if (conversationId != foregroundConversationId) return@synchronized null
+            gates.firstOrNull { it.conversationId == conversationId }?.view ?: foregroundView
+        }
     }
 
     private fun scheduleBackgroundTick() {
@@ -92,11 +113,15 @@ internal object StreamingHaptics {
     }
 
     private fun backgroundGate(view: View): Boolean = synchronized(gates) {
-        gates.any { gate ->
-            gate.view === view && gate.enabled() &&
-                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED) &&
-                !gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        val id = foregroundConversationId ?: return false
+        val ownsView = view === foregroundView || view === backgroundView ||
+            gates.any { it.view === view && it.conversationId == id }
+        if (!ownsView) return false
+        val visible = gates.any { gate ->
+            gate.conversationId == id && gate.enabled() &&
+                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         }
+        !visible
     }
 
     private fun cancelBackgroundTicks() {
@@ -107,16 +132,29 @@ internal object StreamingHaptics {
     }
 
     @Composable
-    fun Observe(enabled: Boolean) {
+    fun Observe(enabled: Boolean, conversationId: String? = null) {
         val view = LocalView.current
         val lifecycle = LocalLifecycleOwner.current.lifecycle
         val active by rememberUpdatedState(enabled)
-        DisposableEffect(view, lifecycle) {
-            val gate = Gate(view, lifecycle) { active }
-            synchronized(gates) { gates += gate }
+        DisposableEffect(view, lifecycle, conversationId) {
+            val gate = Gate(view, lifecycle, conversationId) { active }
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME && !conversationId.isNullOrBlank() && active) {
+                    synchronized(gates) { foregroundConversationId = conversationId }
+                }
+            }
+            synchronized(gates) {
+                gates += gate
+                if (!conversationId.isNullOrBlank() && active &&
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                ) {
+                    foregroundConversationId = conversationId
+                }
+            }
+            lifecycle.addObserver(observer)
             onDispose {
+                lifecycle.removeObserver(observer)
                 synchronized(gates) { gates.remove(gate) }
-                if (synchronized(gates) { gates.isEmpty() }) cancelBackgroundTicks()
             }
         }
     }

@@ -140,7 +140,7 @@ internal object AgentToolRequirements {
                 }
             }
             "read_image" -> properties?.getJSONObject("path")?.put("description",
-                "绝对图片或视频路径、file URI、已授权的 content URI，或聊天附件别名 /home/workdir/attachments/image.jpg；视频会抽取封面帧。")
+                "绝对图片或视频路径、file URI、已授权的 content URI；聊天附件优先用用户消息里给出的绝对路径，别名 /home/workdir/attachments/image.jpg 只解析当前会话的附件。视频会抽取封面帧。")
             "press_key" -> properties?.getJSONObject("button")?.let { button ->
                 val values = button.getJSONArray("enum")
                 button.put("enum", JSONArray().also { allowed ->

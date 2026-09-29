@@ -4,6 +4,30 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentSilentContextBudgetTest {
+    @Test fun onlyAReceiptOfThisRunIsTheAutomaticCompactionInput() {
+        val budget = AgentSilentContextBudget()
+        assertNull(budget.cloudTokens())
+        budget.seed(50000, 70000, contextWindow = 200000)
+        // A carried-over value calibrates the send limit but is not a receipt.
+        assertNull(budget.cloudTokens())
+        assertEquals(71000, budget.tokens(51000))
+        budget.requestStarted(51000)
+        budget.measured(72000, contextWindow = 200000)
+        assertEquals(72000, budget.cloudTokens())
+        // Local growth never moves it.
+        budget.tokens(90000)
+        assertEquals(72000, budget.cloudTokens())
+        budget.cloudStale()
+        assertNull(budget.cloudTokens())
+        assertEquals(72000, budget.tokens(51000))
+        budget.measured(73000, contextWindow = 200000)
+        budget.contextReplaced()
+        assertNull(budget.cloudTokens())
+        // An implausible seed is ignored.
+        budget.seed(1000, 900000, contextWindow = 200000)
+        assertEquals(1000, budget.tokens(1000))
+    }
+
     @Test fun firstBoundaryUsesFullLocalRequest() {
         val budget = AgentSilentContextBudget()
         assertEquals(45000, budget.tokens(45000))

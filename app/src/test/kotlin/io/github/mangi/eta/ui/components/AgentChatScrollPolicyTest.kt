@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -49,6 +50,130 @@ class AgentChatScrollPolicyTest {
                 isStreaming = false,
                 keepBottomAnchored = true,
                 isUserDragging = false,
+            )
+        )
+    }
+
+    @Test
+    fun restingTailRemainsClippedAfterFollowEnds() {
+        // 停止跟底之后的静止尾部仍然要被裁剪，否则新内容会画进输入框上方。
+        assertTrue(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+    }
+
+    @Test
+    fun manualScrollingReleasesComposerClip() {
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = true,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = true,
+                navigationActive = false,
+            )
+        )
+    }
+
+    @Test
+    fun messageNavigationReleasesComposerClip() {
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = true,
+            )
+        )
+    }
+
+    @Test
+    fun interactionInertiaAndNavigationOnlyReleaseTheClipWhileActive() {
+        // 惯性滑动：手指已经抬起，但列表仍在移动。
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = true,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+        // 手指按住拖动。
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = true,
+                navigationActive = false,
+            )
+        )
+        // 导航跳转同时动用了滚动与导航。
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = true,
+                isUserDragging = false,
+                navigationActive = true,
+            )
+        )
+        // 手势与导航结束后恢复静止裁剪。
+        assertTrue(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+    }
+
+    @Test
+    fun tinyDragAtBottomStopsFollowingYetStillClipsTheRestingTail() {
+        val afterDrag = resolveKeepBottomAnchored(
+            current = true,
+            isUserDragging = true,
+            isAtBottom = true,
+            hasLeftBottom = false,
+        )
+        assertFalse(afterDrag)
+        val afterRelease = resolveKeepBottomAnchored(
+            current = afterDrag,
+            isUserDragging = false,
+            isAtBottom = true,
+            hasLeftBottom = false,
+        )
+        assertFalse(afterRelease)
+        // 松手恢复裁剪，但不能重新启用跟底或上提来改变历史阅读位置。
+        assertTrue(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+        val following = resolveBottomFollowEnabled(
+            isStreaming = true,
+            keepBottomAnchored = afterRelease,
+            isUserDragging = false,
+            isBottomSettling = true,
+        )
+        assertFalse(following)
+        assertEquals(FollowTailLag.None, resolveFollowTailLag(following, tailOverflowPx = 151))
+    }
+
+    @Test
+    fun restingClipIsNotGatedByStreamingOrAnchorState() {
+        // 非流式（且已经停止跟底）时静止尾部同样裁剪；裁剪决策只接收交互状态，
+        // 不再接收 streaming / anchor 输入，因此两者都无法再关闭裁剪。
+        assertTrue(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
             )
         )
     }
@@ -337,7 +462,8 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun manualScrollNeitherLiftsNorClips() {
+    fun notFollowingReaderNeverLiftsTheTail() {
+        // 已经停止跟底：无论尾部越线多少（或未知）都不再上提，避免把读者拉回底部。
         assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = 80))
         assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = null))
     }
@@ -350,18 +476,50 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun userExpansionOfTheTailDoesNotLift() {
-        assertFalse(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = true))
-        assertTrue(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = false))
-        assertFalse(shouldLiftStreamingTail(followingOutput = false, holdingUserExpansion = false))
+    fun tailBottomFallsBackToTheLastContentItemWhenTheSentinelIsPushedOut() {
+        // 哨兵可见时直接用哨兵。
+        assertEquals(900, resolveTailBottomPx(900, 11, 900, totalItems = 12))
+        // 展开把哨兵挤出可视区，最后一段内容（倒数第二项）还可见：用它的下沿。
+        assertEquals(1400, resolveTailBottomPx(null, 10, 1400, totalItems = 12))
+        // 看到的只是更靠上的内容：尾部位置未知。
+        assertNull(resolveTailBottomPx(null, 9, 1400, totalItems = 12))
+        assertNull(resolveTailBottomPx(null, null, null, totalItems = 12))
+        assertNull(resolveTailBottomPx(null, 0, 100, totalItems = 1))
     }
 
     @Test
-    fun tailLiftHoldWaitsUntilTheTailIsBackOnTheRestLine() {
-        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
-        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = null, elapsedNanos = 0L, maxNanos = 100L))
-        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 1, elapsedNanos = 0L, maxNanos = 100L))
-        assertTrue(shouldReleaseTailLiftHold(following = false, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
-        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 100L, maxNanos = 100L))
+    fun userInputScrollWithoutAFingerDownDoesNotCountAsUserScrolling() {
+        assertTrue(isUserScrollGesture(pointerDown = true))
+        assertFalse(isUserScrollGesture(pointerDown = false))
+    }
+
+    @Test
+    fun compactStackKeepsOnlyClassAndMethodNames() {
+        val frames = arrayOf(
+            StackTraceElement("self.Frame", "skipped", null, 1),
+            StackTraceElement("kotlin.coroutines.Continuation", "resume", null, 1),
+            StackTraceElement("a.b.C\$1", "onPreScroll", null, 1),
+            StackTraceElement("x.Y", "run secret", null, 1),
+        )
+        assertEquals("a.b.C\$1.onPreScroll<x.Y.run", compactStack(frames))
+    }
+
+    @Test
+    fun drawnTailOverflowIsMeasuredAfterTheLift() {
+        assertEquals(0, resolveTailDrawnOverflow(1200, 1000, 200))
+        assertEquals(150, resolveTailDrawnOverflow(1150, 1000, 0))
+        assertEquals(-20, resolveTailDrawnOverflow(980, 1000, 0))
+        assertNull(resolveTailDrawnOverflow(null, 1000, 0))
+    }
+
+    @Test
+    fun expansionGrowsFromTheBottomOnlyWhenTheBottomStaysPut() {
+        // 跟底上提：尾部停在静止线。
+        assertTrue(resolveExpansionHoldsBottom(following = true, arrangedToBottom = false, listScrollable = true))
+        // 不满一屏贴底排列：列表往上长。
+        assertTrue(resolveExpansionHoldsBottom(following = false, arrangedToBottom = true, listScrollable = false))
+        // 满屏但没在跟底：首个可见项不动，内容往下长。
+        assertFalse(resolveExpansionHoldsBottom(following = false, arrangedToBottom = true, listScrollable = true))
+        assertFalse(resolveExpansionHoldsBottom(following = false, arrangedToBottom = false, listScrollable = false))
     }
 }

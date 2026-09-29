@@ -31,11 +31,30 @@ class ContextDualMeterContractTest(unittest.TestCase):
         self.assertIn('historyTokenCount = historyTokenCount', bar)
         self.assertIn('shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)', bar)
         app = self.text('ui/app/AgentAppState.kt')
-        self.assertEqual(4, app.count('= compressionContextUsage('))
+        # Send guard, pre-send tail scaling and post-run tail scaling. Automatic compaction
+        # itself reads the ring's cloud receipt, not this silent budget.
+        self.assertEqual(3, app.count('= compressionContextUsage('))
+        # Every automatic-compaction call passes the ring's cloud receipt, never a local estimate.
+        self.assertEqual(4, app.count('shouldAutoCompress('))  # one declaration + three call sites
+        self.assertIn('estimatedTokens = if (history == state.history) billedPromptTokens(state) else null', app)
+        self.assertIn('if (!shouldAutoCompress(state.history, contextWindow, billedPromptTokens(state))) return', app)
+        self.assertRegex(app, r'shouldAutoCompress\(\s*history,\s*config\.contextWindow,\s*(//[^\n]*\n\s*)?billedForCompression,')
         self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', app)
         # Only a plausible receipt may become occupancy, judged against the run's own window.
         self.assertIn('CloudReceiptPlausibility.isOccupancy(', app)
         self.assertIn('runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)', app)
+
+    def test_local_growth_cannot_reject_a_new_cloud_receipt(self):
+        policy = self.text('ui/model/CloudReceiptPlausibility.kt')
+        for removed in ('fitsGrowth', 'previousTokens', 'previousLocalTokens', 'localTokens'):
+            self.assertNotIn(removed, policy)
+        self.assertIn('return fitsWindow(value, contextWindow)', policy)
+        app = self.text('ui/app/AgentAppState.kt')
+        receipt = app.split('val measured = occupancy.takeIf {', 1)[1].split('if (measured != null)', 1)[0]
+        self.assertIn('tokens = it, contextWindow = window', receipt)
+        self.assertNotIn('localBasis', receipt)
+        self.assertNotIn('billedPromptTokens', receipt)
+        self.assertIn('historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens', app)
 
     def test_request_calibration_is_optional_on_the_wire(self):
         wire = self.text('agent/runtime/AgentRuntimeWire.kt')

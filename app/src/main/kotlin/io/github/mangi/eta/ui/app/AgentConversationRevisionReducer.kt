@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.model.AgentContextCompactor
 import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentChatUiState
+import io.github.mangi.eta.ui.model.latestBilledContextTokens
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
 import io.github.mangi.eta.ui.model.RunTraceMessageUi
@@ -71,12 +72,18 @@ internal object AgentConversationRevisionReducer {
 
     fun deleteFromTurn(state: AgentChatUiState, targetMessageId: String): AgentChatUiState? {
         val boundary = boundary(state, targetMessageId) ?: return null
+        val messages = state.messages.take(boundary.userMessageIndex)
         return state.copy(
-            messages = state.messages.take(boundary.userMessageIndex),
+            messages = messages,
             history = boundary.historyPrefix,
             messageEdit = null,
-            livePromptTokens = null,
+            // Deleting turns is neither a new chat nor compaction. Keep the last cloud
+            // bill that still belongs to the retained transcript, and drop the old
+            // local calibration so the next receipt is not judged against deleted text.
+            livePromptTokens = latestBilledContextTokens(messages),
             livePromptIsProjected = false,
+            cloudHistoryTokens = null,
+            cloudRequestOverheadTokens = null,
         )
     }
 

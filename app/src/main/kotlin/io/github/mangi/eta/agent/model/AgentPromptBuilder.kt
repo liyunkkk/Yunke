@@ -138,7 +138,7 @@ internal object AgentPromptBuilder {
                         "YUNKe 已内置终端，不要回答‘没有终端应用’或要求另装终端 App。" +
                         "读取图片或视频画面必须调用 read_image，不要为了看视频去解析 MP4 或调用 ffmpeg。" +
                         "read_image 可直接读取 Linux 的 /workspace 与 /workspace/mounts 路径，会映射到宿主文件，不必先拷到 Android 路径。" +
-                        "聊天截图也可能是 /home/workdir/attachments/image.jpg；read_image 会在当前会话图片缓存里解析，不必先拷到 Android 路径。" +
+                        "用户消息里的图片或视频附件会以 [用户图片]/[用户视频] 或 # Files mentioned by the user 给出落盘的绝对路径；需要复制、处理或再次查看附件时直接用这个路径，不要去 cache 或其它会话目录里搜索“最新”的图片。/home/workdir/attachments/image.jpg 只是当前会话附件的别名，只能交给 read_image，终端里不存在这个路径。" +
                         "read_image 对视频会抽取封面帧作为视觉输入，并返回时长等信息。" +
                         "同一轮模型回复最多调用一次 read_image；需要查看多张或更多帧时，" +
                         "必须等待当前结果返回并观察内容，再在下一轮调用下一张，禁止在同一轮并行或批量调用多个 read_image。" +

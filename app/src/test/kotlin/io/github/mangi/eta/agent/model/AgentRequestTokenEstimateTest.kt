@@ -63,8 +63,9 @@ class AgentRequestTokenEstimateTest {
             val filtered = AgentRequestMediaPolicy.filter(history, vision, false)
             assertEquals(AgentRequestTokenEstimate.filtered(filtered, JSONArray()),
                 AgentRequestTokenEstimate.boundary(history, JSONArray(), vision, false))
-            if (!vision) assertTrue(filtered.toString().contains("[用户图片]"))
-            else assertFalse(filtered.toString().contains("image_url"))
+            // Vision models also get the real path; without it they guess and may pick another chat's image.
+            assertTrue(filtered.toString().contains("[用户图片]"))
+            if (vision) assertFalse(filtered.toString().contains("image_url"))
         }
     }
 
@@ -101,7 +102,12 @@ class AgentRequestTokenEstimateTest {
                 val boundary = AgentRequestTokenEstimate.boundary(source, JSONArray(), vision, !vision)
                 // Hydration rejects the oversized file before reading its contents.
                 val actual = AgentRequestMediaPolicy.filter(source, vision, !vision)
-                assertEquals(3, boundary)
+                // 图片文件不发，但落盘路径仍以一行文字交给模型（视觉模型也一样），这一行要计入。
+                // 视频用例支持视频输入，不追加路径行。
+                val listing = if (type == "image_file") {
+                    AgentContextBudget.countTokens("[用户图片] ${file.absolutePath}")
+                } else 0
+                assertEquals(3 + listing, boundary)
                 assertEquals(boundary, AgentRequestTokenEstimate.filtered(actual, JSONArray()))
             } finally { file.delete() }
         }
@@ -112,7 +118,8 @@ class AgentRequestTokenEstimateTest {
         try {
             java.io.RandomAccessFile(file, "rw").use { it.setLength(4L * 1024 * 1024) }
             val source = JSONArray().put(message(JSONObject().put("type", "image_file").put("path", file.absolutePath)))
-            assertEquals(3 + 1024, AgentRequestTokenEstimate.boundary(source, JSONArray(), true, false))
+            val listing = AgentContextBudget.countTokens("[用户图片] ${file.absolutePath}")
+            assertEquals(3 + 1024 + listing, AgentRequestTokenEstimate.boundary(source, JSONArray(), true, false))
         } finally { file.delete() }
     }
 

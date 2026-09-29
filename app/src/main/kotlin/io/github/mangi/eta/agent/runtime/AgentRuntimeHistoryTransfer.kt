@@ -47,7 +47,7 @@ internal object AgentRuntimeHistoryTransfer {
         cleanupStaleFiles(cacheDirectory)
 
         val file = File(cacheDirectory, "history-${UUID.randomUUID()}.json")
-        val encoded = AgentConversationCodec.encodeTranscriptForStorage(history)
+        val encoded = AgentConversationCodec.encodeTranscriptForTransfer(history)
         if (encoded.length > MAX_HISTORY_FILE_BYTES) {
             throw AgentRuntimeWire.PayloadTooLargeException(encoded.length)
         }
