@@ -52,15 +52,30 @@ final class OwnerHandoff {
     }
     /** Launch preflight: distinguish a real target task from an unreadable inventory. */
     static void rejectExistingPackage(String pkg)throws OwnerException {
+        if(rejectExistingPackage(pkg,-1,Collections.<Integer,Task>emptyMap())>0)
+            throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,"unexpected reuse");
+    }
+    /**
+     * Launch preflight that may return this owner's own live task on {@code source} for the target
+     * package (task id > 0) instead of refusing it. Returns -1 when a fresh launch is allowed.
+     * Tasks on any other display, foreign tasks and unprovable identities still refuse.
+     */
+    static int rejectExistingPackage(String pkg,int source,Map<Integer,Task> owned)throws OwnerException {
         Map<Integer,Object> current;
         try { current=roots(); }
         catch(Exception ex) { throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 "root inventory " + ex.getClass().getSimpleName()); }
+        Set<Integer> reusable=Collections.emptySet();
+        if(source>0 && !owned.isEmpty()) {
+            // Unreadable classification only disables reuse; it never relaxes the refusal.
+            try { reusable=OwnedTaskStates.read(source,current,owned).live; }
+            catch(Exception ignored) { reusable=Collections.emptySet(); }
+        }
         List<LaunchTargetOccupancy.Root> rootDescriptions=new ArrayList<LaunchTargetOccupancy.Root>();
         for(Object task:current.values()) rootDescriptions.add(describeRoot(task));
         // Report an observed active target even if the recent-task query later fails.
         LaunchTargetOccupancy.Decision active=LaunchTargetOccupancy.decide(pkg,
-                rootDescriptions, Collections.<LaunchTargetOccupancy.Recent>emptyList());
+                rootDescriptions, Collections.<LaunchTargetOccupancy.Recent>emptyList(),reusable);
         if(LaunchTargetOccupancy.ACTIVE.equals(active.code)) throw new OwnerException(active.code,active.detail);
         List<LaunchTargetOccupancy.Recent> recentDescriptions=new ArrayList<LaunchTargetOccupancy.Recent>();
         try {
@@ -73,12 +88,31 @@ final class OwnerHandoff {
         }
         catch(Exception ex) { throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 "recent inventory " + ex.getClass().getSimpleName()); }
-        LaunchTargetOccupancy.Decision result=LaunchTargetOccupancy.decide(pkg,rootDescriptions,recentDescriptions);
+        LaunchTargetOccupancy.Decision result=LaunchTargetOccupancy.decide(pkg,rootDescriptions,recentDescriptions,reusable);
         if(LaunchTargetOccupancy.RECENT.equals(result.code)) throw new OwnerException(result.code,result.detail);
         // A full page may omit older target tasks; refuse even if the visible page is clear.
         if(recentDescriptions.size()>=256) throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 "recent inventory truncated");
         if(result.rejects()) throw new OwnerException(result.code,result.detail);
+        return result.reuses() ? result.reuseTaskId : -1;
+    }
+    /**
+     * Brings one of this owner's live tasks to the top of ITS OWN display only. A single
+     * WindowContainerTransaction.reorder(token,true) acts inside the task's current parent, so it
+     * can never move the task to another display. Identity and display are rechecked afterwards.
+     */
+    static void bringOwnedToFront(int source,String unique,Task identity)throws Exception {
+        verifyDisplay(source,unique);
+        Object task=roots().get(identity.id);
+        identity.check(task,source);
+        Class<?> cl=Class.forName("android.window.WindowContainerTransaction");
+        Object change=cl.getConstructor().newInstance();
+        Class<?> tokenCl=Class.forName("android.window.WindowContainerToken");
+        cl.getMethod("reorder",tokenCl,boolean.class).invoke(change,field(task,"token"),true);
+        Class<?> org=Class.forName("android.window.WindowOrganizer");
+        org.getMethod("applyTransaction",cl).invoke(org.getConstructor().newInstance(),change);
+        verifyDisplay(source,unique);
+        identity.check(roots().get(identity.id),source);
     }
 
     private static String componentPackage(Object value) throws Exception {
@@ -375,7 +409,9 @@ final class OwnerHandoff {
             origActivity=componentPackage(field(task,"origActivity"));
             known=true;
         } catch(Exception ignored) { }
-        return new LaunchTargetOccupancy.Recent(base,baseActivity,topActivity,realActivity,origActivity,known);
+        int taskId=-1;
+        try { taskId=number(task,"taskId"); } catch(Exception ignored) { }
+        return new LaunchTargetOccupancy.Recent(taskId,base,baseActivity,topActivity,realActivity,origActivity,known);
     }
     static void verifyDisplay(int id,String unique)throws Exception {
         Class<?> c=Class.forName("android.hardware.display.DisplayManagerGlobal");
@@ -517,6 +553,12 @@ final class OwnerHandoff {
             focusSamples=preflight.observations;
             Map<Integer,Object> current=preflight.inventory;
             FocusWitness witness=preflight.witness;
+            // Same snapshot as the focus preflight. A task that left for another display or changed
+            // identity is never silently abandoned; a task the system already removed is reported.
+            phase="preflight:inventory";
+            OwnedTaskStates states=OwnedTaskStates.read(source,current,owned);
+            if(!states.escaped.isEmpty()) throw new IllegalStateException("owned task escaped");
+            if(!states.live.containsAll(selected)) throw new IllegalStateException("selected task not live");
             phase="preflight:capability";
             SafeBackgroundHandoff background=new SafeBackgroundHandoff(
                     new AndroidBackgroundHandoff(source,unique,owned,selected,witness),progress);
@@ -564,7 +606,9 @@ final class OwnerHandoff {
             verifyDisplay(source,unique);focus(witness);
             for(Object t:roots().values())if(number(t,"displayId")==source)throw new IllegalStateException("source occupied");
             for(Integer id:selected)owned.get(id).check(roots().get(id),0);
+            // Empty selection is cleanup: nothing is delivered; every live task was removed above.
             return new JSONObject().put("handedOff",true).put("sourceEmpty",true).put("keptTaskIds",moved).put("removedTaskIds",removed)
+                    .put("goneTaskIds",new JSONArray(states.gone)).put("cleanupOnly",selected.isEmpty())
                     .put("focusSamples",new JSONArray(preflight.observations));
         } catch(Throwable ex) {
             // Preserve the exact failed movement phase and its historical progress. Never demote

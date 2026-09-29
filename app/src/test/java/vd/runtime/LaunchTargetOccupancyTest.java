@@ -273,4 +273,57 @@ public class LaunchTargetOccupancyTest {
         assertFalse(decide(root(249, ETA, ETA, ETA, ETA, true, 1, true,
                 new int[]{249, 250}, true, new String[]{ETA, "com.other.app"})).rejects());
     }
+
+    // ---- Reuse of this owner's own live task (virtual-display switch-back) ----
+    private static LaunchTargetOccupancy.Decision decideReusable(java.util.List<LaunchTargetOccupancy.Root> roots,
+            java.util.List<LaunchTargetOccupancy.Recent> recents, Integer... reusable) {
+        return LaunchTargetOccupancy.decide(TARGET, roots, recents,
+                new java.util.HashSet<Integer>(Arrays.asList(reusable)));
+    }
+    private static LaunchTargetOccupancy.Root self(int id, String pkg) {
+        return root(id, pkg, pkg, pkg, pkg, true, 1, true, new int[]{id}, true, new String[]{pkg});
+    }
+    @Test public void ownedLiveTargetIsReusedInsteadOfActive() {
+        LaunchTargetOccupancy.Decision d = decideReusable(Arrays.asList(self(191, TARGET),
+                self(190, "com.other.app")), Arrays.asList(
+                new LaunchTargetOccupancy.Recent(191, TARGET, TARGET, TARGET, TARGET, null, true)), 191);
+        assertFalse(d.rejects());
+        assertTrue(d.reuses());
+        assertEquals(191, d.reuseTaskId);
+    }
+    @Test public void targetOnAnotherTaskStillRefusesEvenWithReusableOwnedTask() {
+        // e.g. the same app is also open on the main display as task 50.
+        LaunchTargetOccupancy.Decision d = decideReusable(Arrays.asList(self(191, TARGET), self(50, TARGET)),
+                Collections.<LaunchTargetOccupancy.Recent>emptyList(), 191);
+        assertEquals(LaunchTargetOccupancy.ACTIVE, d.code);
+        assertFalse(d.reuses());
+    }
+    @Test public void notReusableOwnedTaskStillActive() {
+        // Owned but not proven live on this display (moved away or identity changed).
+        assertEquals(LaunchTargetOccupancy.ACTIVE, decideReusable(Arrays.asList(self(191, TARGET)),
+                Collections.<LaunchTargetOccupancy.Recent>emptyList()).code);
+    }
+    @Test public void otherTargetRecentStillRefusesReuse() {
+        assertEquals(LaunchTargetOccupancy.RECENT, decideReusable(Arrays.asList(self(191, TARGET)),
+                Arrays.asList(new LaunchTargetOccupancy.Recent(77, TARGET, null, null, null, null, true)), 191).code);
+        // A recent whose id is unreadable can never be proven to be the reused task.
+        assertEquals(LaunchTargetOccupancy.RECENT, decideReusable(Arrays.asList(self(191, TARGET)),
+                Arrays.asList(new LaunchTargetOccupancy.Recent(TARGET, null, null, null, null, true)), 191).code);
+    }
+    @Test public void unknownInventoryWinsOverReuse() {
+        LaunchTargetOccupancy.Decision d = decideReusable(Arrays.asList(self(191, TARGET),
+                root(3, null, null, null, null, true, 0, true, new int[]{4}, true, new String[]{null})),
+                Collections.<LaunchTargetOccupancy.Recent>emptyList(), 191);
+        assertEquals(LaunchTargetOccupancy.UNKNOWN, d.code);
+        assertFalse(d.reuses());
+    }
+    @Test public void targetRootWithForeignChildIsNeverReused() {
+        assertEquals(LaunchTargetOccupancy.ACTIVE, decideReusable(Arrays.asList(root(191, TARGET, TARGET,
+                TARGET, TARGET, true, 1, true, new int[]{192}, true, new String[]{"com.other.app"})),
+                Collections.<LaunchTargetOccupancy.Recent>emptyList(), 191).code);
+    }
+    @Test public void nullReusableSetFailsClosed() {
+        assertEquals(LaunchTargetOccupancy.UNKNOWN, LaunchTargetOccupancy.decide(TARGET,
+                Arrays.asList(self(191, TARGET)), Collections.<LaunchTargetOccupancy.Recent>emptyList(), null).code);
+    }
 }

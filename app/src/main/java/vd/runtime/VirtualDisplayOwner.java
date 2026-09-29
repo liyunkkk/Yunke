@@ -128,6 +128,12 @@ public final class VirtualDisplayOwner {
                 out.put("sourcePackages",packages);
             }catch(Exception e){out.put("sourcePackagesKnown",false);}
             out.put("retainedTaskIds",new JSONArray(owned.keySet()));
+            // Read-only: owned is never pruned here. Absent fields mean "unknown" to the client.
+            try {
+                OwnedTaskStates states=OwnedTaskStates.read(created.displayId,OwnerHandoff.roots(),owned);
+                out.put("liveTaskIds",new JSONArray(states.live));
+                out.put("goneTaskIds",new JSONArray(states.gone));
+            } catch(Exception ignored) { }
             out.put("finishing",finishing);
             out.put("handoffComplete",handoffComplete);
             out.put("releaseAttempted",releaseAttempted);
@@ -170,7 +176,8 @@ public final class VirtualDisplayOwner {
         if(component==null)throw new OwnerException("EXPLICIT_COMPONENT_REQUIRED");
         String targetPackage=component.substring(0,component.indexOf('/'));
         // Never conflate a known target task with an unreadable inventory, and never continue on either.
-        try { OwnerHandoff.rejectExistingPackage(targetPackage); }
+        int reuse;
+        try { reuse=OwnerHandoff.rejectExistingPackage(targetPackage,displayId==created.displayId?displayId:-1,owned); }
         catch(OwnerException ex) { throw ex; }
         catch(Exception ex) { throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 ex.getClass().getSimpleName()); }
@@ -178,6 +185,8 @@ public final class VirtualDisplayOwner {
         // rejected here, never silently ignored.
         try { LaunchPolicy.resolveLaunchFlags(callerFlags); }
         catch(IllegalArgumentException ex) { throw new OwnerException(OwnerProtocol.ERROR_PROTOCOL, "flags"); }
+        // Switch back to this session's own live task instead of refusing it as "occupied".
+        if(reuse>0) return reuseOwned(reuse, displayId);
         String marker=LaunchPolicy.newMarker();
         String[] argv=LaunchPolicy.startArgv(displayId, packageName, component, action,categories,marker);
         OwnerShell.Result result = OwnerShell.run(argv, OwnerShell.DEFAULT_TIMEOUT_MS,
@@ -210,6 +219,25 @@ public final class VirtualDisplayOwner {
             out.put("displayId", displayId);
             out.put("exitCode", result.exitCode);
             out.put("output", clip(result.stdout));
+        } catch (JSONException ex) {
+            throw new OwnerException(OwnerProtocol.ERROR_INTERNAL, "launch");
+        }
+        return out;
+    }
+
+    /** Switch back to a task this session launched; never starts an activity or touches display 0. */
+    private JSONObject reuseOwned(int taskId, int displayId) throws OwnerException {
+        OwnerHandoff.Task identity=owned.get(taskId);
+        if(identity==null) throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,"reuse identity");
+        try { OwnerHandoff.bringOwnedToFront(displayId,created.uniqueId,identity); }
+        catch(Exception e) { finishing=true; mutationUncertain=true; throw new OwnerException("LAUNCH_IDENTITY_UNCERTAIN"); }
+        JSONObject out = new JSONObject();
+        try {
+            out.put("taskIds",new JSONArray(owned.keySet()));
+            out.put("launched", true);
+            out.put("reused", true);
+            out.put("reusedTaskId", taskId);
+            out.put("displayId", displayId);
         } catch (JSONException ex) {
             throw new OwnerException(OwnerProtocol.ERROR_INTERNAL, "launch");
         }
