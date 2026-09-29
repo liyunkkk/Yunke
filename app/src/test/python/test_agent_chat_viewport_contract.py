@@ -102,7 +102,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         draw = boxes[0]
-        self.assertRegex(draw, r"if\s*\(\s*!shouldLiftTail\s*\)")
+        self.assertRegex(draw, r"if\s*\(\s*!shouldClipTail\s*\)")
         self.assertRegex(
             draw,
             r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",

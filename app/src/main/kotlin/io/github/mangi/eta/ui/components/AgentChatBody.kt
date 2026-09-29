@@ -818,6 +818,12 @@ internal fun AgentConversationMessages(
     // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
     // 上提照常，标签随动画一帧一帧往上让开。
     val shouldLiftTail = shouldFollowBottom
+    val shouldClipTail = shouldClipChatTail(
+        keepBottomAnchored = keepBottomAnchored,
+        isUserScrolling = isUserScrolling,
+        isUserDragging = isUserDragging,
+        navigationActive = messageNavigationJob != null,
+    )
     val isListScrollable by remember {
         derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
     }
@@ -1100,10 +1106,9 @@ internal fun AgentConversationMessages(
 
     // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
     // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
-    // 才追上。这几帧不裁剪（裁剪会把卡片底边和半行字切掉），而是在绘制阶段把整个列表
-    // 上提尚未追上的距离：尾部始终停在输入框上方 14dp 的静止线，底边和间距都完整可见。
-    // 只有尾部不在视口内（一次性长出超过一屏）时才退回裁在静止线上。
-    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除，内容可以滑到输入框后面。
+    // 才追上。绘制阶段会把已经量到的尾部上提；底部锚定保护持续裁在输入框上方的静止线；
+    // 覆盖超快输出在 isStreaming 结束后、列表滚动尚未完成的过渡帧。
+    // 用户一拖动或跳转消息，锚定保护解除，内容可以正常滑到输入框后面。
     Box(
         modifier = modifier
             .clipToBounds()
@@ -1111,7 +1116,7 @@ internal fun AgentConversationMessages(
                 // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
                 // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
                 // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
-                if (!shouldLiftTail) {
+                if (!shouldClipTail) {
                     drawContent()
                     return@drawWithContent
                 }
@@ -1699,6 +1704,16 @@ internal fun resolveBottomFollowEnabled(
     isUserDragging: Boolean,
     isBottomSettling: Boolean = false,
 ): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
+
+internal fun shouldClipChatTail(
+    keepBottomAnchored: Boolean,
+    isUserScrolling: Boolean,
+    isUserDragging: Boolean,
+    navigationActive: Boolean,
+): Boolean = keepBottomAnchored &&
+    !isUserScrolling &&
+    !isUserDragging &&
+    !navigationActive
 
 internal fun shouldRequestInitialBottom(
     isStreaming: Boolean,

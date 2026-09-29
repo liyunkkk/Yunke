@@ -55,6 +55,50 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
+    fun anchoredTailRemainsClippedAfterFastCompletion() {
+        assertTrue(
+            shouldClipChatTail(
+                keepBottomAnchored = true,
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+    }
+
+    @Test
+    fun manualScrollingReleasesComposerClip() {
+        assertFalse(
+            shouldClipChatTail(
+                keepBottomAnchored = true,
+                isUserScrolling = true,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+        assertFalse(
+            shouldClipChatTail(
+                keepBottomAnchored = true,
+                isUserScrolling = false,
+                isUserDragging = true,
+                navigationActive = false,
+            )
+        )
+    }
+
+    @Test
+    fun messageNavigationReleasesComposerClip() {
+        assertFalse(
+            shouldClipChatTail(
+                keepBottomAnchored = true,
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = true,
+            )
+        )
+    }
+
+    @Test
     fun streamingTailGrowthFollowsBottom() {
         assertTrue(
             resolveBottomFollowEnabled(
