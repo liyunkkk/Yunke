@@ -56,45 +56,94 @@ final class OwnerHandoff {
             throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,"unexpected reuse");
     }
     /**
-     * Launch preflight that may return this owner's own live task on {@code source} for the target
-     * package (task id > 0) instead of refusing it. Returns -1 when a fresh launch is allowed.
-     * Tasks on any other display, foreign tasks and unprovable identities still refuse.
+     * Live owned targets return their id for reorder; an exactly proven ended owned recent only
+     * permits a fresh marked launch (-1), never reuse of its old binder.
      */
     static int rejectExistingPackage(String pkg,int source,Map<Integer,Task> owned)throws OwnerException {
+        return launchPreflight(pkg,source,owned).reuseTaskId;
+    }
+
+    /** One admission snapshot, also used to prove a post-launch id was not already active. */
+    static final class LaunchPreflight {
+        final int reuseTaskId;
+        final Set<Integer> presentTaskIds, goneTaskIds;
+        LaunchPreflight(int reuseTaskId,Set<Integer> present,Set<Integer> gone) {
+            this.reuseTaskId=reuseTaskId;
+            presentTaskIds=Collections.unmodifiableSet(new LinkedHashSet<Integer>(present));
+            goneTaskIds=Collections.unmodifiableSet(new LinkedHashSet<Integer>(gone));
+        }
+    }
+
+    static LaunchPreflight launchPreflight(String pkg,int source,Map<Integer,Task> owned)throws OwnerException {
         Map<Integer,Object> current;
         try { current=roots(); }
         catch(Exception ex) { throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 "root inventory " + ex.getClass().getSimpleName()); }
-        Set<Integer> reusable=Collections.emptySet();
-        if(source>0 && !owned.isEmpty()) {
-            // Unreadable classification only disables reuse; it never relaxes the refusal.
-            try { reusable=OwnedTaskStates.read(source,current,owned).live; }
-            catch(Exception ignored) { reusable=Collections.emptySet(); }
+        OwnedTaskStates states=null;
+        if(source>0) {
+            try { states=OwnedTaskStates.read(source,current,owned); }
+            catch(Exception ignored) { }
         }
+        Set<Integer> reusable=states==null ? Collections.<Integer>emptySet() : states.live;
         List<LaunchTargetOccupancy.Root> rootDescriptions=new ArrayList<LaunchTargetOccupancy.Root>();
         for(Object task:current.values()) rootDescriptions.add(describeRoot(task));
         // Report an observed active target even if the recent-task query later fails.
         LaunchTargetOccupancy.Decision active=LaunchTargetOccupancy.decide(pkg,
                 rootDescriptions, Collections.<LaunchTargetOccupancy.Recent>emptyList(),reusable);
         if(LaunchTargetOccupancy.ACTIVE.equals(active.code)) throw new OwnerException(active.code,active.detail);
+        Set<Integer> present=EndedOwnedRecent.presentIds(rootDescriptions);
+        if(present==null || (source>0 && (states==null || !states.escaped.isEmpty())))
+            throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,"owned or child inventory unproven");
+        Set<Integer> gone=states==null ? Collections.<Integer>emptySet() : states.gone;
         List<LaunchTargetOccupancy.Recent> recentDescriptions=new ArrayList<LaunchTargetOccupancy.Recent>();
+        int recentCount;
         try {
             Object slice=invokeAtm("getRecentTasks",new Class<?>[]{int.class,int.class,int.class},256,1,0);
             Object list=slice.getClass().getMethod("getList").invoke(slice);
             if(!(list instanceof List))throw new IllegalStateException("recent inventory type");
             List<?> entries=(List<?>)list;
-            // A full page does not prove that older target tasks are absent.
-            for(Object task:entries) recentDescriptions.add(describeRecent(task));
+            recentCount=entries.size();
+            Set<Integer> exempted=new HashSet<Integer>();
+            for(Object task:entries) {
+                LaunchTargetOccupancy.Recent recent=describeRecent(task);
+                EndedOwnedRecent.Recent ended=describeEndedRecent(task,pkg,recent);
+                Task identity=owned.get(ended.identityId());
+                // Exempt only this exact raw record, not every recent with the package or id.
+                if(identity!=null && states!=null && EndedOwnedRecent.proves(pkg,source,identity.id,
+                        identity.base,identity.data,gone,states.escaped,present,ended)) {
+                    if(!exempted.add(identity.id)) throw new IllegalStateException("duplicate ended recent");
+                } else recentDescriptions.add(recent);
+            }
         }
         catch(Exception ex) { throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 "recent inventory " + ex.getClass().getSimpleName()); }
         LaunchTargetOccupancy.Decision result=LaunchTargetOccupancy.decide(pkg,rootDescriptions,recentDescriptions,reusable);
         if(LaunchTargetOccupancy.RECENT.equals(result.code)) throw new OwnerException(result.code,result.detail);
-        // A full page may omit older target tasks; refuse even if the visible page is clear.
-        if(recentDescriptions.size()>=256) throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
+        // Count the RAW page, not the filtered list: exempted entries cannot hide truncation.
+        if(recentCount>=256) throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 "recent inventory truncated");
         if(result.rejects()) throw new OwnerException(result.code,result.detail);
-        return result.reuses() ? result.reuseTaskId : -1;
+        return new LaunchPreflight(result.reuses() ? result.reuseTaskId : -1,present,gone);
+    }
+
+    private static EndedOwnedRecent.Recent describeEndedRecent(Object task,String pkg,
+            LaunchTargetOccupancy.Recent recent) {
+        String component=null,marker=null;
+        boolean packagesMatch=false;
+        try {
+            Intent intent=(Intent)field(task,"baseIntent");
+            component=base(task);
+            marker=intent.getDataString();
+            packagesMatch=pkg!=null && pkg.equals(recent.base)
+                    && (intent.getPackage()==null || pkg.equals(intent.getPackage()))
+                    && (recent.realActivity==null || pkg.equals(recent.realActivity))
+                    && (recent.origActivity==null || pkg.equals(recent.origActivity));
+        } catch(Exception ignored) { }
+        return new EndedOwnedRecent.Recent(intFieldOrNull(task,"taskId"),
+                intFieldOrNull(task,"persistentId"),intFieldOrNull(task,"displayId"),
+                intFieldOrNull(task,"userId"),intFieldOrNull(task,"parentTaskId"),
+                intFieldOrNull(task,"numActivities"),component,marker,recent.componentsKnown,
+                recent.baseActivity==null && recent.topActivity==null,packagesMatch);
     }
     /**
      * Brings one of this owner's live tasks to the top of ITS OWN display only. A single
@@ -132,7 +181,7 @@ final class OwnerHandoff {
         String component=componentPackage(intent.getComponent());
         return component!=null ? component : intent.getPackage();
     }
-    private static LaunchTargetOccupancy.Root describeRoot(Object task) {
+    static LaunchTargetOccupancy.Root describeRoot(Object task) {
         int id=-1, activities=-1;
         try { id=number(task,"taskId"); } catch(Exception ignored) { }
         try { activities=number(task,"numActivities"); } catch(Exception ignored) { }

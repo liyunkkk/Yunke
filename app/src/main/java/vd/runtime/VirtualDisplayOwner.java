@@ -154,9 +154,7 @@ public final class VirtualDisplayOwner {
 
     public JSONObject launch(JSONObject request) throws OwnerException {
         requireLive();
-        if(finishing) throw new OwnerException("SESSION_FINISHING");
-        java.util.Map<Integer,Object> before;
-        try { before=OwnerHandoff.roots(); } catch(Exception e) {throw new OwnerException("INVENTORY_FAILED");}
+        if(finishing || mutationUncertain) throw new OwnerException("SESSION_FINISHING");
         OwnerProtocol.Request parsed = wrap(request);
         int displayId = optionalDisplay(parsed);
         String packageName = parsed.optionalString("package");
@@ -179,9 +177,9 @@ public final class VirtualDisplayOwner {
         }
         if(component==null)throw new OwnerException("EXPLICIT_COMPONENT_REQUIRED");
         String targetPackage=component.substring(0,component.indexOf('/'));
-        // Never conflate a known target task with an unreadable inventory, and never continue on either.
-        int reuse;
-        try { reuse=OwnerHandoff.rejectExistingPackage(targetPackage,displayId==created.displayId?displayId:-1,owned); }
+        // Admission and post-launch absence checks use the SAME complete root/child snapshot.
+        OwnerHandoff.LaunchPreflight preflight;
+        try { preflight=OwnerHandoff.launchPreflight(targetPackage,displayId,owned); }
         catch(OwnerException ex) { throw ex; }
         catch(Exception ex) { throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,
                 ex.getClass().getSimpleName()); }
@@ -189,33 +187,63 @@ public final class VirtualDisplayOwner {
         // rejected here, never silently ignored.
         try { LaunchPolicy.resolveLaunchFlags(callerFlags); }
         catch(IllegalArgumentException ex) { throw new OwnerException(OwnerProtocol.ERROR_PROTOCOL, "flags"); }
-        // Switch back to this session's own live task instead of refusing it as "occupied".
-        if(reuse>0) return reuseOwned(reuse, displayId);
+        // Only a live identity may reorder. An ended recent always takes a new marked launch.
+        if(preflight.reuseTaskId>0) return reuseOwned(preflight.reuseTaskId, displayId);
         String marker=LaunchPolicy.newMarker();
         String[] argv=LaunchPolicy.startArgv(displayId, packageName, component, action,categories,marker);
-        OwnerShell.Result result = OwnerShell.run(argv, OwnerShell.DEFAULT_TIMEOUT_MS,
-                OwnerShell.DEFAULT_MAX_OUTPUT_BYTES);
-        if (!result.success() || containsError(result.stdout) || containsError(result.stderr)) {
-            throw new OwnerException(OwnerProtocol.ERROR_LAUNCH_FAILED, result.summary());
-        }
+        try { OwnerHandoff.verifyDisplay(displayId,created.uniqueId); }
+        catch(Exception ex) { throw new OwnerException("DISPLAY_REBOUND"); }
+        // Arm the no-replay latch BEFORE the first attempted mutation, including timeout/failure.
+        // Clear it only after the actual new task and the response have both been verified.
+        finishing=true; mutationUncertain=true;
+        OwnerShell.Result result;
         try {
-            boolean provenanceObserved=false;
+            result=OwnerShell.run(argv,OwnerShell.DEFAULT_TIMEOUT_MS,OwnerShell.DEFAULT_MAX_OUTPUT_BYTES);
+            if(!result.success() || containsError(result.stdout) || containsError(result.stderr))
+                throw new IllegalStateException("launch outcome unverified");
+            OwnerHandoff.Task fresh=null;
             java.util.Map<Integer,Object> after=OwnerHandoff.roots();
             for(Object task:after.values()) if(OwnerHandoff.number(task,"displayId")==displayId) {
                 int id=OwnerHandoff.number(task,"taskId");
-                if(before.containsKey(id) && !owned.containsKey(id)) throw new IllegalStateException("pre-existing task moved");
-                if(!owned.containsKey(id)) {
+                if(preflight.presentTaskIds.contains(id)) {
+                    OwnerHandoff.Task existing=owned.get(id);
+                    if(existing==null) throw new IllegalStateException("pre-existing task moved");
+                    existing.check(task,displayId);
+                } else {
                     android.content.Intent base=(android.content.Intent)OwnerHandoff.field(task,"baseIntent");
                     String baseData=base==null?null:base.getDataString();
                     android.content.ComponentName baseComponent=base==null?null:base.getComponent();
                     String basePackage=baseComponent==null?null:baseComponent.getPackageName();
                     if(!LaunchPolicy.provenanceMatches(marker,targetPackage,baseData,basePackage))throw new IllegalStateException("launch provenance");
-                    owned.put(id,new OwnerHandoff.Task(task));
-                    provenanceObserved=true;
+                    if(fresh!=null) throw new IllegalStateException("multiple fresh tasks");
+                    fresh=new OwnerHandoff.Task(task);
+                    fresh.check(task,displayId);
                 }
             }
-            if(!provenanceObserved)throw new IllegalStateException("fresh launch task not observed");
-        } catch(Exception e) { finishing=true; mutationUncertain=true; throw new OwnerException("LAUNCH_IDENTITY_UNCERTAIN"); }
+            if(fresh==null)throw new IllegalStateException("fresh launch task not observed");
+            java.util.Map<Integer,OwnerHandoff.Task> updated=EndedOwnedRecent.register(owned,fresh.id,
+                    fresh,preflight.presentTaskIds,preflight.goneTaskIds);
+            // Re-read actual binder, marker, component, shape and display before committing.
+            java.util.Map<Integer,Object> verified=OwnerHandoff.roots();
+            fresh.check(verified.get(fresh.id),displayId);
+            java.util.List<LaunchTargetOccupancy.Root> descriptions=new java.util.ArrayList<LaunchTargetOccupancy.Root>();
+            for(Object task:verified.values()) {
+                descriptions.add(OwnerHandoff.describeRoot(task));
+                if(OwnerHandoff.number(task,"displayId")==displayId) {
+                    OwnerHandoff.Task identity=updated.get(OwnerHandoff.number(task,"taskId"));
+                    if(identity==null) throw new IllegalStateException("unexpected source task");
+                    identity.check(task,displayId);
+                }
+            }
+            if(EndedOwnedRecent.presentIds(descriptions)==null
+                    || !OwnedTaskStates.read(displayId,verified,updated).escaped.isEmpty())
+                throw new IllegalStateException("post-launch inventory unproven");
+            OwnerHandoff.verifyDisplay(displayId,created.uniqueId);
+            OwnerHandoff.Task previous=owned.get(fresh.id);
+            if(previous!=null) registry.replaceGone(fresh.id,previous.binder,fresh.binder,
+                    preflight.presentTaskIds,preflight.goneTaskIds);
+            owned.put(fresh.id,fresh);
+        } catch(Exception e) { throw new OwnerException("LAUNCH_IDENTITY_UNCERTAIN"); }
         JSONObject out = new JSONObject();
         try {
             out.put("taskIds",new JSONArray(owned.keySet()));
@@ -226,6 +254,7 @@ public final class VirtualDisplayOwner {
         } catch (JSONException ex) {
             throw new OwnerException(OwnerProtocol.ERROR_INTERNAL, "launch");
         }
+        finishing=false; mutationUncertain=false;
         return out;
     }
 
