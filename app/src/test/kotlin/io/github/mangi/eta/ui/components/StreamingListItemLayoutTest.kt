@@ -1,8 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.layout.Layout
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.DpRect
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,9 +46,10 @@ class StreamingListItemLayoutTest {
     @Test
     fun unstartedRowsDoNotAccumulateMarkerHeightOrPadding() {
         val visible = mutableStateOf(false)
+        val sizes = ChildSizes()
         val laidOutRows = mutableSetOf<Int>()
         compose.setContent {
-            Column(Modifier.width(ListWidth).testTag("list")) {
+            MeasuredColumn(sizes, Modifier.width(ListWidth).testTag("list")) {
                 repeat(ROW_COUNT) { index ->
                     ListRow(
                         text = "列表项 $index",
@@ -62,7 +64,9 @@ class StreamingListItemLayoutTest {
 
         // 20 个未开始的行：alpha 0 的 marker 行高和上下 padding 都不能累计成空白。
         compose.onNodeWithTag("list").assertHeightIsEqualTo(0.dp)
-        compose.onNodeWithTag("row-0").assertHeightIsEqualTo(0.dp).assertWidthIsEqualTo(ListWidth)
+        // Compose 1.12 reports Dp.Unspecified for a zero-height row that its parent did not mark
+        // placed, so the occupied size has to come from the parent's Placeable, not semantics.
+        assertCollapsed(sizes, ROW_COUNT)
         compose.runOnIdle {
             assertEquals("hidden rows must still lay out their text", (0 until ROW_COUNT).toSet(), laidOutRows)
         }
@@ -81,10 +85,11 @@ class StreamingListItemLayoutTest {
     @Test
     fun hiddenRowStillMeasuresAndDeliversTextLayoutForStreamingUpdates() {
         val text = mutableStateOf("第一段")
+        val sizes = ChildSizes()
         val laidOutTexts = mutableListOf<String>()
         val layouts = arrayOfNulls<TextLayoutResult>(1)
         compose.setContent {
-            Column(Modifier.width(ListWidth)) {
+            MeasuredColumn(sizes, Modifier.width(ListWidth)) {
                 ListRow(
                     text = text.value,
                     visible = false,
@@ -104,22 +109,23 @@ class StreamingListItemLayoutTest {
             assertTrue("hidden text should be measured with real width", layout.size.width > 0)
             assertTrue("hidden text should be measured with real height", layout.size.height > 0)
         }
-        compose.onNodeWithTag("row").assertHeightIsEqualTo(0.dp)
+        assertCollapsed(sizes, 1)
 
         // 流式追加时隐藏行也要重新排版，否则显现协调器拿不到新目标。
         compose.runOnIdle { text.value = "第一段追加的内容" }
         compose.waitForIdle()
 
         compose.runOnIdle { assertEquals("第一段追加的内容", laidOutTexts.lastOrNull()) }
-        compose.onNodeWithTag("row").assertHeightIsEqualTo(0.dp).assertWidthIsEqualTo(ListWidth)
+        assertCollapsed(sizes, 1)
     }
 
     @Test
     fun switchingToVisibleRestoresHeightContentAndWidth() {
         val visible = mutableStateOf(false)
+        val sizes = ChildSizes()
         val content = "恢复显示后的列表项正文"
         compose.setContent {
-            Column(Modifier.width(ListWidth)) {
+            MeasuredColumn(sizes, Modifier.width(ListWidth)) {
                 ListRow(
                     text = content,
                     visible = visible.value,
@@ -136,7 +142,15 @@ class StreamingListItemLayoutTest {
         }
         compose.waitForIdle()
 
-        compose.onNodeWithTag("item").assertHeightIsEqualTo(0.dp).assertWidthIsEqualTo(ListWidth)
+        compose.runOnIdle {
+            val measured = sizes.value
+            assertEquals(2, measured.size)
+            val expectedWidth = with(compose.density) { ListWidth.roundToPx() }
+            assertEquals(expectedWidth, measured[0].first)
+            assertEquals(0, measured[0].second)
+            assertEquals(expectedWidth, measured[1].first)
+            assertTrue(measured[1].second > 0)
+        }
         val reference = compose.onNodeWithTag("reference").getUnclippedBoundsInRoot()
         assertTrue("reference row must have real height", reference.heightDp().value > 0f)
 
@@ -159,6 +173,7 @@ class StreamingListItemLayoutTest {
     @Test
     fun hiddenRowsRegisterWithRealCoordinatorAndStartInOrder() {
         val coordinator = SmoothTextRevealCoordinator()
+        val sizes = ChildSizes()
         val keys = listOf(RevealBlockKey(0), RevealBlockKey(100))
         val texts = listOf("第一项", "第二项内容")
         // Captured synchronously on every reveal frame: (first progress, second progress).
@@ -169,7 +184,7 @@ class StreamingListItemLayoutTest {
         compose.setContent {
             LaunchedEffect(coordinator) { coordinator.runFrameClock() }
             val started by coordinator.started.collectAsState()
-            Column(Modifier.width(ListWidth)) {
+            MeasuredColumn(sizes, Modifier.width(ListWidth)) {
                 keys.forEachIndexed { index, key ->
                     val state = rememberSmoothTextRevealState(key, coordinator)
                     // 与 ChatMessageItem 接线一致：块开始显现（marker 可见）才展开整行。
@@ -216,6 +231,43 @@ class StreamingListItemLayoutTest {
 
     private fun progressOf(coordinator: SmoothTextRevealCoordinator, key: RevealBlockKey): Float =
         coordinator.drawSnapshot(key)?.progress ?: 0f
+
+
+    private class ChildSizes {
+        var value: List<Pair<Int, Int>> = emptyList()
+    }
+
+    @Composable
+    private fun MeasuredColumn(
+        sizes: ChildSizes,
+        modifier: Modifier = Modifier,
+        content: @Composable () -> Unit,
+    ) {
+        Layout(content = content, modifier = modifier) { measurables, constraints ->
+            val childConstraints = constraints.copy(minWidth = 0, minHeight = 0)
+            val placeables = measurables.map { it.measure(childConstraints) }
+            sizes.value = placeables.map { it.width to it.height }
+            val height = placeables.sumOf { it.height }
+            layout(constraints.maxWidth, height) {
+                var y = 0
+                placeables.forEach { child ->
+                    child.placeRelative(0, y)
+                    y += child.height
+                }
+            }
+        }
+    }
+
+    private fun assertCollapsed(sizes: ChildSizes, count: Int) {
+        val expectedWidth = with(compose.density) { ListWidth.roundToPx() }
+        val measured = sizes.value
+        assertEquals(count, measured.size)
+        assertFalse(measured.isEmpty())
+        measured.forEach { (width, height) ->
+            assertEquals(expectedWidth, width)
+            assertEquals(0, height)
+        }
+    }
 
     @Composable
     private fun ListRow(

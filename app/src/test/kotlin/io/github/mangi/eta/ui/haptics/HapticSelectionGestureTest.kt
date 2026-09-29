@@ -141,7 +141,13 @@ class HapticSelectionGestureTest {
                 }
             }
         }
-        compose.onNodeWithTag("text").performTouchInput { longClick(layout.getBoundingBox(4).center) }
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("text", useUnmergedTree = true).fetchSemanticsNodes()
+                .any { it.layoutInfo.isPlaced && it.size.height > 0 }
+        }
+        // The markdown success slot can keep this tag out of the merged tree.
+        compose.onNodeWithTag("text", useUnmergedTree = true)
+            .performTouchInput { longClick(layout.getBoundingBox(4).center) }
         compose.runOnIdle {
             assertEquals("APK", selection.selectedTexts.joinToString("") { it.text })
             assertNotNull(toolbar.copy)
