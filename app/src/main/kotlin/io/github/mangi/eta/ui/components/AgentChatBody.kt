@@ -1034,6 +1034,7 @@ internal fun AgentConversationMessages(
                 // Keep the row key/index and animate its root, including its footer.
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalTailResize provides if (reportsTailResize) ({ holdTailLift = true }) else null,
+                    LocalPauseExpandLayout provides (isStreaming && isUserScrolling),
                 ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
