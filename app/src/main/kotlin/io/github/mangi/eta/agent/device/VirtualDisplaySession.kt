@@ -137,9 +137,9 @@ internal object VirtualDisplaySession {
             if (s.phase == "finished") return reply(false, "SESSION_FINISHED")
             // A cancelled run can still select delivery tasks and finish through the owner.
             // Do not restore GUI access or reset this run's automatic retry budget.
+            // An empty kept set stays empty: recovery must not promote every launched task.
             if (VirtualDisplayRecoveryPolicy.canRecoverExistingRun(s.phase, s.closedRun)) {
                 s.cleanupOnly = true
-                if (s.kept.isEmpty()) s.packages.values.forEach { s.kept.addAll(it) }
                 return reply(true).put("recovered", true).put("cleanup_only", true).put("phase", s.phase)
             }
             return if (s.phase == "active") reply(true).put("phase", s.phase)
@@ -151,7 +151,6 @@ internal object VirtualDisplaySession {
             val s = others.single()
             sessions.entries.removeAll { it.value === s }
             s.cleanupOnly = true
-            if (s.kept.isEmpty()) s.packages.values.forEach { s.kept.addAll(it) }
             sessions[runId] = s
             // A deliberate later run gets a fresh clean-rejection budget, never mutation replay.
             s.handoffBudget.reset()
@@ -187,8 +186,9 @@ internal object VirtualDisplaySession {
                     ?: throw VirtualDisplayRecoveryException(recoveryStage, "RECOVERY_HANDOFF_STATE_INVALID")
                 val registered = observed.retainedTaskIds
                 recoveryStage = "selection"
+                // A missing kept field is an empty delivery selection, not "every retained task".
                 val restored = record.kept?.let { ids(JSONArray(it))
-                    ?: throw VirtualDisplayRecoveryException(recoveryStage, "RECOVERY_SELECTION_INVALID") } ?: registered
+                    ?: throw VirtualDisplayRecoveryException(recoveryStage, "RECOVERY_SELECTION_INVALID") } ?: emptySet()
                 if (!registered.containsAll(restored)) throw VirtualDisplayRecoveryException(recoveryStage, "RECOVERY_SELECTION_INVALID")
                 s.kept.addAll(restored)
                 s.persisted = true
@@ -386,15 +386,21 @@ internal object VirtualDisplaySession {
                     val data = state.json
                     val observed = handoffState(owner, state)
                     val sameRecord = nowRecord.key() == record.key() && nowRecord.token == record.token && nowRecord.run == record.run
+                    val retainedIds = observed?.retainedTaskIds
+                    val liveIds = observed?.liveTaskIds
+                    val goneIds = observed?.goneTaskIds
+                    val escapedCount = if (retainedIds != null && liveIds != null && goneIds != null)
+                        (retainedIds - liveIds - goneIds).size else null
                     return VirtualDisplayManualClose.Evidence(
                         record.key(), bootId(), observed != null && sameRecord,
                         sessions.values.any { !it.closedRun && it.phase != "finished" },
                         data?.opt("sourceState") as? String, data?.opt("sourceTaskCount") as? Int,
-                        data?.opt("sourceEmpty") as? Boolean, observed?.retainedTaskIds?.size,
+                        data?.opt("sourceEmpty") as? Boolean, retainedIds?.size,
                         data?.opt("finishing") as? Boolean, data?.opt("handoffComplete") as? Boolean,
                         data?.opt("releaseAttempted") as? Boolean, data?.opt("mutationUncertain") as? Boolean,
                         nowRecord.mutationBarrier != null || (session?.handoffState != null &&
                             session.receipt?.opt("mutation_uncertain") == true),
+                        liveIds?.size, goneIds?.size, escapedCount,
                     )
                 }
                 override fun markAttempt(): Boolean {
@@ -403,6 +409,24 @@ internal object VirtualDisplaySession {
                     val persisted = saved.edit().putString(VirtualDisplayRecoveryRecord.BARRIER, "manual_release_pending").commit()
                     if (persisted) { attempted = true; session?.handoffBudget?.stop() }
                     return persisted
+                }
+                /** One empty-taskIds cleanup. No retry; a false result must not release. */
+                override fun cleanup(): Boolean {
+                    val before = handoffState(owner, owner.status()) ?: return false
+                    if (!VirtualDisplayHandoffRetry.freshStateAllowsCleanup(before, before)) return false
+                    val handoff = owner.handoff(mapOf("taskIds" to JSONArray()))
+                    val completed = VirtualDisplayHandoffEvidence.completed(
+                        authenticatedConnection = owner.isAlive && handoff.op == VirtualDisplayOwnerProtocol.OP_HANDOFF,
+                        responseOk = handoff.ok,
+                        selectedIds = emptySet(),
+                        retainedIds = before.retainedTaskIds,
+                        keptIds = ids(handoff.json?.optJSONArray("keptTaskIds")),
+                        removedIds = ids(handoff.json?.optJSONArray("removedTaskIds")),
+                        field = { handoff.json?.opt(it) },
+                        goneIds = ids(handoff.json?.optJSONArray("goneTaskIds")),
+                    )
+                    if (session != null) recordHandoff(session, handoff, completed)
+                    return completed
                 }
                 override fun release(): Boolean = owner.release().ok
                 override fun confirmGone(): Boolean {
@@ -481,8 +505,15 @@ internal object VirtualDisplaySession {
         if (wanted.isEmpty()) return reply(false, "NO_DELIVERY_TASKS")
         val state = s.client?.status() ?: return reply(false, "RECOVERY_UNCERTAIN")
         if (!state.ok) return body(state)
-        val known = ids(body(state).optJSONArray("retainedTaskIds")) ?: return reply(false, "OWNER_TASKS_UNKNOWN")
+        val data = body(state)
+        val known = ids(data.optJSONArray("retainedTaskIds")) ?: return reply(false, "OWNER_TASKS_UNKNOWN")
         if (!known.containsAll(wanted)) return reply(false, "TASK_NOT_SESSION_OWNED")
+        // A missing liveTaskIds field stays on the retained-only check. A present field must parse
+        // and contain every selected id; gone or escaped ids are not live.
+        if (data.has("liveTaskIds")) {
+            val live = ids(data.optJSONArray("liveTaskIds")) ?: return reply(false, "OWNER_STATE_UNKNOWN")
+            VirtualDisplayHandoffRetry.nonLiveKeepCode(live, wanted)?.let { return reply(false, it) }
+        }
         val next = s.kept + wanted
         val context = recoveryContext ?: return reply(false, "RECOVERY_STATE_UNWRITABLE")
         if (!runCatching { recoveryPrefs(context).edit().putString("kept", JSONArray(next).toString()).commit() }.getOrDefault(false))
@@ -519,23 +550,35 @@ internal object VirtualDisplaySession {
         val observed = freshHandoffState(c) ?: return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
         val frozen = s.kept.toSet()
         val baseline = s.handoffState
-        if (baseline != null && (s.handoffSelection != frozen ||
-                !VirtualDisplayHandoffRetry.freshStateAllowsRetry(baseline, observed, frozen)))
-            return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
         val f = observed.flags
         val action = VirtualDisplayRecoveryPolicy.finishAction(f)
+        val directRelease = action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isEmpty() &&
+            f.sourceEmpty && observed.retainedTaskIds.isEmpty()
+        val cleanup = action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isEmpty() && !directRelease
+        if (action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isNotEmpty()) {
+            // Do not drop gone/escaped ids out of the frozen selection to make delivery succeed.
+            VirtualDisplayHandoffRetry.frozenDeliveryCode(
+                observed.liveTaskIds, observed.goneTaskIds, observed.retainedTaskIds, frozen,
+            )?.let { return reply(false, it) }
+        }
+        if (baseline != null) {
+            val fresh = if (cleanup) VirtualDisplayHandoffRetry.freshStateAllowsCleanup(baseline, observed)
+                else VirtualDisplayHandoffRetry.freshStateAllowsRetry(baseline, observed, frozen)
+            if (s.handoffSelection != frozen || !fresh) return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
+        }
         if (action == VirtualDisplayRecoveryPolicy.Action.REFUSE)
             return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
-        if (action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isEmpty()) {
-            if (!f.sourceEmpty) return reply(false, "NO_DELIVERY_TASKS")
-            if (observed.retainedTaskIds.isNotEmpty()) return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
-        }
         var handedOff = action == VirtualDisplayRecoveryPolicy.Action.RELEASE_ONLY
-        if (action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isNotEmpty()) {
+        var cleanedUp = false
+        var removedForReceipt = emptySet<Int>()
+        var goneForReceipt = emptySet<Int>()
+        if (action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && (frozen.isNotEmpty() || cleanup)) {
             // Frozen selection: retries never widen it; compare with the pre-attempt baseline.
+            // Cleanup uses an empty taskIds list and does not count as delivery.
             val before = baseline ?: observed
-            if (!VirtualDisplayHandoffRetry.freshStateAllowsRetry(before, observed, frozen))
-                return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
+            val allowed = if (cleanup) VirtualDisplayHandoffRetry.freshStateAllowsCleanup(before, observed)
+                else VirtualDisplayHandoffRetry.freshStateAllowsRetry(before, observed, frozen)
+            if (!allowed) return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
             if (!s.handoffBudget.hasRemaining()) {
                 // Same round: still a FAILURE, never another handoff/release or a budget reset.
                 // The status above is fresh; cached diagnostics alone cannot keep this pending.
@@ -546,22 +589,31 @@ internal object VirtualDisplaySession {
             s.handoffState = before
             s.handoffSelection = frozen
             s.phase = "finishing"
+            var acceptedRemoved: Set<Int>? = null
+            var acceptedGone: Set<Int>? = null
             val outcome = VirtualDisplayHandoffRetry.run(
                 budget = s.handoffBudget,
                 handoff = {
-                    val handoff = c.handoff(mapOf("taskIds" to JSONArray(frozen)))
+                    val handoff = c.handoff(mapOf("taskIds" to if (cleanup) JSONArray() else JSONArray(frozen)))
+                    val keptIds = ids(handoff.json?.optJSONArray("keptTaskIds"))
+                    val removedIds = ids(handoff.json?.optJSONArray("removedTaskIds"))
+                    val goneIds = ids(handoff.json?.optJSONArray("goneTaskIds"))
                     val completed = VirtualDisplayHandoffEvidence.completed(
                         authenticatedConnection = c.isAlive && handoff.op == VirtualDisplayOwnerProtocol.OP_HANDOFF,
                         responseOk = handoff.ok,
                         selectedIds = frozen,
                         retainedIds = before.retainedTaskIds,
-                        keptIds = ids(handoff.json?.optJSONArray("keptTaskIds")),
-                        removedIds = ids(handoff.json?.optJSONArray("removedTaskIds")),
+                        keptIds = keptIds,
+                        removedIds = removedIds,
                         field = { handoff.json?.opt(it) },
+                        goneIds = goneIds,
                     )
                     recordHandoff(s, handoff, completed)
-                    if (completed) VirtualDisplayHandoffRetry.Attempt.Completed
-                    else VirtualDisplayHandoffEvidence.refused(
+                    if (completed) {
+                        acceptedRemoved = removedIds
+                        acceptedGone = goneIds
+                        VirtualDisplayHandoffRetry.Attempt.Completed
+                    } else VirtualDisplayHandoffEvidence.refused(
                         authenticatedConnection = c.isAlive && handoff.op == VirtualDisplayOwnerProtocol.OP_HANDOFF,
                         responseOk = handoff.ok,
                         code = handoff.errorCode.ifBlank { "HANDOFF_UNCERTAIN" },
@@ -570,12 +622,20 @@ internal object VirtualDisplaySession {
                     )
                 },
                 verifyFresh = {
-                    VirtualDisplayHandoffRetry.freshStateAllowsRetry(before, freshHandoffState(c), frozen)
+                    val after = freshHandoffState(c)
+                    if (cleanup) VirtualDisplayHandoffRetry.freshStateAllowsCleanup(before, after)
+                    else VirtualDisplayHandoffRetry.freshStateAllowsRetry(before, after, frozen)
                 },
                 delay = { millis -> Thread.sleep(millis) },
             )
             when (outcome) {
-                VirtualDisplayHandoffRetry.Outcome.HandedOff -> handedOff = true
+                VirtualDisplayHandoffRetry.Outcome.HandedOff -> {
+                    if (cleanup) {
+                        cleanedUp = true
+                        removedForReceipt = acceptedRemoved.orEmpty()
+                        goneForReceipt = acceptedGone.orEmpty()
+                    } else handedOff = true
+                }
                 is VirtualDisplayHandoffRetry.Outcome.Stopped -> {
                     // Do not send a PROVEN read-only rejection through fail(), which marks
                     // ambiguity. Unknown/unauthenticated/post-anchor outcomes remain uncertain.
@@ -592,12 +652,14 @@ internal object VirtualDisplaySession {
             }
         }
         // Re-read identity and phase before release; never replay an uncertain release or handoff.
+        // Cleanup still finishes the owner handoff phase, but the receipt handedOff flag stays false.
         val beforeRelease = freshHandoffState(c)
         val latest = beforeRelease?.flags
+        val handoffPhaseDone = cleanedUp || handedOff
         if (Thread.currentThread().isInterrupted || beforeRelease == null || latest == null ||
             beforeRelease.identity != observed.identity || beforeRelease.retainedTaskIds != observed.retainedTaskIds ||
             !latest.sourceEmpty || latest.releaseAttempted || latest.mutationUncertain ||
-            latest.finishing != handedOff || latest.handoffComplete != handedOff)
+            latest.finishing != handoffPhaseDone || latest.handoffComplete != handoffPhaseDone)
             return fail(s, "RELEASE_UNCERTAIN")
         s.handoffBudget.stop() // No second release, even if its response is lost or malformed.
         // A successful release stops the owner; post-response isAlive is not transport proof.
@@ -613,15 +675,28 @@ internal object VirtualDisplaySession {
         if (!VirtualDisplayHandoffEvidence.released(observed.identity, authenticatedReleaseConnection,
                 released.ok && released.op == VirtualDisplayOwnerProtocol.OP_RELEASE, { released.json?.opt(it) }))
             return fail(s, released.errorCode.ifBlank { "RELEASE_UNCERTAIN" }, safeOwnerDetail(released))
-        return clearReleased(ctx, s).put("handedOff", latest.handoffComplete)
-            .withHandoffAttempts(s).also { s.receipt = it }
+        val receipt = clearReleased(ctx, s).put("handedOff", handedOff)
+        if (cleanedUp) {
+            receipt.put("cleanedUp", true)
+                .put("removedTaskIds", JSONArray(removedForReceipt))
+                .put("goneTaskIds", JSONArray(goneForReceipt))
+        }
+        return receipt.withHandoffAttempts(s).also { s.receipt = it }
     }
     /** Called once when the owning run closes; explicit delivery choices are preserved. */
     @Synchronized fun onRunClosed(context: Context, runId: String) {
         val s = sessions[runId] ?: return
         s.closedRun = true
         if (s.phase == "finished") return
-        if (s.kept.isEmpty()) s.packages.values.forEach { s.kept.addAll(it) }
+        if (s.kept.isEmpty()) {
+            // Only tasks this run launched and that status still shows as live are delivery tasks.
+            // An unknown live inventory must not promote every package task.
+            val live = s.client?.let { freshHandoffState(it)?.liveTaskIds }
+            if (live != null) {
+                val owned = s.packages.values.flatten().toSet()
+                s.kept.addAll(owned.intersect(live))
+            }
+        }
         if (s.client == null) {
             failPreservingPrior(s, "RECOVERY_UNCERTAIN")
             return
@@ -685,9 +760,14 @@ internal object VirtualDisplaySession {
                 s.observation.invalidate()
                 val launched=c.launch(component)
                 if(launched.ok) {
-                    val ids=body(launched).optJSONArray("taskIds")?:return text(reply(false,"LAUNCH_TASKS_UNKNOWN"))
-                    val current=(0 until ids.length()).map{ids.getInt(it)}.toSet()
-                    s.packages[pkg]=(s.packages[pkg]?:emptySet())+(current-prior)
+                    val payload=body(launched)
+                    // reused=true switches back to this session's existing task. current-prior is
+                    // empty, so do not replace the package's recorded task ids with that diff.
+                    if(payload.opt("reused")!=true) {
+                        val ids=payload.optJSONArray("taskIds")?:return text(reply(false,"LAUNCH_TASKS_UNKNOWN"))
+                        val current=(0 until ids.length()).map{ids.getInt(it)}.toSet()
+                        s.packages[pkg]=(s.packages[pkg]?:emptySet())+(current-prior)
+                    }
                     //新任务意味着画面已变，必须重新观察后才能用坐标。
                     s.observation.invalidate()
                 }

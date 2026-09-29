@@ -9,18 +9,33 @@ class VirtualDisplayManualCloseTest {
         "boot", true, false, "empty", 0, true, 0, false, false, false, false, false)
     private inner class Fake : VirtualDisplayManualClose.Backend {
         var state = this@VirtualDisplayManualCloseTest.evidence()
-        var marks = 0; var releases = 0; var clears = 0
-        var writable = true; var gone = true; var releaseThrows = false
+        var marks = 0; var releases = 0; var clears = 0; var cleanups = 0
+        var writable = true; var gone = true; var releaseThrows = false; var cleanupOk = true
         override fun evidence() = state
         override fun markAttempt(): Boolean { marks++; if (writable) state = state.copy(journalBlocked = true); return writable }
+        override fun cleanup(): Boolean {
+            cleanups++
+            if (!cleanupOk) return false
+            state = state.copy(sourceState = "empty", taskCount = 0, sourceEmpty = true,
+                finishing = true, handoffComplete = true, liveCount = 0,
+                goneCount = (state.goneCount ?: 0) + (state.liveCount ?: 0), escapedCount = 0)
+            return true
+        }
         override fun release(): Boolean { releases++; if (releaseThrows) error("lost reply"); return true }
         override fun confirmGone() = gone
         override fun clearConfirmed(): Boolean { clears++; return true }
     }
+    private fun cleanupEvidence(live: Int, gone: Int, escaped: Int) = evidence().copy(
+        sourceState = if (live == 0) "empty" else "occupied",
+        taskCount = live, sourceEmpty = live == 0,
+        retainedCount = live + gone + escaped,
+        liveCount = live, goneCount = gone, escapedCount = escaped,
+    )
     @Test fun prepareReadsOnlyThenClosesOnceAfterConfirmation() {
         val b = Fake(); val c = VirtualDisplayManualClose(); val p = c.prepare(b)
         assertEquals("prepared", p.outcome); assertEquals(0, b.marks); assertEquals(0, b.releases)
         assertEquals("closed_confirmed", c.close(p.nonce!!, b).outcome)
+        assertEquals(0, b.cleanups)
         assertEquals(1, b.releases); assertEquals(1, b.clears)
         assertEquals("blocked", c.close(p.nonce, b).outcome); assertEquals(1, b.releases)
     }
@@ -61,6 +76,34 @@ class VirtualDisplayManualCloseTest {
         val b=Fake();b.state=b.state.copy(finishing=true,handoffComplete=true,retainedCount=2)
         val c=VirtualDisplayManualClose();val p=c.prepare(b)
         assertEquals("closed_confirmed",c.close(p.nonce!!,b).outcome)
+        assertEquals(0, b.cleanups)
+    }
+    @Test fun knownInventoryCleansRetainedTasksOnceThenReleases() {
+        val b = Fake(); b.state = cleanupEvidence(live = 2, gone = 1, escaped = 0)
+        val c = VirtualDisplayManualClose(); val p = c.prepare(b)
+        assertEquals("", VirtualDisplayManualClose.refusal(b.state))
+        assertEquals("prepared", p.outcome)
+        assertEquals("closed_confirmed", c.close(p.nonce!!, b).outcome)
+        assertEquals(1, b.cleanups); assertEquals(1, b.releases)
+        assertEquals("blocked", c.close(p.nonce, b).outcome)
+        assertEquals(1, b.cleanups)
+    }
+    @Test fun escapedOrUnknownInventoryStillRefusesManualClose() {
+        assertEquals("HANDOFF_REQUIRED", VirtualDisplayManualClose.refusal(cleanupEvidence(1, 0, 1)))
+        assertEquals("OWNER_STATE_UNKNOWN", VirtualDisplayManualClose.refusal(
+            evidence().copy(retainedCount = 2, sourceState = "occupied", taskCount = 2, sourceEmpty = false)))
+        val escaped = Fake(); escaped.state = cleanupEvidence(1, 0, 1)
+        assertEquals("blocked", VirtualDisplayManualClose().prepare(escaped).outcome)
+        assertEquals(0, escaped.releases); assertEquals(0, escaped.cleanups)
+    }
+    @Test fun failedCleanupDoesNotRelease() {
+        val b = Fake(); b.state = cleanupEvidence(1, 0, 0); b.cleanupOk = false
+        val c = VirtualDisplayManualClose(); val p = c.prepare(b)
+        val closed = c.close(p.nonce!!, b)
+        assertEquals("closed_unconfirmed", closed.outcome)
+        assertEquals("HANDOFF_UNCERTAIN", closed.reason)
+        assertEquals(1, b.cleanups); assertEquals(0, b.releases)
+        assertEquals("MUTATION_UNCERTAIN_NO_REPLAY", c.prepare(b).reason)
     }
     @Test fun resultDiagnosticDoesNotLeakNonce() {
         assertFalse(VirtualDisplayManualClose.Result("prepared",nonce="secret").toString().contains("secret"))

@@ -56,6 +56,16 @@ class VirtualDisplayToolContractTest {
         assertTrue("keep_virtual_result" in catalog(rootAvailable = false).names())
     }
 
+    @Test
+    fun unmarkedFinishCleansUpWithoutDeliveryAndLaunchReusesVirtualTask() {
+        val finish = catalog(rootAvailable = false).function("finish_virtual_session").getString("description")
+        assertTrue(finish.contains("handedOff=false"))
+        assertTrue(finish.contains("released=true"))
+        assertTrue(finish.contains("不交付"))
+        val launch = catalog(rootAvailable = false).function("launch_app").getString("description")
+        assertTrue(launch.contains("reused=true"))
+    }
+
     private fun catalog(rootAvailable: Boolean): JSONArray = AgentToolCatalog.build(
         terminalTools = false,
         browserTools = false,

@@ -25,12 +25,14 @@ class VirtualDisplayHandoffEvidenceTest {
     )
 
     // OwnerProtocol.ok("status", owner.status()) emits these fields at top level, not in a body.
+    // live/gone are optional on the wire: omission is unknown, not an empty inventory.
     private fun status(): Map<String, Any?> = mapOf(
         "v" to 1, "op" to "status", "ok" to true, "ready" to true, "session" to "active",
         "displayId" to 2, "uniqueId" to "owner-unique", "retainedTaskIds" to listOf(16, 17, 18),
         "finishing" to false, "handoffComplete" to false, "releaseAttempted" to false,
         "mutationUncertain" to false, "sourceEmpty" to false,
         "sourceState" to "occupied", "sourceTaskCount" to 3,
+        "liveTaskIds" to listOf(16, 17, 18), "goneTaskIds" to emptyList<Int>(),
     )
 
     private fun readState(
@@ -61,7 +63,7 @@ class VirtualDisplayHandoffEvidenceTest {
         assertFalse(wire.containsKey("displayId"))
         assertFalse(wire.containsKey("uniqueId"))
         val before = readState()!!
-        assertEquals(VirtualDisplayHandoffRetry.OwnerState(identity, true, clean, retained, 3), before)
+        assertEquals(VirtualDisplayHandoffRetry.OwnerState(identity, true, clean, retained, 3, retained, emptySet()), before)
         var attempts = 0
         var reads = 0
         val result = VirtualDisplayHandoffRetry.run(VirtualDisplayHandoffRetry.Budget(), {
@@ -109,7 +111,13 @@ class VirtualDisplayHandoffEvidenceTest {
     }
 
     @Test fun missingMalformedAndUnknownStatusFieldsFailClosed() {
-        for (field in status().keys) assertNull(field, readState(status() - field))
+        val optionalInventory = setOf("liveTaskIds", "goneTaskIds")
+        for (field in status().keys) {
+            val parsed = readState(status() - field)
+            if (field in optionalInventory) assertNotNull(field, parsed) else assertNull(field, parsed)
+        }
+        assertNull(readState(status() - "liveTaskIds")!!.liveTaskIds)
+        assertNull(readState(status() - "goneTaskIds")!!.goneTaskIds)
         for ((field, value) in listOf(
             "v" to "1", "v" to 1L, "v" to 1.0, "v" to 2,
             "op" to "handoff", "ok" to "true", "ok" to false,
@@ -124,6 +132,9 @@ class VirtualDisplayHandoffEvidenceTest {
             "retainedTaskIds" to "[16,17,18]", "retainedTaskIds" to listOf(16, 16),
             "retainedTaskIds" to listOf(0), "retainedTaskIds" to listOf(-1),
             "retainedTaskIds" to listOf("16"), "retainedTaskIds" to listOf(16L),
+            "liveTaskIds" to listOf(0), "liveTaskIds" to listOf(-1), "liveTaskIds" to listOf(16, 16),
+            "liveTaskIds" to listOf(19), "liveTaskIds" to listOf("16"), "liveTaskIds" to "[]",
+            "goneTaskIds" to listOf(16), "goneTaskIds" to listOf(0), "goneTaskIds" to listOf(19),
         )) assertNull("$field=$value", readState(status() + (field to value)))
         assertNull(readState(authenticated = false))
         assertNull(readState(ok = false))
@@ -148,8 +159,8 @@ class VirtualDisplayHandoffEvidenceTest {
         )) assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(before, readState(fields), selected))
         assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(before, readState(owner = identity.copy(pid = 124L)), selected))
         assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(before, readState(owner = identity.copy(socketName = "other")), selected))
-        val inconsistent = readState(status() + ("sourceTaskCount" to 2))!!
-        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(inconsistent, inconsistent, selected))
+        // Present live inventory larger than the reported root count is illegal, not a retry signal.
+        assertNull(readState(status() + ("sourceTaskCount" to 2)))
     }
 
     @Test fun frameAndDiagnosticChangesAreNotMutationEvidence() {
@@ -163,8 +174,11 @@ class VirtualDisplayHandoffEvidenceTest {
         val wire = mapOf<String, Any?>("v" to 1, "op" to "handoff", "ok" to true,
             "handedOff" to true, "sourceEmpty" to true)
         fun completed(fields: Map<String, Any?> = wire, kept: Set<Int>? = selected,
-            removed: Set<Int>? = setOf(18), authenticated: Boolean = true, ok: Boolean = true) =
-            VirtualDisplayHandoffEvidence.completed(authenticated, ok, selected, retained, kept, removed, fields::get)
+            removed: Set<Int>? = setOf(18), authenticated: Boolean = true, ok: Boolean = true,
+            gone: Set<Int>? = emptySet(), chosen: Set<Int> = selected) =
+            VirtualDisplayHandoffEvidence.completed(
+                authenticated, ok, chosen, retained, kept, removed, fields::get, gone,
+            )
         assertTrue(completed())
         assertFalse(completed(authenticated = false))
         assertFalse(completed(ok = false))
@@ -173,14 +187,60 @@ class VirtualDisplayHandoffEvidenceTest {
         assertFalse(completed(removed = null))
         assertFalse(completed(removed = emptySet()))
         assertFalse(completed(removed = setOf(17, 18)))
+        assertFalse(completed(gone = null))
+        assertFalse(completed(fields = wire + ("cleanupOnly" to true)))
         for (field in wire.keys) assertFalse(field, completed(wire - field))
         assertFalse(completed(wire + ("ok" to "true")))
+    }
+
+    @Test fun goneTasksAreExcludedFromRemovedAndEscapedIdsFailClosed() {
+        val wire = mapOf<String, Any?>("v" to 1, "op" to "handoff", "ok" to true,
+            "handedOff" to true, "sourceEmpty" to true)
+        assertTrue(VirtualDisplayHandoffEvidence.completed(
+            true, true, selected, retained, selected, emptySet(), wire::get, setOf(18)))
+        assertFalse(VirtualDisplayHandoffEvidence.completed(
+            true, true, selected, retained, selected, setOf(18), wire::get, setOf(18)))
+        assertFalse(VirtualDisplayHandoffEvidence.completed(
+            true, true, selected, retained, selected, setOf(19), wire::get, setOf(19)))
+        assertFalse(VirtualDisplayHandoffEvidence.completed(
+            true, true, selected, retained, selected, emptySet(), wire::get, setOf(17)))
+    }
+
+    @Test fun cleanupCompletionRequiresEmptySelectionAndCleanupOnly() {
+        val wire = mapOf<String, Any?>("v" to 1, "op" to "handoff", "ok" to true,
+            "handedOff" to true, "sourceEmpty" to true, "cleanupOnly" to true)
+        val gone = setOf(18)
+        val removed = setOf(16, 17)
+        assertTrue(VirtualDisplayHandoffEvidence.completed(
+            true, true, emptySet(), retained, emptySet(), removed, wire::get, gone))
+        assertTrue(VirtualDisplayHandoffEvidence.completed(
+            true, true, emptySet(), retained, emptySet(), retained, wire::get, emptySet()))
+        assertFalse(VirtualDisplayHandoffEvidence.completed(
+            true, true, emptySet(), retained, emptySet(), removed, (wire - "cleanupOnly")::get, gone))
+        assertFalse(VirtualDisplayHandoffEvidence.completed(
+            true, true, emptySet(), retained, setOf(16), removed, wire::get, gone))
+        // gone ids must not also appear in removed.
+        assertFalse(VirtualDisplayHandoffEvidence.completed(
+            true, true, emptySet(), retained, emptySet(), retained, wire::get, gone))
+        assertFalse(VirtualDisplayHandoffEvidence.completed(
+            true, true, selected, retained, selected, setOf(18), wire::get, emptySet()))
+    }
+
+    @Test fun omittedLiveInventoryParsesButCannotAuthorizeDelivery() {
+        val unknown = readState(status() - "liveTaskIds" - "goneTaskIds")!!
+        assertNull(unknown.liveTaskIds)
+        assertNull(unknown.goneTaskIds)
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(unknown, unknown, selected))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(unknown, unknown))
+        assertNull(VirtualDisplayHandoffRetry.nonLiveKeepCode(null, setOf(18)))
+        assertEquals("TASK_NOT_LIVE", VirtualDisplayHandoffRetry.nonLiveKeepCode(setOf(16), setOf(18)))
     }
 
     @Test fun postHandoffStatusMayRetainOwnedIdsButCannotAuthorizeReplay() {
         // VirtualDisplayOwner keeps owned IDs after moving/removing them; source count is now zero.
         val post = readState(status() + mapOf("sourceTaskCount" to 0, "sourceEmpty" to true,
-            "sourceState" to "empty", "finishing" to true, "handoffComplete" to true))!!
+            "sourceState" to "empty", "finishing" to true, "handoffComplete" to true,
+            "liveTaskIds" to emptyList<Int>(), "goneTaskIds" to emptyList<Int>()))!!
         assertEquals(retained, post.retainedTaskIds)
         assertEquals(0, post.sourceTaskCount)
         assertEquals(VirtualDisplayRecoveryPolicy.Action.RELEASE_ONLY, VirtualDisplayRecoveryPolicy.finishAction(post.flags))
