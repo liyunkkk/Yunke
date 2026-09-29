@@ -44,6 +44,18 @@ class ContextDualMeterContractTest(unittest.TestCase):
         self.assertIn('CloudReceiptPlausibility.isOccupancy(', app)
         self.assertIn('runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)', app)
 
+    def test_local_growth_cannot_reject_a_new_cloud_receipt(self):
+        policy = self.text('ui/model/CloudReceiptPlausibility.kt')
+        for removed in ('fitsGrowth', 'previousTokens', 'previousLocalTokens', 'localTokens'):
+            self.assertNotIn(removed, policy)
+        self.assertIn('return fitsWindow(value, contextWindow)', policy)
+        app = self.text('ui/app/AgentAppState.kt')
+        receipt = app.split('val measured = occupancy.takeIf {', 1)[1].split('if (measured != null)', 1)[0]
+        self.assertIn('tokens = it, contextWindow = window', receipt)
+        self.assertNotIn('localBasis', receipt)
+        self.assertNotIn('billedPromptTokens', receipt)
+        self.assertIn('historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens', app)
+
     def test_request_calibration_is_optional_on_the_wire(self):
         wire = self.text('agent/runtime/AgentRuntimeWire.kt')
         for key in ('request_history_tokens', 'request_overhead_tokens'):
