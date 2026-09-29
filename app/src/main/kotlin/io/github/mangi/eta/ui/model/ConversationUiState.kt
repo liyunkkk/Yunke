@@ -26,6 +26,7 @@ data class ConversationSummaryUi(
     val preview: String,
     val timeLabel: String,
     val updatedAtMillis: Long = 0L,
+    val createdAtMillis: Long = 0L,
     val mode: ConversationModeUi,
     val isPinned: Boolean = false,
     val isActiveRun: Boolean = false,

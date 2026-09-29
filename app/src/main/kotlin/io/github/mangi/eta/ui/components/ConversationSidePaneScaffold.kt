@@ -1209,7 +1209,7 @@ private fun List<ConversationSummaryUi>.groupForDrawer(): List<ConversationDrawe
 
 private fun ConversationSummaryUi.drawerSection(): ConversationDrawerSection = when {
     isPinned -> ConversationDrawerSection.Pinned
-    isActiveRun || isUpdatedToday(updatedAtMillis) -> ConversationDrawerSection.Today
+    isUpdatedToday(createdAtMillis.takeIf { it > 0L } ?: updatedAtMillis) -> ConversationDrawerSection.Today
     else -> ConversationDrawerSection.Dated(timeLabel)
 }
 
