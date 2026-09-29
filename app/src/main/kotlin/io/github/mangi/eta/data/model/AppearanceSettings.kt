@@ -34,9 +34,9 @@ data class AppearanceSettings(
     )
 
     companion object {
-        const val DEFAULT_ICON_LIGHT = 0xFFF6F7F9.toInt()
+        const val DEFAULT_ICON_LIGHT = 0xFFFFFFFF.toInt()
         const val DEFAULT_ICON_DARK = 0xFF1C1C1E.toInt()
-        const val DEFAULT_ICON_CAT = 0xFFF27A1A.toInt()
+        const val DEFAULT_ICON_CAT = 0xFF2491FF.toInt()
     }
 }
 
