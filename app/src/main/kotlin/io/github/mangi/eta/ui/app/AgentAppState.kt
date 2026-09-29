@@ -3055,23 +3055,22 @@ internal class AgentAppState(
         showCompressionCompletedToast(conversationId, originalHistory, compressedHistory, compressorLabel)
     }
 
-    /** Called on Main only after an accepted history update, never from replay/projection. */
+    /** Called on Main only after an accepted history update, never from replay/projection.
+     *  The notice belongs to the conversation that finished, even if the user has switched away. */
     private fun showCompressionCompletedToast(
         conversationId: String?,
         originalHistory: List<AgentModelClient.ConversationMessage>,
         compressedHistory: List<AgentModelClient.ConversationMessage>,
         compressorLabel: String,
     ) {
-        if (conversationId != selectedConversationId) return
         val count = AgentContextCompactionUi.completedMessageCount(
             originalHistory, compressedHistory, compressorLabel,
         )
         if (count <= 0) return
-        Toast.makeText(
-            appContext,
-            appContext.resources.getQuantityString(R.plurals.context_compacted_messages, count, count),
-            Toast.LENGTH_SHORT,
-        ).show()
+        val body = appContext.resources.getQuantityString(R.plurals.context_compacted_messages, count, count)
+        val title = conversationId?.let { conversationTitles[it] }?.trim().orEmpty()
+        val text = if (conversationId != selectedConversationId && title.isNotBlank()) "$title：$body" else body
+        Toast.makeText(appContext, text, Toast.LENGTH_SHORT).show()
     }
 
     private fun showRevisionHistoryUnavailableNotice() {
