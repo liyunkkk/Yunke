@@ -5,6 +5,13 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 
 /** 重试只包围模型请求；完整响应返回前不提交历史或执行本地工具。 */
 internal class AgentModelRetry(
+    /** 最大重试次数，默认读取设置项（0/3/5/8，缺省 3）。 */
+    private val maxRetries: Int = ModelRetrySettings.configuredCount(),
+    /** 退避是否叠加 ±20% 抖动，默认读取设置项（默认开启）。 */
+    private val jitterEnabled: Boolean = ModelRetrySettings.jitterEnabled(),
+    /** 随机源返回 [0,1)，供测试注入；默认使用系统随机数。 */
+    private val random: () -> Double = { Math.random() },
+    // 保持为最后一个参数：既有调用使用尾随 lambda 指定等待实现。
     private val waitBeforeRetry: (AgentRunController, Long) -> Unit = { controller, delay ->
         controller.awaitRetryDelay(delay)
     },
@@ -134,10 +141,10 @@ internal class AgentModelRetry(
                         diagnostic = classified.diagnostic,
                     )
                 }
-                if (retries >= MAX_RETRIES) {
+                if (retries >= maxRetries) {
                     throw AgentModelFailure(
                         classified.code, false,
-                        "${classified.message} 已重试 $MAX_RETRIES 次仍未恢复，已保留此前完成的工具结果。",
+                        "${classified.message} 已重试 $maxRetries 次仍未恢复，已保留此前完成的工具结果。",
                         classified,
                         diagnostic = classified.diagnostic,
                     )
@@ -149,8 +156,8 @@ internal class AgentModelRetry(
                 }
                 if (envelopeRejected || envelopeRetries > 0) envelopeRetries += 1
                 retries += 1
-                val delayMs = BASE_DELAY_MS shl (retries - 1)
-                onEvent(AgentEvent.ModelRetryScheduled(round, if (envelopeRetries > 0) envelopeRetries else retries, if (envelopeRetries > 0) ResponsesToolEnvelopeRecovery.MAX_RETRIES else MAX_RETRIES, delayMs.toInt(), classified.code, reasonDetail))
+                val delayMs = retryDelayMs(retries)
+                onEvent(AgentEvent.ModelRetryScheduled(round, if (envelopeRetries > 0) envelopeRetries else retries, if (envelopeRetries > 0) ResponsesToolEnvelopeRecovery.MAX_RETRIES else maxRetries, delayMs.toInt(), classified.code, reasonDetail))
                 waitBeforeRetry(controller, delayMs)
                 controller.throwIfCancelled()
                 // 展示保留失败尝试，模型上下文与最终推理摘要只接纳成功尝试。
@@ -160,8 +167,18 @@ internal class AgentModelRetry(
         }
     }
 
+    /** 第 [retries] 次重试前的退避：`BASE shl (retries-1)`，可选叠加 ±20% 抖动。 */
+    private fun retryDelayMs(retries: Int): Long {
+        val base = BASE_DELAY_MS shl (retries - 1)
+        if (!jitterEnabled) return base
+        val factor = 1.0 + (random().coerceIn(0.0, 1.0) * 2.0 - 1.0) * JITTER_RATIO
+        return (base * factor).toLong().coerceAtLeast(0L)
+    }
+
     companion object {
-        private const val MAX_RETRIES = 3
         private const val BASE_DELAY_MS = 2_000L
+
+        /** 退避抖动幅度：±20%。 */
+        private const val JITTER_RATIO = 0.2
     }
 }

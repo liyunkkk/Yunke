@@ -43,6 +43,7 @@ import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Psychology
+import androidx.compose.material.icons.rounded.Refresh
 import io.github.mangi.eta.ui.icons.SubAgents
 import androidx.compose.material.icons.rounded.Restaurant
 import androidx.compose.material.icons.rounded.Security
@@ -74,6 +75,7 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.kimi.KimiPermissionMode
+import io.github.mangi.eta.agent.model.ModelRetrySettings
 import io.github.mangi.eta.agent.voice.EtaVoiceInteractionService
 import io.github.mangi.eta.config.PowerAssistantTarget
 import io.github.mangi.eta.config.Prefs
@@ -237,6 +239,13 @@ internal fun SettingsScreen(
     var kimiPermissionMode by remember(agentPrefs) {
         mutableStateOf(KimiPermissionMode.resolve(agentPrefs?.getString(Prefs.Keys.KIMI_PERMISSION_MODE, KimiPermissionMode.YOLO)))
     }
+    var modelRetryCount by remember(agentPrefs) {
+        mutableStateOf(
+            ModelRetrySettings.parseCount(
+                agentPrefs?.getString(Prefs.Keys.MODEL_RETRY_COUNT, ModelRetrySettings.DEFAULT_COUNT.toString()),
+            ),
+        )
+    }
     var powerAssistantTarget by remember(prefs) {
         mutableStateOf(prefs?.let(Prefs::powerAssistantTarget) ?: enhancementHistory.powerTarget())
     }
@@ -300,6 +309,31 @@ internal fun SettingsScreen(
                         title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
                         key = Prefs.Keys.AGENT_THINKING_ENABLED,
                         icon = Icons.Rounded.Psychology,
+                    )
+
+                    WindowSpinnerPreference(
+                        title = "模型请求重试次数",
+                        summary = "网络或中转站不稳时可调高；0 表示不自动重试。",
+                        items = ModelRetrySettings.allowedCounts.map { DropdownItem(text = it.toString()) },
+                        selectedIndex = ModelRetrySettings.allowedCounts.indexOf(modelRetryCount).coerceAtLeast(0),
+                        onSelectedIndexChange = { index ->
+                            val count = ModelRetrySettings.allowedCounts.getOrNull(index)
+                                ?: return@WindowSpinnerPreference
+                            val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
+                            if (putStringSync(targetPrefs, Prefs.Keys.MODEL_RETRY_COUNT, count.toString())) {
+                                modelRetryCount = count
+                            } else {
+                                Toast.makeText(
+                                    context.applicationContext,
+                                    context.getString(R.string.settings_write_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        },
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Refresh, enabled = agentPrefs != null)
+                        },
+                        enabled = agentPrefs != null,
                     )
                 }
             }

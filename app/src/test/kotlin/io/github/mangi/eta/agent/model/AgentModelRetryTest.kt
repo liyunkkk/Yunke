@@ -21,7 +21,8 @@ class AgentModelRetryTest {
     @Test
     fun retriesAreBoundedAndBackoffIsPerModelRound() {
         val delays = mutableListOf<Long>()
-        val retry = AgentModelRetry { _, delay -> delays += delay }
+        // 注入中性随机源：抖动因子恒为 1.0，便于断言基础退避序列。
+        val retry = AgentModelRetry(waitBeforeRetry = { _, delay -> delays += delay }, random = { 0.5 })
         var calls = 0
         val failure = assertThrows(AgentModelFailure::class.java) {
             complete(retry, provider { _, _ -> calls++; throw SocketTimeoutException("timeout") })
@@ -37,6 +38,54 @@ class AgentModelRetryTest {
         })
         assertEquals(2, result.round)
         assertEquals(listOf(2_000L), delays)
+    }
+
+    @Test
+    fun retryCountIsConfigurable() {
+        var calls = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            complete(
+                AgentModelRetry(waitBeforeRetry = { _, _ -> }, maxRetries = 5),
+                provider { _, _ -> calls++; throw SocketTimeoutException("timeout") },
+            )
+        }
+        assertEquals(6, calls)
+        assertTrue(failure.message.orEmpty().contains("已重试 5 次"))
+    }
+
+    @Test
+    fun disabledJitterKeepsTheExactBaseSequence() {
+        val delays = mutableListOf<Long>()
+        val retry = AgentModelRetry(
+            waitBeforeRetry = { _, delay -> delays += delay },
+            maxRetries = 3,
+            jitterEnabled = false,
+        )
+        assertThrows(AgentModelFailure::class.java) {
+            complete(retry, provider { _, _ -> throw SocketTimeoutException("timeout") })
+        }
+        assertEquals(listOf(2_000L, 4_000L, 8_000L), delays)
+    }
+
+    @Test
+    fun backoffJitterStaysWithinTwentyPercent() {
+        val delays = mutableListOf<Long>()
+        repeat(8) {
+            val retry = AgentModelRetry(
+                waitBeforeRetry = { _, delay -> delays += delay },
+                maxRetries = 3,
+                jitterEnabled = true,
+            )
+            assertThrows(AgentModelFailure::class.java) {
+                complete(retry, provider { _, _ -> throw SocketTimeoutException("timeout") })
+            }
+        }
+        assertEquals(24, delays.size)
+        val bases = listOf(2_000L, 4_000L, 8_000L)
+        delays.forEachIndexed { index, delay ->
+            val base = bases[index % bases.size]
+            assertTrue("delay=$delay base=$base", delay in (base * 80 / 100)..(base * 120 / 100))
+        }
     }
 
     @Test
