@@ -1156,6 +1156,9 @@ internal class AgentAppState(
                         updateTimestamp = !recovery.alreadyApplied,
                     )
                     stateChanged = true
+                    if (!recovery.alreadyApplied && VirtualCompletionNotice.confirmed(result)) {
+                        Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 acknowledgeAfterSave += runId
             }
@@ -4706,6 +4709,9 @@ internal class AgentAppState(
         }
         if (stoppedDuringRetry == null) {
             updateMessages(runId) { VirtualCompletionNotice.append(it, runId, result) }
+            if (acknowledgeRuntimeResult && VirtualCompletionNotice.confirmed(result)) {
+                Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+            }
         }
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)

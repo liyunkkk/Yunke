@@ -13,9 +13,8 @@ class VirtualCompletionNoticeTest {
     @Test fun confirmedResultAppendsOnceAndKeepsAnswer() {
         val answer = AgentMessageUi("assistant-run-vd-1", "answer")
         val first = VirtualCompletionNotice.append(listOf(answer), "run-vd", result())
-        assertSame(answer, first.first())
-        assertEquals(SystemNoticeCode.Completed, (first.last() as SystemNoticeMessageUi).code)
-        assertEquals(2, first.size)
+        assertSame(answer, first.single())
+        assertTrue(first.none { it is SystemNoticeMessageUi && it.code == SystemNoticeCode.Completed })
         assertSame(first, VirtualCompletionNotice.append(first, "run-vd", result()))
     }
 
@@ -36,7 +35,7 @@ class VirtualCompletionNoticeTest {
         val second = AgentPendingResultRecovery.apply(first.state, "run-vd", result(), supplements = emptyList())
         assertTrue(second.alreadyApplied)
         assertEquals(first.state, second.state)
-        assertEquals(1, first.state.messages.filterIsInstance<SystemNoticeMessageUi>()
+        assertEquals(0, first.state.messages.filterIsInstance<SystemNoticeMessageUi>()
             .count { it.code == SystemNoticeCode.Completed })
         assertEquals("answer", first.state.messages.filterIsInstance<AgentMessageUi>().single().content)
         assertFalse(first.state.history.any { it.content == "已完成" })
@@ -46,9 +45,7 @@ class VirtualCompletionNoticeTest {
         val placeholder = SystemNoticeMessageUi("assistant-run-vd-1", SystemNoticeCode.EmptyResult)
         val other = AgentMessageUi("assistant-other-1", "keep")
         val updated = VirtualCompletionNotice.append(listOf(other, placeholder), "run-vd", result(content = ""))
-        assertEquals(other, updated.first())
-        assertEquals(2, updated.size)
-        assertEquals(SystemNoticeCode.Completed, (updated.last() as SystemNoticeMessageUi).code)
+        assertEquals(listOf(other), updated)
     }
 
     @Test
@@ -60,8 +57,7 @@ class VirtualCompletionNoticeTest {
             )
             val first = AgentPendingResultRecovery.apply(state, "run-vd", result(content = ""), supplements = emptyList())
             assertEquals(answer.copy(isStreaming = false), first.state.messages.filterIsInstance<AgentMessageUi>().single())
-            assertEquals(listOf(SystemNoticeCode.Completed),
-                first.state.messages.filterIsInstance<SystemNoticeMessageUi>().map { it.code })
+            assertTrue(first.state.messages.none { it is SystemNoticeMessageUi && it.code == SystemNoticeCode.Completed })
             val replay = AgentPendingResultRecovery.apply(first.state, "run-vd", result(content = ""), supplements = emptyList())
             assertTrue(replay.alreadyApplied)
             assertEquals(first.state, replay.state)
@@ -77,6 +73,6 @@ class VirtualCompletionNoticeTest {
         assertTrue(answer in updated)
         assertTrue(other in updated)
         assertFalse(stale in updated)
-        assertEquals(1, updated.filterIsInstance<SystemNoticeMessageUi>().count { it.code == SystemNoticeCode.Completed })
+        assertEquals(0, updated.filterIsInstance<SystemNoticeMessageUi>().count { it.code == SystemNoticeCode.Completed })
     }
 }
