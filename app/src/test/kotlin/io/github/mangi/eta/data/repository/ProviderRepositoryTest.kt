@@ -2,9 +2,6 @@ package io.github.mangi.eta.data.repository
 
 import android.content.Context
 import io.github.mangi.eta.data.datastore.SettingsDataStore
-import io.github.mangi.eta.data.db.toEntity
-import io.github.mangi.eta.data.db.toModelEntities
-import io.github.mangi.eta.agent.model.oauth.ProviderOAuthStore
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.model.CustomHeader
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
@@ -36,37 +33,6 @@ class ProviderRepositoryTest {
         runBlocking {
             SettingsDataStore.setSelection(providerId = null, modelId = null)
         }
-    }
-
-    @Test
-    fun startupRemovesLegacyProviderAndCredentialsWithoutAffectingCodex() = runBlocking {
-        val legacy = sampleProvider(id = "retired").copy(
-            baseUrl = "https://daily-cloudcode-pa.googleapis.com",
-            endpointMode = "antigravity",
-            authMode = "oauth_antigravity",
-        )
-        val dao = EtaDatabase.get(context).providerDao()
-        dao.replaceProvider(legacy.toEntity(), legacy.toModelEntities())
-        val normal = ProviderRepository.addProvider(sampleProvider(id = "normal"))
-        val store = ProviderOAuthStore(context)
-        store.saveString("retired", "project_id", "test-project")
-        store.saveTokens("retired", org.json.JSONObject().put("access_token", "test-retired"))
-        store.saveString("orphaned", "api_host", "https://daily-cloudcode-pa.googleapis.com")
-        store.saveTokens("orphaned", org.json.JSONObject().put("access_token", "test-orphaned"))
-        store.saveTokens("normal", org.json.JSONObject().put("access_token", "test-codex"))
-        SettingsDataStore.setSelection(legacy.id, legacy.models.first().id)
-        assertTrue(ProviderRepository.providerById(legacy.id) == null)
-
-        ProviderRepository.ensureBuiltInsMerged()
-        ProviderRepository.ensureBuiltInsMerged() // idempotent; also used after backup import
-
-        assertTrue(dao.providerById(legacy.id) == null)
-        assertTrue(dao.models(legacy.id).isEmpty())
-        assertTrue(store.loadTokens("retired") == null)
-        assertTrue(store.loadTokens("orphaned") == null)
-        assertEquals("test-codex", store.loadTokens("normal")?.optString("access_token"))
-        assertEquals(normal.id, SettingsDataStore.settings().selectedProviderId)
-        assertTrue(ProviderRepository.providerById(normal.id) != null)
     }
 
     @Test

@@ -101,7 +101,6 @@ internal object OpenAiCodexOAuth {
         context: Context,
         provider: ProviderSetting,
     ): ProviderSetting {
-        io.github.mangi.eta.data.model.RemovedProviderPolicy.requireSupported(provider)
         if (!usesCodexBackend(provider)) return provider
         val token = validAccessToken(context, provider.id) ?: provider.apiKey
         val extra = extraHeaders(context, provider.id, provider.baseUrl)

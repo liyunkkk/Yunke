@@ -28,15 +28,6 @@ internal class ProviderOAuthStore(context: Context) {
         editor.apply()
     }
 
-    /** Remove orphaned credentials identified by this retired backend's private metadata. */
-    fun clearRetiredBackendEntries() {
-        val prefixes = listOf("oauth_project_id_", "oauth_api_host_")
-        val ids = prefs.all.keys.mapNotNull { key ->
-            prefixes.firstOrNull { key.startsWith(it) }?.let { key.removePrefix(it) }
-        }.filter { it.isNotBlank() }.toSet()
-        ids.forEach(::clear)
-    }
-
     companion object {
         private const val PREFS = "eta_oauth_prefs"
 

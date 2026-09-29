@@ -19,9 +19,10 @@ class OpenAiCodexOAuthTest {
         assertEquals(ProviderAuthMode.OAUTH, ProviderAuthMode.parse("OAuth"))
         assertFalse(ProviderAuthMode.isOAuth("api_key"))
         assertTrue(ProviderAuthMode.isOAuth("oauth"))
-        assertEquals(ProviderAuthMode.REMOVED, ProviderAuthMode.parse("oauth_antigravity"))
-        assertFalse(ProviderAuthMode.isOAuth("oauth_antigravity"))
-        assertFalse(ProviderAuthMode.isOAuth(ProviderAuthMode.REMOVED))
+        assertEquals(ProviderAuthMode.OAUTH_ANTIGRAVITY, ProviderAuthMode.parse("oauth_antigravity"))
+        assertTrue(ProviderAuthMode.isOAuth("oauth_antigravity"))
+        assertTrue(ProviderAuthMode.isAntigravity("oauth_antigravity"))
+        assertFalse(ProviderAuthMode.isAntigravity("oauth"))
     }
 
     @Test
