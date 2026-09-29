@@ -350,18 +350,13 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun userExpansionOfTheTailDoesNotLift() {
-        assertFalse(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = true))
-        assertTrue(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = false))
-        assertFalse(shouldLiftStreamingTail(followingOutput = false, holdingUserExpansion = false))
-    }
-
-    @Test
-    fun tailLiftHoldWaitsUntilTheTailIsBackOnTheRestLine() {
-        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
-        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = null, elapsedNanos = 0L, maxNanos = 100L))
-        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 1, elapsedNanos = 0L, maxNanos = 100L))
-        assertTrue(shouldReleaseTailLiftHold(following = false, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
-        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 100L, maxNanos = 100L))
+    fun expansionGrowsFromTheBottomOnlyWhenTheBottomStaysPut() {
+        // 跟底上提：尾部停在静止线。
+        assertTrue(resolveExpansionHoldsBottom(following = true, arrangedToBottom = false, listScrollable = true))
+        // 不满一屏贴底排列：列表往上长。
+        assertTrue(resolveExpansionHoldsBottom(following = false, arrangedToBottom = true, listScrollable = false))
+        // 满屏但没在跟底：首个可见项不动，内容往下长。
+        assertFalse(resolveExpansionHoldsBottom(following = false, arrangedToBottom = true, listScrollable = true))
+        assertFalse(resolveExpansionHoldsBottom(following = false, arrangedToBottom = false, listScrollable = false))
     }
 }

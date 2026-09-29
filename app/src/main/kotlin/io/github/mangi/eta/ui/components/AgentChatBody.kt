@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -789,43 +791,33 @@ internal fun AgentConversationMessages(
             isBottomSettling = isBottomSettling,
         )
     )
-    // 展开最底部工具时先不上提，让跟底滚动把新增高度吃掉。
-    // 固定 220ms 后如果还没吃完，上提会把剩下的高度一次抬走，所以偶尔还会卡一下。
-    // 改成尾部回到静止线再放开；不跟底或等太久也放开，避免一直压着。
-    var holdTailLift by remember { mutableStateOf(false) }
-    val shouldLiftTail = shouldLiftStreamingTail(shouldFollowBottom, holdTailLift)
-    LaunchedEffect(holdTailLift) {
-        if (!holdTailLift) return@LaunchedEffect
-        val started = System.nanoTime()
-        var checks = 0
-        StreamPerformanceDiagnostics.probeNote("hold") {
-            "state=start following=$shouldFollowBottom overflowPx=${scrollState.followTailOverflow()}"
-        }
-        while (currentCoroutineContext().isActive) {
-            val overflow = scrollState.followTailOverflow()
-            val elapsed = System.nanoTime() - started
-            if (shouldReleaseTailLiftHold(
-                    following = shouldFollowBottom,
-                    overflowPx = overflow,
-                    elapsedNanos = elapsed,
-                    maxNanos = TAIL_LIFT_HOLD_MAX_NANOS,
-                )
-            ) {
-                StreamPerformanceDiagnostics.probeNote("hold") {
-                    val reason = when {
-                        !shouldFollowBottom -> "notFollowing"
-                        elapsed >= TAIL_LIFT_HOLD_MAX_NANOS -> "timeout"
-                        else -> "settled"
-                    }
-                    "state=release reason=$reason checks=$checks overflowPx=$overflow heldMs=${elapsed / 1_000_000}"
-                }
-                break
-            }
-            checks++
-            withFrameNanos { }
-        }
-        holdTailLift = false
+    // 跟底时上提让尾部一直停在静止线上：列表变高多少，同一帧就上提多少，下沿不动。
+    // 以前点开最底部一行时先暂停上提，让内容从上沿往下长过静止线、再由跟底滚动追回来，
+    // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
+    // 上提照常，标签随动画一帧一帧往上让开。
+    val shouldLiftTail = shouldFollowBottom
+    val isListScrollable by remember {
+        derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
     }
+    var streamFilledViewport by remember { mutableStateOf(false) }
+    LaunchedEffect(isStreaming, isListScrollable) {
+        streamFilledViewport = if (isStreaming) streamFilledViewport || isListScrollable else false
+    }
+    // 点击回调里问一次：这一行下面的内容会不会停在原处。只读 State，不参与组合；
+    // remember 后引用不变，作为 CompositionLocal 提供时不会让整页重组。
+    val expansionHoldsBottom: () -> Boolean = remember(scrollState) {
+        {
+            resolveExpansionHoldsBottom(
+                following = shouldFollowBottom,
+                arrangedToBottom = shouldPinConversationToBottom(currentStreaming.value, streamFilledViewport),
+                listScrollable = isListScrollable,
+            )
+        }
+    }
+    // 点开工作过程时新插入的步骤行从 0 高度展开（只在下沿被钉住时）。
+    // 滚动进可视区、或过了这段时间才组合的行不播放。只在步骤行首次组合时读，
+    // 用普通 Map，写入不触发任何重组。
+    val workExpandStarts = remember { HashMap<String, Long>() }
     // 点开工具或推理后，逐帧记下列表状态：跟底、上提、暂停上提、哨兵相对静止线的位置、
     // 用户是否在拖动。只在点击窗口内运行，读 layoutInfo 不参与组合。
     LaunchedEffect(scrollState) {
@@ -836,12 +828,12 @@ internal fun AgentConversationMessages(
                     val frameNanos = withFrameNanos { it }
                     StreamPerformanceDiagnostics.probeListSample(frameNanos) {
                         val info = scrollState.layoutInfo
-                        // shouldLiftTail 是组合时的快照，这里按当前的跟底和暂停状态重新算。
-                        val liftingNow = shouldLiftStreamingTail(shouldFollowBottom, holdTailLift)
+                        // shouldLiftTail 是组合时的快照，这里按当前的跟底状态重新算。
+                        val liftingNow = shouldFollowBottom
                         val lift = if (liftingNow) {
                             resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
                         } else 0
-                        "follow=$shouldFollowBottom lift=$liftingNow liftPx=$lift hold=$holdTailLift " +
+                        "follow=$shouldFollowBottom lift=$liftingNow liftPx=$lift pinned=${expansionHoldsBottom()} " +
                             "userScroll=$isUserScrolling overflowPx=${scrollState.followTailOverflow()} " +
                             "first=${scrollState.firstVisibleItemIndex}:${scrollState.firstVisibleItemScrollOffset} " +
                             "visible=${info.visibleItemsInfo.size} total=${info.totalItemsCount}"
@@ -1008,13 +1000,6 @@ internal fun AgentConversationMessages(
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
             }
         }
-        val isListScrollable by remember {
-            derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
-        }
-        var streamFilledViewport by remember { mutableStateOf(false) }
-        LaunchedEffect(isStreaming, isListScrollable) {
-            streamFilledViewport = if (isStreaming) streamFilledViewport || isListScrollable else false
-        }
         val messageActions = remember { ChatMessageActions() }
         SideEffect {
             messageActions.onSuggestionClick = onSuggestionClick
@@ -1067,20 +1052,9 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
-                val tailRow = timelineRows.lastOrNull()
-                val tailGroupKey = when (tailRow) {
-                    is AgentTimelineRow.WorkStep -> tailRow.groupKey
-                    is AgentTimelineRow.WorkHeader -> tailRow.key
-                    else -> null
-                }
-                val reportsTailResize = when (entry) {
-                    is AgentTimelineRow.WorkHeader -> entry.key == tailGroupKey
-                    is AgentTimelineRow.WorkStep -> entry.groupKey == tailGroupKey
-                    is AgentTimelineRow.Message -> entry.key == tailRow?.key
-                }
                 // Keep the row key/index and animate its root, including its footer.
                 androidx.compose.runtime.CompositionLocalProvider(
-                    LocalTailResize provides if (reportsTailResize) ({ holdTailLift = true }) else null,
+                    LocalExpansionHoldsBottom provides expansionHoldsBottom,
                 ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
@@ -1136,12 +1110,14 @@ internal fun AgentConversationMessages(
                             isPaused = isPaused,
                             expanded = entry.expanded,
                             onToggle = {
-                                if (entry.key == tailGroupKey) holdTailLift = true
+                                val pinned = expansionHoldsBottom()
+                                if (!entry.expanded && pinned) workExpandStarts[entry.key] = System.nanoTime()
+                                else workExpandStarts.remove(entry.key)
                                 val token = StreamPerformanceDiagnostics.markToggle("work", !entry.expanded)
                                 StreamPerformanceDiagnostics.probeEvent(
                                     token,
                                     "item",
-                                    "steps=${entry.group.messages.size} tail=${entry.key == tailGroupKey}",
+                                    "steps=${entry.group.messages.size} anchor=${if (pinned) "bottom" else "top"}",
                                 )
                                 workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
                             },
@@ -1153,6 +1129,18 @@ internal fun AgentConversationMessages(
                             (message.isStreaming || streamingMarkdownStates.containsKey(message.id))) {
                             streamingMarkdownStates.getOrPut(message.id) { StreamingMarkdownState() }
                         } else null
+                        val appearStartedAt = workExpandStarts[entry.groupKey]
+                        val appear = remember {
+                            val animate = appearStartedAt != null &&
+                                System.nanoTime() - appearStartedAt < WORK_STEP_APPEAR_WINDOW_NANOS
+                            MutableTransitionState(!animate).apply { targetState = true }
+                        }
+                        // 与工具、推理展开同一套时长和缓动；下沿被钉住，从下沿长出，标签随之上移。
+                        AnimatedVisibility(
+                            visibleState = appear,
+                            enter = tailDetailsEnter(fromBottom = true),
+                            exit = ExitTransition.None,
+                        ) {
                         WorkProcessCardSlice(
                             part = if (entry.isLast) WorkProcessCardPart.Last else WorkProcessCardPart.Middle,
                         ) {
@@ -1170,6 +1158,7 @@ internal fun AgentConversationMessages(
                                     bottom = if (entry.isLast) 8.dp else 0.dp,
                                 ),
                             )
+                        }
                         }
                     }
                 }
@@ -1652,19 +1641,17 @@ internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = fals
  * 跟底输出时，跟底滚动尚未追上的尾部超出量改为绘制上提，让尾部停在静止线上。
  * 不跟底（用户拖动、浏览历史、输出结束）时不做任何处理；尾部不可见时交给静止线裁剪兜底。
  */
-/** 用户正在展开最底部工具时不上提，避免整段高度在一帧里把列表抬走。 */
-internal fun shouldLiftStreamingTail(followingOutput: Boolean, holdingUserExpansion: Boolean): Boolean =
-    followingOutput && !holdingUserExpansion
-
-private const val TAIL_LIFT_HOLD_MAX_NANOS = 1_500_000_000L
-
-/** 尾部已经回到静止线，或已经不在跟底，才结束上提抑制。超时只是兜底。 */
-internal fun shouldReleaseTailLiftHold(
+/**
+ * 点开一行时，它下面的内容会不会停在屏幕原处。跟底时上提让尾部停在静止线；
+ * 内容不满一屏且贴底排列时，列表变高也是往上长。两种情况下展开都该从下沿长出。
+ */
+internal fun resolveExpansionHoldsBottom(
     following: Boolean,
-    overflowPx: Int?,
-    elapsedNanos: Long,
-    maxNanos: Long,
-): Boolean = !following || (overflowPx != null && overflowPx <= 1) || elapsedNanos >= maxNanos
+    arrangedToBottom: Boolean,
+    listScrollable: Boolean,
+): Boolean = following || (arrangedToBottom && !listScrollable)
+
+private const val WORK_STEP_APPEAR_WINDOW_NANOS = 500_000_000L
 
 internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
     !following -> FollowTailLag.None

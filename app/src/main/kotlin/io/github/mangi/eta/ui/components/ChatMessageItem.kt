@@ -291,8 +291,12 @@ internal class ChatMessageActions {
     var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
 }
 
-/** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
-internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
+/**
+ * 点开时这一行的下沿会不会被钉住：跟底输出时尾部停在静止线，或内容不满一屏贴底。
+ * 钉住时展开从下沿长出、收起收向下沿，内容在屏幕上不动，只有标签移动；
+ * 没钉住时标签不动，内容向下长。只在点击回调里调用，不参与组合。
+ */
+internal val LocalExpansionHoldsBottom = staticCompositionLocalOf<() -> Boolean> { { false } }
 
 
 @Composable
@@ -2347,7 +2351,9 @@ private fun ThinkingRow(
     compact: Boolean = false,
     isPaused: Boolean = false,
 ) {
-    val reportTailResize = LocalTailResize.current
+    val expansionHoldsBottom = LocalExpansionHoldsBottom.current
+    // 这一次展开或收起朝哪边长；点击时定，动画期间不变。
+    var anchorBottom by remember(message.id) { mutableStateOf(false) }
     var expanded by rememberSaveable(message.id) { mutableStateOf(!message.collapsed) }
     var manuallyExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     // 仅本次组合内由点击触发的展开才分帧组合正文；不跨配置变更保存。
@@ -2362,6 +2368,8 @@ private fun ThinkingRow(
     }
     LaunchedEffect(message.isStreaming) {
         if (manuallyExpanded) return@LaunchedEffect
+        // 输出结束时的自动收起沿用原来的上沿方向。
+        anchorBottom = false
         expanded = message.isStreaming
     }
 
@@ -2409,6 +2417,7 @@ private fun ThinkingRow(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
                 .clickable {
+                    anchorBottom = expansionHoldsBottom()
                     manuallyExpanded = true
                     expandedByTap = !expanded
                     expanded = !expanded
@@ -2417,9 +2426,8 @@ private fun ThinkingRow(
                         toggleProbeRef.token,
                         "item",
                         "chars=${message.content.length} streaming=${message.isStreaming} " +
-                            "tail=${reportTailResize != null}",
+                            "anchor=${if (anchorBottom) "bottom" else "top"}",
                     )
-                    reportTailResize?.invoke()
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2470,8 +2478,8 @@ private fun ThinkingRow(
 
         AnimatedVisibility(
             visible = expanded && message.content.isNotBlank(),
-            enter = tailDetailsEnter(),
-            exit = tailDetailsExit(),
+            enter = tailDetailsEnter(anchorBottom),
+            exit = tailDetailsExit(anchorBottom),
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             HapticSelectionContainer(modifier = Modifier.toggleProbe(toggleProbeRef, "content")) {
@@ -2522,16 +2530,20 @@ private fun ThinkingRow(
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
 
-private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition =
+/**
+ * 展开和收起的时长、缓动不变，只换生长方向：下沿被钉住时从下沿长出，
+ * 让已经排好的内容停在原处、由标签往上让开；否则从上沿往下长。
+ */
+internal fun tailDetailsEnter(fromBottom: Boolean): androidx.compose.animation.EnterTransition =
     fadeIn(tween(160)) + expandVertically(
         animationSpec = tween(180, easing = FastOutSlowInEasing),
-        expandFrom = Alignment.Top,
+        expandFrom = if (fromBottom) Alignment.Bottom else Alignment.Top,
     )
 
-private fun tailDetailsExit(): androidx.compose.animation.ExitTransition =
+internal fun tailDetailsExit(toBottom: Boolean): androidx.compose.animation.ExitTransition =
     shrinkVertically(
         animationSpec = tween(160, easing = FastOutSlowInEasing),
-        shrinkTowards = Alignment.Top,
+        shrinkTowards = if (toBottom) Alignment.Bottom else Alignment.Top,
     ) + fadeOut(tween(100))
 
 @Composable
@@ -2543,7 +2555,8 @@ private fun ToolActivityInline(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
-    val reportTailResize = LocalTailResize.current
+    val expansionHoldsBottom = LocalExpansionHoldsBottom.current
+    var anchorBottom by remember(message.id) { mutableStateOf(false) }
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     val toggleProbeRef = remember(message.id) { ToggleProbeRef() }
     // 只有「当前浏览器」卡片订阅实时会话快照，避免每个工具行都跟随快照重组
@@ -2596,6 +2609,7 @@ private fun ToolActivityInline(
             .then(
                 if (hasDetails) {
                     Modifier.clickable {
+                        anchorBottom = expansionHoldsBottom()
                         isExpanded = !isExpanded
                         toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("tool", isExpanded)
                         StreamPerformanceDiagnostics.probeEvent(
@@ -2603,9 +2617,8 @@ private fun ToolActivityInline(
                             "item",
                             "status=${message.status} commandChars=${message.command?.length ?: 0} " +
                                 "resultChars=${message.resultSummary?.length ?: 0} " +
-                                "browser=$showBrowserShortcut tail=${reportTailResize != null}",
+                                "browser=$showBrowserShortcut anchor=${if (anchorBottom) "bottom" else "top"}",
                         )
-                        reportTailResize?.invoke()
                     }
                 } else {
                     Modifier
@@ -2721,8 +2734,8 @@ private fun ToolActivityInline(
 
         AnimatedVisibility(
             visible = isExpanded && hasDetails,
-            enter = tailDetailsEnter(),
-            exit = tailDetailsExit(),
+            enter = tailDetailsEnter(anchorBottom),
+            exit = tailDetailsExit(anchorBottom),
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             Column(
