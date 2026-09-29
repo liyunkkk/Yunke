@@ -5,7 +5,13 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -22,6 +28,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
@@ -50,7 +59,9 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
+import io.github.mangi.eta.ui.components.AppCatIcon
 import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -67,6 +78,8 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
     var showScaleDialog by remember { mutableStateOf(false) }
     var scaleInput by remember { mutableStateOf("") }
     var morphLoadingExpanded by remember { mutableStateOf(false) }
+    var iconExpanded by remember { mutableStateOf(false) }
+    val view = LocalView.current
     val blurSupported = isRuntimeShaderSupported()
 
     fun update(transform: (AppearanceSettings) -> AppearanceSettings) {
@@ -169,6 +182,37 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                     checked = appearance.pureBlackEnabled,
                     onCheckedChange = { enabled ->
                         update { current -> current.copy(pureBlackEnabled = enabled) }
+                    },
+                )
+                BasicComponent(
+                    title = stringResource(R.string.appearance_icon),
+                    summary = stringResource(R.string.appearance_icon_summary),
+                    onClick = {
+                        TouchHaptics.click(view)
+                        iconExpanded = !iconExpanded
+                    },
+                    holdDownState = iconExpanded,
+                    endActions = {
+                        Icon(
+                            imageVector = if (iconExpanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
+                            contentDescription = null,
+                            modifier = Modifier.align(Alignment.CenterVertically).padding(end = 16.dp).size(16.dp),
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                        )
+                    },
+                    bottomAction = if (iconExpanded) {
+                        {
+                            IconAppearanceEditor(
+                                light = appearance.iconLightColor,
+                                dark = appearance.iconDarkColor,
+                                cat = appearance.iconCatColor,
+                                onLight = { color -> update { it.copy(iconLightColor = color) } },
+                                onDark = { color -> update { it.copy(iconDarkColor = color) } },
+                                onCat = { color -> update { it.copy(iconCatColor = color) } },
+                            )
+                        }
+                    } else {
+                        null
                     },
                 )
             }
@@ -358,6 +402,56 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                 },
                 modifier = Modifier.padding(top = 16.dp),
             )
+        }
+    }
+}
+
+private val iconSwatches = listOf(
+    0xFFF27A1A, 0xFF7B61FF, 0xFFF26D9A, 0xFF3DDC84, 0xFFF5C542, 0xFF2491FF,
+    0xFFF6F7F9, 0xFF1C1C1E,
+).map { it.toInt() }
+
+@Composable
+private fun IconAppearanceEditor(
+    light: Int,
+    dark: Int,
+    cat: Int,
+    onLight: (Int) -> Unit,
+    onDark: (Int) -> Unit,
+    onCat: (Int) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            AppCatIcon(background = Color(light), cat = Color(cat))
+            AppCatIcon(background = Color(dark), cat = Color(cat))
+        }
+        IconColorChoices(stringResource(R.string.appearance_icon_light), light, onLight)
+        IconColorChoices(stringResource(R.string.appearance_icon_dark), dark, onDark)
+        IconColorChoices(stringResource(R.string.appearance_icon_cat), cat, onCat)
+    }
+}
+
+@Composable
+private fun IconColorChoices(title: String, selected: Int, onSelect: (Int) -> Unit) {
+    val view = LocalView.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(text = title, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            iconSwatches.forEach { color ->
+                Box(
+                    modifier = Modifier
+                        .size(if (color == selected) 28.dp else 24.dp)
+                        .clip(CircleShape)
+                        .background(Color(color))
+                        .clickable {
+                            TouchHaptics.click(view)
+                            onSelect(color)
+                        },
+                )
+            }
         }
     }
 }

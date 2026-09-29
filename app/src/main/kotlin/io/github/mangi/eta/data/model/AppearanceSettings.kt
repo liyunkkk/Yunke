@@ -21,11 +21,23 @@ data class AppearanceSettings(
     val morphLoadingIndicator: Boolean = true,
     val morphLoadingBeforeResponseOnly: Boolean = false,
     val messageTimestampsEnabled: Boolean = false,
+    val iconLightColor: Int = DEFAULT_ICON_LIGHT,
+    val iconDarkColor: Int = DEFAULT_ICON_DARK,
+    val iconCatColor: Int = DEFAULT_ICON_CAT,
 ) {
     fun normalized(): AppearanceSettings = copy(
         monetEnabled = true,
         interfaceScale = normalizeInterfaceScale(interfaceScale),
+        iconLightColor = iconLightColor or 0xFF000000.toInt(),
+        iconDarkColor = iconDarkColor or 0xFF000000.toInt(),
+        iconCatColor = iconCatColor or 0xFF000000.toInt(),
     )
+
+    companion object {
+        const val DEFAULT_ICON_LIGHT = 0xFFF6F7F9.toInt()
+        const val DEFAULT_ICON_DARK = 0xFF1C1C1E.toInt()
+        const val DEFAULT_ICON_CAT = 0xFFF27A1A.toInt()
+    }
 }
 
 @Serializable
