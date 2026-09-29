@@ -862,6 +862,9 @@ private fun AgentMessageBlock(
     }
 }
 
+/** 当前点开的推理把分帧组合进度和 loading 回退记进同一个点击窗口。 */
+private val LocalToggleProbe = staticCompositionLocalOf<ToggleProbeRef?> { null }
+
 @Composable
 private fun StableMarkdown(
     content: String,
@@ -883,6 +886,9 @@ private fun StableMarkdown(
         components = components,
         modifier = modifier,
         loading = {
+            LocalToggleProbe.current?.let { ref ->
+                SideEffect { StreamPerformanceDiagnostics.probeEvent(ref.token, "markdown", "state=loading chars=${content.length}") }
+            }
             // 保留与最终正文接近的高度，避免历史消息异步解析完成后越界绘制。
             Text(
                 text = content,
@@ -1182,10 +1188,19 @@ private fun ChatMarkdownDocument(
         var limit by remember(blocks) {
             mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
         }
+        val probeRef = LocalToggleProbe.current
         LaunchedEffect(lengths) {
+            probeRef?.let { ref ->
+                StreamPerformanceDiagnostics.probeEvent(
+                    ref.token, "progressive", "blocks=$limit/${lengths.size} chars=${lengths.sum()}",
+                )
+            }
             while (limit < lengths.size) {
                 withFrameNanos { }
                 limit = nextProgressiveBlockLimit(lengths, limit, PROGRESSIVE_FRAME_CHARS)
+                probeRef?.let { ref ->
+                    StreamPerformanceDiagnostics.probeEvent(ref.token, "progressive", "blocks=$limit/${lengths.size}")
+                }
             }
         }
         limit
@@ -2337,6 +2352,7 @@ private fun ThinkingRow(
     var manuallyExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     // 仅本次组合内由点击触发的展开才分帧组合正文；不跨配置变更保存。
     var expandedByTap by remember(message.id) { mutableStateOf(false) }
+    val toggleProbeRef = remember(message.id) { ToggleProbeRef() }
     // 思考结束后立即切换为与完成态回答相同的稳定 Markdown。工具执行期间 App 可能
     // 处于后台，不能让旧思考保留显现债务，回来后在新回答旁边补播整段内容。
     val streamingState = if (message.isStreaming) {
@@ -2396,7 +2412,13 @@ private fun ThinkingRow(
                     manuallyExpanded = true
                     expandedByTap = !expanded
                     expanded = !expanded
-                    StreamPerformanceDiagnostics.markToggle("thinking", expanded)
+                    toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("thinking", expanded)
+                    StreamPerformanceDiagnostics.probeEvent(
+                        toggleProbeRef.token,
+                        "item",
+                        "chars=${message.content.length} streaming=${message.isStreaming} " +
+                            "tail=${reportTailResize != null}",
+                    )
                     reportTailResize?.invoke()
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
@@ -2450,8 +2472,9 @@ private fun ThinkingRow(
             visible = expanded && message.content.isNotBlank(),
             enter = tailDetailsEnter(),
             exit = tailDetailsExit(),
+            modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
-            HapticSelectionContainer {
+            HapticSelectionContainer(modifier = Modifier.toggleProbe(toggleProbeRef, "content")) {
                 Column {
                     if (!compact) {
                         Box(
@@ -2481,13 +2504,15 @@ private fun ThinkingRow(
                             modifier = contentModifier,
                         )
                     } else {
-                        StableMarkdown(
-                            content = message.content,
-                            tone = ChatMarkdownTone.Thinking,
-                            markdownState = checkNotNull(stableMarkdownState),
-                            modifier = contentModifier,
-                            progressive = expandedByTap,
-                        )
+                        androidx.compose.runtime.CompositionLocalProvider(LocalToggleProbe provides toggleProbeRef) {
+                            StableMarkdown(
+                                content = message.content,
+                                tone = ChatMarkdownTone.Thinking,
+                                markdownState = checkNotNull(stableMarkdownState),
+                                modifier = contentModifier,
+                                progressive = expandedByTap,
+                            )
+                        }
                     }
                 }
             }
@@ -2520,6 +2545,7 @@ private fun ToolActivityInline(
 ) {
     val reportTailResize = LocalTailResize.current
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    val toggleProbeRef = remember(message.id) { ToggleProbeRef() }
     // 只有「当前浏览器」卡片订阅实时会话快照，避免每个工具行都跟随快照重组
     val browserSnapshot = if (showBrowserShortcut) {
         AgentBrowserSession.snapshots.collectAsState().value
@@ -2571,7 +2597,14 @@ private fun ToolActivityInline(
                 if (hasDetails) {
                     Modifier.clickable {
                         isExpanded = !isExpanded
-                        StreamPerformanceDiagnostics.markToggle("tool", isExpanded)
+                        toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("tool", isExpanded)
+                        StreamPerformanceDiagnostics.probeEvent(
+                            toggleProbeRef.token,
+                            "item",
+                            "status=${message.status} commandChars=${message.command?.length ?: 0} " +
+                                "resultChars=${message.resultSummary?.length ?: 0} " +
+                                "browser=$showBrowserShortcut tail=${reportTailResize != null}",
+                        )
                         reportTailResize?.invoke()
                     }
                 } else {
@@ -2690,9 +2723,11 @@ private fun ToolActivityInline(
             visible = isExpanded && hasDetails,
             enter = tailDetailsEnter(),
             exit = tailDetailsExit(),
+            modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             Column(
                 modifier = Modifier
+                    .toggleProbe(toggleProbeRef, "content")
                     .fillMaxWidth()
                     .padding(start = 27.dp, top = 2.dp, bottom = 6.dp)
                     .squircleSurface(

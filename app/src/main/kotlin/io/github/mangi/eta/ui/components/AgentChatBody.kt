@@ -797,17 +797,57 @@ internal fun AgentConversationMessages(
     LaunchedEffect(holdTailLift) {
         if (!holdTailLift) return@LaunchedEffect
         val started = System.nanoTime()
+        var checks = 0
+        StreamPerformanceDiagnostics.probeNote("hold") {
+            "state=start following=$shouldFollowBottom overflowPx=${scrollState.followTailOverflow()}"
+        }
         while (currentCoroutineContext().isActive) {
+            val overflow = scrollState.followTailOverflow()
+            val elapsed = System.nanoTime() - started
             if (shouldReleaseTailLiftHold(
                     following = shouldFollowBottom,
-                    overflowPx = scrollState.followTailOverflow(),
-                    elapsedNanos = System.nanoTime() - started,
+                    overflowPx = overflow,
+                    elapsedNanos = elapsed,
                     maxNanos = TAIL_LIFT_HOLD_MAX_NANOS,
                 )
-            ) break
+            ) {
+                StreamPerformanceDiagnostics.probeNote("hold") {
+                    val reason = when {
+                        !shouldFollowBottom -> "notFollowing"
+                        elapsed >= TAIL_LIFT_HOLD_MAX_NANOS -> "timeout"
+                        else -> "settled"
+                    }
+                    "state=release reason=$reason checks=$checks overflowPx=$overflow heldMs=${elapsed / 1_000_000}"
+                }
+                break
+            }
+            checks++
             withFrameNanos { }
         }
         holdTailLift = false
+    }
+    // 点开工具或推理后，逐帧记下列表状态：跟底、上提、暂停上提、哨兵相对静止线的位置、
+    // 用户是否在拖动。只在点击窗口内运行，读 layoutInfo 不参与组合。
+    LaunchedEffect(scrollState) {
+        snapshotFlow { StreamPerformanceDiagnostics.probeRequests.intValue }
+            .collectLatest { request ->
+                if (request == 0) return@collectLatest
+                while (StreamPerformanceDiagnostics.probing) {
+                    val frameNanos = withFrameNanos { it }
+                    StreamPerformanceDiagnostics.probeListSample(frameNanos) {
+                        val info = scrollState.layoutInfo
+                        // shouldLiftTail 是组合时的快照，这里按当前的跟底和暂停状态重新算。
+                        val liftingNow = shouldLiftStreamingTail(shouldFollowBottom, holdTailLift)
+                        val lift = if (liftingNow) {
+                            resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
+                        } else 0
+                        "follow=$shouldFollowBottom lift=$liftingNow liftPx=$lift hold=$holdTailLift " +
+                            "userScroll=$isUserScrolling overflowPx=${scrollState.followTailOverflow()} " +
+                            "first=${scrollState.firstVisibleItemIndex}:${scrollState.firstVisibleItemScrollOffset} " +
+                            "visible=${info.visibleItemsInfo.size} total=${info.totalItemsCount}"
+                    }
+                }
+            }
     }
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
     val bottomFollowDecisions = remember(scrollState) {
@@ -922,6 +962,12 @@ internal fun AgentConversationMessages(
                 scrollState.scroll {
                     if (!isUserScrolling && messageNavigationJob == null && shouldFollowBottom) {
                         consumedStep = StreamPerformanceDiagnostics.measure("follow.scroll") { scrollBy(step) }
+                        if (StreamPerformanceDiagnostics.probing) {
+                            StreamPerformanceDiagnostics.probeNote("follow") {
+                                "stepPx=${"%.1f".format(step)} consumedPx=${"%.1f".format(consumedStep)} " +
+                                    "remainingPx=${"%.1f".format(remainingDistancePx - consumedStep)}"
+                            }
+                        }
                         StreamPerformanceDiagnostics.record("follow.step", value = (consumedStep * 1000).toLong())
                     }
                 }
@@ -1091,7 +1137,12 @@ internal fun AgentConversationMessages(
                             expanded = entry.expanded,
                             onToggle = {
                                 if (entry.key == tailGroupKey) holdTailLift = true
-                                StreamPerformanceDiagnostics.markToggle("work", !entry.expanded)
+                                val token = StreamPerformanceDiagnostics.markToggle("work", !entry.expanded)
+                                StreamPerformanceDiagnostics.probeEvent(
+                                    token,
+                                    "item",
+                                    "steps=${entry.group.messages.size} tail=${entry.key == tailGroupKey}",
+                                )
                                 workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
                             },
                         )
