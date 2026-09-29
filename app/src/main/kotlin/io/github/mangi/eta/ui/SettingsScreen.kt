@@ -73,6 +73,7 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
+import io.github.mangi.eta.agent.kimi.KimiPermissionMode
 import io.github.mangi.eta.agent.voice.EtaVoiceInteractionService
 import io.github.mangi.eta.config.PowerAssistantTarget
 import io.github.mangi.eta.config.Prefs
@@ -233,6 +234,9 @@ internal fun SettingsScreen(
     // LSPosed 数据库）；未就绪时保持 null，UI 禁止修改。
     var prefs by remember { mutableStateOf(Prefs.remotePreferencesForUi(EtaApp.serviceInstance)) }
     val agentPrefs = remember { Prefs.localAgentPreferences() }
+    var kimiPermissionMode by remember(agentPrefs) {
+        mutableStateOf(KimiPermissionMode.resolve(agentPrefs?.getString(Prefs.Keys.KIMI_PERMISSION_MODE, KimiPermissionMode.YOLO)))
+    }
     var powerAssistantTarget by remember(prefs) {
         mutableStateOf(prefs?.let(Prefs::powerAssistantTarget) ?: enhancementHistory.powerTarget())
     }
@@ -480,6 +484,32 @@ internal fun SettingsScreen(
                         title = stringResource(R.string.settings_kimi_web_builtin_browser),
                         key = Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER,
                         icon = Icons.Rounded.Language,
+                    )
+
+                    WindowSpinnerPreference(
+                        title = "Kimi 授权模式",
+                        summary = "默认自动批准，遇到高风险操作可切到「每次确认」。",
+                        items = listOf("自动批准（yolo）", "自动（auto）", "每次确认（manual）")
+                            .map { DropdownItem(text = it) },
+                        selectedIndex = KimiPermissionMode.all.indexOf(kimiPermissionMode).coerceAtLeast(0),
+                        onSelectedIndexChange = { index ->
+                            val mode = KimiPermissionMode.all.getOrNull(index)
+                                ?: return@WindowSpinnerPreference
+                            val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
+                            if (putStringSync(targetPrefs, Prefs.Keys.KIMI_PERMISSION_MODE, mode)) {
+                                kimiPermissionMode = mode
+                            } else {
+                                Toast.makeText(
+                                    context.applicationContext,
+                                    context.getString(R.string.settings_write_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        },
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Lock, enabled = agentPrefs != null)
+                        },
+                        enabled = agentPrefs != null,
                     )
 
                     ArrowPreference(

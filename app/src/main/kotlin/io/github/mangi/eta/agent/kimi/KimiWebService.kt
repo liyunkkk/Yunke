@@ -117,10 +117,11 @@ internal class KimiWebService(
         cwd: String,
         bindingKey: String,
         title: String? = null,
+        permissionMode: String? = null,
     ): String {
         sessionBindings[bindingKey]?.takeIf { it.isNotBlank() }?.let { return it }
         val session = client.createSession(cwd, title = title?.takeIf { it.isNotBlank() }
-            ?: cwd.substringAfterLast('/').ifBlank { null })
+            ?: cwd.substringAfterLast('/').ifBlank { null }, permissionMode = permissionMode)
         bind(bindingKey, session.id)
         return session.id
     }

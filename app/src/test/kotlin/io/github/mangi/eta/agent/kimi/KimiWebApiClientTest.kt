@@ -192,6 +192,31 @@ class KimiWebApiClientTest {
     }
 
     @Test
+    fun createSessionAlwaysSendsResolvedPermissionMode() {
+        // 建会话时不下发授权模式，Kimi 侧会退回人工批准，委派看起来一直不动。
+        server.enqueueEnvelope("""{"id":"s-1","workspace_id":"w-1","metadata":{"cwd":"/w"}}""")
+        client().createSession("/w")
+        assertEquals(KimiPermissionMode.YOLO, JSONObject(server.request(0).body).getString("permission_mode"))
+    }
+
+    @Test
+    fun invalidPermissionModeFallsBackToYoloInRequest() {
+        server.enqueueEnvelope("""{"prompt_id":"p-1","user_message_id":"m-1","status":"queued"}""")
+        client().submitPrompt("s-1", "x", permissionMode = "bogus")
+        assertEquals(KimiPermissionMode.YOLO, JSONObject(server.request(0).body).getString("permission_mode"))
+    }
+
+    @Test
+    fun submitPromptSendsEachSupportedPermissionModeVerbatim() {
+        listOf(KimiPermissionMode.YOLO, KimiPermissionMode.AUTO, KimiPermissionMode.MANUAL)
+            .forEachIndexed { index, mode ->
+                server.enqueueEnvelope("""{"prompt_id":"p-$index","user_message_id":"m","status":"queued"}""")
+                client().submitPrompt("s-1", "x", permissionMode = mode)
+                assertEquals(mode, JSONObject(server.request(index).body).getString("permission_mode"))
+            }
+    }
+
+    @Test
     fun sessionIdIsUrlEncodedSoSlashOrSpaceCannotBreakThePath() {
         server.enqueueEnvelope("""{"busy":false}""")
         client().sessionStatus("s 1/2")

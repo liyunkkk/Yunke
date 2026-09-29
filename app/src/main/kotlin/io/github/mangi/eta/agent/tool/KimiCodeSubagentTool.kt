@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.SystemClock
 import io.github.mangi.eta.agent.kimi.FileKimiSessionBindingStore
 import io.github.mangi.eta.agent.kimi.KimiCodeConfig
+import io.github.mangi.eta.agent.kimi.KimiPermissionMode
 import io.github.mangi.eta.agent.kimi.KimiReplyExtractor
 import io.github.mangi.eta.agent.kimi.KimiSubagentOutcome
 import io.github.mangi.eta.agent.kimi.KimiWebApiClient
@@ -146,6 +147,7 @@ internal class KimiCodeSubagentTool(
                 cwd = projectPath,
                 bindingKey = bindingKey,
                 title = conversationTitle,
+                permissionMode = KimiPermissionMode.current(),
             )
         } catch (failure: KimiWebApiException) {
             return errorJson("SESSION_FAILED", "创建 Kimi 会话失败：${failure.message}")
@@ -162,6 +164,7 @@ internal class KimiCodeSubagentTool(
                     cwd = projectPath,
                     bindingKey = bindingKey,
                     title = conversationTitle,
+                    permissionMode = KimiPermissionMode.current(),
                 )
                 runCatching { executeAndCollect(client, fresh, task, projectPath, model, deadlineAt) }
                     .getOrElse { errorJson("SUBAGENT_FAILED", it.message ?: "Kimi 会话执行失败") }
@@ -186,7 +189,11 @@ internal class KimiCodeSubagentTool(
         val prompt = buildPrompt(task, projectPath)
         // model 必须随提示词下发：服务端据此写回会话 profile，不传则本轮
         // 会在 turn.ended 里以 model.not_configured 失败。
-        client.submitPrompt(sessionId, prompt, attachments = emptyList(), model = model)
+        // permission_mode 同理：默认 yolo，否则 Kimi 侧等待人工批准，委派看起来一直不动。
+        client.submitPrompt(
+            sessionId, prompt, attachments = emptyList(), model = model,
+            permissionMode = KimiPermissionMode.current(),
+        )
         awaitIdle(client, sessionId, deadlineAt)
 
         val git = collectGitSnapshot(projectPath)

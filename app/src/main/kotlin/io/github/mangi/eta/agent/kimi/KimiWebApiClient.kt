@@ -29,10 +29,12 @@ internal class KimiWebApiClient(
     private val apiBase: String = origin.trimEnd('/') + "/api/v1"
 
     /** 创建会话；`metadata.cwd` 决定工作目录（服务端据此注册 workspace）。 */
-    fun createSession(cwd: String, title: String? = null): KimiSession {
+    fun createSession(cwd: String, title: String? = null, permissionMode: String? = null): KimiSession {
         val body = JSONObject().apply {
             put("metadata", JSONObject().put("cwd", cwd))
             title?.takeIf { it.isNotBlank() }?.let { put("title", it) }
+            // 建会话时就定下授权模式，避免 Kimi 侧退回人工批准让委派一直停在等待确认。
+            put("permission_mode", resolvePermissionMode(permissionMode))
         }
         val data = post("/sessions", body)
         return KimiSession.from(data)
@@ -57,11 +59,15 @@ internal class KimiWebApiClient(
         val body = JSONObject().apply {
             put("content", content)
             model?.takeIf { it.isNotBlank() }?.let { put("model", it) }
-            permissionMode?.takeIf { it.isNotBlank() }?.let { put("permission_mode", it) }
+            // 委派与 Web 面板共用同一键：显式值优先，缺省时读取 [KimiPermissionMode.current]。
+            put("permission_mode", resolvePermissionMode(permissionMode))
         }
         val data = post("/sessions/${encode(sessionId)}/prompts", body)
         return KimiPrompt.from(data)
     }
+
+    private fun resolvePermissionMode(explicit: String?): String =
+        explicit?.takeIf { it.isNotBlank() }?.let(KimiPermissionMode::resolve) ?: KimiPermissionMode.current()
 
     /** 读取会话状态：`busy` 表示是否仍在执行本轮。 */
     fun sessionStatus(sessionId: String): KimiSessionStatus {
