@@ -22,6 +22,9 @@ internal object AgentConversationCodec {
     internal const val MAX_IPC_TRANSCRIPT_CHARS = MAX_STORAGE_TRANSCRIPT_CHARS
     // Room 检查点与运行归档同级，避免会话在远低于模型窗口时被截断。
     internal const val MAX_CONVERSATION_CHECKPOINT_CHARS = MAX_STORAGE_TRANSCRIPT_CHARS
+    // 模型历史走文件描述符，不再按 Binder 的 1MB 从前面截掉。
+    // 500K 窗口的会话大约在 1MB 处只剩一半，并且前缀一变缓存就失效。
+    internal const val MAX_TRANSFER_TRANSCRIPT_CHARS = 4 * 1024 * 1024
 
     private const val MAX_CONTENT_CHARS = 64_000
     private const val MAX_REASONING_CHARS = 64_000
@@ -50,6 +53,10 @@ internal object AgentConversationCodec {
 
     fun encodeTranscriptForStorage(messages: List<AgentModelClient.ConversationMessage>): String =
         encodeBounded(messages, MAX_STORAGE_TRANSCRIPT_CHARS)
+
+    /** 交给 Runtime 的模型历史。能放下就不截前面，缓存前缀才能接上一次请求。 */
+    fun encodeTranscriptForTransfer(messages: List<AgentModelClient.ConversationMessage>): String =
+        encodeBounded(messages, MAX_TRANSFER_TRANSCRIPT_CHARS)
 
     fun encodeConversationCheckpoint(messages: List<AgentModelClient.ConversationMessage>): String =
         encodeBounded(messages, MAX_CONVERSATION_CHECKPOINT_CHARS)

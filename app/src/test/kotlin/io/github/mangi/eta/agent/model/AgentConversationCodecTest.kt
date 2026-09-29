@@ -156,6 +156,26 @@ class AgentConversationCodecTest {
     }
 
     @Test
+    fun transferTranscriptKeepsHistoryThatWouldBeCutAtTheBinderLimit() {
+        val messages = buildList {
+            repeat(40) { index ->
+                add(AgentModelClient.ConversationMessage(role = "user", content = "问-$index"))
+                add(AgentModelClient.ConversationMessage(
+                    role = "assistant",
+                    content = "答-$index-${"x".repeat(40_000)}",
+                    turnId = "turn-$index",
+                ))
+            }
+        }
+        val encoded = AgentConversationCodec.encodeTranscriptForTransfer(messages)
+        val decoded = AgentConversationCodec.decodeTranscript(encoded)
+        assertTrue(encoded.length > AgentConversationCodec.MAX_IPC_TRANSCRIPT_CHARS)
+        assertEquals(messages.size, decoded.size)
+        assertEquals(messages.first().content, decoded.first().content)
+        assertFalse(decoded.first().content.contains("容量上限已压缩"))
+    }
+
+    @Test
     fun conversationCheckpointHasHardBudgetAndKeepsNewestContext() {
         val messages = buildList {
             repeat(30) { index ->

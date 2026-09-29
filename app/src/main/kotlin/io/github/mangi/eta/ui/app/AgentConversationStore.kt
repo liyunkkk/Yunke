@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import android.content.Context
+import java.io.File
 import androidx.room.withTransaction
 import io.github.mangi.eta.ui.model.CloudUsageReceiptCodec
 import io.github.mangi.eta.agent.model.AgentConversationCodec
@@ -115,7 +116,10 @@ internal object AgentConversationStore {
                     require(sorted.all { (id, state) -> state.conversationContentLoaded || id in existing }) {
                         "Cannot save a new conversation without loaded content"
                     }
-                    existing.keys.filterNot { it in storedIds }.forEach { dao.deleteConversation(it) }
+                    existing.keys.filterNot { it in storedIds }.forEach { id ->
+                        dao.deleteConversation(id)
+                        conversationHistoryFile(appContext, id).delete()
+                    }
                     val metadata = conversations.map { row ->
                         row.copy(createdAt = existing[row.id]?.createdAt ?: row.createdAt)
                     }
@@ -134,6 +138,7 @@ internal object AgentConversationStore {
                             .mapIndexedNotNull { index, message -> message.toEntityOrNull(conversationId, index) }
                             .chunked(MESSAGE_LOAD_PAGE_SIZE)
                         for (page in pages) dao.insertMessages(page)
+                        writeConversationHistory(appContext, conversationId, state.history)
                         val encodedHistory = encodeCheckpoint(state.history)
                         dao.insertContextCheckpoints(listOf(ConversationContextCheckpointEntity(
                             conversationId = conversationId,
@@ -198,6 +203,40 @@ internal object AgentConversationStore {
             childContexts = emptyList(), childContextRunId = "", selectedContextTaskId = null)
     }
 
+
+    private fun conversationHistoryFile(context: Context, id: String): File {
+        val safe = id.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+        return File(File(context.filesDir, "conversation-history"), "$safe.json")
+    }
+
+    /** Room 列仍受游标窗口限制。模型下一次要发的历史写在文件里，避免重新打开后又被截短。 */
+    private fun writeConversationHistory(
+        context: Context,
+        id: String,
+        history: List<AgentModelClient.ConversationMessage>,
+    ) {
+        if (id.any { !it.isLetterOrDigit() && it != '-' && it != '_' }) return
+        val file = conversationHistoryFile(context, id)
+        file.parentFile?.mkdirs()
+        val encoded = AgentConversationCodec.encodeTranscriptForTransfer(history)
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.writeText(encoded, Charsets.UTF_8)
+        if (!tmp.renameTo(file)) {
+            file.writeText(encoded, Charsets.UTF_8)
+            tmp.delete()
+        }
+    }
+
+    private fun readConversationHistory(
+        context: Context,
+        id: String,
+    ): List<AgentModelClient.ConversationMessage>? {
+        val file = conversationHistoryFile(context, id)
+        if (!file.isFile) return null
+        val decoded = AgentConversationCodec.decodeTranscript(file.readText(Charsets.UTF_8))
+        return decoded.takeIf { it.isNotEmpty() }
+    }
+
     /**
      * 只有"受保护回合本身超过容量上限"才允许放弃保护重编：那时保留保护只会让整轮写不进去。
      * OOM、序列化故障等其它异常必须上抛——过去一律 catch 会把它们也当成容量问题，
@@ -219,16 +258,19 @@ internal object AgentConversationStore {
         val database = EtaDatabase.get(context.applicationContext)
         database.withTransaction {
             val dao = database.conversationDao()
-            dao.conversationMetadata(id)?.let { loadConversationState(dao, it, true) }
+            dao.conversationMetadata(id)?.let { loadConversationState(context, dao, it, true) }
         }
     }
 
     private suspend fun loadConversationState(
-        dao: ConversationDao, conversation: ConversationMetadata, withContent: Boolean,
+        context: Context, dao: ConversationDao, conversation: ConversationMetadata, withContent: Boolean,
     ): AgentChatHomeUiState {
         val (fallbackProviderId, fallbackModelId) = defaultSelection()
         val checkpoint = if (withContent) dao.contextCheckpoint(conversation.id) else null
-        val decodedHistory = if (withContent) AgentConversationCodec.decodeTranscript(checkpoint?.historyJson) else emptyList()
+        val decodedHistory = if (!withContent) emptyList() else {
+            readConversationHistory(context, conversation.id)
+                ?: AgentConversationCodec.decodeTranscript(checkpoint?.historyJson)
+        }
         val legacyHistory = mutableListOf<AgentModelClient.ConversationMessage>()
         val uiMessages = buildList {
             if (!withContent) {
@@ -291,7 +333,7 @@ internal object AgentConversationStore {
             ?.takeIf { id -> conversations.any { it.id == id } }
             ?: conversations.first().id
         conversations.forEach { conversation ->
-            states[conversation.id] = loadConversationState(dao, conversation, !selectedOnly || conversation.id == selected)
+            states[conversation.id] = loadConversationState(context, dao, conversation, !selectedOnly || conversation.id == selected)
             titles[conversation.id] = conversation.title.takeUnless { it == LEGACY_UNNAMED_TITLE }.orEmpty()
             updatedAt[conversation.id] = conversation.updatedAt
         }
