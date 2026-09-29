@@ -160,7 +160,7 @@ internal object AgentModelClient {
                 tools.put(additionalTools.opt(index))
             }
             if (compactionArchive != null) tools.put(AgentCompactionArchive.tool())
-            return tools
+            return AgentToolCatalog.filterAdvertised(tools)
         }
         val tools = toolsFor(initialCapabilities)
         val traceFormatter = AgentTraceFormatter(

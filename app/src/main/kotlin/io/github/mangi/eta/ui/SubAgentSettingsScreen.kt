@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor
 import io.github.mangi.eta.ui.components.SubAgentEditorState
@@ -42,6 +43,7 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
     var rename by remember(editor) { mutableStateOf<SubAgentProfile?>(null) }
     var delete by remember(editor) { mutableStateOf<SubAgentProfile?>(null) }
     var name by remember(editor) { mutableStateOf("") }
+    var pollGuard by remember { mutableStateOf(Prefs.isEnabled(Prefs.Keys.SUBAGENT_POLL_GUARD)) }
     val view = LocalView.current
     LaunchedEffect(editor, editable) { if (!editable) { rename = null; delete = null } }
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
@@ -94,6 +96,19 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                                 }
                                 Switch(checked = config.diagnosticsEnabled, enabled = editable,
                                     onCheckedChange = { if (editor?.enabled == true) editor.setDiagnosticsEnabled(it) })
+                            }
+                        }
+                        item {
+                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("轮询退避门禁", style = MaterialTheme.typography.bodyLarge)
+                                    Text("同一运行中任务的连续查询过于频繁时，短暂摘除查询工具；终态任务与列表查询不受限。", style = MaterialTheme.typography.bodySmall)
+                                }
+                                Switch(checked = pollGuard, enabled = editable,
+                                    onCheckedChange = { if (editor?.enabled == true) {
+                                        pollGuard = it
+                                        Prefs.putBoolean(Prefs.Keys.SUBAGENT_POLL_GUARD, it)
+                                    } })
                             }
                         }
                         items(profiles, key = { it.id }) { profile ->

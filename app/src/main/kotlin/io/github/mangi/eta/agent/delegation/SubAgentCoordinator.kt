@@ -50,6 +50,9 @@ internal class SubAgentCoordinator(
     @Volatile private var onTaskChanged: (() -> Unit)? = onTaskChanged
     @Volatile private var executeChild = executeChild
     private val callbacks = SubAgentCallbackDispatcher()
+    /** 轮询退避门禁；默认关闭时所有方法均为直通。 */
+    private val pollGuard = SubAgentPollGuard(SubAgentPollGuard.enabled())
+    init { SubAgentPollGuard.install(pollGuard) }
     private var resourcesReleased = false
 
     private inner class Task(val id: String, val worker: Int, val role: String, val project: String, @Volatile var workspaceId: String? = null) {
@@ -197,7 +200,10 @@ internal class SubAgentCoordinator(
             val args = JSONObject(call.argumentsJson)
             when (call.name) {
                 "delegate_task" -> start(args)
-                "get_task_result" -> get(args)
+                "get_task_result" -> pollGuard.reject(call)?.let { rejection ->
+                    JSONObject().put("ok", false).put("code", rejection.code)
+                        .put("message", rejection.message).put("next_poll_after_ms", rejection.nextPollAfterMs)
+                } ?: get(args).also { pollGuard.observe(call, AgentModelClient.ToolResult(it.toString())) }
                 "continue_task" -> continueTask(args)
                 "supervise_task" -> supervise(args)
                 "manage_agent_workspace" -> manage(args)
@@ -366,7 +372,7 @@ internal class SubAgentCoordinator(
                         t.workspaceLeaseOpen = false
                         t.controller.throwIfCancelled()
                         synchronized(t) {
-                            if (t.state == "running") { t.state = "completed"; t.journal.mark("completed", progress = true); diagnostic(t, "completed"); t.context.finish(t.state); changed() }
+                            if (t.state == "running") { t.state = "completed"; t.journal.mark("completed", progress = true); diagnostic(t, "completed"); t.context.finish(t.state); pollGuard.release(t.id); changed() }
                         }
                     } catch (error: Exception) {
                         diagnostic(t, "worker_exception", error)
@@ -376,7 +382,7 @@ internal class SubAgentCoordinator(
                         synchronized(t) {
                             if (t.state in ACTIVE) {
                                 val cancelled = t.controller.isCancelled || interrupted || error is io.github.mangi.eta.agent.runtime.AgentRunCancelledException || error is java.util.concurrent.CancellationException
-                                if (cancelled) { t.state = "cancelled"; t.errorCode = "" }
+                                if (cancelled) { t.state = "cancelled"; t.errorCode = ""; pollGuard.release(t.id) }
                                 else {
                                     val providerFailure = SubAgentProviderFailure.find(error)
                                     t.errorCode = when {
@@ -394,7 +400,7 @@ internal class SubAgentCoordinator(
                                         providerFailure != null -> "子代理供应商不可用（${providerFailure.code.replace('_', ' ')}）：${workerNames[worker]}（${workers[worker].providerName} / ${workers[worker].model}）。这不是任务结论；不要自动重试副作用或付费请求。"
                                         else -> "子代理未完成，请主代理接手；不会自动重新执行。（${error.javaClass.simpleName}）"
                                     }
-                                    t.state = "failed"
+                                    t.state = "failed"; pollGuard.release(t.id)
                                 }
                                 t.journal.mark(t.state); t.context.finish(t.state); changed()
                             }
@@ -563,7 +569,7 @@ internal class SubAgentCoordinator(
     private fun stop(task: Task, state: String, errorCode: String = "") {
         val cleanupQueued = synchronized(task) {
             if (task.state !in ACTIVE) return
-            task.state = state; task.errorCode = errorCode; task.groupPauseEpoch = 0L; task.boundaryReached = false
+            task.state = state; task.errorCode = errorCode; task.groupPauseEpoch = 0L; task.boundaryReached = false; pollGuard.release(task.id)
             val cleanup = !task.executing && !task.preparing
             if (cleanup) task.preparing = true
             task.watchdog?.cancel(false); task.journal.mark(state); publishContext(task.context.finish(state)); diagnostic(task, state); changed(); (task as java.lang.Object).notifyAll(); cleanup
@@ -616,6 +622,7 @@ internal class SubAgentCoordinator(
         val release = synchronized(this) { if (!closed || resourcesReleased || tasks.values.any(::active)) false else { resourcesReleased = true; true } }
         if (!release) return
         timer.shutdownNow(); poolLeases.forEach(SubAgentModelPools::release)
+        SubAgentPollGuard.uninstall(pollGuard)
         workspace = null; executeWorkspaceChild = null; executeObservedChild = null; executeVideoChild = null; executeImageChild = null
         executeChild = { _, _, _ -> error("Child execution resources released") }; prepareManualCompactor = { it }; onContext = null; onTaskChanged = null; diagnostics = null; callbacks.close()
     }

@@ -45,6 +45,8 @@ internal object Prefs {
         const val AGENT_THINKING_ENABLED = "agent_thinking_enabled"
         const val AGENT_RUNTIME_CONFIG_JSON = "agent_runtime_config_json"
         const val AGENT_AUTO_COMPRESS_ENABLED = "agent_auto_compress_enabled"
+        /** 子代理轮询退避门禁；默认关闭，需在子代理设置页显式开启。 */
+        const val SUBAGENT_POLL_GUARD = "agent_subagent_poll_guard"
         const val AGENT_COMPRESS_MODEL_PROVIDER_ID = "agent_compress_model_provider_id"
         const val AGENT_COMPRESS_MODEL_ID = "agent_compress_model_id"
         const val AGENT_COMPRESS_CUSTOM_MODEL_ENABLED = "agent_compress_custom_model_enabled"
@@ -84,6 +86,7 @@ internal object Prefs {
             AGENT_DEVICE_SENSITIVE_ACTION_TOOLS to true,
             AGENT_THINKING_ENABLED to true,
             AGENT_AUTO_COMPRESS_ENABLED to false,
+            SUBAGENT_POLL_GUARD to false,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
             KIMI_WEB_USE_BUILTIN_BROWSER to true,
             HAPTIC_TOUCH_FEEDBACK to true,
@@ -99,6 +102,7 @@ internal object Prefs {
             AGENT_DEVICE_SENSITIVE_ACTION_TOOLS,
             AGENT_THINKING_ENABLED,
             AGENT_AUTO_COMPRESS_ENABLED,
+            SUBAGENT_POLL_GUARD,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED,
             KIMI_WEB_USE_BUILTIN_BROWSER,
             HAPTIC_TOUCH_FEEDBACK,
