@@ -97,7 +97,9 @@ internal object AgentHistoryImageHydrator {
         }
         if (!changed) return message
         val listings = buildList {
-            if (!supportsVision && restoredImagePaths.isNotEmpty()) {
+            // 视觉模型也要拿到真实路径：只看得到画面时，改图标、转存等文件操作只能去猜路径，
+            // 曾因此在别的会话缓存里挑中旧截图。
+            if (restoredImagePaths.isNotEmpty()) {
                 addAll(restoredImagePaths.map { path -> "[用户图片] $path" })
             }
             if (!supportsVideo && restoredVideoPaths.isNotEmpty()) {

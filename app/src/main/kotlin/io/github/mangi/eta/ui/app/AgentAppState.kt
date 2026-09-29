@@ -106,6 +106,7 @@ import io.github.mangi.eta.ui.model.liveContextUsage
 import io.github.mangi.eta.ui.model.compressionContextUsage
 import io.github.mangi.eta.ui.model.cacheDisplayName
 import io.github.mangi.eta.ui.model.toOutboundModelImage
+import io.github.mangi.eta.ui.model.visibleFileReferences
 import io.github.mangi.eta.ui.model.shouldBlockSendForContextWindow
 import io.github.mangi.eta.ui.model.AgentSkillsUiState
 import io.github.mangi.eta.ui.model.AgentToolsUiState
@@ -1863,11 +1864,9 @@ internal class AgentAppState(
                     val outbound = pendingImages.filter { image ->
                         if (image.isVideo) supportsVideo || supportsVision else supportsVision
                     }
-                    val extraFiles = pendingImages.mapIndexedNotNull { index, image ->
-                        val file = staged.getOrNull(index) ?: return@mapIndexedNotNull null
-                        val asFile = (image.isVideo && !supportsVideo) || (!image.isVideo && !supportsVision)
-                        file.takeIf { asFile }
-                    }
+                    // 视觉模型看得到画面，但也要拿到落盘路径：否则改图标、转存这类文件操作
+                    // 只能去猜路径，曾因此在别的会话缓存里挑中旧截图。气泡按媒体路径去重，不会多出文件卡片。
+                    val extraFiles = staged.filterNotNull()
                     startPreparedSend(
                         prompt = prompt,
                         uiImages = pendingImages,
@@ -2020,7 +2019,9 @@ internal class AgentAppState(
             )
         }
         val parsedPrompt = AgentFileReferencePromptCodec.parse(boundary.userMessage.content)
-        val fileReferences = parsedPrompt.references.mapIndexed { index, reference ->
+        // 图片自己的落盘路径也写在消息的文件段里（给模型用）。编辑时它们已经作为图片回填，
+        // 再当文件卡片回填会重复，重发时还会发两次。
+        val fileReferences = boundary.userMessage.visibleFileReferences(parsedPrompt.references).mapIndexed { index, reference ->
             PendingFileReferenceUi(
                 id = "edit-${boundary.userMessage.id}-file-$index",
                 reference = reference,
@@ -2208,7 +2209,7 @@ internal class AgentAppState(
                 }
                 val runtimePrompt = AgentFileReferencePromptCodec.format(
                     parsed.request,
-                    if (supportsVision) parsed.references else parsed.references + extra,
+                    parsed.references + extra,
                     parsed.conversations,
                 )
                 val persisted = extra.ifEmpty { parsed.references }.map { reference ->

@@ -14,6 +14,7 @@ import java.util.UUID
  */
 internal class AgentChatImageCache(context: Context) {
     private val root = File(context.applicationContext.cacheDir, CACHE_DIRECTORY)
+    private val packageName = context.applicationContext.packageName
 
     fun stage(
         conversationId: String,
@@ -106,23 +107,62 @@ internal class AgentChatImageCache(context: Context) {
 
     /**
      * 模型侧常见的 /home/workdir/attachments/image.jpg 并不是 Android 路径。
-     * 只在缓存目录内按附件名查找，不跟随任意外部路径。
+     * 别名只在当前会话自己的附件目录里解析：跨会话按修改时间挑“最新”的图，
+     * 会把别的会话的截图当成用户刚发的附件。没有会话或当前会话没有附件时返回 null。
      */
-    fun resolveReadableFile(raw: String): File? {
+    fun resolveReadableFile(raw: String, conversationId: String): File? {
         val path = raw.trim().removePrefix("file://")
         if (path.isEmpty() || path.startsWith("content://") || path.contains('\u0000')) return null
         val direct = File(path)
+        if (isOtherConversationAttachment(path, conversationId)) return null
         if (direct.isFile && direct.canRead()) return direct
         if (!isAttachmentAlias(path)) return null
-        if (!root.isDirectory) return null
         val requested = AgentFileReferenceGateway.safeImportName(direct.name)
         if (requested.isBlank() || requested.contains("..")) return null
-        return root.listFiles().orEmpty()
+        val directory = conversationAttachmentDir(conversationId) ?: return null
+        return directory.listFiles().orEmpty()
             .asSequence()
-            .filter { it.isDirectory }
-            .flatMap { it.listFiles()?.asSequence() ?: emptySequence() }
             .filter { it.isFile && it.canRead() && matchesAttachmentName(it.name, requested) }
             .maxByOrNull { it.lastModified() }
+    }
+
+    /**
+     * 路径是否落在别的会话的附件目录里。聊天附件只属于它所在的会话，模型读别的会话的
+     * 附件会把旧截图当成用户刚发的图；缓存目录外的普通文件不受限制。
+     * 语音浮窗、Breeno 等不属于聊天会话的 run 没有会话 ID，不做归属判断（它们只有别名被禁用）。
+     */
+    fun isOtherConversationAttachment(path: String, conversationId: String): Boolean {
+        if (conversationId.isBlank()) return false
+        val owner = attachmentOwner(path) ?: return false
+        return owner != sanitize(conversationId)
+    }
+
+    /** 缓存根下的会话子目录名；不在缓存目录里（含 /data/data 与 /data/user/0 两种写法）时返回 null。 */
+    private fun attachmentOwner(path: String): String? {
+        val normalized = path.trim().removePrefix("file://").replace('\\', '/')
+        val canonical = runCatching { File(normalized).canonicalPath }.getOrDefault(normalized)
+        val roots = listOfNotNull(
+            runCatching { root.canonicalPath }.getOrNull(),
+            root.absolutePath,
+        ).distinct()
+        for (candidate in listOf(canonical, normalized)) {
+            for (base in roots) {
+                if (!candidate.startsWith("$base/")) continue
+                return candidate.removePrefix("$base/").substringBefore('/').takeIf { it.isNotBlank() }
+            }
+        }
+        // 同一缓存文件常以另一种应用数据根出现（/data/data 与 /data/user/0）。
+        // 只认本应用 cache 目录下的这一段，工作区里恰好同名的目录不算。
+        val segment = "/$packageName/cache/$CACHE_DIRECTORY/"
+        val index = normalized.indexOf(segment)
+        if (index < 0 || !AppDataRoot.matches(normalized.substring(0, index))) return null
+        return normalized.substring(index + segment.length).substringBefore('/').takeIf { it.isNotBlank() }
+    }
+
+    /** 已存在的当前会话附件目录；不创建目录，会话 ID 为空时不回退到其它会话。 */
+    private fun conversationAttachmentDir(conversationId: String): File? {
+        if (conversationId.isBlank()) return null
+        return File(root, sanitize(conversationId)).takeIf { it.isDirectory }
     }
 
     private fun isAttachmentAlias(path: String): Boolean {
@@ -135,12 +175,15 @@ internal class AgentChatImageCache(context: Context) {
     private fun matchesAttachmentName(fileName: String, requested: String): Boolean {
         if (fileName == requested) return true
         if (fileName.endsWith("-$requested")) return true
+        // 通用名 image.jpg 不知道是第几张，只能取当前会话最新的一张聊天图片。
         val genericImage = requested.matches(Regex("(?i)image\\.(jpg|jpeg|png|webp|gif)"))
-        return genericImage && fileName.contains("chat-image-1")
+        return genericImage && ChatImageFileName.matches(fileName)
     }
 
     companion object {
         const val CACHE_DIRECTORY = "eta-chat-images"
+        private val ChatImageFileName = Regex(".*-chat-image-\\d+\\.[A-Za-z0-9]+")
+        private val AppDataRoot = Regex("/data/data|/data/user/\\d+")
 
         fun decodeImageBytes(value: String): ByteArray? {
             val trimmed = value.trim()

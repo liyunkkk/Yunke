@@ -24,10 +24,19 @@ internal class AgentImageTools(
     private val rootAvailable: () -> Boolean = { RootAccess.isGranted },
     private val resolveGuestPath: (String) -> String = { LinuxGuestPathResolver.resolveForApp(context, it) },
     private val chatImages: AgentChatImageCache = AgentChatImageCache(context),
+    /** 当前 run 所属会话。附件别名只在这个会话的附件目录里解析，空值时别名不可用。 */
+    private val conversationId: String = "",
 ) {
     fun readImage(args: JSONObject): AgentModelClient.ToolResult {
         val requested = args.getString("path").removePrefix("file://")
         val mapped = resolveGuestPath(requested)
+        if (chatImages.isOtherConversationAttachment(mapped, conversationId) ||
+            chatImages.isOtherConversationAttachment(requested, conversationId)) {
+            return sensitive(error(
+                "IMAGE_OTHER_CONVERSATION",
+                "这是其它会话的聊天附件，不能在当前会话读取；请使用当前用户消息里给出的附件路径",
+            ))
+        }
         val source = resolveExistingImagePath(mapped, requested)
         val sourceKind = when {
             source.startsWith("content://") -> ImageSourceKind.ContentUri
@@ -97,9 +106,9 @@ internal class AgentImageTools(
 
     private fun resolveExistingImagePath(mapped: String, requested: String): String {
         if (isReadableLocalFile(mapped)) return mapped
-        chatImages.resolveReadableFile(mapped)?.let { return it.absolutePath }
+        chatImages.resolveReadableFile(mapped, conversationId)?.let { return it.absolutePath }
         if (requested != mapped) {
-            chatImages.resolveReadableFile(requested)?.let { return it.absolutePath }
+            chatImages.resolveReadableFile(requested, conversationId)?.let { return it.absolutePath }
         }
         return mapped
     }

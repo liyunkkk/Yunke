@@ -63,22 +63,73 @@ class AgentChatImageCacheTest {
         assertTrue(staged.displayName.contains("chat-video-1.mp4") || staged.displayName.endsWith("mp4"))
     }
     @Test
-    fun workdirAttachmentAliasResolvesNewestChatImage() {
+    fun workdirAttachmentAliasOnlyResolvesCurrentConversation() {
         val context = RuntimeEnvironment.getApplication()
         val cache = AgentChatImageCache(context)
-        val older = cache.stage("conv-a", byteArrayOf(1, 2, 3, 4), "chat-image-1.jpg")!!
-        File(older.absolutePath).setLastModified(1_000L)
-        val newer = cache.stage("conv-b", byteArrayOf(5, 6, 7, 8), "chat-image-1.jpg")!!
-        File(newer.absolutePath).setLastModified(2_000L)
+        val mine = cache.stage("conv-a", byteArrayOf(1, 2, 3, 4), "chat-image-1.jpg")!!
+        File(mine.absolutePath).setLastModified(1_000L)
+        // 别的会话里有一张更新的同名图，过去会被当成当前会话的附件。
+        val others = cache.stage("conv-b", byteArrayOf(5, 6, 7, 8), "chat-image-1.jpg")!!
+        File(others.absolutePath).setLastModified(2_000L)
 
-        val resolved = cache.resolveReadableFile("/home/workdir/attachments/image.jpg")
-        assertEquals(newer.absolutePath, resolved!!.absolutePath)
         assertEquals(
-            newer.absolutePath,
-            cache.resolveReadableFile("/home/workdir/attachments/chat-image-1.jpg")!!.absolutePath,
+            mine.absolutePath,
+            cache.resolveReadableFile("/home/workdir/attachments/image.jpg", "conv-a")!!.absolutePath,
         )
-        assertEquals(newer.absolutePath, cache.resolveReadableFile(newer.absolutePath)!!.absolutePath)
-        assertEquals(null, cache.resolveReadableFile("/home/workdir/attachments/missing.png"))
-        assertEquals(null, cache.resolveReadableFile("/tmp/eta-missing-image-does-not-exist.jpg"))
+        assertEquals(
+            mine.absolutePath,
+            cache.resolveReadableFile("/home/workdir/attachments/chat-image-1.jpg", "conv-a")!!.absolutePath,
+        )
+        assertEquals(
+            others.absolutePath,
+            cache.resolveReadableFile("/home/workdir/attachments/image.jpg", "conv-b")!!.absolutePath,
+        )
+        assertEquals(mine.absolutePath, cache.resolveReadableFile(mine.absolutePath, "conv-a")!!.absolutePath)
+        assertEquals(null, cache.resolveReadableFile("/home/workdir/attachments/missing.png", "conv-a"))
+        assertEquals(null, cache.resolveReadableFile("/tmp/eta-missing-image-does-not-exist.jpg", "conv-a"))
+    }
+
+    @Test
+    fun aliasNeverFallsBackToAnotherConversation() {
+        val context = RuntimeEnvironment.getApplication()
+        val cache = AgentChatImageCache(context)
+        cache.stage("conv-other", byteArrayOf(1, 2, 3, 4), "chat-image-1.jpg")!!
+
+        assertEquals(null, cache.resolveReadableFile("/home/workdir/attachments/image.jpg", "conv-empty"))
+        assertEquals(null, cache.resolveReadableFile("/home/workdir/attachments/image.jpg", ""))
+    }
+
+    @Test
+    fun genericAliasAlsoMatchesLaterImagesInTheSameMessage() {
+        val context = RuntimeEnvironment.getApplication()
+        val cache = AgentChatImageCache(context)
+        val second = cache.stage("conv-two", byteArrayOf(1, 2, 3, 4), "chat-image-2.png")!!
+
+        assertEquals(
+            second.absolutePath,
+            cache.resolveReadableFile("/home/workdir/attachments/image.png", "conv-two")!!.absolutePath,
+        )
+    }
+
+    @Test
+    fun absolutePathIntoAnotherConversationIsRejected() {
+        val context = RuntimeEnvironment.getApplication()
+        val cache = AgentChatImageCache(context)
+        val others = cache.stage("conv-b", byteArrayOf(5, 6, 7, 8), "chat-image-1.jpg")!!
+        val mine = cache.stage("conv-a", byteArrayOf(1, 2, 3, 4), "chat-image-1.jpg")!!
+
+        assertTrue(cache.isOtherConversationAttachment(others.absolutePath, "conv-a"))
+        assertFalse(cache.isOtherConversationAttachment(mine.absolutePath, "conv-a"))
+        assertEquals(null, cache.resolveReadableFile(others.absolutePath, "conv-a"))
+
+        // 同一文件的另一种应用数据根写法也要识别出来。
+        val alternate = "/data/data/${context.packageName}/cache/${AgentChatImageCache.CACHE_DIRECTORY}/conv-b/x.jpg"
+        assertTrue(cache.isOtherConversationAttachment(alternate, "conv-a"))
+        assertFalse(cache.isOtherConversationAttachment(alternate.replace("conv-b", "conv-a"), "conv-a"))
+
+        // 缓存目录外的普通文件、工作区里恰好同名的目录，以及没有会话归属的 run 都不受限制。
+        assertFalse(cache.isOtherConversationAttachment("/sdcard/Download/photo.jpg", "conv-a"))
+        assertFalse(cache.isOtherConversationAttachment("/workspace/eta-chat-images/conv-b/x.jpg", "conv-a"))
+        assertFalse(cache.isOtherConversationAttachment(others.absolutePath, ""))
     }
 }

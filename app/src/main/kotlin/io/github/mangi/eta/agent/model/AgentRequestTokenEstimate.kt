@@ -95,8 +95,9 @@ internal object AgentRequestTokenEstimate {
             when {
                 persisted && type == "image_file" -> {
                     val path = p.optString("path")
-                    if (!vision) listings += "[用户图片] $path"
-                    else {
+                    // Hydration lists the path for every model, vision or not.
+                    listings += "[用户图片] $path"
+                    if (vision) {
                         val size = fileLength(path)
                         if (size in 1..MAX_AGENT_IMAGE_BYTES.toLong()) {
                             // Hydration retains original bytes, but does not send dimensions.

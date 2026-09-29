@@ -63,8 +63,9 @@ class AgentRequestTokenEstimateTest {
             val filtered = AgentRequestMediaPolicy.filter(history, vision, false)
             assertEquals(AgentRequestTokenEstimate.filtered(filtered, JSONArray()),
                 AgentRequestTokenEstimate.boundary(history, JSONArray(), vision, false))
-            if (!vision) assertTrue(filtered.toString().contains("[用户图片]"))
-            else assertFalse(filtered.toString().contains("image_url"))
+            // Vision models also get the real path; without it they guess and may pick another chat's image.
+            assertTrue(filtered.toString().contains("[用户图片]"))
+            if (vision) assertFalse(filtered.toString().contains("image_url"))
         }
     }
 

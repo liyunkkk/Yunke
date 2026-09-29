@@ -116,7 +116,12 @@ internal class AgentLocalTools(
         root = rootCommandExecutor,
         rootAvailable = rootAvailable,
     )
-    private val imageTools = AgentImageTools(context, rootCommandExecutor, rootAvailable)
+    private val imageTools = AgentImageTools(
+        context,
+        rootCommandExecutor,
+        rootAvailable,
+        conversationId = browserConversationId,
+    )
     private val terminalController = RootShellTerminalController(
         processSupervisor = io.github.mangi.eta.agent.terminal.ShellProcessSupervisor(skillsDirectoryProvider = { runSkillsRoot }),
         logger = logger,
