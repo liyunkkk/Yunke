@@ -58,6 +58,8 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -66,9 +68,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.drawscope.clipRect
-import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -82,7 +84,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.browser.AgentBrowserSession
@@ -935,32 +939,20 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
-    // 跟底时先把列表上提到静止线，再裁掉线以下。快速出字且没有打字机时，
-    // 子项自己的绘制层会逃出普通 clipRect，所以跟底期间先画进离屏层再裁。
-    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除，内容可以滑到输入框后面。
+    val restClip = remember(bottomInset) { ConversationRestClip(bottomInset) }
+    // 输入器悬浮在会话之上。跟底时内层上提、外层用裁剪矩形挡住静止线以下。
+    // 不使用离屏缓冲：展开工具或推理的第一帧若整页离屏重画，会直接掉帧。
+    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除。
     Box(
         modifier = modifier
             .clipToBounds()
             .graphicsLayer {
-                compositingStrategy = if (shouldLiftTail) {
-                    CompositingStrategy.Offscreen
+                if (shouldLiftTail) {
+                    clip = true
+                    shape = restClip
                 } else {
-                    CompositingStrategy.Auto
-                }
-            }
-            .drawWithContent {
-                // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
-                if (!shouldLiftTail) {
-                    drawContent()
-                    return@drawWithContent
-                }
-                val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
-                val lift = resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
-                clipRect(bottom = restLine) {
-                    translate(top = -lift) {
-                        this@drawWithContent.drawContent()
-                    }
+                    clip = false
+                    shape = RectangleShape
                 }
             },
     ) {
@@ -995,6 +987,13 @@ internal fun AgentConversationMessages(
             },
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    translationY = if (shouldLiftTail) {
+                        -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
+                    } else {
+                        0f
+                    }
+                }
                 .nestedScroll(userScrollConnection)
                 // Navigation already emits one explicit click/long-press haptic.
                 .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
@@ -1767,3 +1766,10 @@ internal fun shouldStopOrphanSpeechPlayback(
 
 /** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
 private val ConversationComposerGap = 14.dp
+
+private class ConversationRestClip(private val bottomInset: Dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val bottom = size.height - with(density) { (bottomInset + ConversationComposerGap).toPx() }
+        return Outline.Rectangle(Rect(0f, 0f, size.width, bottom.coerceAtLeast(0f)))
+    }
+}
