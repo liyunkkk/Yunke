@@ -39,10 +39,15 @@ internal sealed interface AgentEvent {
         val reasonDetail: String = "",
     ) : AgentEvent {
         val displayMessage: String
-            get() = if (reasonCode == "DELEGATION_ARGUMENT_REPAIR") {
-                "正在补全委派任务参数（$attempt/$maxAttempts）；尚未创建子任务，已完成的工具不会重放。"
-            } else "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。" +
-                reasonDetail.takeIf { it.isNotBlank() }?.let { "\n原因：$it" }.orEmpty()
+            get() = when (reasonCode) {
+                "DELEGATION_ARGUMENT_REPAIR" ->
+                    "正在补全委派任务参数（$attempt/$maxAttempts）；尚未创建子任务，已完成的工具不会重放。"
+                "EMPTY_RESPONSE" ->
+                    "模型本轮返回空正文，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。" +
+                        reasonDetail.takeIf { it.isNotBlank() }?.let { "\n原因：$it" }.orEmpty()
+                else -> "模型请求暂时中断，${delayMs / 1000} 秒后重试（$attempt/$maxAttempts）；此前工具结果已保留。" +
+                    reasonDetail.takeIf { it.isNotBlank() }?.let { "\n原因：$it" }.orEmpty()
+            }
 
         override fun toLogLine(): String =
             "model_retry_scheduled round=$round, attempt=$attempt, delay_ms=$delayMs, code=${reasonCode.toSafeLogToken()}"

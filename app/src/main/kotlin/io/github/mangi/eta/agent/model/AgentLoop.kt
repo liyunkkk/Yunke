@@ -124,6 +124,9 @@ internal class AgentLoop(
     /** 上游在输出上限处截断且正文为空时，同一 round 内的自动重发预算，不跨 round 累积。 */
     private var emptyOutputLimitRetries = 0
     private var emptyOutputLimitRound = 0
+    /** 非截断的空响应（如 finish_reason=step）在同一 round 内的重发计数，与输出上限截断分开累计。 */
+    private var emptyResponseRetries = 0
+    private var emptyResponseRound = 0
 
     fun reasoningSnapshot(): String = accumulatedReasoning.toString().trim()
 
@@ -299,7 +302,10 @@ internal class AgentLoop(
                 assistantMessage.optString("reasoning_content"))
             val content = assistantMessage.optString("content").trim()
             // 已写出的正文会结束或推进本轮；空正文截断的重发预算只在同一轮内累计。
-            if (content.isNotBlank() && content != "null") emptyOutputLimitRetries = 0
+            if (content.isNotBlank() && content != "null") {
+                emptyOutputLimitRetries = 0
+                emptyResponseRetries = 0
+            }
             val hasAssistantPayload = (content.isNotBlank() && content != "null") ||
                 assistantReasoning.isNotBlank() ||
                 toolCalls.isNotEmpty()
@@ -462,17 +468,48 @@ internal class AgentLoop(
 
             if (content.isBlank() || content == "null") {
                 val finishReason = assistantMessage.optString("finish_reason")
+                val modelLabel = "${config.providerType}/${config.modelDisplayName.trim().ifBlank { config.model }}"
                 if (truncatedWithoutBody) {
                     val outputTokens = lastUsage?.outputTokens
                     error(
                         "模型接口第 $round 轮在输出上限处截断且未返回正文" +
                             "（finish_reason=${finishReason.ifBlank { "unknown" }}" +
-                            "，模型=${config.providerType}/${config.modelDisplayName.trim().ifBlank { config.model }}" +
+                            "，模型=$modelLabel" +
                             (outputTokens?.let { "，输出 token=$it" } ?: "") +
                             "），已自动重试 $emptyOutputLimitRetries 次仍为空",
                     )
                 }
-                error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
+                // 非截断的空响应（多为偶发空回合，如 finish_reason=step）同样有界重试：
+                // 与「输出上限截断」各自计数、各自文案，保留原路径的语义与次数。
+                if (emptyResponseRound != round) {
+                    emptyResponseRound = round
+                    emptyResponseRetries = 0
+                }
+                if (emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+                    emptyResponseRetries += 1
+                    // 空响应不进历史，也不进累积推理。
+                    discardEmptyOutputLimitAttempt(storedAssistantMessage)
+                    accumulatedReasoning.setLength(reasoningLengthBeforeRound)
+                    onEvent(
+                        AgentEvent.ModelRetryScheduled(
+                            round = round,
+                            attempt = emptyResponseRetries,
+                            maxAttempts = MAX_EMPTY_RESPONSE_RETRIES,
+                            delayMs = EMPTY_RESPONSE_RETRY_DELAY_MS.toInt(),
+                            reasonCode = EMPTY_RESPONSE_CODE,
+                            reasonDetail = "模型返回空正文" +
+                                finishReason.takeIf { it.isNotBlank() }?.let { "（finish_reason=$it）" }.orEmpty(),
+                        ),
+                    )
+                    runController.awaitRetryDelay(EMPTY_RESPONSE_RETRY_DELAY_MS)
+                    runController.throwIfCancelled()
+                    continue
+                }
+                error(
+                    "模型接口第 $round 轮返回为空" +
+                        finishReason.takeIf { it.isNotBlank() }?.let { "（finish_reason=$it）" }.orEmpty() +
+                        "，已重试 $emptyResponseRetries 次仍为空（模型=$modelLabel）",
+                )
             }
 
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length, generatedAtMillis = System.currentTimeMillis()))
@@ -1075,5 +1112,14 @@ internal class AgentLoop(
     private companion object {
         /** 上游在输出上限处截断且正文为空时，同一 round 内最多自动重发的次数。 */
         private const val MAX_EMPTY_OUTPUT_LIMIT_RETRIES = 2
+
+        /** 非截断空响应（如 finish_reason=step）在同一 round 内最多自动重发的次数。 */
+        private const val MAX_EMPTY_RESPONSE_RETRIES = 2
+
+        /** 空响应重发前的短固定退避：不改变既有轮次语义，只让上游有机会恢复。 */
+        private const val EMPTY_RESPONSE_RETRY_DELAY_MS = 1_000L
+
+        /** 空响应重发事件的原因码，供 UI / 诊断区分于传输层重试。 */
+        private const val EMPTY_RESPONSE_CODE = "EMPTY_RESPONSE"
     }
 }
