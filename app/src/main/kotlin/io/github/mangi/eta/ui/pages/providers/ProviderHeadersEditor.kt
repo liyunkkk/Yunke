@@ -188,6 +188,7 @@ private fun ProviderHeaderRow(
     onRemove: () -> Unit,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     var visible by remember(row.id) { mutableStateOf(false) }
     Row(
         modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
@@ -226,7 +227,7 @@ private fun ProviderHeaderRow(
             )
         }
         IconButton(onClick = {
-            TouchHaptics.click(LocalView.current)
+            TouchHaptics.click(view)
             onRemove()
         }) {
             Icon(
