@@ -4267,6 +4267,7 @@ internal class AgentAppState(
                 if (event.kind != AgentEvent.AssistantBlockKind.TOOL_CALL) {
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(
                         event.deltaChars.coerceAtLeast(event.delta.length),
+                        conversationIdForRun(runId),
                     )
                 }
             }
@@ -4368,6 +4369,7 @@ internal class AgentAppState(
                 if (!replaying) {
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
                         "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                        conversationIdForRun(runId),
                     )
                 }
                 updateRunTrace(runId) { messages ->
@@ -4388,6 +4390,7 @@ internal class AgentAppState(
                 if (!replaying) {
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
                         "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                        conversationIdForRun(runId),
                     )
                 }
                 updateRunTrace(runId) { messages ->
