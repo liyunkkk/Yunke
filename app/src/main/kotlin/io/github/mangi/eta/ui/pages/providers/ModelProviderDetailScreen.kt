@@ -42,6 +42,7 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.CustomProviderSetting
+import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
 import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderAuthMode
@@ -519,7 +520,13 @@ private fun ProviderConfigTab(
                                     val toSave = built.withId(newId).let { saved ->
                                         when {
                                             saved.usesOAuth && saved.models.isEmpty() ->
-                                                saved.withModels(OpenAiCodexOAuth.defaultModels())
+                                                saved.withModels(
+                                                    if (GoogleAntigravityOAuth.usesBackend(saved)) {
+                                                        GoogleAntigravityOAuth.defaultModels()
+                                                    } else {
+                                                        OpenAiCodexOAuth.defaultModels()
+                                                    },
+                                                )
                                             SpeechSynthesisModels.isSpeechOnlyProvider(saved) && saved.models.none { SpeechSynthesisModels.matches(it) } ->
                                                 saved.withModels(SpeechSynthesisModels.mergeCatalog(saved))
                                             else -> saved
@@ -682,7 +689,6 @@ private suspend fun testConnection(
     context: android.content.Context,
     provider: ProviderSetting,
 ): String {
-    io.github.mangi.eta.data.model.RemovedProviderPolicy.requireSupported(provider)
     if (SpeechSynthesisModels.isSpeechOnlyProvider(provider) &&
         !SpeechSynthesisModels.isCompatibleSpeechProvider(provider)) {
         return runCatching { CloudSpeechSynthesizer().test(provider.apiKey) }.getOrElse { throwable ->
@@ -692,12 +698,28 @@ private suspend fun testConnection(
             )
         }
     }
-    if (provider.usesOAuth && OpenAiCodexOAuth.isCodexEndpoint(provider.baseUrl)) {
-        val token = OpenAiCodexOAuth.validAccessToken(context, provider.id) ?: provider.apiKey
-        return context.getString(
-            if (token.isBlank()) R.string.provider_oauth_need_sign_in
-            else R.string.provider_oauth_signed_in,
-        )
+    if (provider.usesOAuth && (
+            OpenAiCodexOAuth.isCodexEndpoint(provider.baseUrl) ||
+                GoogleAntigravityOAuth.isAntigravityEndpoint(provider.baseUrl)
+            )
+    ) {
+        val token = if (GoogleAntigravityOAuth.usesBackend(provider)) {
+            GoogleAntigravityOAuth.validAccessToken(context, provider.id)
+        } else {
+            OpenAiCodexOAuth.validAccessToken(context, provider.id)
+        } ?: provider.apiKey
+        val antigravity = GoogleAntigravityOAuth.usesBackend(provider)
+        return if (token.isBlank()) {
+            context.getString(
+                if (antigravity) R.string.provider_oauth_antigravity_need_sign_in
+                else R.string.provider_oauth_need_sign_in,
+            )
+        } else {
+            context.getString(
+                if (antigravity) R.string.provider_oauth_antigravity_signed_in
+                else R.string.provider_oauth_signed_in,
+            )
+        }
     }
     return RemoteModelFetcher.fetch(provider)
         .map { context.resources.getQuantityString(R.plurals.provider_models_fetched, it.size, it.size) }

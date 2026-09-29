@@ -90,10 +90,15 @@ internal class AgentModelFailure(
                         val verify = validationUrl != null || (
                             detail != null && detail.contains("verify your account", ignoreCase = true)
                         )
+                        val license = detail != null && (
+                            detail.contains("valid license", ignoreCase = true) ||
+                                detail.contains("#3501")
+                        )
                         when {
                             validationUrl != null ->
                                 "Google 要求验证这个账号（HTTP 403）。请用无痕浏览器打开：$validationUrl 登录被标记的账号完成验证，然后再发消息。官网首页通常不会弹验证。"
-                            verify -> "Google 要求先验证这个账号（HTTP 403）。请用无痕浏览器打开接口返回的 validation_url 完成账号验证。"
+                            verify -> "Google 要求先验证这个账号（HTTP 403）。请用无痕浏览器打开接口返回的 validation_url，不要只登录 antigravity.google 首页。"
+                            license -> "这个 Google 账号没有 Antigravity 许可证（HTTP 403）。验证手机过不了这关。个人号要在电脑上用官方 Antigravity 完成开通；公司 Workspace 号要管理员分配许可证。"
                             detail != null -> "模型接口拒绝访问（HTTP 403）：$detail"
                             else -> "模型接口拒绝访问（HTTP 403），请检查账户与模型权限。"
                         }

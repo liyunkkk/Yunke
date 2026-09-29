@@ -82,6 +82,7 @@ import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 import io.github.mangi.eta.data.provider.ReasoningCapabilityResolver
 import io.github.mangi.eta.data.repository.ModelRepository
+import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
 import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.repository.RemoteModelFetcher
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
@@ -267,7 +268,11 @@ internal fun ProviderModelsTab(
                                 isFetching = true
                                 message = null
                                 try {
-                                    val requestProvider = OpenAiCodexOAuth.withResolvedAuth(context, provider)
+                                    val requestProvider = if (GoogleAntigravityOAuth.usesBackend(provider)) {
+                                        GoogleAntigravityOAuth.withResolvedAuth(context, provider)
+                                    } else {
+                                        OpenAiCodexOAuth.withResolvedAuth(context, provider)
+                                    }
                                     val models = RemoteModelFetcher.fetch(requestProvider).getOrElse { throwable ->
                                         message = context.getString(
                                             R.string.provider_error,

@@ -1468,6 +1468,14 @@
     <string name="provider_oauth_login_title">Sign in with OpenAI</string>
     <string name="provider_oauth_cancelled">Sign-in cancelled</string>
     <string name="provider_oauth_signed_in_note">Token is stored on this device. Sign in again if requests start failing.</string>
+    <string name="provider_auth_oauth_antigravity">Antigravity OAuth</string>
+    <string name="provider_auth_oauth_antigravity_summary">Sign in with Google Antigravity</string>
+    <string name="provider_oauth_antigravity_sign_in">Sign in with Google</string>
+    <string name="provider_oauth_antigravity_signed_in">Signed in with Google</string>
+    <string name="provider_oauth_antigravity_sign_in_note">Opens Google login in the app. After you pick an account, it returns here.</string>
+    <string name="provider_oauth_antigravity_login_title">Sign in with Google</string>
+    <string name="provider_oauth_antigravity_signed_in_note">Token is stored on this device. Sign in again if requests start failing.</string>
+    <string name="provider_oauth_antigravity_need_sign_in">Sign in with Google first</string>
     <string name="provider_oauth_sign_in_ok">Signed in</string>
     <string name="provider_oauth_sign_in_failed">Sign-in failed</string>
     <string name="provider_oauth_need_sign_in">Sign in with OpenAI Codex first</string>

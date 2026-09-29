@@ -16,15 +16,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RuntimeConfigRepositoryTest {
-    @Test(expected = IllegalArgumentException::class)
-    fun removedOAuthBackupCannotBecomeAnOrdinaryApiKeyConfig() {
-        val provider = OpenAiCompatibleProviderSetting(
-            id = "retired", name = "Old provider", baseUrl = "https://proxy.example/v1",
-            authMode = "oauth_antigravity",
-        )
-        RuntimeConfigRepository.buildRuntimeConfig(provider, Model(id = "m", modelId = "old-model", displayName = "Old"))
-    }
-
     @Test
     fun buildsStructuredRuntimeConfigFromProviderAndModel() {
         val provider = OpenAiCompatibleProviderSetting(

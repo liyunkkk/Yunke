@@ -1440,6 +1440,14 @@
     <string name="provider_oauth_login_title">登入 OpenAI</string>
     <string name="provider_oauth_cancelled">已取消登入</string>
     <string name="provider_oauth_signed_in_note">權杖保存在本機。請求失敗時再登入一次即可。</string>
+    <string name="provider_auth_oauth_antigravity">反重力 OAuth</string>
+    <string name="provider_auth_oauth_antigravity_summary">使用 Google 帳號登入反重力</string>
+    <string name="provider_oauth_antigravity_sign_in">使用 Google 登入</string>
+    <string name="provider_oauth_antigravity_signed_in">已用 Google 登入</string>
+    <string name="provider_oauth_antigravity_sign_in_note">在應用內開啟 Google 登入頁，選好帳號後會自動回來。</string>
+    <string name="provider_oauth_antigravity_login_title">登入 Google</string>
+    <string name="provider_oauth_antigravity_signed_in_note">權杖保存在本機。請求失敗時再登入一次即可。</string>
+    <string name="provider_oauth_antigravity_need_sign_in">請先使用 Google 登入</string>
     <string name="provider_oauth_sign_in_ok">登入成功</string>
     <string name="provider_oauth_sign_in_failed">登入失敗</string>
     <string name="provider_oauth_need_sign_in">請先使用 OpenAI Codex 登入</string>

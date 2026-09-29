@@ -9,6 +9,7 @@ import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
+import io.github.mangi.eta.agent.model.oauth.GoogleAntigravityOAuth
 import io.github.mangi.eta.data.model.SessionGatewayRule
 import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.model.ProviderSetting
@@ -160,7 +161,6 @@ internal object RuntimeConfigRepository {
         model: Model,
         assistant: io.github.mangi.eta.data.model.AssistantProfile? = null,
     ): AgentModelClient.ModelConfig {
-        io.github.mangi.eta.data.model.RemovedProviderPolicy.requireSupported(provider)
         val systemPrompt = assistant?.let {
             io.github.mangi.eta.data.model.AssistantPrompt.build(it.name, it.prompt)
         }?.ifBlank { BuiltinProviders.DEFAULT_SYSTEM_PROMPT }
@@ -245,7 +245,12 @@ internal object RuntimeConfigRepository {
 
     private suspend fun resolveOAuth(provider: ProviderSetting): ProviderSetting {
         val context = ProviderRepository.context()
-        io.github.mangi.eta.data.model.RemovedProviderPolicy.requireSupported(provider)
-        return OpenAiCodexOAuth.withResolvedAuth(context, provider)
+        return if (GoogleAntigravityOAuth.usesBackend(provider)) {
+            val resolved = GoogleAntigravityOAuth.withResolvedAuth(context, provider)
+            GoogleAntigravityOAuth.ensureProjectId(context, resolved.id, resolved.apiKey)
+            resolved
+        } else {
+            OpenAiCodexOAuth.withResolvedAuth(context, provider)
+        }
     }
 }

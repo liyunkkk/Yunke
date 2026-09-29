@@ -11,7 +11,6 @@ import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
-import io.github.mangi.eta.data.model.RemovedProviderPolicy
 import io.github.mangi.eta.agent.model.oauth.ProviderOAuthStore
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.Settings
@@ -42,7 +41,6 @@ internal object ProviderRepository {
         dao().providersFlow().map { providers ->
             providers
                 .map { it.toDomain().withSpeechCatalog() }
-                .filterNot { RemovedProviderPolicy.isRemoved(it) }
                 .sortedBy(ProviderSetting::sortOrder)
         }
 
@@ -55,14 +53,13 @@ internal object ProviderRepository {
     suspend fun allProviders(): List<ProviderSetting> =
         dao().providers()
             .map { it.toDomain().withSpeechCatalog() }
-            .filterNot { RemovedProviderPolicy.isRemoved(it) }
             .sortedBy(ProviderSetting::sortOrder)
 
     suspend fun providerById(id: String): ProviderSetting? =
-        dao().providerById(id)?.toDomain()?.withSpeechCatalog()?.takeUnless { RemovedProviderPolicy.isRemoved(it) }
+        dao().providerById(id)?.toDomain()?.withSpeechCatalog()
 
     suspend fun providerByModelId(modelId: String): ProviderSetting? =
-        dao().providerByModelId(modelId)?.toDomain()?.takeUnless { RemovedProviderPolicy.isRemoved(it) }
+        dao().providerByModelId(modelId)?.toDomain()
 
     suspend fun addProvider(provider: ProviderSetting): ProviderSetting {
         val nextOrder = (allProviders().maxOfOrNull { it.sortOrder } ?: -1) + 1
@@ -73,7 +70,6 @@ internal object ProviderRepository {
     }
 
     suspend fun updateProvider(provider: ProviderSetting) {
-        RemovedProviderPolicy.requireSupported(provider)
         require(dao().updateProvider(provider.toEntity()) == 1) { "Provider 不存在" }
         repairSelection()
     }
@@ -125,22 +121,8 @@ internal object ProviderRepository {
         repairSelection()
     }
 
-    /** Runs on startup and backup restore. Does not contact any OAuth endpoint. */
-    private suspend fun removeRetiredProviders() {
-        val store = ProviderOAuthStore(appContext())
-        dao().providers().forEach { record ->
-            val provider = record.provider
-            if (RemovedProviderPolicy.isRemoved(provider.baseUrl, provider.endpointMode, provider.authMode)) {
-                store.clear(provider.id)
-                dao().deleteProvider(provider.id)
-                SettingsDataStore.clearSelectedModelIdForProvider(provider.id)
-            }
-        }
-        store.clearRetiredBackendEntries()
-    }
 
     suspend fun ensureBuiltInsMerged() {
-        removeRetiredProviders()
         val current = allProviders()
         val catalogIds = BuiltinProviders.PROVIDERS.mapTo(mutableSetOf()) { it.id }
         val stale = current.filter { it.isBuiltIn && it.id !in catalogIds }
@@ -201,7 +183,6 @@ internal object ProviderRepository {
     }
 
     private suspend fun replaceProvider(provider: ProviderSetting) {
-        RemovedProviderPolicy.requireSupported(provider)
         dao().replaceProvider(
             provider = provider.toEntity(),
             models = provider.toModelEntities(),

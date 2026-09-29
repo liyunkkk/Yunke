@@ -13,6 +13,7 @@ internal object ProviderTypes {
 internal object OpenAiEndpointMode {
     const val CHAT_COMPLETIONS = "chat_completions"
     const val RESPONSES = "responses"
+    const val ANTIGRAVITY = "antigravity"
 }
 
 internal object ProviderSourceTypes {

@@ -1440,6 +1440,14 @@
     <string name="provider_oauth_login_title">登录 OpenAI</string>
     <string name="provider_oauth_cancelled">已取消登录</string>
     <string name="provider_oauth_signed_in_note">令牌保存在本机。请求失败时再登录一次即可。</string>
+    <string name="provider_auth_oauth_antigravity">反重力 OAuth</string>
+    <string name="provider_auth_oauth_antigravity_summary">使用 Google 账号登录反重力</string>
+    <string name="provider_oauth_antigravity_sign_in">使用 Google 登录</string>
+    <string name="provider_oauth_antigravity_signed_in">已用 Google 登录</string>
+    <string name="provider_oauth_antigravity_sign_in_note">在应用内打开 Google 登录页，选好账号后会自动回来。</string>
+    <string name="provider_oauth_antigravity_login_title">登录 Google</string>
+    <string name="provider_oauth_antigravity_signed_in_note">令牌保存在本机。请求失败时再登录一次即可。</string>
+    <string name="provider_oauth_antigravity_need_sign_in">请先使用 Google 登录</string>
     <string name="provider_oauth_sign_in_ok">登录成功</string>
     <string name="provider_oauth_sign_in_failed">登录失败</string>
     <string name="provider_oauth_need_sign_in">请先使用 OpenAI Codex 登录</string>

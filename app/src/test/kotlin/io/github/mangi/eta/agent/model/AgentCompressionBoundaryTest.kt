@@ -409,17 +409,17 @@ class AgentCompressionBoundaryTest {
         assertEquals(io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES, back.openAiEndpointMode)
     }
 
-    @Test fun compressionEndpointDoesNotOverrideCodexOrRemovedBackend() {
+    @Test fun compressionEndpointDoesNotOverrideCodexOrAntigravity() {
         val codex = config().copy(
             baseUrl = "https://chatgpt.com/backend-api/codex",
             openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES,
         )
         assertEquals(codex, AgentCompressionEndpoint.apply(codex, io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS))
-        val removed = config().copy(
+        val antigravity = config().copy(
             baseUrl = "https://cloudcode-pa.googleapis.com",
-            openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES,
+            openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.ANTIGRAVITY,
         )
-        assertEquals(removed, AgentCompressionEndpoint.apply(removed, io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS))
+        assertEquals(antigravity, AgentCompressionEndpoint.apply(antigravity, io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS))
     }
 
     @Test fun queuedManualEndpointOnlyOverridesThatCompression() {
