@@ -24,6 +24,13 @@ internal class AgentSilentContextBudget {
      */
     private var underCountScale: Double = 1.0
 
+    /**
+     * 本次 run 最近一张被接受的真实云端回执，也就是会话圆环上显示的那个数。自动压缩
+     * （80%）只看它：没有回执、摘要替换了上下文、或工具修剪改了上下文之后都为 null，
+     * 等下一张回执再决定。上一轮带来的种子只校准发送上限，不算回执。
+     */
+    private var cloudInput: Int? = null
+
     fun requestStarted(localTokens: Int) { requestLocal = localTokens.coerceAtLeast(0) }
 
     /**
@@ -54,8 +61,27 @@ internal class AgentSilentContextBudget {
         if (!isPlausible(inputTokens, contextWindow)) return
         measuredInput = inputTokens
         measuredLocal = requestLocal
+        cloudInput = inputTokens
         learnScale(inputTokens)
     }
+
+    /**
+     * 用会话上一张回执折算到本次请求的值做发送上限的起点。只影响 [tokens] 和
+     * [sendLimitTokens]，不产生 [cloudTokens]，也不学习倍率。
+     */
+    fun seed(localTokens: Int, inputTokens: Int?, contextWindow: Int? = null) {
+        if (inputTokens == null || inputTokens <= 0) return
+        requestStarted(localTokens)
+        if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, contextWindow?.takeIf { it > 0 })) return
+        measuredInput = inputTokens
+        measuredLocal = requestLocal
+    }
+
+    /** 自动压缩用的云端实测；见 [cloudInput]。 */
+    fun cloudTokens(): Int? = cloudInput
+
+    /** 上下文被工具修剪改过：旧回执不再代表下一次请求，等新回执。发送上限的锚点保留。 */
+    fun cloudStale() { cloudInput = null }
 
     private fun learnScale(inputTokens: Int) {
         if (requestLocal < MIN_SCALE_BASIS) return
@@ -108,6 +134,7 @@ internal class AgentSilentContextBudget {
         measuredInput = null
         measuredLocal = 0
         requestLocal = 0
+        cloudInput = null
         // underCountScale is a property of the model's tokenizer, not of this context.
     }
 

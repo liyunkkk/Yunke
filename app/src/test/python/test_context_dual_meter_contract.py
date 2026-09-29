@@ -31,7 +31,14 @@ class ContextDualMeterContractTest(unittest.TestCase):
         self.assertIn('historyTokenCount = historyTokenCount', bar)
         self.assertIn('shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)', bar)
         app = self.text('ui/app/AgentAppState.kt')
-        self.assertEqual(4, app.count('= compressionContextUsage('))
+        # Send guard, pre-send tail scaling and post-run tail scaling. Automatic compaction
+        # itself reads the ring's cloud receipt, not this silent budget.
+        self.assertEqual(3, app.count('= compressionContextUsage('))
+        # Every automatic-compaction call passes the ring's cloud receipt, never a local estimate.
+        self.assertEqual(4, app.count('shouldAutoCompress('))  # one declaration + three call sites
+        self.assertIn('estimatedTokens = if (history == state.history) billedPromptTokens(state) else null', app)
+        self.assertIn('if (!shouldAutoCompress(state.history, contextWindow, billedPromptTokens(state))) return', app)
+        self.assertRegex(app, r'shouldAutoCompress\(\s*history,\s*config\.contextWindow,\s*(//[^\n]*\n\s*)?billedForCompression,')
         self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', app)
         # Only a plausible receipt may become occupancy, judged against the run's own window.
         self.assertIn('CloudReceiptPlausibility.isOccupancy(', app)

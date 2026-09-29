@@ -2514,19 +2514,11 @@ internal class AgentAppState(
             directMediaRuns.start(runId)
         } else null
 
+        // 自动压缩只看圆环：同一段历史的云端实测。没有实测（首次请求、压缩后、换模型）不压缩。
         val willCompress = !generateImage && !generateVideo && !skipAutoCompress && shouldAutoCompress(
             history = history,
             contextWindow = runConfig.contextWindow,
-            estimatedTokens = compressionContextUsage(
-                history = history,
-                currentInput = prompt,
-                pendingImages = images,
-                selectedModel = runModelOption,
-                billedContextTokens = if (history == state.history) billedPromptTokens(state) else null,
-                requestOverheadTokens = runOverhead,
-                billedOverheadTokens = state.cloudRequestOverheadTokens,
-                billedHistoryTokens = state.cloudHistoryTokens,
-            ).contextTokens,
+            estimatedTokens = if (history == state.history) billedPromptTokens(state) else null,
         )
         val runMessages = if (generateImage || generateVideo) {
             messages + AgentMessageUi(
@@ -2637,7 +2629,8 @@ internal class AgentAppState(
                     shouldAutoCompress(
                         history,
                         config.contextWindow,
-                        estimatedTokens,
+                        // 与圆环同一个数；estimatedTokens 只用于压缩时按账单缩放保留尾部。
+                        billedForCompression,
                     )
             )
             if (shouldCompress != willCompress) {
@@ -4600,7 +4593,8 @@ internal class AgentAppState(
             billedOverheadTokens = state.cloudRequestOverheadTokens,
             billedHistoryTokens = state.cloudHistoryTokens,
         ).contextTokens
-        if (!shouldAutoCompress(state.history, contextWindow, estimatedTokens)) return
+        // 与圆环同一个数：云端实测。estimatedTokens 只用于压缩时按账单缩放保留尾部。
+        if (!shouldAutoCompress(state.history, contextWindow, billedPromptTokens(state))) return
         val billed = billedPromptTokens(state)
         val local = billed?.let {
             compressionContextUsage(history = state.history, currentInput = "", pendingImages = emptyList(),

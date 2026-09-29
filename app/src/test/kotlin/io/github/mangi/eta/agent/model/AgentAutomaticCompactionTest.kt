@@ -21,7 +21,8 @@ import org.robolectric.annotation.Config
 /**
  * Automatic compaction is driven purely by the provider's billed input usage (cloud policy):
  *  - no billed usage => no automatic compaction, no matter how large the local history is;
- *  - freshly appended assistant/tool content is never accumulated into a local projection;
+ *  - the decision is the latest receipt itself (the ring's number), never receipt + local growth;
+ *  - a receipt carried over from the previous run only calibrates the hard send limit;
  *  - automatic compaction fires at exactly 80% of the effective window (configured window wins);
  *  - after a summary commits the loop waits for the next reported usage before it can fire again;
  *  - hitting the local persistence cap pauses without summarizing protected history.
@@ -54,8 +55,8 @@ class AgentAutomaticCompactionTest {
         }
     }
 
-    @Test fun unmeasuredInitialRequestUsesSilentLocalPressure() {
-        // The local history exceeds 80% before any provider request: summarize safely.
+    @Test fun unmeasuredInitialRequestIsSentWithoutLocalAutoCompaction() {
+        // The local estimate is above 80% but below the hard send limit: only a receipt may decide.
         val messages = largeHistory()
         assertTrue(requestTokens(messages) >= AUTO_PRESSURE)
         val events = mutableListOf<AgentEvent>()
@@ -65,33 +66,31 @@ class AgentAutomaticCompactionTest {
             compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
 
         assertEquals(1, provider.requests.size)
-        assertEquals(1, summaries)
-        assertTrue(events.filterIsInstance<AgentEvent.UsageReceived>().none { !it.projected })
-        assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
-        assertEquals(1, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().size)
-        assertEquals(1, events.filterIsInstance<AgentEvent.ContextCompacted>().count { it.applied })
-    }
-
-    @Test fun seededCloudAnchorKeepsAnOverCountingLocalEstimateFromCompacting() {
-        // 本地估算已过 80%，但 UI 带来的上一张回执远低于阈值：不压缩。
-        val messages = largeHistory()
-        assertTrue(requestTokens(messages) >= AUTO_PRESSURE)
-        val events = mutableListOf<AgentEvent>()
-        var summaries = 0
-        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }))
-        assertEquals("done", runLoop(messages, provider, events, calibratedInputTokens = AUTO_PRESSURE / 2,
-            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
-        assertEquals(1, provider.requests.size)
         assertEquals(0, summaries)
         assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+        // The ring keeps its single local estimate for the first request.
+        assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
+    }
 
-        // 锚点本身过了阈值时照常压缩。
-        val over = mutableListOf<AgentEvent>()
-        var overSummaries = 0
-        runLoop(smallHistory(), ScriptedProvider(listOf({ _, _ -> assistant() })), over,
-            calibratedInputTokens = AUTO_PRESSURE,
-            compactHistory = { source, policy -> overSummaries++; summarize(source, policy) })
-        assertEquals(1, overSummaries)
+    @Test fun carriedOverReceiptOnlyCalibratesTheHardSendLimit() {
+        // A previous run's receipt at 80% does not schedule a summary by itself.
+        for (seed in listOf(AUTO_PRESSURE / 2, AUTO_PRESSURE)) {
+            val events = mutableListOf<AgentEvent>()
+            var summaries = 0
+            val provider = ScriptedProvider(listOf({ _, _ -> assistant() }))
+            assertEquals("done", runLoop(largeHistory(), provider, events, calibratedInputTokens = seed,
+                compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+            assertEquals(1, provider.requests.size)
+            assertEquals(0, summaries)
+            assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+        }
+        // Above the send limit it still protects the request before it leaves.
+        var hardSummaries = 0
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }))
+        assertEquals("done", runLoop(smallHistory(), provider, mutableListOf(), calibratedInputTokens = WINDOW - 1000,
+            compactHistory = { source, policy -> hardSummaries++; summarize(source, policy) }).content)
+        assertEquals(1, hardSummaries)
+        assertEquals(1, provider.requests.size)
     }
 
     @Test fun calibratedUsageAndSmallIncrementBelowThresholdDoNotCompact() {
@@ -119,12 +118,14 @@ class AgentAutomaticCompactionTest {
             val messages = smallHistory()
             val events = mutableListOf<AgentEvent>()
             var summaries = 0
-            val provider = ScriptedProvider(listOf({ _, _ -> assistant(promptTokens = decisionTokens - responseDelta) }))
+            // The receipt itself is compared; the reply appended after it is not added.
+            assertTrue(responseDelta > 0)
+            val provider = ScriptedProvider(listOf({ _, _ -> assistant(promptTokens = decisionTokens) }))
             assertEquals("done", runLoop(messages, provider, events, config = config,
                 compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
 
             assertEquals(1, provider.requests.size)
-            assertEquals(decisionTokens - responseDelta,
+            assertEquals(decisionTokens,
                 requireNotNull(events.filterIsInstance<AgentEvent.UsageReceived>().single { !it.projected }.usage.inputTokens))
             if (decisionTokens < threshold) {
                 assertEquals(0, summaries)
@@ -136,26 +137,27 @@ class AgentAutomaticCompactionTest {
         }
     }
 
-    @Test fun silentToolIncrementTriggersSummaryWithoutChangingTheCloudBill() {
+    @Test fun localToolIncrementWaitsForTheNextCloudReceipt() {
         val messages = smallHistory()
         val events = mutableListOf<AgentEvent>()
         var summaries = 0
         val output = "x".repeat(360_000)
         val provider = ScriptedProvider(listOf(
             { _, _ -> toolReply("big").put("usage", JSONObject().put("prompt_tokens", 131_470)) },
+            { _, _ -> toolReply("next").put("usage", JSONObject().put("prompt_tokens", AUTO_PRESSURE)) },
             { _, _ -> assistant(promptTokens = 20) },
         ))
         assertEquals("done", runLoop(messages, provider, events,
             toolExecutor = AgentModelClient.ToolExecutor { _ -> AgentModelClient.ToolResult(output) },
             compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
 
-        assertEquals(2, provider.requests.size)
+        assertEquals(3, provider.requests.size)
+        // The large tool result alone (a local increment) does not summarize; it is sent.
+        assertTrue(provider.requests[1].toString().contains(output))
+        // The next receipt at 80% does.
         assertEquals(1, summaries)
-        assertEquals(1, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().size)
-        // The new cloud base is discarded after summary; the complete tool result still fits.
-        assertTrue(requestTokens(provider.requests.last()) < AUTO_PRESSURE)
-        assertTrue(provider.requests.last().toString().contains(output))
-        assertEquals(listOf(131470, 20), events.filterIsInstance<AgentEvent.UsageReceived>()
+        assertEquals(3, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        assertEquals(listOf(131470, AUTO_PRESSURE, 20), events.filterIsInstance<AgentEvent.UsageReceived>()
             .filterNot { it.projected }.map { it.usage.inputTokens })
     }
 

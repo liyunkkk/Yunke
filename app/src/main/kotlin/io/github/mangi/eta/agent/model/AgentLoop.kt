@@ -132,12 +132,10 @@ internal class AgentLoop(
     fun run(): Result {
         // Only annotate messages created by this run. The current user entry is initially last.
         messages.optJSONObject(messages.length() - 1)?.put(AgentTurnIdentity.JSON_KEY, turnId)
-        // 新 run 的第一个决策点还没有本轮回执。UI 手里有上一张可信回执时用它做锚点：
-        // 本地字符估算在中文长会话里常常比实测高四成以上，单靠它会在远没到 80% 时误压缩。
-        calibratedInputTokens?.takeIf { it > 0 }?.let { seed ->
-            silentBudget.requestStarted(localRequestTokens())
-            silentBudget.measured(seed, config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
-        }
+        // UI 手里有上一张可信回执时，用它折算到本次请求的值校准发送上限。
+        // 自动压缩不看它：80% 只看本次 run 收到的真实回执（圆环上的数）。
+        silentBudget.seed(localRequestTokens(), calibratedInputTokens,
+            config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
         var round = 1
 
         roundLoop@ while (true) {
@@ -523,26 +521,29 @@ internal class AgentLoop(
         }
         val window = config.contextWindow?.takeIf { it > 0 } ?: return false
         // Hard send limit only: correct a measured local under-count so an uncalibrated
-        // request cannot leave above the configured window. Compaction scheduling keeps
-        // using the uncorrected budget, so a purely local estimate still cannot summarize.
+        // request cannot leave above the configured window. Automatic scheduling reads
+        // cloud receipts only; this guard is the one place a local estimate may compact.
         val tokens = silentBudget.sendLimitTokens(localRequestTokens())
         return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
     }
 
-    private fun maybeCompactBeforeRound(round: Int, pressureRetry: Boolean = false) {
+    private fun maybeCompactBeforeRound(round: Int) {
         val override = runController.takePendingCompact()
         val forced = override != null
         if (forced) { manualBudgetAttempt = true; lastFailedCompaction = null }
-        if (!forced && !pressureRetry && (!compactPolicy.enabled || overflowPending)) return
+        if (!forced && (!compactPolicy.enabled || overflowPending)) return
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        if (!forced && !pressureRetry && skipIneffectiveAutoCompact && !requestOverBudget()) return
-        // Soft scheduling uses request tokens only. Hard input/storage limits and
-        // confirmed provider overflow are handled separately by tryBudgetCompaction.
+        if (!forced && skipIneffectiveAutoCompact && !requestOverBudget()) return
+        // Automatic (80%) scheduling reads only the latest real cloud receipt of this run,
+        // the same number the conversation ring shows. No receipt, a committed summary or a
+        // tool-output pruning all leave it unknown until the next receipt: a local estimate
+        // never schedules a summary. Hard input/storage limits and confirmed provider
+        // overflow are handled separately by tryBudgetCompaction.
         if (!forced && storedHistoryChars() > persistenceCharLimit()) return
-        var decisionTokens = requestBudgetTokens()
-        if (!forced && decisionTokens < AgentContextCompactor.autoPressureTokens(window)) return
-        budgetCompressModelConfig = override?.compressModelConfig
-            ?: if (pressureRetry) budgetCompressModelConfig else compactPolicy.compressModelConfig
+        val cloudTokens = silentBudget.cloudTokens()
+        if (!forced && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) return
+        var decisionTokens = if (forced) requestBudgetTokens() else requireNotNull(cloudTokens)
+        budgetCompressModelConfig = override?.compressModelConfig ?: compactPolicy.compressModelConfig
         val keep = AgentContextCompactor.coerceKeepRecent(
             override?.keepRecentMessages ?: compactPolicy.keepRecentMessages,
         )
@@ -556,11 +557,18 @@ internal class AgentLoop(
         }
         val pruned = pruneOversizedToolResults(round, systemCount + cut)
         if (pruned) {
+            if (!forced) {
+                // Pruning changed the context, so the receipt no longer describes the next
+                // request. Send it and let the next receipt decide whether to summarize.
+                silentBudget.cloudStale()
+                overflowPending = false
+                skipIneffectiveAutoCompact = false
+                return
+            }
             // Both the DTO and same-model JSON replay must come from this new snapshot.
             history = historyForCompaction()
             cut = compactionStart(history)
             decisionTokens = requestBudgetTokens()
-            if (!forced && decisionTokens < AgentContextCompactor.autoPressureTokens(window)) return
         }
         if (forced && cut <= 0) {
             onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
@@ -570,11 +578,8 @@ internal class AgentLoop(
         if (reduced || pruned) {
             overflowPending = false
             skipIneffectiveAutoCompact = false
-            // Re-evaluate the whole request, not a desired summary length. At most
-            // one additional pressure pass, and only after measurable progress.
-            if (reduced && !pressureRetry && requestBudgetTokens() >= AgentContextCompactor.autoPressureTokens(window)) {
-                maybeCompactBeforeRound(round, pressureRetry = true)
-            }
+            // A committed summary clears the receipt; the next one decides whether another
+            // pass is needed. The hard send limit still guards the request in between.
         } else if (!forced) {
             skipIneffectiveAutoCompact = true
         }
