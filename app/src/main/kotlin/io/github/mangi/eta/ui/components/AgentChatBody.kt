@@ -58,8 +58,6 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -68,9 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.Outline
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,9 +80,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Velocity
-import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.browser.AgentBrowserSession
@@ -942,21 +936,25 @@ internal fun AgentConversationMessages(
         }
     }
 
-    val restClip = remember(bottomInset) { ConversationRestClip(bottomInset) }
-    // 输入器悬浮在会话之上。跟底时内层上提、外层用裁剪矩形挡住静止线以下。
-    // 不使用离屏缓冲：展开工具或推理的第一帧若整页离屏重画，会直接掉帧。
-    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除。
+    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
+    // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
+    // 才追上。这几帧不裁剪（裁剪会把卡片底边和半行字切掉），而是在绘制阶段把整个列表
+    // 上提尚未追上的距离：尾部始终停在输入框上方 14dp 的静止线，底边和间距都完整可见。
+    // 只有尾部不在视口内（一次性长出超过一屏）时才退回裁在静止线上。
+    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除，内容可以滑到输入框后面。
     Box(
         modifier = modifier
             .clipToBounds()
-            .graphicsLayer {
-                if (shouldLiftTail) {
-                    clip = true
-                    shape = restClip
-                } else {
-                    clip = false
-                    shape = RectangleShape
+            .drawWithContent {
+                // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
+                // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
+                // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
+                if (!shouldLiftTail) {
+                    drawContent()
+                    return@drawWithContent
                 }
+                val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
+                clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
             },
     ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
@@ -1771,9 +1769,3 @@ internal fun shouldStopOrphanSpeechPlayback(
 /** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
 private val ConversationComposerGap = 14.dp
 
-private class ConversationRestClip(private val bottomInset: Dp) : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
-        val bottom = size.height - with(density) { (bottomInset + ConversationComposerGap).toPx() }
-        return Outline.Rectangle(Rect(0f, 0f, size.width, bottom.coerceAtLeast(0f)))
-    }
-}

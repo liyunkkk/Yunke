@@ -78,11 +78,6 @@ class AgentChatViewportContractTest(unittest.TestCase):
     def test_composer_floats_over_the_full_height_list(self):
         # The composer surround is transparent: the viewport is not shortened,
         # so messages remain visible around and behind the floating composer.
-        lists = list(calls(self.messages, "LazyColumn"))
-        self.assertRegex(
-            lists[0],
-            r"translationY\s*=\s*if\s*\(\s*shouldLiftTail\s*\)",
-        )
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
@@ -96,16 +91,26 @@ class AgentChatViewportContractTest(unittest.TestCase):
         # While following streamed output, the tail is lifted to the 14dp line and
         # also clipped there. Fast output can draw a new line past the measured
         # tail before the lift catches it; the clip keeps that line out of the composer.
+        lists = list(calls(self.messages, "LazyColumn"))
+        self.assertRegex(
+            lists[0],
+            r"graphicsLayer\s*\{[^}]*if\s*\(\s*shouldLiftTail\s*\)\s*\{[^}]*"
+            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
+        )
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         draw = boxes[0]
-        self.assertRegex(draw, r"shape\s*=\s*restClip")
-        self.assertNotIn("CompositingStrategy.Offscreen", draw)
+        self.assertRegex(draw, r"if\s*\(\s*!shouldLiftTail\s*\)")
+        self.assertRegex(
+            draw,
+            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",
+        )
+        self.assertRegex(draw, r"clipRect\s*\(\s*bottom\s*=\s*restLine")
 
     def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
-        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 4)
+        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 3)
 
     def test_lazy_column_rests_above_the_composer(self):
         lists = list(calls(self.messages, "LazyColumn"))
