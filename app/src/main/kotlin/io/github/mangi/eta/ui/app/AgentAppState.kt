@@ -3072,6 +3072,7 @@ internal class AgentAppState(
         if (count <= 0) return
         val body = appContext.resources.getQuantityString(R.plurals.context_compacted_messages, count, count)
         val title = conversationId?.let { conversationTitles[it] }?.trim().orEmpty()
+            .let { raw -> if (raw.length <= 12) raw else raw.take(12) + "…" }
         val text = if (conversationId != selectedConversationId && title.isNotBlank()) "$title：$body" else body
         Toast.makeText(appContext, text, Toast.LENGTH_SHORT).show()
     }
