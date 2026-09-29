@@ -10,6 +10,7 @@ import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
 import io.github.mangi.eta.ui.model.RunTraceMessageUi
 import io.github.mangi.eta.ui.model.SuggestionChipsMessageUi
+import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
@@ -70,21 +71,117 @@ internal object AgentConversationRevisionReducer {
         )
     }
 
+    /**
+     * 操作栏只删它和上一条操作栏之间的消息。用户气泡自己的栏不带走回复，
+     * 回复栏也不回头删掉提问或更早一段。
+     */
     fun deleteFromTurn(state: AgentChatUiState, targetMessageId: String): AgentChatUiState? {
-        val boundary = boundary(state, targetMessageId) ?: return null
-        val messages = state.messages.take(boundary.userMessageIndex)
+        val segments = actionBarSegments(state.messages)
+        val segment = segments.firstOrNull { it.ownerId == targetMessageId } ?: return null
+        val history = historyWithoutSegment(state, segment, segments) ?: return null
+        val messages = state.messages.filterIndexed { index, _ ->
+            index < segment.start || index > segment.endInclusive
+        }
         return state.copy(
             messages = messages,
-            history = boundary.historyPrefix,
+            history = history,
             messageEdit = null,
-            // Deleting turns is neither a new chat nor compaction. Keep the last cloud
-            // bill that still belongs to the retained transcript, and drop the old
-            // local calibration so the next receipt is not judged against deleted text.
             livePromptTokens = latestBilledContextTokens(messages),
             livePromptIsProjected = false,
             cloudHistoryTokens = null,
             cloudRequestOverheadTokens = null,
         )
+    }
+
+    internal data class ActionBarSegment(val start: Int, val endInclusive: Int, val ownerId: String)
+
+    /** 与时间线上的操作栏同一套分界：用户气泡单独一段，回复在下一条用户消息或下一次收口处分段。 */
+    internal fun actionBarSegments(messages: List<AgentChatMessageUi>): List<ActionBarSegment> {
+        val segments = mutableListOf<ActionBarSegment>()
+        var start = 0
+        var owner: AgentChatMessageUi? = null
+        var terminalIndex = -1
+        fun flush(end: Int) {
+            val current = owner
+            if (current != null && end >= start) {
+                segments += ActionBarSegment(start, end, current.id)
+            }
+            start = end + 1
+            owner = null
+            terminalIndex = -1
+        }
+        messages.forEachIndexed { index, message ->
+            when (message) {
+                is UserMessageUi -> {
+                    if (index > start) flush(index - 1)
+                    segments += ActionBarSegment(index, index, message.id)
+                    start = index + 1
+                }
+                is AgentMessageUi -> {
+                    if (message.content.isNotBlank()) {
+                        if (terminalIndex >= 0) flush(terminalIndex)
+                        owner = message
+                    }
+                }
+                is SystemNoticeMessageUi -> {
+                    if (message.code == SystemNoticeCode.ModelRetry) {
+                        if (terminalIndex >= 0) flush(terminalIndex)
+                    } else {
+                        if (message.code != SystemNoticeCode.Completed || owner == null) owner = message
+                        terminalIndex = index
+                    }
+                }
+                else -> Unit
+            }
+        }
+        if (owner != null) flush(messages.lastIndex)
+        return segments
+    }
+
+    private fun historyWithoutSegment(
+        state: AgentChatUiState,
+        segment: ActionBarSegment,
+        segments: List<ActionBarSegment>,
+    ): List<AgentModelClient.ConversationMessage>? {
+        val message = state.messages[segment.start]
+        if (segment.start == segment.endInclusive && message is UserMessageUi) {
+            val index = historyUserIndex(state, segment.start) ?: return null
+            return state.history.filterIndexed { historyIndex, _ -> historyIndex != index }
+        }
+        val previousUser = (segment.start - 1 downTo 0).firstOrNull { index ->
+            val candidate = state.messages[index]
+            candidate is UserMessageUi && !candidate.isSteerSupplement()
+        }
+        val nextUser = (segment.endInclusive + 1 until state.messages.size).firstOrNull { index ->
+            val candidate = state.messages[index]
+            candidate is UserMessageUi && !candidate.isSteerSupplement()
+        }
+        val historyFrom = previousUser?.let { historyUserIndex(state, it)?.plus(1) ?: return null } ?: 0
+        val historyTo = nextUser?.let { historyUserIndex(state, it) ?: return null } ?: state.history.size
+        if (historyFrom > historyTo || historyFrom > state.history.size) return null
+        val replySegments = segments.filter { candidate ->
+            candidate.start >= (previousUser?.plus(1) ?: 0) &&
+                (nextUser == null || candidate.endInclusive < nextUser) &&
+                state.messages[candidate.start] !is UserMessageUi
+        }
+        if (replySegments.size <= 1) {
+            return state.history.filterIndexed { index, _ -> index !in historyFrom until historyTo }
+        }
+        val drop = mutableSetOf<Int>()
+        val buckets = replySegments.associateWith { mutableListOf<Int>() }
+        var bucket = 0
+        for (offset in 0 until (historyTo - historyFrom)) {
+            val role = state.history[historyFrom + offset].role
+            if (role != "assistant" && role != "tool") continue
+            val target = replySegments[bucket.coerceAtMost(replySegments.lastIndex)]
+            buckets.getValue(target) += historyFrom + offset
+            val needed = state.messages.subList(target.start, target.endInclusive + 1).count { item ->
+                (item is AgentMessageUi && item.content.isNotBlank()) || item is ToolActivityMessageUi
+            }.coerceAtLeast(1)
+            if (bucket < replySegments.lastIndex && buckets.getValue(target).size >= needed) bucket++
+        }
+        buckets[segment]?.let(drop::addAll)
+        return state.history.filterIndexed { index, _ -> index !in drop }
     }
 
     /**
