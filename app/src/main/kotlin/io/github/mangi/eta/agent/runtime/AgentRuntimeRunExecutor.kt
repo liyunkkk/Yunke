@@ -30,6 +30,7 @@ import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
+import io.github.mangi.eta.data.repository.SubAgentRunRepository
 import io.github.mangi.eta.agent.terminal.LinuxDistribution
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -192,6 +193,9 @@ internal class AgentRuntimeRunExecutor(
                         workerIds = configuredChildren.map { it.first.id },
                         workerNames = configuredChildren.map { it.first.name },
                         workerModelIds = configuredChildren.map { it.first.modelId },
+                        workerTiers = configuredChildren.map { it.first.tier },
+                        sampleSource = { scope -> SubAgentRunRepository.recent(appContext, scope) },
+                        onSample = { scope, sample -> SubAgentRunRepository.record(appContext, scope, sample) },
                         modelParallelLimits = frozenParallelLimits,
                         poolScope = poolScope,
                         allowTimeoutContinuation = true,
@@ -211,7 +215,8 @@ internal class AgentRuntimeRunExecutor(
                                 val backend = requireNotNull(workspace)
                                 SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
                                     backend.childExecutor(project, id, writable, controller), controller,
-                                    workspaceMode = true, writable = writable, sessionId = childSessionId, onProgress = progress)
+                                    workspaceMode = true, writable = writable, sessionId = childSessionId, onProgress = progress,
+                                    maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
                             } else {
                                 val readTools = SubAgentTools.filter(AgentToolCatalog.build(
                                     terminalTools = allowTerminal && currentPermissions().terminalTools,
@@ -221,14 +226,16 @@ internal class AgentRuntimeRunExecutor(
                                     memoryTools = memoryEnabled,
                                     capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay)))
                                 SubAgentRunner.run(config, prompt, readTools, executor, controller,
-                                    sessionId = childSessionId, onProgress = progress)
+                                    sessionId = childSessionId, onProgress = progress,
+                                    maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
                             }
                         },
                         executeWorkspaceChild = { config, prompt, controller, project, id, writable ->
                             val backend = requireNotNull(workspace)
                             SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
                                 backend.childExecutor(project, id, writable, controller), controller,
-                                workspaceMode = true, writable = writable, sessionId = childSessionId)
+                                workspaceMode = true, writable = writable, sessionId = childSessionId,
+                                maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
                         },
                     ) { config, prompt, controller ->
                         val readTools = SubAgentTools.filter(AgentToolCatalog.build(
@@ -238,7 +245,8 @@ internal class AgentRuntimeRunExecutor(
                             deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
                             memoryTools = memoryEnabled,
                             capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay)))
-                        SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = childSessionId)
+                        SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = childSessionId,
+                            maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
                     }
                     val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
                         releaseTools = { ownership.release() }, workspaceEnvironment = workspaceEnvironment,

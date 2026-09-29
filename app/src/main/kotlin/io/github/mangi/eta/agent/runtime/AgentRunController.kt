@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.delegation.SubAgentPlan
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.ArrayDeque
@@ -30,6 +31,9 @@ internal class AgentRunController {
     private var pendingCompact: CompactRequest? = null
     private var boundaryObserver: (() -> Unit)? = null
     private var taskProgressReporter: ((String) -> Boolean)? = null
+
+    /** 子代理预算：协调器在派发前写入，运行器读取以告知子代理；默认 null 表示不额外约束。 */
+    @Volatile var subAgentBudget: SubAgentPlan? = null
 
     data class CompactRequest(
         val keepRecentMessages: Int? = null,

@@ -27,6 +27,12 @@ internal class SubAgentCoordinator(
     private val workerIds: List<String> = workers.indices.map { "worker-${it + 1}" },
     private val workerNames: List<String> = workerIds,
     private val workerModelIds: List<String> = List(workers.size) { "" },
+    /** 各 worker 的任务分工；用于映射预算档位，未设置时按中间档。 */
+    private val workerTiers: List<SubAgentTaskTier?> = List(workers.size) { null },
+    /** 同档位历史样本来源；默认空表示沿用档位默认预算。 */
+    private val sampleSource: (SubAgentScope) -> List<SubAgentSample> = { emptyList() },
+    /** 子代理运行结束后回报实际消耗；默认不记录。 */
+    private val onSample: (SubAgentScope, SubAgentSample) -> Unit = { _, _ -> },
     prepareManualCompactor: (AgentModelClient.ModelConfig) -> AgentModelClient.ModelConfig = { it },
     executeVideoChild: ((AgentModelClient.ModelConfig, String, AgentRunController) -> String)? = null,
     executeImageChild: ((AgentModelClient.ModelConfig, String, AgentRunController, AgentImageGenerationOptions) -> String)? = null,
@@ -37,7 +43,7 @@ internal class SubAgentCoordinator(
     poolScope: String? = null,
     executeChild: (AgentModelClient.ModelConfig, String, AgentRunController) -> String,
 ) : AutoCloseable {
-    init { require(workers.isNotEmpty() && roles.size == workers.size && workerIds.size == workers.size && workerIds.distinct().size == workers.size && workerNames.size == workers.size && workerModelIds.size == workers.size && modelParallelLimits.size == workers.size && modelParallelLimits.all { it >= 0 }) }
+    init { require(workers.isNotEmpty() && roles.size == workers.size && workerIds.size == workers.size && workerIds.distinct().size == workers.size && workerNames.size == workers.size && workerModelIds.size == workers.size && workerTiers.size == workers.size && modelParallelLimits.size == workers.size && modelParallelLimits.all { it >= 0 }) }
 
     @Volatile private var workspace = workspace
     @Volatile private var executeWorkspaceChild = executeWorkspaceChild
@@ -90,6 +96,10 @@ internal class SubAgentCoordinator(
         @Volatile var result = ""
         @Volatile var errorCode = ""
         @Volatile var future: Future<*>? = null
+        /** 本次委派的预算；null 表示不限制（媒体任务或未设置）。 */
+        @Volatile var budgetPlan: SubAgentPlan? = null
+        /** 实际发生的 provider 请求轮次，用于写入历史样本。 */
+        val providerRounds = AtomicInteger()
 
         // Only mutation paths call this; readers never advance a task's transition token.
         fun refreshContextStatus() {
@@ -409,6 +419,7 @@ internal class SubAgentCoordinator(
                         t.watchdog?.cancel(false); t.leaseRenewal?.cancel(false)
                         synchronized(t) { publishContext(t.context.finish(t.state)); t.executing = false; changed() }
                         diagnostic(t, "worker_released")
+                        recordSample(t)
                         releaseIfClosedAndIdle()
                     }
                 }
@@ -420,6 +431,14 @@ internal class SubAgentCoordinator(
             val predecessor = requireNotNull(blockedPredecessor)
             synchronized(predecessor) { if (predecessor.state == "awaiting_decision" && predecessor.errorCode == "SUB_AGENT_NO_PROGRESS") stop(predecessor, "cancelled", "REPLACED_AFTER_BLOCK") }
             return errorResult("REPLACE_PENDING_STOP")
+        }
+        // 在放行子任务（release dispatchGate）之前定档，避免运行器读到半态预算。
+        if (task.role !in MEDIA) {
+            val scope = SubAgentTaskTier.scopeOf(workerTiers.getOrNull(task.worker))
+            // 历史样本读取失败时退回档位默认值，不影响派发。
+            val plan = AgentSubAgentBudget.plan(scope, runCatching { sampleSource(scope) }.getOrDefault(emptyList()))
+            task.budgetPlan = plan
+            task.controller.subAgentBudget = plan
         }
         if (task.role == "implementation") {
             try {
@@ -501,7 +520,7 @@ internal class SubAgentCoordinator(
     }
     private fun diagnosticEvent(task: Task, event: AgentEvent) {
         when (event) {
-            is AgentEvent.ProviderRequestStarted -> diagnostic(task, "provider_request", more = mapOf("round" to event.round))
+            is AgentEvent.ProviderRequestStarted -> { task.providerRounds.incrementAndGet(); diagnostic(task, "provider_request", more = mapOf("round" to event.round)) }
             is AgentEvent.ProviderResponseStarted -> diagnostic(task, "provider_response", more = mapOf("round" to event.round, "http_status" to event.httpCode))
             is AgentEvent.ModelRetryScheduled -> diagnostic(task, "provider_retry", more = mapOf("attempt" to event.attempt, "delay_ms" to event.delayMs))
             is AgentEvent.ToolStarted -> diagnostic(task, "tool_started", more = mapOf("round" to event.round), tool = event.name)
@@ -515,6 +534,17 @@ internal class SubAgentCoordinator(
         callbacks.post("context:${stats.taskId}") { onContext?.invoke(stats) }
         // Registry subscriptions survive parent sink detachment and failed sink callbacks.
         changed()
+    }
+    /** 运行结束后把实际消耗写入历史样本；媒体任务与无消耗任务不记录。 */
+    private fun recordSample(task: Task) {
+        val plan = task.budgetPlan ?: return
+        if (task.role in MEDIA) return
+        val stats = task.context.value
+        val tokens = (stats.inputTokens + stats.outputTokens).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+        val rounds = task.providerRounds.get()
+        if (tokens <= 0 && rounds <= 0) return
+        // 样本记录失败不应影响任务收尾。
+        runCatching { onSample(plan.scope, SubAgentSample(tokens = tokens, rounds = rounds, ok = task.state == "completed")) }
     }
     @Synchronized private fun find(id: String): Task = requireNotNull(tasks[id]) { "Task does not belong to this session" }
     private fun get(args: JSONObject): JSONObject {
@@ -582,7 +612,7 @@ internal class SubAgentCoordinator(
         val replaceReason = when { task.role in MEDIA -> "media_delivery_uncertain"; task.state == "failed" -> "failed"; task.state == "awaiting_decision" && task.errorCode == "SUB_AGENT_NO_PROGRESS" -> "blocked_no_progress"; task.errorCode == "REPLACED_AFTER_BLOCK" && !task.executing -> "blocked_stopped"; else -> "healthy_or_not_isolated" }
         val paused = task.state == "awaiting_decision"
         val pendingPause = task.role !in MEDIA && task.state in setOf("queued", "running") && pendingGroupPauses.get() > 0
-        JSONObject().put("ok", true).put("task_id", task.id).put("worker", task.worker + 1).put("agent_id", workerIds[task.worker]).put("agent_name", workerNames[task.worker])
+        val snapshot = JSONObject().put("ok", true).put("task_id", task.id).put("worker", task.worker + 1).put("agent_id", workerIds[task.worker]).put("agent_name", workerNames[task.worker])
             .put("model", model.model).put("model_display_name", model.modelDisplayName.ifBlank { model.model }).put("provider_id", model.providerId).put("provider_name", model.providerName)
             .put("status", task.state).put("result", task.result).put("partial_result", task.confirmedText.value()).put("partial_result_unverified", true)
             .put("execution_exited", !active(task)).put("stopping", stopping || (task.state !in ACTIVE && active(task))).put("pause_supported", task.role !in MEDIA)
@@ -595,6 +625,11 @@ internal class SubAgentCoordinator(
             .put("successor_task_id", task.successorId ?: JSONObject.NULL).put("replaces_task_id", task.predecessorId ?: JSONObject.NULL).put("replace_reason", replaceReason)
             .put("continuation_count", task.continuationCount).put("parallel_limit", SubAgentModelPools.currentLimit(poolLeases[task.worker])).put("supervision", task.journal.page(after.coerceAtLeast(0), limit))
             .put("continuation_note", if (paused) "已请求在安全边界暂停，pause_confirmed 表示已到达边界；保留同一任务、上下文与工作树。主代理可显式 continue_task 或 cancel_task，不重放正在进行的请求/工具。" else "")
+        task.budgetPlan?.let { plan ->
+            snapshot.put("budget", JSONObject().put("scope", plan.scope.wire).put("max_rounds", plan.maxRounds)
+                .put("token_budget", plan.tokenBudget).put("sample_count", plan.sampleCount).put("from_history", plan.fromHistory))
+        }
+        snapshot
     }
     @Synchronized private fun manage(args: JSONObject): JSONObject {
         if (closed || stopping) return errorResult("RUN_CLOSED")

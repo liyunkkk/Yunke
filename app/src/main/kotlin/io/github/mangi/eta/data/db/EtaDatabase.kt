@@ -24,8 +24,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RuntimeInFlightEventEntity::class,
         SkillRegistryEntity::class,
         McpServerEntity::class,
+        SubAgentRunEntity::class,
     ],
-    version = 31,
+    version = 32,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -34,6 +35,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
     abstract fun runtimeRunDao(): RuntimeRunDao
     abstract fun skillDao(): SkillDao
     abstract fun mcpServerDao(): McpServerDao
+    abstract fun subAgentRunDao(): SubAgentRunDao
 
     companion object {
         @Volatile
@@ -72,6 +74,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_28_29,
                         MIGRATION_29_30,
                         MIGRATION_30_31,
+                        MIGRATION_31_32,
                     )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -177,6 +180,19 @@ internal abstract class EtaDatabase : RoomDatabase() {
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->
             database.execSQL(
                 "ALTER TABLE model_providers ADD COLUMN session_gateway_json TEXT NOT NULL DEFAULT ''"
+            )
+        }
+
+        /** 子代理消耗样本：滑动窗口数据，只用于同档位预算估算。 */
+        internal val MIGRATION_31_32 = Migration(31, 32) { database ->
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS sub_agent_runs (" +
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "scope TEXT NOT NULL, " +
+                    "tokens INTEGER NOT NULL, " +
+                    "rounds INTEGER NOT NULL, " +
+                    "ok INTEGER NOT NULL, " +
+                    "created_at INTEGER NOT NULL)"
             )
         }
 

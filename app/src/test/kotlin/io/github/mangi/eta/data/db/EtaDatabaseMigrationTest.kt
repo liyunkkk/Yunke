@@ -68,6 +68,7 @@ class EtaDatabaseMigrationTest {
                 EtaDatabase.MIGRATION_28_29,
                 EtaDatabase.MIGRATION_29_30,
                 EtaDatabase.MIGRATION_30_31,
+                EtaDatabase.MIGRATION_31_32,
             )
             .build()
         } catch (error: Throwable) {
@@ -95,7 +96,7 @@ class EtaDatabaseMigrationTest {
                 database.conversationDao().contextCheckpoint("conv-1")
             }
             assertEquals("", retainedCheckpoint?.cloudUsageJson)
-            assertEquals(31, database.openHelper.readableDatabase.version)
+            assertEquals(32, database.openHelper.readableDatabase.version)
             val oversizedCheckpoint = runBlocking(Dispatchers.IO) {
                 database.conversationDao().contextCheckpoint("conv-oversized")
             }
@@ -116,6 +117,9 @@ class EtaDatabaseMigrationTest {
             }
             val mcpServers = runBlocking(Dispatchers.IO) {
                 database.mcpServerDao().servers()
+            }
+            val subAgentSamples = runBlocking(Dispatchers.IO) {
+                database.subAgentRunDao().recent("quick", 10)
             }
 
             assertEquals("保留的结果", result.content)
@@ -148,6 +152,7 @@ class EtaDatabaseMigrationTest {
             assertEquals(null, migratedMessage.generatedAtMillis)
             assertEquals(emptyList<RuntimeInFlightRunWithEvents>(), inFlightRuns)
             assertEquals(listOf("mcp-1"), mcpServers.map { it.id })
+            assertEquals(emptyList<SubAgentRunRow>(), subAgentSamples)
             assertEquals(null, mcpServers.single().toolsExpireAt)
             assertEquals(null, provider.models.first().contextWindowOverride)
             assertEquals(null, provider.models.first().reasoningOverride)
@@ -286,10 +291,10 @@ class EtaDatabaseMigrationTest {
             val database = Room.databaseBuilder(context, EtaDatabase::class.java, name)
                 .allowMainThreadQueries()
                 .openHelperFactory(FrameworkSQLiteOpenHelperFactory())
-                .addMigrations(EtaDatabase.MIGRATION_28_29, EtaDatabase.MIGRATION_29_30, EtaDatabase.MIGRATION_30_31)
+                .addMigrations(EtaDatabase.MIGRATION_28_29, EtaDatabase.MIGRATION_29_30, EtaDatabase.MIGRATION_30_31, EtaDatabase.MIGRATION_31_32)
                 .build()
             try {
-                assertEquals(31, database.openHelper.writableDatabase.version)
+                assertEquals(32, database.openHelper.writableDatabase.version)
                 runBlocking(Dispatchers.IO) {
                     val result = database.runtimeRunDao().runtimeResults().single()
                     val archive = database.runtimeRunDao().archivedRuns().single().run
