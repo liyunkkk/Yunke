@@ -272,16 +272,20 @@ internal fun liveContextUsage(
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
     projectedContextTokens: Int? = null,
+    activeRunContextWindow: Int? = null,
 ): AgentContextUsageUi {
+    // An in-flight run keeps the window it was launched with, so a mid-run settings
+    // change must not restate the percentage of a request that never saw the new limit.
+    val window = activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow
     if (billedContextTokens != null && billedContextTokens > 0) {
-        return AgentContextUsageUi(billedContextTokens, selectedModel?.contextWindow)
+        return AgentContextUsageUi(billedContextTokens, window)
     }
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
     val local = projectedContextTokens?.takeIf { it > 0 }?.toLong()
         ?: ((historyTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
             history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
             requestOverheadTokens.coerceAtLeast(0) + uncommittedLiveTokens.coerceAtLeast(0))
-    return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), selectedModel?.contextWindow, estimated = true)
+    return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
 }
 
 /** Decision-only: actual input + locally counted changes since that exact request. */
@@ -298,6 +302,7 @@ internal fun compressionContextUsage(
     billedOverheadTokens: Int? = null,
     billedHistoryTokens: Int? = null,
     localHistoryTokenCount: Int? = null,
+    activeRunContextWindow: Int? = null,
 ): AgentContextUsageUi {
     if (billedContextTokens == null || billedContextTokens <= 0 ||
         billedHistoryTokens == null || billedOverheadTokens == null) {
@@ -305,7 +310,8 @@ internal fun compressionContextUsage(
         // needed for a safe delta. Only the silent budget falls back to a full estimate.
         val local = liveContextUsage(history, currentInput, pendingImages, selectedModel,
             pendingFileReferences, pendingConversationMentions, localHistoryTokenCount,
-            requestOverheadTokens = requestOverheadTokens)
+            requestOverheadTokens = requestOverheadTokens,
+            activeRunContextWindow = activeRunContextWindow)
         val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
             draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
         return local.copy(contextTokens = maxOf(local.contextTokens?.toLong() ?: 0L, floor)
@@ -318,7 +324,8 @@ internal fun compressionContextUsage(
     val fixedDelta = billedOverheadTokens?.let { requestOverheadTokens.toLong() - it } ?: 0L
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
     return AgentContextUsageUi((billedContextTokens.toLong() + delta + fixedDelta + draft)
-        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), selectedModel?.contextWindow, estimated = true)
+        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
+        activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow, estimated = true)
 }
 
 private fun draftContextTokens(

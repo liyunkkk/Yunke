@@ -76,6 +76,9 @@
   <string name="context_compacted_summary_title">压缩摘要</string>
   <string name="context_compacted_summary_action">查看摘要</string>
   <string name="action_launch_kimi_web">启动 Kimi Web</string>
+  <string name="action_sub_agent_status">子代理状态</string>
+  <string name="sub_agent_status_empty">这个会话还没有子代理</string>
+  <string name="sub_agent_status_close">关闭</string>
   <string name="route_chat">对话</string>
   <string name="route_browser">Agent 浏览器</string>
   <string name="route_tools">工具能力</string>
@@ -255,6 +258,8 @@
   <string name="appearance_morph_loading_collapse">收起显示时机</string>
   <string name="conversation_unnamed">新对话</string>
   <string name="conversation_search_hint">搜索对话</string>
+  <string name="model_search_hint">搜索模型</string>
+  <string name="model_search_empty">没有匹配的模型</string>
   <string name="drawer_greeting_morning">早上好👋</string>
   <string name="drawer_greeting_afternoon">下午好👋</string>
   <string name="drawer_greeting_evening">晚上好👋</string>
@@ -1034,6 +1039,14 @@
     <item quantity="other">删除选中的 %d 个提供商后将不可恢复。</item>
   </plurals>
   <string name="provider_reset_summary">将恢复“%1$s”的默认配置和官方模型列表，API Key 会保留。</string>
+  <string name="provider_remote_pick_title">选择要添加的模型</string>
+  <string name="provider_remote_select_all">全选</string>
+  <string name="provider_remote_invert">反选</string>
+  <string name="provider_remote_add">添加</string>
+  <string name="provider_remote_none_new">没有可添加的新模型</string>
+  <plurals name="provider_models_added">
+    <item quantity="other">已添加 %d 个模型</item>
+  </plurals>
   <plurals name="provider_models_fetched">
     <item quantity="other">成功，拉取到 %d 个模型</item>
   </plurals>
@@ -1367,6 +1380,8 @@
     <string name="stats_page_fresh_input_tokens">输入 Token（不含缓存）</string>
     <string name="stats_page_output_tokens">输出 Token</string>
     <string name="stats_page_cached_tokens">缓存 Token</string>
+    <string name="stats_page_cache_creation_tokens">缓存创建</string>
+    <string name="stats_page_token_total">总计</string>
     <string name="stats_page_launch_count">应用启动次数</string>
     <string name="stats_tab_overview">对话统计</string>
     <string name="stats_tab_models">模型用量</string>

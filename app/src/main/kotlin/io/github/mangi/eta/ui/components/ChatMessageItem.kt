@@ -13,12 +13,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -72,6 +70,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -285,6 +284,9 @@ internal class ChatMessageActions {
     var onRegenerateMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
     var onBranchMessage: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
 }
+
+/** 仅最底部那一行非空。展开时从上沿往下长，并通知列表先停掉跟底上提。 */
+internal val LocalTailResize = staticCompositionLocalOf<(() -> Unit)?> { null }
 
 @Composable
 internal fun ChatMessageItem(
@@ -2323,6 +2325,7 @@ private fun ThinkingRow(
     compact: Boolean = false,
     isPaused: Boolean = false,
 ) {
+    val reportTailResize = LocalTailResize.current
     var expanded by rememberSaveable(message.id) { mutableStateOf(!message.collapsed) }
     var manuallyExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     // 仅本次组合内由点击触发的展开才分帧组合正文；不跨配置变更保存。
@@ -2386,6 +2389,7 @@ private fun ThinkingRow(
                     manuallyExpanded = true
                     expandedByTap = !expanded
                     expanded = !expanded
+                    reportTailResize?.invoke()
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -2434,7 +2438,11 @@ private fun ThinkingRow(
             )
         }
 
-        AnimatedVisibility(visible = expanded && message.content.isNotBlank()) {
+        AnimatedVisibility(
+            visible = expanded && message.content.isNotBlank(),
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             HapticSelectionContainer {
                 Column {
                     if (!compact) {
@@ -2482,6 +2490,12 @@ private fun ThinkingRow(
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
 
 @Composable
+private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition = fadeIn(tween(120))
+
+@Composable
+private fun tailDetailsExit(): androidx.compose.animation.ExitTransition = fadeOut(tween(80))
+
+@Composable
 private fun ToolActivityInline(
     message: ToolActivityMessageUi,
     onOpenBrowser: () -> Unit,
@@ -2490,6 +2504,7 @@ private fun ToolActivityInline(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
+    val reportTailResize = LocalTailResize.current
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     // 只有「当前浏览器」卡片订阅实时会话快照，避免每个工具行都跟随快照重组
     val browserSnapshot = if (showBrowserShortcut) {
@@ -2540,7 +2555,10 @@ private fun ToolActivityInline(
             .clip(RoundedCornerShape(10.dp))
             .then(
                 if (hasDetails) {
-                    Modifier.clickable { isExpanded = !isExpanded }
+                    Modifier.clickable {
+                        isExpanded = !isExpanded
+                        reportTailResize?.invoke()
+                    }
                 } else {
                     Modifier
                 }
@@ -2653,7 +2671,11 @@ private fun ToolActivityInline(
             }
         }
 
-        AnimatedVisibility(visible = isExpanded && hasDetails) {
+        AnimatedVisibility(
+            visible = isExpanded && hasDetails,
+            enter = tailDetailsEnter(),
+            exit = tailDetailsExit(),
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()

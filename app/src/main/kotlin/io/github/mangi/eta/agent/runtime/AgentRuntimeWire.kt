@@ -126,6 +126,9 @@ internal object AgentRuntimeWire {
     private const val KEY_EXTRA_BODY_JSON = "extra_body_json"
     private const val KEY_CUSTOM_HEADERS_JSON = "custom_headers_json"
     private const val KEY_CUSTOM_BODY_JSON = "custom_body_json"
+    private const val KEY_SESSION_MODEL_PATTERN = "session_model_pattern"
+    private const val KEY_SESSION_PATH_PATTERN = "session_path_pattern"
+    private const val KEY_SESSION_KEY_FIELD = "session_key_field"
     private const val KEY_IMAGES = "images"
     internal const val KEY_HISTORY = "history"
     internal const val KEY_HISTORY_FD = "history_fd"
@@ -319,6 +322,9 @@ internal object AgentRuntimeWire {
         putString(KEY_EXTRA_BODY_JSON, request.config.extraBodyJson)
         putString(KEY_CUSTOM_HEADERS_JSON, json.encodeToString(request.config.customHeaders))
         putString(KEY_CUSTOM_BODY_JSON, json.encodeToString(request.config.customBody))
+        putString(KEY_SESSION_MODEL_PATTERN, request.config.sessionModelPattern)
+        putString(KEY_SESSION_PATH_PATTERN, request.config.sessionPathPattern)
+        putString(KEY_SESSION_KEY_FIELD, request.config.sessionKeyField)
         putBoolean(KEY_HISTORY_ALREADY_COMPACTED, request.historyAlreadyCompacted)
         request.handoff?.let { putBundle(KEY_HANDOFF, toBundle(it)) }
         putParcelable(KEY_HISTORY_FD, historyDescriptor)
@@ -415,6 +421,9 @@ internal object AgentRuntimeWire {
                     .ifBlank { io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS },
                 responsesStripReasoningStatus = bundle.getBoolean(KEY_RESPONSES_STRIP_REASONING_STATUS, false),
                 hostedWebSearchEnabled = bundle.getBoolean(KEY_HOSTED_WEB_SEARCH_ENABLED, false),
+                sessionModelPattern = bundle.getString(KEY_SESSION_MODEL_PATTERN).orEmpty().ifBlank { "^gpt-.*$" },
+                sessionPathPattern = bundle.getString(KEY_SESSION_PATH_PATTERN).orEmpty().ifBlank { "/v1/responses" },
+                sessionKeyField = bundle.getString(KEY_SESSION_KEY_FIELD).orEmpty().ifBlank { "prompt_cache_key" },
                 terminalTools = bundle.getBoolean(KEY_TERMINAL_TOOLS),
                 browserTools = if (bundle.containsKey(KEY_BROWSER_TOOLS)) {
                     bundle.getBoolean(KEY_BROWSER_TOOLS)
@@ -998,6 +1007,7 @@ internal object AgentRuntimeWire {
         usage.outputTokens?.let { putInt("usage_output_tokens", it) }
         usage.reasoningTokens?.let { putInt("usage_reasoning_tokens", it) }
         usage.cachedTokens?.let { putInt("usage_cached_tokens", it) }
+        usage.cacheCreationTokens?.let { putInt("usage_cache_creation_tokens", it) }
     }
 
     private fun Bundle.getTokenUsage(): AgentTokenUsage = AgentTokenUsage(
@@ -1006,6 +1016,7 @@ internal object AgentRuntimeWire {
         outputTokens = if (containsKey("usage_output_tokens")) getInt("usage_output_tokens") else null,
         reasoningTokens = if (containsKey("usage_reasoning_tokens")) getInt("usage_reasoning_tokens") else null,
         cachedTokens = if (containsKey("usage_cached_tokens")) getInt("usage_cached_tokens") else null,
+        cacheCreationTokens = if (containsKey("usage_cache_creation_tokens")) getInt("usage_cache_creation_tokens") else null,
     )
 
     private fun decodeReasoningCapabilities(raw: String?): ModelReasoningCapabilities? =

@@ -74,7 +74,13 @@ internal class AgentChatImageCache(context: Context) {
         if (value.isEmpty() || fromId == toId) return value
         val fromDir = File(root, sanitize(fromId)).absolutePath
         val toDir = File(root, sanitize(toId)).absolutePath
-        return value.replace(fromDir, toDir)
+        val replaced = value.replace(fromDir, toDir)
+        if (replaced != value) return replaced
+        // History often stores the same cache file with another absolute root
+        // (/data/data vs /data/user/0). The conversation directory is stable.
+        val fromSegment = "/$CACHE_DIRECTORY/${sanitize(fromId)}/"
+        val toSegment = "/$CACHE_DIRECTORY/${sanitize(toId)}/"
+        return value.replace(fromSegment, toSegment)
     }
 
     fun deleteConversation(conversationId: String) {

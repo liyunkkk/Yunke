@@ -21,7 +21,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** Full multi-tab browser UI; the pool is the same one used by browser_use. */
 @Composable
-internal fun AgentBrowserScreen(onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+internal fun AgentBrowserScreen(onDismiss: () -> Unit, conversationId: String? = null, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val owner = remember { Any() }
     var pool by remember { mutableStateOf<BrowserTabPool?>(null) }
@@ -31,7 +31,7 @@ internal fun AgentBrowserScreen(onDismiss: () -> Unit, modifier: Modifier = Modi
     }
     LaunchedEffect(context.applicationContext) {
         try {
-            pool = AgentBrowserSession.acquireUserControl(context.applicationContext, owner)
+            pool = AgentBrowserSession.acquireUserControl(context.applicationContext, owner, conversationId)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {

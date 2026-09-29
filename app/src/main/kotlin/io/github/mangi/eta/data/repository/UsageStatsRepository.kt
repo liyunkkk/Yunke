@@ -25,6 +25,8 @@ internal data class UsageStatsSnapshot(
     val lifetimeOutputTokens: Long = 0L,
     val currentCachedTokens: Long = 0L,
     val lifetimeCachedTokens: Long = 0L,
+    val currentCacheCreationTokens: Long = 0L,
+    val lifetimeCacheCreationTokens: Long = 0L,
     val conversationsPerDay: Map<LocalDate, Int> = emptyMap(),
     val launchCount: Int = 0,
     val modelUsage: ModelUsageSnapshot = ModelUsageSnapshot(),
@@ -32,8 +34,8 @@ internal data class UsageStatsSnapshot(
     val totalConversations: Int get() = currentConversations
     val totalMessages: Int get() = currentMessages
     val totalInputTokens: Long get() = lifetimeInputTokens
-    val currentFreshInputTokens: Long get() = (currentInputTokens - currentCachedTokens).coerceAtLeast(0L)
-    val lifetimeFreshInputTokens: Long get() = (lifetimeInputTokens - lifetimeCachedTokens).coerceAtLeast(0L)
+    val currentFreshInputTokens: Long get() = (currentInputTokens - currentCachedTokens - currentCacheCreationTokens).coerceAtLeast(0L)
+    val lifetimeFreshInputTokens: Long get() = (lifetimeInputTokens - lifetimeCachedTokens - lifetimeCacheCreationTokens).coerceAtLeast(0L)
     val totalOutputTokens: Long get() = lifetimeOutputTokens
     val totalCachedTokens: Long get() = lifetimeCachedTokens
 }
@@ -56,24 +58,30 @@ internal object UsageStatsRepository {
                 runCatching { LocalDate.parse(entry.day) to entry.count }.getOrNull()
             }
             .toMap()
-        val tokenTotals = aggregateVisibleTokens(dao.usageContentRows())
         val retired = SettingsDataStore.retiredUsage()
         val liveConversations = dao.conversationCount()
         val liveMessages = dao.totalMessageCount()
+        val modelUsage = decodeModelUsageSnapshot(SettingsDataStore.modelUsageJson())
+        // Same bills as the model tab. Message rows are a second book: compaction
+        // markers and prompts the ledger rejected must not be added again.
+        val liveIds = dao.conversations().map { it.id }.toSet()
+        val (currentTokens, lifetimeTokens) = alignedUsageTotals(modelUsage, liveIds)
         return UsageStatsSnapshot(
             currentConversations = liveConversations,
             lifetimeConversations = liveConversations + retired.conversations,
             currentMessages = liveMessages,
             lifetimeMessages = liveMessages + retired.messages,
-            currentInputTokens = tokenTotals.input,
-            lifetimeInputTokens = tokenTotals.input + retired.inputTokens,
-            currentOutputTokens = tokenTotals.output,
-            lifetimeOutputTokens = tokenTotals.output + retired.outputTokens,
-            currentCachedTokens = tokenTotals.cached,
-            lifetimeCachedTokens = tokenTotals.cached + retired.cachedTokens,
+            currentInputTokens = currentTokens.input,
+            lifetimeInputTokens = lifetimeTokens.input,
+            currentOutputTokens = currentTokens.output,
+            lifetimeOutputTokens = lifetimeTokens.output,
+            currentCachedTokens = currentTokens.cached,
+            lifetimeCachedTokens = lifetimeTokens.cached,
+            currentCacheCreationTokens = currentTokens.cacheCreation,
+            lifetimeCacheCreationTokens = lifetimeTokens.cacheCreation,
             conversationsPerDay = mergeHeatmap(perDay, retired.heatmap, startDate),
             launchCount = SettingsDataStore.launchCount(),
-            modelUsage = decodeModelUsageSnapshot(SettingsDataStore.modelUsageJson()),
+            modelUsage = modelUsage,
         )
     }
 
@@ -99,6 +107,40 @@ internal object UsageStatsRepository {
     }
 }
 
+
+
+/** Lifetime matches the model ledger. Current is the part still tied to a live conversation. */
+internal fun alignedUsageTotals(
+    snapshot: ModelUsageSnapshot,
+    liveConversationIds: Set<String>,
+): Pair<TokenTotals, TokenTotals> {
+    var currentInput = 0L
+    var currentOutput = 0L
+    var currentCached = 0L
+    var currentCreated = 0L
+    var lifetimeInput = 0L
+    var lifetimeOutput = 0L
+    var lifetimeCached = 0L
+    var lifetimeCreated = 0L
+    snapshot.providers.forEach { provider ->
+        provider.models.forEach { model ->
+            lifetimeInput += model.inputTokens
+            lifetimeOutput += model.outputTokens
+            lifetimeCached += model.cachedTokens
+            lifetimeCreated += model.cacheCreationTokens
+            model.events.collapsedByRound().forEach { event ->
+                val id = event.conversationId ?: return@forEach
+                if (id !in liveConversationIds) return@forEach
+                currentInput += event.inputTokens
+                currentOutput += event.outputTokens
+                currentCached += event.cachedTokens
+                currentCreated += event.cacheCreationTokens
+            }
+        }
+    }
+    return TokenTotals(currentInput, currentOutput, currentCached, currentCreated) to
+        TokenTotals(lifetimeInput, lifetimeOutput, lifetimeCached, lifetimeCreated)
+}
 
 internal fun aggregateVisibleTokens(rows: List<UsageContentRow>): TokenTotals {
     var input = 0L
@@ -127,6 +169,7 @@ internal data class TokenTotals(
     val input: Long,
     val output: Long,
     val cached: Long,
+    val cacheCreation: Long = 0L,
 )
 
 

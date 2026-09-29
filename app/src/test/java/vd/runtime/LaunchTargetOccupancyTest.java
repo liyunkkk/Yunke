@@ -237,12 +237,16 @@ public class LaunchTargetOccupancyTest {
         assertFalse(decide(root(242, ETA, null, ETA, null, true, 2, true,
                 new int[]{242}, true, new String[]{ETA})).rejects());
     }
-    @Test public void selfMarkerNameMustEchoEveryReadableIdentity() {
-        // base=Eta but topActivity=other: the self-marker name contradicts one identity field, so the
-        // root is not clearable even though it matches the base.
+    @Test public void selfMarkerNameEchoesAnyReadableIdentity() {
+        // Task #39: Eta's task also hosts the system photo picker. The self-marker repeats one of
+        // those packages, not every one. Neither package is the launch target, so this must not block
+        // opening another app. A name that matches none of the readable fields still fails closed.
+        assertFalse(decide(root(39, "com.android.providers.media.module",
+                "com.android.providers.media.module", ETA, ETA, true, 2, true,
+                new int[]{39}, true, new String[]{ETA})).rejects());
         assertEquals(LaunchTargetOccupancy.UNKNOWN,
                 decide(root(242, ETA, ETA, "com.other.app", ETA, true, 1, true,
-                        new int[]{242}, true, new String[]{ETA})).code);
+                        new int[]{242}, true, new String[]{"com.unreported.app"})).code);
         // A self-marker name on an identity-free root has no readable identity to echo.
         assertEquals(LaunchTargetOccupancy.UNKNOWN,
                 decide(root(242, null, null, null, null, true, 0, true,

@@ -147,6 +147,22 @@ internal object AgentCompressionBoundary {
             .maxOrNull()?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt() ?: 4096
     }
 
-    fun inputLimit(window: Int, outputReserve: Int = 4096): Int =
-        (window.toLong() - outputReserve - maxOf(512, window / 20)).coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+    /**
+     * Largest prompt still allowed to leave for [window].
+     *
+     * [calibrated] states whether the caller's token count came from a cloud receipt.
+     * When it did not, the only basis is the local character heuristic, which
+     * under-counts dense code and mixed CJK; a run configured for 200k then really
+     * sends ~220k. The extra reserve absorbs that error, and disappears as soon as a
+     * real receipt calibrates the budget.
+     */
+    fun inputLimit(window: Int, outputReserve: Int = 4096, calibrated: Boolean = true): Int {
+        val safety = maxOf(512, window / 20)
+        val heuristic = if (calibrated) 0L else window.toLong() * UNCALIBRATED_MARGIN_PERCENT / 100
+        return (window.toLong() - outputReserve - safety - heuristic)
+            .coerceIn(0, Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    /** Headroom for local under-counting while no cloud receipt exists yet. */
+    private const val UNCALIBRATED_MARGIN_PERCENT = 12
 }

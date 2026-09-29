@@ -77,6 +77,8 @@ internal data class EtaBackupDocument(
     val attachmentCount: Int = 0,
     val importedFileCount: Int = 0,
     val agentPreferences: Map<String, String> = emptyMap(),
+    val messagesExternal: Boolean = false,
+    val messageCount: Int = 0,
 ) {
     companion object {
         const val FORMAT = "eta-backup"
@@ -161,13 +163,30 @@ internal object EtaBackupRepository {
             AgentExecutionService.beginBackupMaintenance()
             try {
                 val appContext = context.applicationContext
-                val document = EtaDatabase.get(appContext).withTransaction { snapshot(appContext, options) }
+                val payloads = File(appContext.cacheDir, "daiyu-backup-conversations")
+                payloads.deleteRecursively()
+                BackupDurability.mkdirs(payloads)
+                val document = try {
+                    EtaDatabase.get(appContext).withTransaction {
+                        val meta = snapshot(appContext, options)
+                        val count = writeConversationPayloads(appContext, payloads)
+                        require(count == meta.messageCount) { "会话消息在导出时发生变化" }
+                        meta
+                    }
+                } catch (failure: Throwable) {
+                    payloads.deleteRecursively()
+                    throw failure
+                }
+                try {
                 ZipOutputStream(output).use { zip ->
                     val writer = BackupZipWriter(zip)
                     zip.setLevel(if (options.includeLinuxEnvironment) 1 else 6)
                     val manifest = json.encodeToString(document)
                     require(manifest.toByteArray().size <= BackupArchiveSafety.MANIFEST_LIMIT) { "备份清单超过大小限制" }
                     writer.text(EtaBackupDocument.MANIFEST_NAME, manifest)
+                    payloads.listFiles()?.sortedBy { it.name }?.forEach { file ->
+                        writer.file("conversations/${file.name}", file)
+                    }
                     writer.directory("attachments/chat-images/", File(appContext.cacheDir, AgentChatImageCache.CACHE_DIRECTORY))
                     writer.directory(
                         "attachments/imports/",
@@ -184,6 +203,9 @@ internal object EtaBackupRepository {
                     zip.finish()
                 }
                 document.toBackupSummary()
+                } finally {
+                    payloads.deleteRecursively()
+                }
             } finally {
                 AgentExecutionService.endBackupMaintenance()
             }
@@ -243,7 +265,7 @@ internal object EtaBackupRepository {
                             mapOf(manifestName(archive.readText()) to archive)
                         }
                         val document = files[EtaBackupDocument.MANIFEST_NAME]?.let {
-                            decodeDocument(it.readText()).also(::validate)
+                            attachExternalMessages(decodeDocument(it.readText()).also(::validate), files.filterKeys(::isConversationPayload).values)
                         }
                         val conversation = files[EtaConversationExport.MANIFEST_NAME]?.let {
                             decodeConversation(it.readText())
@@ -296,6 +318,7 @@ internal object EtaBackupRepository {
                         files.forEach { (name, source) ->
                             val target = when {
                                 name == EtaBackupDocument.MANIFEST_NAME || name == EtaConversationExport.MANIFEST_NAME -> null
+                                isConversationPayload(name) -> null
                                 name.startsWith("attachments/chat-images/") -> BackupArchiveSafety.target(
                                     File(appContext.cacheDir, AgentChatImageCache.CACHE_DIRECTORY), name.removePrefix("attachments/chat-images/"))
                                 name.startsWith("attachments/imports/") -> BackupArchiveSafety.target(
@@ -327,7 +350,15 @@ internal object EtaBackupRepository {
                             val records = daemons.inputStream().use { BackupArchiveSafety.readText(it, 1024 * 1024) }
                             require(org.json.JSONArray(records).length() == 0) { "请先停止并移除后台守护任务，再导入备份" }
                         }
-                        val old = EtaDatabase.get(appContext).withTransaction { snapshot(appContext, EtaBackupExportOptions()) }
+                        val previousPayloads = File(operation, "previous-conversations")
+                        previousPayloads.deleteRecursively()
+                        BackupDurability.mkdirs(previousPayloads)
+                        val old = EtaDatabase.get(appContext).withTransaction {
+                            val meta = snapshot(appContext, EtaBackupExportOptions())
+                            val count = writeConversationPayloads(appContext, previousPayloads)
+                            require(count == meta.messageCount) { "回滚快照中的消息数量不一致，未开始恢复" }
+                            meta
+                        }
                         val oldJson = json.encodeToString(old)
                         require(oldJson.toByteArray().size <= BackupArchiveSafety.MANIFEST_LIMIT) { "回滚快照过大，未开始恢复" }
                         durableText(File(operation, "previous.json"), oldJson)
@@ -350,7 +381,7 @@ internal object EtaBackupRepository {
                             withContext(NonCancellable) {
                                 try {
                                     journal.rollback()
-                                    restoreMetadata(appContext, old, reconcile = false, exactPreferences = true)
+                                    restoreMetadata(appContext, attachExternalMessages(old, previousPayloads.listFiles()?.toList().orEmpty()), reconcile = false, exactPreferences = true)
                                 } catch (rollbackFailure: Throwable) {
                                     failure.addSuppressed(rollbackFailure)
                                     throw EtaBackupException("恢复失败且回滚尚未完成，恢复日志已保留。请重启应用完成恢复。", failure)
@@ -399,8 +430,9 @@ internal object EtaBackupRepository {
                 val old = android.util.AtomicFile(File(operation, "previous.json")).openRead().use {
                     decodeDocument(BackupArchiveSafety.readText(it))
                 }
+                val previousPayloads = File(operation, "previous-conversations").listFiles()?.toList().orEmpty()
                 BackupRestoreJournal(operation).rollback()
-                restoreMetadata(context, old, reconcile = false, exactPreferences = true)
+                restoreMetadata(context, attachExternalMessages(old, previousPayloads), reconcile = false, exactPreferences = true)
             }
         }
         if (BackupRestoreJournal.hasJournal(operation) && BackupRestoreJournal.isCommitted(operation)) {
@@ -452,12 +484,56 @@ internal object EtaBackupRepository {
         if (runCatching { org.json.JSONObject(raw).optString("format") }.getOrNull() == EtaConversationExport.FORMAT)
             EtaConversationExport.MANIFEST_NAME else EtaBackupDocument.MANIFEST_NAME
 
+
+    private suspend fun writeConversationPayloads(context: Context, directory: File): Int {
+        val dao = EtaDatabase.get(context).conversationDao()
+        var count = 0
+        dao.conversationEntities().forEachIndexed { index, conversation ->
+            val exported = EtaConversationExport(
+                exportedAt = System.currentTimeMillis(),
+                conversation = conversation,
+                messages = dao.messagesForConversation(conversation.id),
+                contextCheckpoint = dao.contextCheckpoint(conversation.id),
+            )
+            val text = json.encodeToString(exported)
+            require(text.toByteArray().size.toLong() <= BackupArchiveSafety.MANIFEST_LIMIT) {
+                "会话「${conversation.title.ifBlank { conversation.id }.take(40)}」超过单个备份条目上限，请先减少该会话内容"
+            }
+            File(directory, conversationPayloadFileName(conversation.id, index)).writeText(text)
+            count += exported.messages.size
+        }
+        return count
+    }
+
+    private fun conversationPayloadFileName(id: String, index: Int): String {
+        val safe = id.length <= 180 && id.matches(Regex("[A-Za-z0-9_.-]+")) && id != "." && id != ".."
+        return if (safe) "$id.json" else "c$index.json"
+    }
+
+    private fun isConversationPayload(name: String): Boolean =
+        name.startsWith("conversations/") && name.endsWith(".json") && name.count { it == '/' } == 1
+
+    private fun attachExternalMessages(document: EtaBackupDocument, payloads: Collection<File>): EtaBackupDocument {
+        if (!document.messagesExternal) return document
+        val messages = mutableListOf<io.github.mangi.eta.data.db.ConversationMessageEntity>()
+        val checkpoints = mutableListOf<io.github.mangi.eta.data.db.ConversationContextCheckpointEntity>()
+        val seen = mutableSetOf<String>()
+        payloads.filter { it.isFile && it.name.endsWith(".json") }.forEach { file ->
+            val exported = decodeConversation(file.readText())
+            require(seen.add(exported.conversation.id)) { "备份中的会话重复" }
+            messages += exported.messages
+            exported.contextCheckpoint?.let { checkpoints += it }
+        }
+        require(seen == document.conversations.map { it.id }.toSet()) { "备份中的会话消息不完整" }
+        require(messages.size == document.messageCount) { "备份中的消息数量不一致" }
+        return document.copy(messages = messages, contextCheckpoints = checkpoints)
+    }
+
     private suspend fun snapshot(
         context: Context,
         options: EtaBackupExportOptions,
     ): EtaBackupDocument {
         val database = EtaDatabase.get(context)
-        BackupDatabaseBudget.validate(database.openHelper.readableDatabase)
         val providers = database.providerDao().providers().map { provider ->
             EtaBackupProvider(provider = provider.provider, models = provider.models)
         }
@@ -472,8 +548,8 @@ internal object EtaBackupRepository {
             selectedProviderId = settings.selectedProviderId,
             selectedModelId = settings.selectedModelId,
             conversations = conversations.conversationEntities(),
-            messages = conversations.messages(),
-            contextCheckpoints = conversations.contextCheckpoints(),
+            messagesExternal = true,
+            messageCount = conversations.storedMessageCount(),
             conversationState = conversations.state(),
             folders = conversations.folders(),
             memoryMd = AgentMemoryRepository.snapshot(AssistantPrompt.DEFAULT_ID).content,
@@ -663,7 +739,7 @@ internal object EtaBackupRepository {
         providerCount = providers.size,
         modelCount = providers.sumOf { it.models.size },
         conversationCount = conversations.size,
-        messageCount = messages.size,
+        messageCount = if (messagesExternal) messageCount else messages.size,
         memoryBytes = memoryMd.toByteArray().size,
         assistantCount = assistants?.profiles?.size ?: 0,
         mcpCount = mcpServers.size,

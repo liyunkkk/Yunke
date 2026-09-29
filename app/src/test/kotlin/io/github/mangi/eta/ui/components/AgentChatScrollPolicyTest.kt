@@ -324,4 +324,44 @@ class AgentChatScrollPolicyTest {
         assertTrue("fallback must remain live beyond the first viewport", position >= end - 1.1f)
         assertTrue(requests > 10)
     }
+
+    @Test
+    fun followLagLiftsTailBackToRestLine() {
+        assertEquals(FollowTailLag(37f), resolveFollowTailLag(following = true, tailOverflowPx = 37))
+    }
+
+    @Test
+    fun followLagIgnoresTailAtOrAboveRestLine() {
+        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = true, tailOverflowPx = 0))
+        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = true, tailOverflowPx = -12))
+    }
+
+    @Test
+    fun manualScrollNeitherLiftsNorClips() {
+        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = 80))
+        assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = null))
+    }
+
+    @Test
+    fun invisibleTailFallsBackToRestLineClip() {
+        val lag = resolveFollowTailLag(following = true, tailOverflowPx = null)
+        assertTrue(lag.unknown)
+        assertEquals(0f, lag.liftPx, 0f)
+    }
+
+    @Test
+    fun userExpansionOfTheTailDoesNotLift() {
+        assertFalse(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = true))
+        assertTrue(shouldLiftStreamingTail(followingOutput = true, holdingUserExpansion = false))
+        assertFalse(shouldLiftStreamingTail(followingOutput = false, holdingUserExpansion = false))
+    }
+
+    @Test
+    fun tailLiftHoldWaitsUntilTheTailIsBackOnTheRestLine() {
+        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
+        assertFalse(shouldReleaseTailLiftHold(following = true, overflowPx = null, elapsedNanos = 0L, maxNanos = 100L))
+        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 1, elapsedNanos = 0L, maxNanos = 100L))
+        assertTrue(shouldReleaseTailLiftHold(following = false, overflowPx = 40, elapsedNanos = 0L, maxNanos = 100L))
+        assertTrue(shouldReleaseTailLiftHold(following = true, overflowPx = 40, elapsedNanos = 100L, maxNanos = 100L))
+    }
 }

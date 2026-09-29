@@ -16,14 +16,14 @@ internal class ExecutionLeaseRegistry {
     @Synchronized fun release(id: String) { leases.remove(id) }
     @Synchronized fun count(): Int = leases.size
 
-    /** prepare 与 run 属于同一次代理会话；闲置终端保活不计入正在执行。 */
+    /** prepare 与同一 run 的替换租约属于同一次代理会话；子代理和闲置终端不计入正在执行。 */
     @Synchronized fun executingSessionCount(): Int {
         val sessions = HashSet<String>()
         for ((id, lease) in leases) {
             if (!lease.countsAsExecutingSession) continue
             sessions += when {
                 id.startsWith("prepare:") -> "agent:" + id.removePrefix("prepare:")
-                id.startsWith("run:") -> "agent:" + id.removePrefix("run:")
+                id.startsWith("run:") -> "agent:" + id.removePrefix("run:").substringBefore(':')
                 else -> id
             }
         }

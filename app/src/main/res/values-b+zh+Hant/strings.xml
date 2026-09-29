@@ -76,6 +76,9 @@
   <string name="context_compacted_summary_title">壓縮摘要</string>
   <string name="context_compacted_summary_action">查看摘要</string>
   <string name="action_launch_kimi_web">啟動 Kimi Web</string>
+  <string name="action_sub_agent_status">子代理狀態</string>
+  <string name="sub_agent_status_empty">這個工作階段還沒有子代理</string>
+  <string name="sub_agent_status_close">關閉</string>
   <string name="route_chat">對話</string>
   <string name="route_browser">Agent 瀏覽器</string>
   <string name="route_tools">工具</string>
@@ -255,6 +258,8 @@
   <string name="appearance_morph_loading_collapse">收起顯示時機</string>
   <string name="conversation_unnamed">新對話</string>
   <string name="conversation_search_hint">搜尋對話</string>
+  <string name="model_search_hint">搜尋模型</string>
+  <string name="model_search_empty">沒有符合的模型</string>
   <string name="drawer_greeting_morning">早上好👋</string>
   <string name="drawer_greeting_afternoon">下午好👋</string>
   <string name="drawer_greeting_evening">晚上好👋</string>
@@ -1034,6 +1039,14 @@
     <item quantity="other">選取的 %d 個提供商將永久刪除。</item>
   </plurals>
   <string name="provider_reset_summary">將還原「%1$s」的預設設定與官方模型清單，並保留 API Key。</string>
+  <string name="provider_remote_pick_title">選擇要加入的模型</string>
+  <string name="provider_remote_select_all">全選</string>
+  <string name="provider_remote_invert">反選</string>
+  <string name="provider_remote_add">加入</string>
+  <string name="provider_remote_none_new">沒有可加入的新模型</string>
+  <plurals name="provider_models_added">
+    <item quantity="other">已加入 %d 個模型</item>
+  </plurals>
   <plurals name="provider_models_fetched">
     <item quantity="other">已取得 %d 個模型</item>
   </plurals>
@@ -1367,6 +1380,8 @@
     <string name="stats_page_fresh_input_tokens">輸入 Token（不含快取）</string>
     <string name="stats_page_output_tokens">輸出 Token</string>
     <string name="stats_page_cached_tokens">快取 Token</string>
+    <string name="stats_page_cache_creation_tokens">快取建立</string>
+    <string name="stats_page_token_total">總計</string>
     <string name="stats_page_launch_count">應用啟動次數</string>
     <string name="stats_tab_overview">對話統計</string>
     <string name="stats_tab_models">模型用量</string>

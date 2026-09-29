@@ -47,6 +47,15 @@ internal object AgentContextCompactor {
     const val SEAMLESS_CONTINUE_PROMPT =
         "从被打断的位置直接接着做。正文接到最后一个字后面，工具从下一步继续。不要宣布继续、不要说接着往下或从上次中断处继续，也不要重复已经完成的步骤或已经写过的句子。"
 
+    /**
+     * 暂停发生在思考阶段、还没写出任何正文时用这条。reasoning_content 不是可回放的输入，
+     * 上一轮的思考不会随请求回到模型手里，所以必须显式说明"继续本来的判断"，
+     * 否则模型只看到一条空的续写指令，会从头重新理解整轮对话。
+     */
+    const val SEAMLESS_CONTINUE_THINKING_PROMPT =
+        "接着刚才的思考继续，不要重新分析这轮对话，也不要重述任务或已经看过的材料。" +
+            "直接给出结论或下一步动作；如果上一步的判断已经足够，就直接开始写正文或调用工具。"
+
     data class ReplayContext(
         val systemMessages: org.json.JSONArray,
         val historyMessages: org.json.JSONArray,
@@ -286,7 +295,8 @@ internal object AgentContextCompactor {
     ): Boolean =
         message.role.equals("user", ignoreCase = true) &&
             (message.content.trimStart().startsWith(STEERING_USER_PREFIX) ||
-                message.content.trim() == SEAMLESS_CONTINUE_PROMPT)
+                message.content.trim() == SEAMLESS_CONTINUE_PROMPT ||
+                message.content.trim() == SEAMLESS_CONTINUE_THINKING_PROMPT)
 
     internal fun isVisibleConversationMessage(
         message: AgentModelClient.ConversationMessage,

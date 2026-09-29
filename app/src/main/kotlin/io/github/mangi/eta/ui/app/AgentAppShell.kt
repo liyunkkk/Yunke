@@ -42,6 +42,7 @@ import io.github.mangi.eta.ui.components.captureForTopBar
 import io.github.mangi.eta.ui.components.rememberTopBarBackdrop
 import io.github.mangi.eta.ui.components.topBarContainerColor
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
+import io.github.mangi.eta.agent.delegation.SubAgentContextStats
 import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
@@ -92,6 +93,7 @@ internal fun AgentAppShell(
     onSearchHistory: suspend (String) -> List<MessageSearchHit> = { emptyList() },
     onOpenHistoryHit: (MessageSearchHit) -> Unit = {},
     tokenUsage: ConversationTokenUsageUi = ConversationTokenUsageUi(),
+    subAgentStatuses: List<SubAgentContextStats> = emptyList(),
     selectedProviderId: String? = null,
     onSelectConversation: (String) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
@@ -180,6 +182,7 @@ internal fun AgentAppShell(
                             onSearchHistory = onSearchHistory,
                             onOpenHistoryHit = onOpenHistoryHit,
                             tokenUsage = tokenUsage,
+                            subAgentStatuses = subAgentStatuses,
                             selectedProviderId = selectedProviderId,
                         )
                     }
@@ -265,6 +268,7 @@ private fun AgentTopBar(
     onSearchHistory: suspend (String) -> List<MessageSearchHit> = { emptyList() },
     onOpenHistoryHit: (MessageSearchHit) -> Unit = {},
     tokenUsage: ConversationTokenUsageUi = ConversationTokenUsageUi(),
+    subAgentStatuses: List<SubAgentContextStats> = emptyList(),
     selectedProviderId: String? = null,
 ) {
     val view = LocalView.current
@@ -311,6 +315,7 @@ private fun AgentTopBar(
                 onSearchHistory = onSearchHistory,
                 onOpenHistoryHit = onOpenHistoryHit,
                 tokenUsage = tokenUsage,
+                subAgentStatuses = subAgentStatuses,
             )
         }
     }

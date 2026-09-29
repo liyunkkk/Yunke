@@ -13,6 +13,8 @@ internal data class ModelUsageSnapshot(
     val totalFreshInputTokens: Long get() = providers.sumOf { it.freshInputTokens }
     val totalOutputTokens: Long get() = providers.sumOf { it.outputTokens }
     val totalCachedTokens: Long get() = providers.sumOf { it.cachedTokens }
+    val totalCacheCreationTokens: Long get() = providers.sumOf { it.cacheCreationTokens }
+    val totalTokens: Long get() = totalInputTokens + totalOutputTokens
 
     fun filtered(startMillis: Long?, endMillis: Long?): ModelUsageSnapshot {
         if (startMillis == null && endMillis == null) return this
@@ -34,6 +36,7 @@ internal data class ModelUsageProviderUi(
     val freshInputTokens: Long get() = models.sumOf { it.freshInputTokens }
     val outputTokens: Long get() = models.sumOf { it.outputTokens }
     val cachedTokens: Long get() = models.sumOf { it.cachedTokens }
+    val cacheCreationTokens: Long get() = models.sumOf { it.cacheCreationTokens }
 }
 
 internal data class ModelUsageEvent(
@@ -41,6 +44,7 @@ internal data class ModelUsageEvent(
     val inputTokens: Long,
     val outputTokens: Long,
     val cachedTokens: Long = 0L,
+    val cacheCreationTokens: Long = 0L,
     val conversationId: String? = null,
     val round: Int? = null,
     val requestId: String? = null,
@@ -55,10 +59,14 @@ internal data class ModelUsageModelUi(
     val activeDays: Int,
     val events: List<ModelUsageEvent> = emptyList(),
     val cachedTokens: Long = 0L,
+    val cacheCreationTokens: Long = 0L,
 ) {
-    /** Provider dashboards report input without the cache subset. */
+    /** Uncached prefix: full prompt minus reads and writes. */
     val freshInputTokens: Long
-        get() = (inputTokens - cachedTokens).coerceAtLeast(0L)
+        get() = (inputTokens - cachedTokens - cacheCreationTokens).coerceAtLeast(0L)
+    /** Fresh input, output, cache reads and cache writes. */
+    val totalTokens: Long
+        get() = inputTokens + outputTokens
     val dailyAverageTokens: Long
         get() = if (activeDays <= 0) 0L else freshInputTokens / activeDays
     val conversationAverageTokens: Long
@@ -78,6 +86,7 @@ internal data class ModelUsageModelUi(
             inputTokens = filteredInput,
             outputTokens = matched.sumOf { it.outputTokens },
             cachedTokens = matched.sumOf { it.cachedTokens },
+            cacheCreationTokens = matched.sumOf { it.cacheCreationTokens },
             conversationCount = conversations.size,
             activeDays = days.size,
             events = matched,
@@ -93,6 +102,7 @@ internal data class ModelUsageDelta(
     val inputTokens: Long,
     val outputTokens: Long,
     val cachedTokens: Long = 0L,
+    val cacheCreationTokens: Long = 0L,
     val conversationId: String? = null,
     val round: Int? = null,
     val requestId: String? = null,
@@ -129,6 +139,11 @@ internal fun decodeModelUsageSnapshot(raw: String?): ModelUsageSnapshot {
                     } else {
                         model.optLong("cachedTokens")
                     }
+                    val created = if (events.isNotEmpty()) {
+                        maxOf(model.optLong("cacheCreationTokens"), events.sumOf { it.cacheCreationTokens })
+                    } else {
+                        model.optLong("cacheCreationTokens")
+                    }
                     add(
                         ModelUsageModelUi(
                             id = modelId,
@@ -147,6 +162,7 @@ internal fun decodeModelUsageSnapshot(raw: String?): ModelUsageSnapshot {
                             },
                             events = events,
                             cachedTokens = cached,
+                            cacheCreationTokens = created,
                         ),
                     )
                 }
@@ -191,9 +207,14 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     model.put("displayName", delta.modelDisplayName.ifBlank { delta.modelId })
     val events = decodeEvents(model.optJSONArray("events")).toMutableList()
     // Preserve cumulative counters when the detail window is trimmed; initialize old event-only data.
-    for (field in listOf("inputTokens", "outputTokens", "cachedTokens")) {
+    for (field in listOf("inputTokens", "outputTokens", "cachedTokens", "cacheCreationTokens")) {
         if (!model.has(field)) model.put(field, events.sumOf {
-            when (field) { "inputTokens" -> it.inputTokens; "outputTokens" -> it.outputTokens; else -> it.cachedTokens }
+            when (field) {
+                "inputTokens" -> it.inputTokens
+                "outputTokens" -> it.outputTokens
+                "cachedTokens" -> it.cachedTokens
+                else -> it.cacheCreationTokens
+            }
         })
     }
     val incoming = ModelUsageEvent(
@@ -201,6 +222,7 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
         inputTokens = delta.inputTokens.coerceAtLeast(0L),
         outputTokens = delta.outputTokens.coerceAtLeast(0L),
         cachedTokens = delta.cachedTokens.coerceAtLeast(0L),
+        cacheCreationTokens = delta.cacheCreationTokens.coerceAtLeast(0L),
         conversationId = delta.conversationId,
         round = delta.round,
         requestId = delta.requestId,
@@ -217,11 +239,13 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
         model.put("inputTokens", model.optLong("inputTokens") - previous.inputTokens + incoming.inputTokens)
         model.put("outputTokens", model.optLong("outputTokens") - previous.outputTokens + incoming.outputTokens)
         model.put("cachedTokens", model.optLong("cachedTokens") - previous.cachedTokens + incoming.cachedTokens)
+        model.put("cacheCreationTokens", model.optLong("cacheCreationTokens") - previous.cacheCreationTokens + incoming.cacheCreationTokens)
         events[replaceAt] = incoming
     } else {
         model.put("inputTokens", model.optLong("inputTokens") + incoming.inputTokens)
         model.put("outputTokens", model.optLong("outputTokens") + incoming.outputTokens)
         model.put("cachedTokens", model.optLong("cachedTokens") + incoming.cachedTokens)
+        model.put("cacheCreationTokens", model.optLong("cacheCreationTokens") + incoming.cacheCreationTokens)
         events += incoming
     }
     val conversations = stringSet(model.optJSONArray("conversations")).toMutableSet()
@@ -252,6 +276,7 @@ private fun decodeEvents(array: JSONArray?): List<ModelUsageEvent> {
                     inputTokens = item.optLong("in"),
                     outputTokens = item.optLong("out"),
                     cachedTokens = item.optLong("k"),
+                    cacheCreationTokens = item.optLong("w"),
                     conversationId = item.optString("c").takeIf { it.isNotBlank() },
                     round = if (item.has("r")) item.optInt("r") else null,
                     requestId = item.optString("q").takeIf { it.isNotBlank() },
@@ -270,6 +295,7 @@ private fun encodeEvents(events: List<ModelUsageEvent>): JSONArray =
                     json.put("in", event.inputTokens)
                     json.put("out", event.outputTokens)
                     if (event.cachedTokens > 0L) json.put("k", event.cachedTokens)
+                    if (event.cacheCreationTokens > 0L) json.put("w", event.cacheCreationTokens)
                     json.put("c", event.conversationId.orEmpty())
                     event.round?.let { json.put("r", it) }
                     event.requestId?.let { json.put("q", it) }

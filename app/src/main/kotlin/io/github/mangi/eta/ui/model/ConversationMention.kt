@@ -12,6 +12,8 @@ internal data class ConversationMentionQuery(
 
 internal object ConversationMention {
     const val MAX_TRANSCRIPT_CHARS = 240_000
+    /** Snapshot file cap. The prompt itself does not carry this text. */
+    const val SNAPSHOT_MAX_CHARS = 1_500_000
     const val MAX_RESULTS = 8
     const val MAX_ATTACHED = 3
     const val MAX_TOTAL_CHARS = 480_000
@@ -59,10 +61,11 @@ internal object ConversationMention {
         filesDir: File? = null,
         conversationId: String? = null,
         toolEvidence: ConversationToolEvidence? = null,
+        toolFiles: MutableList<String>? = null,
     ): String {
         if (maxChars <= 0) return ""
         val toolDetailsDirectory = filesDir?.let { prepareToolDetailsDirectory(it, conversationId) }
-        val chunks = messages.mapNotNull { formatMessage(it, toolDetailsDirectory, toolEvidence) }
+        val chunks = messages.mapNotNull { formatMessage(it, toolDetailsDirectory, toolEvidence, toolFiles) }
         if (chunks.isEmpty()) return ""
         val joined = chunks.joinToString("\n\n")
         if (joined.length <= maxChars) return joined
@@ -109,25 +112,29 @@ internal object ConversationMention {
         message: ToolActivityMessageUi,
         toolDetailsDirectory: File?,
         toolEvidence: ConversationToolEvidence?,
+        toolFiles: MutableList<String>?,
     ): String = buildString {
         append("Tool ${message.toolName}: ${message.status.name}")
         val original = toolEvidence?.original(message.id)
         val hasSummary = message.argumentsSummary.isNotBlank() || !message.command.isNullOrBlank() || !message.resultSummary.isNullOrBlank()
-        val details = original?.details() ?: if (hasSummary) toolActivityDetails(message) else ""
-        if (original != null) append("\nEvidence: stored tool response; tool-side truncation may still apply.")
-        else if (hasSummary) append("\nEvidence: summary only / 仅有摘要（原文缺失、未保存、匹配不唯一或未在有界存档查询中找到）。")
+        val details = when {
+            original != null -> original.details()
+            hasSummary -> toolActivityDetails(message)
+            else -> ""
+        }
         val detailsFile = if (details.isNotEmpty() && toolDetailsDirectory != null) {
             writeToolDetailsFile(toolDetailsDirectory, message, details)
         } else {
             null
         }
         if (detailsFile != null) {
+            toolFiles?.add("${detailsFile.absolutePath}\t${detailsFile.length()}\t${message.toolName}")
             append("\nDetails file: ").append(detailsFile.absolutePath)
             append("\nBytes: ").append(detailsFile.length())
-            append("\nUse read_file(path, offset_bytes=0, max_bytes=16384); advance by returned byte range until EOF. Do not infer completeness from the summary.")
+            if (original != null) append("\nComplete stored tool record. Read with read_file until EOF; one page is not the whole tool.")
+            else append("\nStored history has no full record for this call; the file is only the UI summary.")
         } else if (details.isNotEmpty()) {
-            if (original != null) append("\n原文文件未能导出；以下仅显示摘要，不包含完整原文。")
-            append('\n').append(toolActivityDetails(message))
+            append('\n').append(if (original != null) original.details() else toolActivityDetails(message))
         }
         if (message.imageCount > 0) {
             append("\nImages: ").append(message.imageCount)
@@ -137,7 +144,35 @@ internal object ConversationMention {
     fun remainingTranscriptBudget(already: List<PendingConversationMentionUi>): Int =
         (MAX_TOTAL_CHARS - already.sumOf { it.transcript.length }).coerceAtLeast(0)
 
-    private fun formatMessage(message: AgentChatMessageUi, toolDetailsDirectory: File?, toolEvidence: ConversationToolEvidence?): String? {
+    /** Full snapshot for on-demand reads. Returns null when the directory cannot be created. */
+    fun writeSnapshot(filesDir: File, conversationId: String, transcript: String): File? {
+        if (transcript.isBlank()) return null
+        val token = sanitizeFileToken(conversationId.ifBlank { "conversation" })
+        val directory = File(TerminalPrivateStorage.workspace(filesDir), "$TOOL_DETAILS_DIRECTORY/$token")
+        if (!runCatching { directory.mkdirs(); directory.isDirectory }.getOrDefault(false)) return null
+        val file = File(directory, "snapshot.txt")
+        return runCatching {
+            file.writeText(transcript)
+            file.takeIf { it.isFile && it.length() > 0L }
+        }.getOrNull()
+    }
+
+    /** One line per tool file: path, bytes, tool name. Not a summary of the tool output. */
+    fun writeToolIndex(snapshot: File, toolFiles: List<String>): File? {
+        if (toolFiles.isEmpty()) return null
+        val index = File(snapshot.parentFile, "tools-index.txt")
+        return runCatching {
+            index.writeText(toolFiles.joinToString("\n"))
+            index.takeIf { it.isFile }
+        }.getOrNull()
+    }
+
+    private fun formatMessage(
+        message: AgentChatMessageUi,
+        toolDetailsDirectory: File?,
+        toolEvidence: ConversationToolEvidence?,
+        toolFiles: MutableList<String>?,
+    ): String? {
         return when (message) {
         is UserMessageUi -> {
             if (message.isResumeAfterCompress()) return null
@@ -162,7 +197,7 @@ internal object ConversationMention {
         is AgentMessageUi -> message.content.trim().takeIf { it.isNotEmpty() }?.let { "Assistant: $it" }
         is ThinkingMessageUi -> message.content.trim().takeIf { it.isNotEmpty() }?.let { "Thinking: $it" }
         is ToolSummaryMessageUi -> message.tools.takeIf { it.isNotEmpty() }?.let { "Tools: ${it.joinToString()}" }
-        is ToolActivityMessageUi -> formatToolActivity(message, toolDetailsDirectory, toolEvidence)
+        is ToolActivityMessageUi -> formatToolActivity(message, toolDetailsDirectory, toolEvidence, toolFiles)
         is ContextCompactedMessageUi -> {
             val summary = message.summary.trim()
             if (summary.isEmpty()) "Context compressed (${message.compactedCount} messages)"
@@ -175,7 +210,15 @@ internal object ConversationMention {
 }
 
 internal fun List<PendingConversationMentionUi>.toMentionedConversations(): List<MentionedConversation> =
-    map { MentionedConversation(id = it.conversationId, title = it.title, transcript = it.transcript) }
+    map {
+        MentionedConversation(
+            id = it.conversationId,
+            title = it.title,
+            transcript = "",
+            snapshotPath = it.snapshotPath,
+            toolsIndexPath = it.toolsIndexPath,
+        )
+    }
 
 /** One composer-scoped controller, passed explicitly through both Home and Chat screens. */
 internal data class ConversationMentionInputUi(

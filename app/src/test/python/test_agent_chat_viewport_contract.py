@@ -75,28 +75,51 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(call, r"\.fillMaxSize\s*\(\s*\)")
         self.assertNotIn("layerBackdrop", call)
 
-    def test_messages_stop_at_the_composer_top_edge(self):
-        # The composer surround is transparent, but reply text must never draw
-        # behind or beside the composer: shrink the viewport first, then clip.
+    def test_composer_floats_over_the_full_height_list(self):
+        # The composer surround is transparent: the viewport is not shortened,
+        # so messages remain visible around and behind the floating composer.
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         self.assertEqual(len(boxes), 1, "Expected one outer messages Box")
+        head = boxes[0].split("{", 1)[0]
+        self.assertNotRegex(head, r"\.padding\s*\(")
+        self.assertRegex(head, r"\.clipToBounds\s*\(\s*\)")
+
+    def test_following_output_lifts_the_tail_instead_of_clipping_it(self):
+        # While following streamed output, the tail is lifted to the 14dp line and
+        # also clipped there. Fast output can draw a new line past the measured
+        # tail before the lift catches it; the clip keeps that line out of the composer.
+        lists = list(calls(self.messages, "LazyColumn"))
         self.assertRegex(
-            boxes[0],
-            r"\bmodifier\s*=\s*modifier\s*\.padding\s*\(\s*bottom\s*=\s*bottomInset\s*\)\s*\.clipToBounds\s*\(\s*\)",
+            lists[0],
+            r"graphicsLayer\s*\{[^}]*if\s*\(\s*shouldLiftTail\s*\)\s*\{[^}]*"
+            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
         )
+        boxes = [
+            call for call in calls(self.messages, "Box")
+            if re.search(r"\bmodifier\s*=\s*modifier\b", call)
+        ]
+        draw = boxes[0]
+        self.assertRegex(draw, r"if\s*\(\s*!shouldLiftTail\s*\)")
+        self.assertRegex(
+            draw,
+            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",
+        )
+        self.assertRegex(draw, r"clipRect\s*\(\s*bottom\s*=\s*restLine")
 
-    def test_inset_is_consumed_once_by_the_viewport(self):
-        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 1)
+    def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
+        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 3)
 
-    def test_lazy_column_padding_does_not_repeat_the_inset(self):
+    def test_lazy_column_rests_above_the_composer(self):
         lists = list(calls(self.messages, "LazyColumn"))
         self.assertEqual(len(lists), 1, "Expected one messages LazyColumn")
         paddings = list(calls(lists[0], "PaddingValues"))
         self.assertEqual(len(paddings), 1)
-        self.assertRegex(paddings[0], r"\bbottom\s*=\s*14\.dp\s*(?:,|$)")
+        # The resting line and the streaming clip line are the same constant.
+        self.assertRegex(paddings[0], r"\bbottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset\b")
+        self.assertRegex(self.source, r"private\s+val\s+ConversationComposerGap\s*=\s*14\.dp")
 
     def test_navigation_stays_above_composer(self):
         buttons = list(calls(self.messages, "ConversationTurnNavigationButton"))
@@ -104,7 +127,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(
             buttons[0],
             r"\.align\s*\(\s*Alignment\.BottomCenter\s*\)\s*"
-            r"\.padding\s*\(\s*bottom\s*=\s*12\.dp\s*,?\s*\)",
+            r"\.padding\s*\(\s*bottom\s*=\s*12\.dp\s*\+\s*bottomInset\s*,?\s*\)",
         )
 
     def test_composer_surround_is_transparent(self):

@@ -32,7 +32,15 @@ internal data class AgentChatUiState(
     // Local snapshots paired with the valid cloud receipt. Never shown as cloud usage.
     val cloudHistoryTokens: Int? = null,
     val cloudRequestOverheadTokens: Int? = null,
+    /**
+     * Window the in-flight run was launched with, when it differs from the window the
+     * picker currently reports. A run keeps its config snapshot, so changing the
+     * maximum context mid-run must not silently restate the percentage of a request
+     * that never saw the new limit. Null means "no in-flight override".
+     */
+    val activeRunContextWindow: Int? = null,
     val childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
+    val childStatusRoster: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
     val childContextRunId: String = "",
     val selectedContextTaskId: String? = null,
     /** False means metadata/preview only; persistence must not replace its stored content. */
@@ -299,6 +307,8 @@ data class PendingConversationMentionUi(
     val conversationId: String,
     val title: String,
     val transcript: String,
+    val snapshotPath: String = "",
+    val toolsIndexPath: String = "",
 )
 
 @Immutable

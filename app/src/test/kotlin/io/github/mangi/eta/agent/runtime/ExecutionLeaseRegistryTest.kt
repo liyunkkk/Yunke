@@ -62,15 +62,20 @@ class ExecutionLeaseRegistryTest {
         val registry = ExecutionLeaseRegistry()
         registry.acquire("prepare:chat") {}
         registry.acquire("run:chat") {}
+        registry.acquire("run:chat:replacement-uuid") {}
+        registry.acquire("child:generation", countsAsExecutingSession = false) {}
         registry.acquire("terminal-ui:idle", countsAsExecutingSession = false) {}
         registry.acquire("user:daemon") {}
-        assertEquals(4, registry.count())
+        assertEquals(6, registry.count())
         assertEquals(2, registry.executingSessionCount())
         registry.release("prepare:chat")
         assertEquals(2, registry.executingSessionCount())
         registry.release("run:chat")
+        assertEquals(2, registry.executingSessionCount())
+        registry.release("run:chat:replacement-uuid")
         registry.release("user:daemon")
         assertEquals(0, registry.executingSessionCount())
-        assertEquals(1, registry.count())
+        // 子代理和闲置终端不计入正在执行，但租约本身还在。
+        assertEquals(2, registry.count())
     }
 }

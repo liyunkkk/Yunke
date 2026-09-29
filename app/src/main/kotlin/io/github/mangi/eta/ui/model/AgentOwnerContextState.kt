@@ -93,22 +93,32 @@ internal class AgentOwnerContextState(
             val id = incoming.stats.taskId
             if (id.isBlank()) continue
             val old = entries[id]
+            val resumed = incoming.stats.status == "running"
             if (old != null) {
                 if (incoming.revision <= old.snapshot.revision) continue
-                if (incoming.statusVersion < old.snapshot.statusVersion) continue
-                // A status change with the old token is an incoherent/late observation.
-                if (incoming.statusVersion == old.snapshot.statusVersion &&
+                // Only an executing task returns after it was hidden. Queued or pausing stays out.
+                // Other backwards or same-token status changes stay incoherent.
+                if (!resumed && incoming.statusVersion < old.snapshot.statusVersion) continue
+                if (!resumed && incoming.statusVersion == old.snapshot.statusVersion &&
                     incoming.stats.status != old.snapshot.stats.status) continue
             }
             val snapshot = incoming.copy(stats = incoming.stats.measuredOnly())
             val sameStatusVersion = old != null && snapshot.statusVersion == old.snapshot.statusVersion
-            val token = if (sameStatusVersion) old?.hideToken else {
-                if (snapshot.stats.status in HIDE_AFTER_DELAY) {
+            val token = when {
+                resumed -> null
+                sameStatusVersion -> old?.hideToken
+                snapshot.stats.status in HIDE_AFTER_DELAY -> {
                     val enteredAt = (snapshot.statusChangedAtMs ?: now).coerceAtMost(now)
                     HideToken(ownerId, id, snapshot.statusVersion, enteredAt + HIDE_AFTER_MS)
-                } else null
+                }
+                else -> null
             }
-            entries[id] = Entry(snapshot, token, hidden = sameStatusVersion && old?.hidden == true)
+            val hidden = when {
+                resumed -> false
+                old?.hidden == true -> true
+                else -> false
+            }
+            entries[id] = Entry(snapshot, token, hidden = hidden)
             changed = true
         }
         return changed
@@ -134,6 +144,9 @@ internal class AgentOwnerContextState(
 
     /** Retained telemetry is available for inspection; hiding never discards this record. */
     fun latest(taskId: String): SubAgentContextStats? = entries[taskId]?.snapshot?.stats
+
+    /** Every retained child, including ones hidden from the context ring. */
+    fun roster(): List<SubAgentContextStats> = entries.values.map { it.snapshot.stats }
 
     /** Schedule each token once. An already due token can be expired immediately. */
     fun pendingHides(): List<HideToken> = entries.values.filterNot { it.hidden }.mapNotNull { it.hideToken }

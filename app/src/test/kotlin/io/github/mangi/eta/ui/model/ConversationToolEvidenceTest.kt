@@ -37,7 +37,7 @@ class ConversationToolEvidenceTest {
         val first = snapshot()
         val firstFile = File(first.substringAfter("Details file: ").substringBefore('\n'))
         assertTrue(firstFile.readText().endsWith(raw))
-        assertTrue(first.contains("offset_bytes=0"))
+        assertTrue(first.contains("Complete stored tool record"))
         assertFalse(first.contains(raw))
         val secondFile = File(snapshot().substringAfter("Details file: ").substringBefore('\n'))
         assertNotEquals(firstFile, secondFile)
@@ -45,9 +45,11 @@ class ConversationToolEvidenceTest {
     }
     @Test fun missingOriginalIsExplicitlySummaryOnly() {
         val text = ConversationMention.transcript(listOf(tool()), filesDir = temp.root, conversationId = "a")
-        assertTrue(text.contains("仅有摘要"))
+        assertTrue(text.contains("only the UI summary"))
         val file = File(text.substringAfter("Details file: ").substringBefore('\n'))
-        assertTrue(file.readText().contains("Result summary:"))
+        val body = file.readText()
+        assertTrue(body.contains("仅有摘要"))
+        assertTrue(body.contains("Result summary:"))
     }
     @Test fun redactedAndSensitiveResultsAreNeverExported() {
         val message = tool(name = "wifi_credentials")

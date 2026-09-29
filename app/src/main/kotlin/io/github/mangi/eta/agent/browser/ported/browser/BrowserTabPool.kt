@@ -184,7 +184,6 @@ class BrowserTabPool(private val context: Context) {
     private val _sessionViewportHeight = MutableStateFlow(0)
     val sessionViewportHeight: StateFlow<Int> = _sessionViewportHeight.asStateFlow()
 
-    private var nextTabId = 0
 
     private val evictionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var evictionJob: Job? = null
@@ -664,7 +663,9 @@ class BrowserTabPool(private val context: Context) {
         acquireTabId: Int? = null,
     ): BrowserActionResult {
         val tab = acquireTab(acquireTabId ?: input.tabId)
-            ?: return BrowserActionResult.error("Failed to acquire browser tab")
+            ?: return BrowserActionResult.error(
+                "This conversation already has 3 tabs in use. Close one with close_tab. Tab ids are only 0, 1 and 2.",
+            )
         return try {
             val result = tab.manager.execute(input)
             // [T-android-js-dialogs-256] If this tab's page tried to open an
@@ -790,19 +791,8 @@ class BrowserTabPool(private val context: Context) {
             // — that's the trampling this task forbids. Wait (bounded) for a tab
             // to free up; only fall back to reusing the least-recently-active tab
             // if nothing frees within the wait window.
-            var picked = currentTabs.firstOrNull { !it.inUse } ?: createTab(currentTabs)
-            if (picked == null) {
-                val waitDeadline = IMPLICIT_TAB_WAIT_MS
-                var waited = 0L
-                while (waited < waitDeadline) {
-                    delay(IMPLICIT_TAB_WAIT_POLL_MS)
-                    waited += IMPLICIT_TAB_WAIT_POLL_MS
-                    currentTabs = _tabs.value.toMutableList()
-                    picked = currentTabs.firstOrNull { !it.inUse } ?: createTab(currentTabs)
-                    if (picked != null) break
-                }
-            }
-            picked ?: currentTabs.firstOrNull()
+            // 本会话的标签都在忙就立刻失败，不空等，也不占用别的标签。
+            currentTabs.firstOrNull { !it.inUse } ?: createTab(currentTabs)
         }
 
         if (tab != null) {
@@ -829,9 +819,7 @@ class BrowserTabPool(private val context: Context) {
     private fun createTab(tabs: MutableList<Tab>, url: String? = null): Tab? {
         if (tabs.size >= MAX_TABS) return null
 
-        val restoredId = savedURLs.keys.minOrNull()
-        val id = restoredId ?: nextTabId++
-        nextTabId = maxOf(nextTabId, id + 1)
+        val id = (0 until MAX_TABS).first { candidate -> tabs.none { it.id == candidate } }
         val webView = WebView(context)
         // [T-android-minis-url-session-scope] Hand the manager a LIVE reader of
         // this pool's session id (set later via setSession) plus a context, so
@@ -941,7 +929,7 @@ class BrowserTabPool(private val context: Context) {
             Log.w(TAG, "window.open rejected: max tabs reached")
             return
         }
-        val id = nextTabId++
+        val id = (0 until MAX_TABS).first { candidate -> currentTabs.none { it.id == candidate } }
         val newWebView = WebView(context)
         val manager = BrowserUseManager(
             newWebView,
@@ -1107,6 +1095,11 @@ class BrowserTabPool(private val context: Context) {
 
     // -- Release --
 
+    fun destroy() {
+        _tabs.value.forEach { it.manager.destroy() }
+        _tabs.value = emptyList()
+    }
+
     fun releaseAllTabs() {
         _tabs.value = _tabs.value.map { it.copy(inUse = false) }
         saveState()
@@ -1115,7 +1108,8 @@ class BrowserTabPool(private val context: Context) {
     // -- Idle Eviction (call from a timer) --
 
     fun evictIdleTabs() {
-        if (io.github.mangi.eta.agent.browser.AgentBrowserSession.isUserControlling) return
+        val owner = sessionId
+        if (owner != null && io.github.mangi.eta.agent.browser.AgentBrowserSession.isControlling(owner)) return
         val now = System.currentTimeMillis()
         val currentTabs = _tabs.value.toMutableList()
         val timeoutMs = idleTimeoutMs
@@ -1281,12 +1275,14 @@ class BrowserTabPool(private val context: Context) {
             val json = JSONObject(file.readText())
             val urlsJson = json.optJSONObject("tabURLs")
             if (urlsJson != null) {
+                val urls = mutableListOf<String>()
                 val keys = urlsJson.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    savedURLs[key.toInt()] = urlsJson.getString(key)
+                while (keys.hasNext()) urls += urlsJson.optString(keys.next())
+                savedURLs.clear()
+                urls.filter { it.isNotEmpty() }.take(MAX_TABS).forEachIndexed { index, url ->
+                    savedURLs[index] = url
                 }
-                _selectedTabId.value = json.optInt("selectedTabId", 0)
+                _selectedTabId.value = 0
             }
             // Restore session viewport override. 0/missing = no override; fall
             // back to the global custom viewport / UA profile default.

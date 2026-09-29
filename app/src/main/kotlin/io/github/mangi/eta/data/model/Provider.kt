@@ -53,6 +53,8 @@ sealed interface ProviderSetting {
         get() = false
     val balanceOption: BalanceOption
         get() = BalanceOption()
+    val sessionGatewayJson: String
+        get() = ""
 }
 
 internal fun ProviderSetting.canQueryBalance(): Boolean {
@@ -83,6 +85,7 @@ data class OpenAiCompatibleProviderSetting(
     override val responsesStripReasoningStatus: Boolean = false,
     override val hostedWebSearchEnabled: Boolean = false,
     override val balanceOption: BalanceOption = BalanceOption(),
+    override val sessionGatewayJson: String = "",
 ) : ProviderSetting
 
 @Serializable
@@ -104,6 +107,7 @@ data class AnthropicProviderSetting(
     override val authMode: String = ProviderAuthMode.DEFAULT,
     val anthropicVersion: String = DEFAULT_ANTHROPIC_VERSION,
     override val balanceOption: BalanceOption = BalanceOption(),
+    override val sessionGatewayJson: String = "",
 ) : ProviderSetting {
     companion object {
         const val DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
@@ -131,6 +135,7 @@ data class CustomProviderSetting(
     override val responsesStripReasoningStatus: Boolean = false,
     override val hostedWebSearchEnabled: Boolean = false,
     override val balanceOption: BalanceOption = BalanceOption(),
+    override val sessionGatewayJson: String = "",
 ) : ProviderSetting
 
 internal val ProviderSetting.runtimeProviderType: String

@@ -63,7 +63,19 @@ class ProviderRequestHeadersTest {
     fun chatgptCodexSendsSessionId() {
         val result = headers("https://chatgpt.com/backend-api/codex", "conversation-1")
         assertEquals("conversation-1", result["session-id"])
+        assertEquals("conversation-1", result["thread-id"])
         assertEquals("codex_cli_rs", result["Originator"])
+    }
+
+    @Test
+    fun sessionIdentityFollowsTheConversationOnAnyHost() {
+        val first = headers("https://gateway.example/v1", "conversation-1")
+        val again = headers("https://gateway.example/v1", "conversation-1")
+        val other = headers("https://gateway.example/v1", "conversation-2")
+        assertEquals("conversation-1", first["session-id"])
+        assertEquals("conversation-1", first["thread-id"])
+        assertEquals(first["session-id"], again["session-id"])
+        assertNotEquals(first["session-id"], other["session-id"])
     }
 
     private fun headers(url: String, session: String): Headers = Headers.Builder().also {

@@ -66,7 +66,7 @@ internal object AgentChildTaskGroups {
         val generation = UUID.randomUUID().toString()
         val leaseId = "child:$generation"
         val stopRequested = AtomicBoolean(false)
-        if (!AgentExecutionService.acquire(context, leaseId, onStop = {
+        if (!AgentExecutionService.acquire(context, leaseId, countsAsExecutingSession = false, onStop = {
             stopRequested.set(true)
             stopGeneration(generation)
         })) {

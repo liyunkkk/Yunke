@@ -10,6 +10,7 @@ import io.github.mangi.eta.ui.model.MessageEditUiState
 import io.github.mangi.eta.ui.model.UserMessageUi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -102,7 +103,10 @@ class AgentConversationRevisionReducerTest {
                 AgentModelClient.ConversationMessage("user", "mention task", turnId = "run-task"),
             ),
         )
-        assertNull(AgentConversationRevisionReducer.boundary(state, "user-run-task-supplement-2"))
+        // The trailing unrecorded supplement is editable without erasing anything.
+        assertEquals(state.history, AgentConversationRevisionReducer.boundary(state, "user-run-task-supplement-2")!!.historyPrefix)
+        // An earlier missing supplement still fails closed.
+        assertNull(AgentConversationRevisionReducer.boundary(state, "user-run-task-supplement-1"))
         assertNull(AgentConversationRevisionReducer.branchPrefix(state, "user-run-task-supplement-2"))
         val boundary = AgentConversationRevisionReducer.boundary(state, "user-run-task")!!
         assertEquals(listOf("earlier"), boundary.historyPrefix.map { it.content })
@@ -283,6 +287,29 @@ class AgentConversationRevisionReducerTest {
         isStreaming = false,
         thinkingEnabled = false,
     )
+
+    @Test fun branchedIdsStillLocateHistoryWhenCachePathWasRewritten() {
+        val oldPath = "/data/user/0/io.github.mangi.eta/cache/eta-chat-images/conv-source/a.jpg"
+        val newPath = "/data/user/0/io.github.mangi.eta/cache/eta-chat-images/conv-branch/a.jpg"
+        val supplement = "看一下 " + newPath
+        val historyText = io.github.mangi.eta.agent.model.AgentContextCompactor
+            .steeringUserContent("看一下 " + oldPath)
+        val state = conversationState().copy(
+            messages = listOf(
+                UserMessageUi("conv-branch:user-run-task", "task"),
+                UserMessageUi("conv-branch:user-run-task-supplement-1", supplement),
+                AgentMessageUi("conv-branch:assistant-run-task-1", "reply"),
+            ),
+            history = listOf(
+                AgentModelClient.ConversationMessage("user", "task", turnId = "run-task"),
+                AgentModelClient.ConversationMessage("user", historyText, turnId = "run-task"),
+                AgentModelClient.ConversationMessage("assistant", "reply", turnId = "run-task"),
+            ),
+        )
+        assertNotNull(AgentConversationRevisionReducer.boundary(state, "conv-branch:user-run-task-supplement-1"))
+        assertNotNull(AgentConversationRevisionReducer.branchPrefix(state, "conv-branch:assistant-run-task-1"))
+        assertNotNull(AgentConversationRevisionReducer.boundary(state, "conv-branch:assistant-run-task-1"))
+    }
 
     @Test
     fun branchPrefixKeepsTargetAssistantTurn() {

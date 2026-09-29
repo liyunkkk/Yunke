@@ -162,6 +162,34 @@ internal object ModelRepository {
             )
         }
 
+    suspend fun addSelectedRemoteModels(providerId: String, selected: List<Model>): Int =
+        mutationMutex.withLock {
+            val existing = currentModels(providerId)
+            val existingKeys = existing.map { it.modelId.normalizedModelId() }.toSet()
+            val fresh = selected
+                .asSequence()
+                .filter { it.modelId.isNotBlank() }
+                .distinctBy { it.modelId.normalizedModelId() }
+                .filter { it.modelId.normalizedModelId() !in existingKeys }
+                .map { remote ->
+                    remote.copy(
+                        id = remote.id.ifBlank(::newId),
+                        modelId = remote.modelId.trim(),
+                        displayName = remote.displayName.trim().ifBlank { remote.modelId.trim() },
+                        isBuiltIn = false,
+                        source = ModelSource.REMOTE,
+                    )
+                }
+                .toList()
+            if (fresh.isEmpty()) return@withLock 0
+            ProviderRepository.replaceModels(
+                providerId,
+                (existing + fresh).mapIndexed { index, model -> model.copy(sortOrder = index) },
+            )
+            ProviderRepository.repairSelection()
+            fresh.size
+        }
+
     suspend fun reorderModels(providerId: String, ids: List<String>) {
         mutationMutex.withLock {
             val models = currentModels(providerId)

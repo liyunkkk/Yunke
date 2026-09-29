@@ -69,6 +69,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -151,6 +154,7 @@ internal fun AgentChatBody(
     livePromptTokens: Int? = null,
     livePromptIsProjected: Boolean = false,
     billedHistoryTokens: Int? = null,
+    activeRunContextWindow: Int? = null,
     childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats> = emptyList(),
     compactingModelName: String = "",
     selectedContextTaskId: String? = null,
@@ -323,6 +327,7 @@ internal fun AgentChatBody(
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
+                activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 isStreaming = isStreaming,
                 isPaused = isPaused,
@@ -403,6 +408,7 @@ private fun AgentChatScaffold(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
+    activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     isStreaming: Boolean,
     isPaused: Boolean = false,
@@ -482,6 +488,7 @@ private fun AgentChatScaffold(
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
+                activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 showContextUsage = hasMessages,
                 isStreaming = isStreaming,
@@ -784,6 +791,26 @@ internal fun AgentConversationMessages(
             isBottomSettling = isBottomSettling,
         )
     )
+    // 展开最底部工具时先不上提，让跟底滚动把新增高度吃掉。
+    // 固定 220ms 后如果还没吃完，上提会把剩下的高度一次抬走，所以偶尔还会卡一下。
+    // 改成尾部回到静止线再放开；不跟底或等太久也放开，避免一直压着。
+    var holdTailLift by remember { mutableStateOf(false) }
+    val shouldLiftTail = shouldLiftStreamingTail(shouldFollowBottom, holdTailLift)
+    LaunchedEffect(holdTailLift) {
+        if (!holdTailLift) return@LaunchedEffect
+        val started = System.nanoTime()
+        while (currentCoroutineContext().isActive) {
+            if (shouldReleaseTailLiftHold(
+                    following = shouldFollowBottom,
+                    overflowPx = scrollState.followTailOverflow(),
+                    elapsedNanos = System.nanoTime() - started,
+                    maxNanos = TAIL_LIFT_HOLD_MAX_NANOS,
+                )
+            ) break
+            withFrameNanos { }
+        }
+        holdTailLift = false
+    }
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
     val bottomFollowDecisions = remember(scrollState) {
         Channel<BottomFollowDecision>(Channel.CONFLATED)
@@ -911,9 +938,27 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 底栏（含输入器和 IME）高度只在这里消费一次，缩小真实滚动视口后再裁剪：
-    // 输入框周围虽然透明，正文也必须止于输入框上沿，不能绘制到输入框后面或两侧。
-    Box(modifier = modifier.padding(bottom = bottomInset).clipToBounds()) {
+    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
+    // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
+    // 才追上。这几帧不裁剪（裁剪会把卡片底边和半行字切掉），而是在绘制阶段把整个列表
+    // 上提尚未追上的距离：尾部始终停在输入框上方 14dp 的静止线，底边和间距都完整可见。
+    // 只有尾部不在视口内（一次性长出超过一屏）时才退回裁在静止线上。
+    // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除，内容可以滑到输入框后面。
+    Box(
+        modifier = modifier
+            .clipToBounds()
+            .drawWithContent {
+                // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
+                // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
+                // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
+                if (!shouldLiftTail) {
+                    drawContent()
+                    return@drawWithContent
+                }
+                val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
+                clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
+            },
+    ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
@@ -945,13 +990,22 @@ internal fun AgentConversationMessages(
             },
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    // 只在跟底时读取布局结果。滑动或展开期间不读，避免每帧把列表重新提交绘制。
+                    translationY = if (shouldLiftTail) {
+                        -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
+                    } else {
+                        0f
+                    }
+                }
                 .nestedScroll(userScrollConnection)
                 // Navigation already emits one explicit click/long-press haptic.
                 .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
                 .overScrollVertical(),
+            // 最后一条静止时停在输入框上方 14dp；手动滑动时内容可以滚到输入框后面。
             contentPadding = PaddingValues(
                 top = 14.dp,
-                bottom = 14.dp,
+                bottom = ConversationComposerGap + bottomInset,
             ),
             overscrollEffect = null,
         ) {
@@ -970,7 +1024,21 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
+                val tailRow = timelineRows.lastOrNull()
+                val tailGroupKey = when (tailRow) {
+                    is AgentTimelineRow.WorkStep -> tailRow.groupKey
+                    is AgentTimelineRow.WorkHeader -> tailRow.key
+                    else -> null
+                }
+                val reportsTailResize = when (entry) {
+                    is AgentTimelineRow.WorkHeader -> entry.key == tailGroupKey
+                    is AgentTimelineRow.WorkStep -> entry.groupKey == tailGroupKey
+                    is AgentTimelineRow.Message -> entry.key == tailRow?.key
+                }
                 // Keep the row key/index and animate its root, including its footer.
+                androidx.compose.runtime.CompositionLocalProvider(
+                    LocalTailResize provides if (reportsTailResize) ({ holdTailLift = true }) else null,
+                ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
                         if (entry is AgentTimelineRow.Message) Modifier.animateItem(
@@ -1025,6 +1093,7 @@ internal fun AgentConversationMessages(
                             isPaused = isPaused,
                             expanded = entry.expanded,
                             onToggle = {
+                                if (entry.key == tailGroupKey) holdTailLift = true
                                 workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
                             },
                         )
@@ -1070,6 +1139,7 @@ internal fun AgentConversationMessages(
                         messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                         branchEnabled = branchEnabled,
                     )
+                }
                 }
                 }
             }
@@ -1141,7 +1211,7 @@ internal fun AgentConversationMessages(
             onEdge = { navigateUserMessage(toEdge = true) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp),
+                .padding(bottom = 12.dp + bottomInset),
         )
     }
 }
@@ -1276,6 +1346,7 @@ private fun AgentChatBottomBar(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
+    activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
     isStreaming: Boolean,
@@ -1336,6 +1407,7 @@ private fun AgentChatBottomBar(
                 requestOverheadTokens = requestOverheadTokens,
                 billedOverheadTokens = billedOverheadTokens,
                 uncommittedLiveTokens = uncommittedLiveTokens,
+                activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 showContextUsage = showContextUsage,
                 isStreaming = isStreaming,
@@ -1511,6 +1583,45 @@ private suspend fun snapListToBottom(
         if (decision.requestIndex == null && decision.scrollByPx == 0) return
         withFrameNanos { }
     }
+}
+
+/** 尾部哨兵超出静止线的像素；哨兵不在可见项中时返回 null（尾部位置未知）。 */
+private fun LazyListState.followTailOverflow(): Int? {
+    val info = layoutInfo
+    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey } ?: return null
+    return sentinel.offset + sentinel.size - (info.viewportEndOffset - info.afterContentPadding)
+}
+
+internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = false) {
+    companion object {
+        val None = FollowTailLag(0f)
+        val Unknown = FollowTailLag(0f, unknown = true)
+    }
+}
+
+/**
+ * 跟底输出时，跟底滚动尚未追上的尾部超出量改为绘制上提，让尾部停在静止线上。
+ * 不跟底（用户拖动、浏览历史、输出结束）时不做任何处理；尾部不可见时交给静止线裁剪兜底。
+ */
+/** 用户正在展开最底部工具时不上提，避免整段高度在一帧里把列表抬走。 */
+internal fun shouldLiftStreamingTail(followingOutput: Boolean, holdingUserExpansion: Boolean): Boolean =
+    followingOutput && !holdingUserExpansion
+
+private const val TAIL_LIFT_HOLD_MAX_NANOS = 1_500_000_000L
+
+/** 尾部已经回到静止线，或已经不在跟底，才结束上提抑制。超时只是兜底。 */
+internal fun shouldReleaseTailLiftHold(
+    following: Boolean,
+    overflowPx: Int?,
+    elapsedNanos: Long,
+    maxNanos: Long,
+): Boolean = !following || (overflowPx != null && overflowPx <= 1) || elapsedNanos >= maxNanos
+
+internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
+    !following -> FollowTailLag.None
+    tailOverflowPx == null -> FollowTailLag.Unknown
+    tailOverflowPx <= 0 -> FollowTailLag.None
+    else -> FollowTailLag(tailOverflowPx.toFloat())
 }
 
 private fun LazyListState.isConversationAtBottom(): Boolean {
@@ -1689,3 +1800,6 @@ internal fun shouldStopOrphanSpeechPlayback(
     if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
+
+/** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
+private val ConversationComposerGap = 14.dp

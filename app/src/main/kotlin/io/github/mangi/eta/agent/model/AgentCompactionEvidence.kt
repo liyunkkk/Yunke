@@ -102,6 +102,7 @@ internal object AgentCompactionEvidence {
                     !text.startsWith("[Conversation summary]") && !text.contains("context-checkpoint:") &&
                     !text.contains("Conversations mentioned") && !text.contains("```") &&
                     text != AgentContextCompactor.SEAMLESS_CONTINUE_PROMPT &&
+                    text != AgentContextCompactor.SEAMLESS_CONTINUE_THINKING_PROMPT &&
                     !Regex("(?i)(api.?key|authorization|password|secret|token[=:]|bearer |sk-[a-zA-Z0-9]|密码|验证码)").containsMatchIn(text)) {
                     requests.addLast(order to text)
                     if (requests.size > 4) requests.removeFirst()

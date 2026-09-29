@@ -74,12 +74,13 @@ internal object BackupArchiveSafety {
                 require(names.add(name)) { "备份存在重复条目：$name" }
                 if (entry.isDirectory) continue
                 require(name == "eta-backup.json" || name == "eta-conversation.json" ||
+                    name.startsWith("conversations/") && name.endsWith(".json") ||
                     name.startsWith("attachments/chat-images/") || name.startsWith("attachments/imports/") ||
                     name.startsWith("linux/workspace/") ||
                     LINUX_ENVIRONMENT_TAR.matches(name)) { "不支持的备份条目：$name" }
                 val file = target(directory, name)
                 require(file.parentFile!!.mkdirs() || file.parentFile!!.isDirectory)
-                val limit = if (!name.contains('/')) MANIFEST_LIMIT else TOTAL_LIMIT
+                val limit = if (!name.contains('/') || name.startsWith("conversations/")) MANIFEST_LIMIT else TOTAL_LIMIT
                 val crc = CRC32()
                 val size = file.outputStream().use { output -> zip.getInputStream(entry).use { input ->
                     copyLimited(input, output, minOf(limit, TOTAL_LIMIT - total), directory, crc)

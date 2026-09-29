@@ -24,13 +24,11 @@ internal object AnthropicUsageTotals {
         return parts.sumOf { it.coerceAtLeast(0) }
     }
 
-    /**
-     * Only cache reads are hits. `cache_creation_input_tokens` is freshly processed
-     * this turn (Anthropic bills it above the base rate), so it stays inside the
-     * non-cached remainder that stats derive as `inputTokens - cachedTokens`,
-     * and it is excluded from the cache hit rate.
-     */
+    /** Cache reads only. Writes are [cacheCreationTokens], not hits. */
     fun cachedTokens(cacheReadTokens: Int?): Int? = cacheReadTokens?.coerceAtLeast(0)
+
+    /** Tokens written into the cache this turn. Already inside the prompt total. */
+    fun cacheCreationTokens(cacheCreationTokens: Int?): Int? = cacheCreationTokens?.coerceAtLeast(0)
 
     /** Builds window-consistent totals from a raw Anthropic `usage` object. */
     fun parse(intOf: (String) -> Int?): AgentTokenUsage? {
@@ -42,6 +40,7 @@ internal object AnthropicUsageTotals {
             outputTokens = intOf("output_tokens"),
             reasoningTokens = intOf("thinking_output_tokens"),
             cachedTokens = cachedTokens(cacheRead),
+            cacheCreationTokens = cacheCreationTokens(cacheCreation),
         ).takeUnless { it.isEmpty }
     }
 }

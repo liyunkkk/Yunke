@@ -39,8 +39,20 @@ internal object AgentConversationRevisionReducer {
         } ?: return null
         val userMessage = state.messages[userMessageIndex] as UserMessageUi
         val historyIndex = historyUserIndex(state, userMessageIndex)
-        // Missing supplements must not be mistaken for the preceding original question.
-        if (historyIndex == null && userMessage.isSteerSupplement()) return null
+        val laterUsers = state.messages.drop(userMessageIndex + 1).any { it is UserMessageUi }
+        if (historyIndex == null && userMessage.isSteerSupplement()) {
+            // 停止时尚未写进历史的最后一条追加：它之后没有任何内容可被抹掉，
+            // 以完整历史为前缀替换它是安全的；其它缺失的追加仍拒绝，避免误认成原问题。
+            val owner = ownerRunId(userMessage.id)
+            if (laterUsers || state.history.none { it.turnId == owner }) return null
+            return Boundary(
+                userMessage = userMessage,
+                userMessageIndex = userMessageIndex,
+                historyPrefix = state.history,
+                laterTurnCount = 0,
+                contextWasCompacted = false,
+            )
+        }
         val laterTurnCount = state.messages.drop(userMessageIndex + 1).count {
             it is UserMessageUi && !it.isSteerSupplement()
         }
@@ -97,15 +109,26 @@ internal object AgentConversationRevisionReducer {
         return BranchPrefix(messages = messages, history = history)
     }
 
+
+    /** Branch copies prefix message ids with the new conversation id. The run id stays after the last colon. */
+    private fun ownerRunId(userMessageId: String): String =
+        userMessageId.substringAfterLast(':').removePrefix("user-").substringBefore("-supplement-")
+
+    /** A branch rewrites cache paths in the bubble but not always in the stored model history. */
+    private fun revisionComparableText(text: String): String =
+        text.replace(Regex("/eta-chat-images/conv-[^/]+/"), "/eta-chat-images/conv/")
+
     /** Stable owner + exact user payload; list length is never evidence of message identity. */
     private fun historyUserIndex(state: AgentChatUiState, uiIndex: Int): Int? {
         val user = state.messages[uiIndex] as UserMessageUi
-        val runId = user.id.removePrefix("user-").substringBefore("-supplement-")
-        val expected = user.content.trim()
-        val steering = io.github.mangi.eta.agent.model.AgentContextCompactor.steeringUserContent(user.content).trim()
+        val runId = ownerRunId(user.id)
+        val expected = revisionComparableText(user.content.trim())
+        val steering = revisionComparableText(
+            io.github.mangi.eta.agent.model.AgentContextCompactor.steeringUserContent(user.content).trim(),
+        )
         fun matches(message: AgentModelClient.ConversationMessage): Boolean {
             if (message.role != "user" || AgentContextCompactor.isCompressionSummary(message)) return false
-            val text = historyText(message)
+            val text = revisionComparableText(historyText(message))
             if (text == expected || text == steering) return true
             // Attachment envelopes differ between UI/persisted/vision requests. Only normalize
             // inside the same proven owner turn, never across repeated questions or supplements.
@@ -120,8 +143,8 @@ internal object AgentConversationRevisionReducer {
         val scoped = inTurn.ifEmpty { candidates }
         // Disambiguate only identical payloads, not every user bubble including supplements.
         val laterDuplicates = state.messages.drop(uiIndex + 1).filterIsInstance<UserMessageUi>().count {
-            it.content.trim() == expected &&
-                (inTurn.isEmpty() || it.id.removePrefix("user-").substringBefore("-supplement-") == runId)
+            revisionComparableText(it.content.trim()) == expected &&
+                (inTurn.isEmpty() || ownerRunId(it.id) == runId)
         }
         return scoped.getOrNull(scoped.size - 1 - laterDuplicates)
     }
@@ -140,7 +163,7 @@ internal object AgentConversationRevisionReducer {
      * A tool-pruning marker or a summary elsewhere in the conversation is insufficient. */
     private fun wasRemovedByCompaction(state: AgentChatUiState, uiIndex: Int): Boolean {
         val user = state.messages[uiIndex] as UserMessageUi
-        val owner = user.id.removePrefix("user-").substringBefore("-supplement-")
+        val owner = ownerRunId(user.id)
         if (state.history.any { it.role == "user" && it.turnId == owner }) return false
         val markers = state.messages.withIndex().filter { (_, message) ->
             message is ContextCompactedMessageUi && message.compactedCount > 0 && message.summary.isNotBlank()

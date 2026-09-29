@@ -71,6 +71,7 @@ internal class AgentLocalTools(
      * `default_main_session`，兼容不传该值的调用点。
      */
     private val conversationId: String = "",
+    private val browserConversationId: String = "",
     private val browserToolsEnabled: () -> Boolean = {
         Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS)
     },
@@ -452,6 +453,7 @@ internal class AgentLocalTools(
             args = args,
             runId = browserRunId,
             toolCallId = toolCallId,
+            conversationId = browserConversationId,
         )
         return AgentModelClient.ToolResult(
             content = result.content,

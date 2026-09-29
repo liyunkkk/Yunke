@@ -464,6 +464,7 @@ fun AgentAppRoot(
                 agentState.openHistorySearchHit(hit)
             },
             tokenUsage = cumulativeUsage,
+            subAgentStatuses = agentState.homeState.childStatusRoster,
             selectedProviderId = agentState.modelPickerState.selectedModel?.providerId,
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
             onConversationRename = { conversation ->
@@ -1030,7 +1031,7 @@ fun AgentAppRoot(
     AgentPendingChildStopDialog(agentState.conversationPaneState.selectedConversationId)
 
     if (browserSheetVisible) {
-        AgentBrowserScreen(onDismiss = { browserSheetVisible = false })
+        AgentBrowserScreen(onDismiss = { browserSheetVisible = false }, conversationId = agentState.conversationPaneState.selectedConversationId)
     }
 
     conversationRenameTarget?.let { conversation ->

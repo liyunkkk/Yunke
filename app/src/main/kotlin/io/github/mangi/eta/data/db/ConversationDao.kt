@@ -72,11 +72,24 @@ internal interface ConversationDao {
     @Query("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = :conversationId")
     suspend fun messageCount(conversationId: String): Int
 
+    @Query("SELECT COUNT(*) FROM conversation_messages")
+    suspend fun storedMessageCount(): Int
+
     @Query("SELECT COUNT(*) FROM conversations")
     suspend fun conversationCount(): Int
 
-    /** Visible chat bubbles only; thinking/tool rows are not messages. */
-    @Query("SELECT COUNT(*) FROM conversation_messages WHERE type IN ('user', 'assistant')")
+    /**
+     * Visible chat bubbles only; thinking/tool rows are not messages.
+     *
+     * Empty assistant rows are excluded: a round whose text lands in another block still
+     * gets a content-free `...-usage` carrier row so its bill has somewhere to live. On
+     * this device those carriers were 1980 of 2550 counted rows, inflating the reported
+     * message count roughly fourfold. They are not bubbles the user ever saw.
+     */
+    @Query(
+        "SELECT COUNT(*) FROM conversation_messages WHERE type IN ('user', 'assistant') " +
+            "AND (type = 'user' OR (content IS NOT NULL AND TRIM(content) <> ''))"
+    )
     suspend fun totalMessageCount(): Int
 
     @Query(

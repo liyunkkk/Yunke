@@ -162,6 +162,7 @@ internal fun AgentChatInputBar(
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
+    activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
     isStreaming: Boolean,
@@ -226,6 +227,7 @@ internal fun AgentChatInputBar(
         pendingFileReferences,
         conversationMentions.pending,
         modelPickerState.selectedModel,
+        activeRunContextWindow,
     ) {
         liveContextUsage(
             history = emptyList(),
@@ -240,11 +242,12 @@ internal fun AgentChatInputBar(
             requestOverheadTokens = requestOverheadTokens,
             billedOverheadTokens = billedOverheadTokens,
             uncommittedLiveTokens = uncommittedLiveTokens,
+            activeRunContextWindow = activeRunContextWindow,
         )
     }
     val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
         conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
-        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens) {
+        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, activeRunContextWindow) {
         io.github.mangi.eta.ui.model.compressionContextUsage(
             history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
             selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
@@ -252,6 +255,7 @@ internal fun AgentChatInputBar(
             pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
             billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
+            activeRunContextWindow = activeRunContextWindow,
         )
     }
     val contextSendBlocked = shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
@@ -531,6 +535,7 @@ internal fun AgentChatInputBar(
                             isCompressingContext = isCompressingContext,
                         )
                         val sendInteraction = remember { MutableInteractionSource() }
+                        val context = LocalContext.current
                         Box(
                             modifier = Modifier
                                 .size(ChatInputActionSize)
@@ -543,6 +548,11 @@ internal fun AgentChatInputBar(
                                     onClick = {
                                         TouchHaptics.click(view)
                                         when (sendMode) {
+                                            "blocked" -> Toast.makeText(
+                                                context,
+                                                R.string.compress_conversation_in_progress,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
                                             "stop" -> onStop()
                                             "continue" -> onContinue()
                                             "send" -> {
@@ -1026,7 +1036,9 @@ internal fun resolveChatComposerSendMode(
     isCompressingContext: Boolean = false,
     canContinueDisconnected: Boolean = false,
 ): String = when {
-    // 压缩进行中禁止追加/续写，避免一边压缩一边输出。流式时仍可停止。
+    // 压缩进行中禁止追加/续写：有待发内容时显示灰色发送键，点击只提示；
+    // 没有内容时流式仍可停止。
+    isCompressingContext && hasSteerContent -> "blocked"
     isCompressingContext && isStreaming -> "stop"
     isCompressingContext -> "idle"
     (isStreaming || isPaused) && hasSteerContent -> "send"

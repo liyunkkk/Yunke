@@ -192,6 +192,16 @@ internal class AgentAppState(
     private val mainStopReasons = java.util.concurrent.ConcurrentHashMap<String, AgentChildControlPolicy.Reason>()
     private val modelRetryState = AgentRunRetryState()
     private val runOverheadTokens = mutableMapOf<String, Int>()
+
+    /**
+     * Window the run was actually launched with.
+     *
+     * A run keeps the config it snapshotted at send time, so changing the maximum
+     * context mid-run does not affect the request already in flight. The picker,
+     * however, immediately reports the new window, and judging an in-flight run
+     * against it made the percentage jump for reasons the run never saw.
+     */
+    private val runContextWindows = mutableMapOf<String, Int>()
     private val runMessageProjector = AgentRunMessageProjector()
     private val runReplayBatch = AgentRunReplayBatch()
     private val runEventCoalescer = AgentRunEventCoalescer()
@@ -1279,7 +1289,7 @@ internal class AgentAppState(
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         conversationUpdatedAt = conversationUpdatedAt +
             (conversationId to checkpoint.updatedAt)
         return true
@@ -1559,9 +1569,11 @@ internal class AgentAppState(
         check(state.conversationContentLoaded)
         fileAttachmentOwnerVersion += 1
         selectedConversationId = conversationId
-        val view = ownerContext(conversationId).projection()
+        val owner = ownerContext(conversationId)
+        val view = owner.projection()
         val ordered = orderedTerminalState(state).copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
+            childStatusRoster = owner.roster(),
         )
         conversationsById = conversationsById + (conversationId to ordered)
         homeState = ordered
@@ -2085,7 +2097,7 @@ internal class AgentAppState(
                 pendingImages = images,
                 pendingFileReferences = fileReferences,
                 pendingConversationMentions = parsedPrompt.conversations.map { mentioned ->
-                    PendingConversationMentionUi("mention-${UUID.randomUUID()}", mentioned.id, mentioned.title, mentioned.transcript)
+                    PendingConversationMentionUi("mention-${UUID.randomUUID()}", mentioned.id, mentioned.title, "", mentioned.snapshotPath, mentioned.toolsIndexPath)
                 },
                 messageEdit = MessageEditUiState(
                     targetMessageId = boundary.userMessage.id,
@@ -2245,7 +2257,7 @@ internal class AgentAppState(
         val supportsVision = generateImage || generateVideo || (modelPickerState.selectedModel?.supportsVision == true) || io.github.mangi.eta.agent.model.ModelFeaturePreferences.visionEnabled()
         if (!generateImage && !generateVideo && rejectSendIfContextWindowExceeded(boundary.historyPrefix, parsed.request, images, parsed.references.mapIndexed { index, reference ->
                 PendingFileReferenceUi(id = "regen-$index", reference = reference)
-            }, parsed.conversations.map { PendingConversationMentionUi(it.id, it.id, it.title, it.transcript) })) {
+            }, parsed.conversations.map { PendingConversationMentionUi(it.id, it.id, it.title, "", it.snapshotPath, it.toolsIndexPath) })) {
             return
         }
         if (!ignoreCompression && boundary.contextWasCompacted) showCompactedRevisionNotice()
@@ -2543,6 +2555,7 @@ internal class AgentAppState(
         val taggedUserHistoryMessage = userHistoryMessage.copy(turnId = logicalTurnId)
         bindUsageRun(runId, conversationId)
         runOverheadTokens[runId] = requestOverheadTokens
+        runConfig.contextWindow?.takeIf { it > 0 }?.let { runContextWindows[runId] = it }
         val generateVideo = runModel.supportsVideoGeneration
         val generateImage = !generateVideo && runModel.supportsImageGeneration
         val mediaController = if (generateImage || generateVideo) {
@@ -2578,8 +2591,10 @@ internal class AgentAppState(
             state.copy(
                 isStreaming = true,
                 isPaused = false,
-                livePromptTokens = if (history == state.history) state.livePromptTokens else null,
-                livePromptIsProjected = if (history == state.history) state.livePromptIsProjected else false,
+                // 估算只属于还没有云端账单的第一轮，以及压缩清掉账单后的第一轮。
+                // 普通发消息会把可见回复写进 history，不能因此丢掉上一轮实测。
+                livePromptTokens = state.livePromptTokens,
+                livePromptIsProjected = state.livePromptIsProjected,
                 isCompressingContext = willCompress,
                 history = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(history) + taggedUserHistoryMessage,
                 messages = runMessages,
@@ -2974,7 +2989,7 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -2993,7 +3008,7 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3292,9 +3307,8 @@ internal class AgentAppState(
         val pending = homeState.pendingConversationMentions
         if (conversationId == selectedConversationId || pending.any { it.conversationId == conversationId }) return false
         val sourceSnapshot = conversationsById[conversationId] ?: return false
-        val budget = minOf(ConversationMention.MAX_TRANSCRIPT_CHARS, ConversationMention.remainingTranscriptBudget(pending))
-        if (pending.size >= ConversationMention.MAX_ATTACHED || budget < 128) {
-            Toast.makeText(appContext, "最多引用 3 个会话，总内容过大时会省略中间记录。", Toast.LENGTH_SHORT).show()
+        if (pending.size >= ConversationMention.MAX_ATTACHED) {
+            Toast.makeText(appContext, "最多引用 3 个会话。", Toast.LENGTH_SHORT).show()
             return false
         }
         val status = if (sourceSnapshot.isStreaming) "[选择时快照：来源会话仍在运行，未包含后续输出]\n" else ""
@@ -3308,16 +3322,21 @@ internal class AgentAppState(
         )))
         scope.launch {
             try {
-                val transcript = withContext(Dispatchers.IO) {
+                val prepared = withContext(Dispatchers.IO) {
                     val source = if (sourceSnapshot.conversationContentLoaded) sourceSnapshot else
                         requireNotNull(AgentConversationStore.loadConversation(appContext, conversationId))
                     val evidence = io.github.mangi.eta.ui.model.ConversationToolEvidence(source.messages)
                     evidence.add(source.history, "source conversation model history")
                     io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, conversationId)
                         .visitForConversationMention(evidence::add)
-                    status + ConversationMention.transcript(
-                        source.messages, budget - status.length, appContext.filesDir, conversationId, evidence,
+                    val toolFiles = mutableListOf<String>()
+                    val body = status + ConversationMention.transcript(
+                        source.messages, ConversationMention.SNAPSHOT_MAX_CHARS - status.length,
+                        appContext.filesDir, conversationId, evidence, toolFiles,
                     )
+                    val snapshot = ConversationMention.writeSnapshot(appContext.filesDir, conversationId, body)
+                    val index = snapshot?.let { ConversationMention.writeToolIndex(it, toolFiles) }
+                    Triple(snapshot?.absolutePath.orEmpty(), index?.absolutePath.orEmpty(), body)
                 }
                 if (ownerVersion != fileAttachmentOwnerVersion) return@launch
                 if (conversationId !in conversationsById) {
@@ -3326,13 +3345,13 @@ internal class AgentAppState(
                 }
                 val current = homeState.pendingConversationMentions
                 if (current.none { it.id == mentionId }) return@launch
-                val remaining = ConversationMention.remainingTranscriptBudget(current.filterNot { it.id == mentionId })
-                if (transcript.isBlank() || transcript.length > remaining) {
+                val (snapshotPath, toolsIndexPath, _) = prepared
+                if (snapshotPath.isBlank()) {
                     removeConversationMention(mentionId)
-                    Toast.makeText(appContext, "会话引用为空或超过总长度限制，请重新选择。", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(appContext, "会话引用为空或快照没写上，请重新选择。", Toast.LENGTH_SHORT).show()
                 } else {
                     updateCurrentConversation(homeState.copy(pendingConversationMentions = current.map {
-                        if (it.id == mentionId) it.copy(transcript = transcript) else it
+                        if (it.id == mentionId) it.copy(transcript = "", snapshotPath = snapshotPath, toolsIndexPath = toolsIndexPath) else it
                     }))
                 }
             } catch (failure: Exception) {
@@ -3505,7 +3524,7 @@ internal class AgentAppState(
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
-            runOverheadTokens.remove(runId)
+            runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             runCompressedDuringRun.remove(runId)
         }
         refreshConversationSummaries()
@@ -3577,7 +3596,7 @@ internal class AgentAppState(
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
-            runOverheadTokens.remove(runId)
+            runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             runCompressedDuringRun.remove(runId)
         }
         if (conversationId == null) {
@@ -4024,6 +4043,13 @@ internal class AgentAppState(
     }
 
     private fun enqueueRunEvent(runId: String, event: AgentEvent) {
+        // Runtime delivers events on the run's IO job. Publishing from that thread races
+        // with selecting another conversation on the main thread: the title can already be
+        // the new conversation while homeState is still overwritten with this run's text.
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            scope.launch(Dispatchers.Main.immediate) { enqueueRunEvent(runId, event) }
+            return
+        }
         if (event is AgentEvent.AssistantBlockDelta) {
             StreamPerformanceDiagnostics.record("ui.delta.received", value = event.delta.length.toLong())
         }
@@ -4319,6 +4345,11 @@ internal class AgentAppState(
                         AgentEvent.AssistantBlockKind.TOOL_CALL -> messages
                     }
                 }
+                if (event.kind != AgentEvent.AssistantBlockKind.TOOL_CALL) {
+                    io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(
+                        event.deltaChars.coerceAtLeast(event.delta.length),
+                    )
+                }
             }
 
             is AgentEvent.AssistantBlockEnd -> {
@@ -4360,9 +4391,33 @@ internal class AgentAppState(
                     }
                 } else if (!isStaleUsageAfterCompact(runId, event.round)) {
                     val occupancy = io.github.mangi.eta.ui.model.windowTokensFromUsage(event.usage.toUi())
+                    // The bill is always recorded; only a plausible receipt may become occupancy.
+                    // Aggregated gateway usage (a retried or multi-leg request summed into one
+                    // object) otherwise makes the ring max out and trips auto-compaction early.
                     updateAssistantUsage(runId, event.round, event.usage.toUi())
-                    updateLivePromptTokens(runId, occupancy, projected = false,
-                        historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens)
+                    val localBasis = event.requestHistoryTokens?.let { history ->
+                        history + (event.requestOverheadTokens ?: 0)
+                    }
+                    val conversation = conversationIdForRun(runId)?.let(::conversationState)
+                    // Judge the receipt against the window this run was launched with,
+                    // not against a limit the user may have changed mid-run.
+                    val window = runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)
+                    val measured = occupancy.takeIf {
+                        io.github.mangi.eta.ui.model.CloudReceiptPlausibility.isOccupancy(
+                            tokens = it, contextWindow = window,
+                            previousTokens = conversation?.let(::billedPromptTokens),
+                            localTokens = localBasis,
+                            previousLocalTokens = conversation?.cloudHistoryTokens?.let { history ->
+                                history + (conversation.cloudRequestOverheadTokens ?: 0)
+                            })
+                    }
+                    if (measured != null) {
+                        updateLivePromptTokens(runId, measured, projected = false,
+                            historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens)
+                    } else if (localBasis != null && localBasis > 0) {
+                        // Keep a usable, self-consistent basis instead of an implausible bill.
+                        updateLivePromptTokens(runId, localBasis, projected = true)
+                    }
                 }
             }
 
@@ -4391,6 +4446,11 @@ internal class AgentAppState(
             }
 
             is AgentEvent.ToolStarted -> {
+                if (!replaying) {
+                    io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
+                        "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                    )
+                }
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking =
                         runMessageProjector.finalizeThinkingRound(runId, event.round, messages)
@@ -4406,6 +4466,11 @@ internal class AgentAppState(
             }
 
             is AgentEvent.HostedToolStarted -> {
+                if (!replaying) {
+                    io.github.mangi.eta.ui.haptics.StreamingHaptics.noteToolAppeared(
+                        "$runId-tool-${event.round}-${event.toolCallId.ifBlank { "unknown" }}",
+                    )
+                }
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking =
                         runMessageProjector.finalizeThinkingRound(runId, event.round, messages)
@@ -4694,7 +4759,7 @@ internal class AgentAppState(
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
-        runOverheadTokens.remove(runId)
+        runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations(
@@ -4965,9 +5030,11 @@ internal class AgentAppState(
                 cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
             else -> state
         }
-        val view = ownerContexts[conversationId]?.projection()
-        val current = if (view == null) projected else projected.copy(
+        val ownerContext = ownerContexts[conversationId]
+        val view = ownerContext?.projection()
+        val current = if (view == null || ownerContext == null) projected else projected.copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
+            childStatusRoster = ownerContext.roster(),
         )
         conversationsById = conversationsById + (conversationId to current)
         if (updateTimestamp) {
@@ -5014,6 +5081,9 @@ internal class AgentAppState(
                 childContexts = state.childContexts,
                 isWaitingForCompression = isStreaming && state.isWaitingForCompression,
                 isPaused = if (isStreaming) state.isPaused else false,
+                // Show the percentage against the window this run actually flies with;
+                // a settled run releases the override back to the picker's window.
+                activeRunContextWindow = if (isStreaming) runContextWindows[runId] else null,
                 isCompressingContext = when {
                     isStreaming -> state.isCompressingContext
                     shouldKeepCompressingIndicator(conversationId) -> true

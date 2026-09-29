@@ -6,13 +6,16 @@ internal data class AgentTokenUsage(
     val outputTokens: Int? = null,
     val reasoningTokens: Int? = null,
     val cachedTokens: Int? = null,
+    /** Cache writes. Not a hit; already included in [inputTokens]. */
+    val cacheCreationTokens: Int? = null,
 ) {
     val isEmpty: Boolean
         get() = contextTokens == null &&
             inputTokens == null &&
             outputTokens == null &&
             reasoningTokens == null &&
-            cachedTokens == null
+            cachedTokens == null &&
+            cacheCreationTokens == null
 
     /**
      * 当前请求占用的窗口：对齐 ST「输入」。
