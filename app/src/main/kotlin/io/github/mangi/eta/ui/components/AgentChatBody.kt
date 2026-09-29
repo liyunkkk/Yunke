@@ -48,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
@@ -805,13 +806,25 @@ internal fun AgentConversationMessages(
     }
     // 点击回调里问一次：这一行下面的内容会不会停在原处。只读 State，不参与组合；
     // remember 后引用不变，作为 CompositionLocal 提供时不会让整页重组。
-    val expansionHoldsBottom: () -> Boolean = remember(scrollState) {
+    val expansionPinnedNow: () -> Boolean = remember(scrollState) {
         {
             resolveExpansionHoldsBottom(
                 following = shouldFollowBottom,
                 arrangedToBottom = shouldPinConversationToBottom(currentStreaming.value, streamFilledViewport),
                 listScrollable = isListScrollable,
             )
+        }
+    }
+    // 下沿被钉住的展开期间，跟底滚动每帧把新增高度一次吃掉，不走平滑加速。
+    // 平滑跟底第一帧不动、之后慢慢加速，其余全靠绘制上提；上提一旦超过列表尾部留白，
+    // 尾部哨兵被挤出可视区，上提归零，内容一帧掉下去三百多像素。展开动画本身已经是平滑的，
+    // 这段时间里标签随动画逐帧上移即可。只在协程里读，写入不触发重组。
+    var bottomSnapUntilNanos by remember { mutableLongStateOf(0L) }
+    val expansionHoldsBottom: () -> Boolean = remember(scrollState) {
+        {
+            expansionPinnedNow().also { pinned ->
+                if (pinned) bottomSnapUntilNanos = System.nanoTime() + EXPANSION_BOTTOM_SNAP_NANOS
+            }
         }
     }
     // 点开工作过程时新插入的步骤行从 0 高度展开（只在下沿被钉住时）。
@@ -833,12 +846,89 @@ internal fun AgentConversationMessages(
                         val lift = if (liftingNow) {
                             resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
                         } else 0
-                        "follow=$shouldFollowBottom lift=$liftingNow liftPx=$lift pinned=${expansionHoldsBottom()} " +
+                        "follow=$shouldFollowBottom lift=$liftingNow liftPx=$lift pinned=${expansionPinnedNow()} snap=${System.nanoTime() < bottomSnapUntilNanos} " +
                             "userScroll=$isUserScrolling overflowPx=${scrollState.followTailOverflow()} " +
                             "first=${scrollState.firstVisibleItemIndex}:${scrollState.firstVisibleItemScrollOffset} " +
                             "visible=${info.visibleItemsInfo.size} total=${info.totalItemsCount}"
                     }
                 }
+            }
+    }
+    // 快速输出时尾部越过静止线、画进输入框的诊断。只在布局或跟底状态变化时取样（snapshotFlow），
+    // 不额外请求帧。跟底上提时列表裁在静止线上，真正画进输入框的只能是没在上提的时候；
+    // 上提时越线的部分被裁掉，只计数。跟底的各个条件变化、越线开始和结束各记一行。
+    LaunchedEffect(scrollState) {
+        snapshotFlow { currentStreaming.value || isBottomSettling }
+            .distinctUntilChanged()
+            .collectLatest { active ->
+                if (!active) return@collectLatest
+                var lastState = ""
+                var breachSamples = 0
+                var breachMaxPx = 0
+                snapshotFlow {
+                    val info = scrollState.layoutInfo
+                    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
+                    val last = info.visibleItemsInfo.lastOrNull()
+                    val tailBottom = resolveTailBottomPx(
+                        sentinelBottom = sentinel?.let { it.offset + it.size },
+                        lastVisibleIndex = last?.index,
+                        lastVisibleBottom = last?.let { it.offset + it.size },
+                        totalItems = info.totalItemsCount,
+                    )
+                    val restLine = info.viewportEndOffset - info.afterContentPadding
+                    val lifting = shouldFollowBottom
+                    val lift = if (lifting) {
+                        resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx.toInt()
+                    } else 0
+                    TailBreachSample(
+                        overPx = resolveTailDrawnOverflow(tailBottom, restLine, lift),
+                        tailBottomPx = tailBottom,
+                        restLinePx = restLine,
+                        padPx = info.afterContentPadding,
+                        sentinelVisible = sentinel != null,
+                        lastIndex = last?.index ?: -1,
+                        totalItems = info.totalItemsCount,
+                        lifting = lifting,
+                        state = "follow=$lifting streaming=${currentStreaming.value} " +
+                            "anchored=${currentAnchor.value} userScroll=$isUserScrolling " +
+                            "settling=$isBottomSettling initialPending=$initialBottomPositionPending " +
+                            "nav=${messageNavigationJob != null}",
+                    )
+                }
+                    .distinctUntilChanged()
+                    .collect { sample ->
+                        if (!StreamPerformanceDiagnostics.enabled) return@collect
+                        val over = sample.overPx
+                        if (sample.state != lastState) {
+                            StreamPerformanceDiagnostics.note("follow") {
+                                "${sample.state} tailVisible=${sample.sentinelVisible} overPx=$over padPx=${sample.padPx}"
+                            }
+                            lastState = sample.state
+                        }
+                        if (over != null && over > 1) {
+                            StreamPerformanceDiagnostics.record(
+                                if (sample.lifting) "tail.clippedPx" else "tail.breachPx", value = over.toLong(),
+                            )
+                        }
+                        if (!sample.lifting && over != null && over > 1) {
+                            if (breachSamples == 0) {
+                                StreamPerformanceDiagnostics.note("breach") {
+                                    "state=start overPx=$over tailBottomPx=${sample.tailBottomPx} " +
+                                        "restLinePx=${sample.restLinePx} padPx=${sample.padPx} " +
+                                        "sentinel=${sample.sentinelVisible} last=${sample.lastIndex}/${sample.totalItems} " +
+                                        sample.state
+                                }
+                            }
+                            breachSamples++
+                            breachMaxPx = maxOf(breachMaxPx, over)
+                        } else if (breachSamples > 0) {
+                            StreamPerformanceDiagnostics.note("breach") {
+                                "state=end samples=$breachSamples maxOverPx=$breachMaxPx ${sample.state}"
+                            }
+                            breachSamples = 0
+                            breachMaxPx = 0
+                        }
+                    }
             }
     }
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
@@ -878,10 +968,17 @@ internal fun AgentConversationMessages(
             val sentinel = layoutInfo.visibleItemsInfo.firstOrNull { item ->
                 item.key == ChatBottomSentinelKey
             }
+            val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
             BottomFollowLayout(
                 enabled = shouldFollowBottom,
                 bottomItemIndex = currentBottomItemIndex,
-                sentinelBottom = sentinel?.let { it.offset + it.size },
+                // 哨兵被挤出可视区、但最后一段内容还可见时，用它的下沿，不再按整屏估算。
+                sentinelBottom = resolveTailBottomPx(
+                    sentinelBottom = sentinel?.let { it.offset + it.size },
+                    lastVisibleIndex = lastVisible?.index,
+                    lastVisibleBottom = lastVisible?.let { it.offset + it.size },
+                    totalItems = layoutInfo.totalItemsCount,
+                ),
                 // 视口已扣除底栏高度；这里只扣列表自身的尾部留白。
                 // 跟底目标仍是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
@@ -946,7 +1043,13 @@ internal fun AgentConversationMessages(
                 reset()
                 continue
             }
-            val step = motion.step(remainingDistancePx, frameNanos, densityScale)
+            val snapping = System.nanoTime() < bottomSnapUntilNanos
+            val step = if (snapping) {
+                motion.reset()
+                remainingDistancePx
+            } else {
+                motion.step(remainingDistancePx, frameNanos, densityScale)
+            }
             // First frame establishes real timing; zero movement is not a failed scroll.
             if (step <= 0f) continue
             var consumedStep = 0f
@@ -1626,8 +1729,48 @@ private suspend fun snapListToBottom(
 /** 尾部哨兵超出静止线的像素；哨兵不在可见项中时返回 null（尾部位置未知）。 */
 private fun LazyListState.followTailOverflow(): Int? {
     val info = layoutInfo
-    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey } ?: return null
-    return sentinel.offset + sentinel.size - (info.viewportEndOffset - info.afterContentPadding)
+    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
+    val last = info.visibleItemsInfo.lastOrNull()
+    val bottom = resolveTailBottomPx(
+        sentinelBottom = sentinel?.let { it.offset + it.size },
+        lastVisibleIndex = last?.index,
+        lastVisibleBottom = last?.let { it.offset + it.size },
+        totalItems = info.totalItemsCount,
+    ) ?: return null
+    // 列表自身在布局边界裁剪；上提超过尾部留白只会在输入框上方露出空白，最多上提到留白为止。
+    return (bottom - (info.viewportEndOffset - info.afterContentPadding)).coerceAtMost(info.afterContentPadding)
+}
+
+private data class TailBreachSample(
+    val overPx: Int?,
+    val tailBottomPx: Int?,
+    val restLinePx: Int,
+    val padPx: Int,
+    val sentinelVisible: Boolean,
+    val lastIndex: Int,
+    val totalItems: Int,
+    val lifting: Boolean,
+    val state: String,
+)
+
+/** 尾部画出来的位置越过静止线多少像素（上提之后）；尾部位置未知时为 null。 */
+internal fun resolveTailDrawnOverflow(tailBottomPx: Int?, restLinePx: Int, liftPx: Int): Int? =
+    tailBottomPx?.let { it - restLinePx - liftPx }
+
+/**
+ * 尾部下沿。哨兵是最后一项；它被挤出可视区、但紧挨着它的最后一段内容仍可见时，
+ * 用那一段的下沿代替（相差哨兵自身 1dp）。两者都看不到时返回 null。
+ */
+internal fun resolveTailBottomPx(
+    sentinelBottom: Int?,
+    lastVisibleIndex: Int?,
+    lastVisibleBottom: Int?,
+    totalItems: Int,
+): Int? = when {
+    sentinelBottom != null -> sentinelBottom
+    lastVisibleIndex != null && lastVisibleBottom != null && totalItems >= 2 &&
+        lastVisibleIndex == totalItems - 2 -> lastVisibleBottom
+    else -> null
 }
 
 internal data class FollowTailLag(val liftPx: Float, val unknown: Boolean = false) {
@@ -1652,6 +1795,8 @@ internal fun resolveExpansionHoldsBottom(
 ): Boolean = following || (arrangedToBottom && !listScrollable)
 
 private const val WORK_STEP_APPEAR_WINDOW_NANOS = 500_000_000L
+// 180ms 展开动画加淡入，再留一点给最后一帧布局。
+private const val EXPANSION_BOTTOM_SNAP_NANOS = 400_000_000L
 
 internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): FollowTailLag = when {
     !following -> FollowTailLag.None

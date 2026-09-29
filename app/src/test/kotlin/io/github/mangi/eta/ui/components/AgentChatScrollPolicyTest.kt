@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -347,6 +348,26 @@ class AgentChatScrollPolicyTest {
         val lag = resolveFollowTailLag(following = true, tailOverflowPx = null)
         assertTrue(lag.unknown)
         assertEquals(0f, lag.liftPx, 0f)
+    }
+
+    @Test
+    fun tailBottomFallsBackToTheLastContentItemWhenTheSentinelIsPushedOut() {
+        // 哨兵可见时直接用哨兵。
+        assertEquals(900, resolveTailBottomPx(900, 11, 900, totalItems = 12))
+        // 展开把哨兵挤出可视区，最后一段内容（倒数第二项）还可见：用它的下沿。
+        assertEquals(1400, resolveTailBottomPx(null, 10, 1400, totalItems = 12))
+        // 看到的只是更靠上的内容：尾部位置未知。
+        assertNull(resolveTailBottomPx(null, 9, 1400, totalItems = 12))
+        assertNull(resolveTailBottomPx(null, null, null, totalItems = 12))
+        assertNull(resolveTailBottomPx(null, 0, 100, totalItems = 1))
+    }
+
+    @Test
+    fun drawnTailOverflowIsMeasuredAfterTheLift() {
+        assertEquals(0, resolveTailDrawnOverflow(1200, 1000, 200))
+        assertEquals(150, resolveTailDrawnOverflow(1150, 1000, 0))
+        assertEquals(-20, resolveTailDrawnOverflow(980, 1000, 0))
+        assertNull(resolveTailDrawnOverflow(null, 1000, 0))
     }
 
     @Test
