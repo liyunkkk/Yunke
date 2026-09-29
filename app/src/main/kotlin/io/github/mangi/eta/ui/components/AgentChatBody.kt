@@ -200,7 +200,7 @@ internal fun AgentChatBody(
 ) {
     StreamPerformanceMonitor(isStreaming)
     io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
-        enabled = !isPaused && !isDrawerOpen,
+        enabled = !isPaused,
         conversationId = collaborationConversationId,
     )
     SideEffect { StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong()) }

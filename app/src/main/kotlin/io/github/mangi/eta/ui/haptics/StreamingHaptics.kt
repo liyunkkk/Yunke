@@ -1,11 +1,8 @@
 package io.github.mangi.eta.ui.haptics
 
-import android.app.Activity
-import android.content.ContextWrapper
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import androidx.lifecycle.LifecycleOwner
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
@@ -32,6 +29,7 @@ internal object StreamingHaptics {
     private var backgroundTickScheduled = false
     private var backgroundView: View? = null
     private var foregroundConversationId: String? = null
+    private var foregroundView: View? = null
 
     /** Test-only counter of allowed advances; never consulted by production paths. */
     @Volatile internal var allowedAdvances: Long = 0
@@ -66,14 +64,14 @@ internal object StreamingHaptics {
     /** 前台也走这条：工具标签只出现一次，不能等界面刚好在 32ms 的打字间隔里把这次丢掉。 */
     fun noteToolAppeared(toolId: String, conversationId: String? = null) {
         if (toolId.isBlank()) return
-        val view = currentConversationView(conversationId, allowBackground = true) ?: return
+        val view = currentConversationView(conversationId) ?: return
         TouchHaptics.onLiveToolActivity(view, toolId)
     }
 
     fun noteBackgroundOutput(graphemes: Int, conversationId: String? = null) {
         if (graphemes <= 0) return
-        // 当前页可见时由打字机震动。只有这条会话在应用退到后台后才补震。
-        val view = currentConversationView(conversationId, allowBackground = true) ?: return
+        // 当前页还在打字时由可见打字机震动。离开页面、展开侧栏或退到后台仍补震，直到换成另一条会话。
+        val view = currentConversationView(conversationId) ?: return
         if (foregroundGate(view)) return
         allowedAdvances++
         pendingBackgroundTicks = (pendingBackgroundTicks + backgroundPulseCount(graphemes))
@@ -86,30 +84,19 @@ internal object StreamingHaptics {
         val resumed = gates.firstOrNull { gate ->
             !gate.conversationId.isNullOrBlank() && gate.enabled() &&
                 gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-        }
-        if (resumed != null) foregroundConversationId = resumed.conversationId
+        } ?: return
+        if (resumed.conversationId != foregroundConversationId) cancelBackgroundTicks()
+        foregroundConversationId = resumed.conversationId
+        foregroundView = resumed.view
     }
 
-    private fun currentConversationView(conversationId: String?, allowBackground: Boolean): View? {
+    private fun currentConversationView(conversationId: String?): View? {
         if (conversationId.isNullOrBlank()) return null
         return synchronized(gates) {
             rememberForeground()
             if (conversationId != foregroundConversationId) return@synchronized null
-            gates.firstOrNull { gate ->
-                gate.conversationId == conversationId && gate.enabled() &&
-                    gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED) &&
-                    (gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) ||
-                        (allowBackground && !activityResumed(gate.view)))
-            }?.view
+            gates.firstOrNull { it.conversationId == conversationId }?.view ?: foregroundView
         }
-    }
-
-    private fun activityResumed(view: View): Boolean {
-        val activity = generateSequence(view.context) { (it as? ContextWrapper)?.baseContext }
-            .filterIsInstance<Activity>()
-            .firstOrNull() ?: return false
-        val owner = activity as? LifecycleOwner ?: return false
-        return owner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
     }
 
     private fun scheduleBackgroundTick() {
@@ -126,13 +113,15 @@ internal object StreamingHaptics {
     }
 
     private fun backgroundGate(view: View): Boolean = synchronized(gates) {
-        gates.any { gate ->
-            gate.view === view && gate.enabled() &&
-                gate.conversationId != null && gate.conversationId == foregroundConversationId &&
-                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED) &&
-                !gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
-                !activityResumed(view)
+        val id = foregroundConversationId ?: return false
+        val ownsView = view === foregroundView || view === backgroundView ||
+            gates.any { it.view === view && it.conversationId == id }
+        if (!ownsView) return false
+        val visible = gates.any { gate ->
+            gate.conversationId == id && gate.enabled() &&
+                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         }
+        !visible
     }
 
     private fun cancelBackgroundTicks() {
@@ -166,7 +155,6 @@ internal object StreamingHaptics {
             onDispose {
                 lifecycle.removeObserver(observer)
                 synchronized(gates) { gates.remove(gate) }
-                if (synchronized(gates) { gates.isEmpty() }) cancelBackgroundTicks()
             }
         }
     }
