@@ -1,0 +1,56 @@
+from pathlib import Path
+import unittest
+
+
+COMPONENTS = Path(__file__).resolve().parents[4] / 'app/src/main/kotlin/io/github/mangi/eta/ui/components'
+
+
+class ChatTailRecoveryContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.body = (COMPONENTS / 'AgentChatBody.kt').read_text()
+        cls.item = (COMPONENTS / 'ChatMessageItem.kt').read_text()
+        cls.controller = cls.body.split(
+            'LaunchedEffect(scrollState, bottomFollowDecisions, densityScale) {', 1
+        )[1].split('// 输入器悬浮', 1)[0]
+
+    def test_recovery_uses_fresh_uncapped_layout_before_real_scroll(self):
+        code = self.controller
+        self.assertEqual(1, code.count('resolveBottomFollowViewportStep('))
+        anchors = ['withFrameNanos', 'val layout = scrollState.layoutInfo',
+                   'resolveBottomFollowViewportStep(', 'scrollState.scroll {', 'scrollBy(step)']
+        positions = [code.index(anchor) for anchor in anchors]
+        self.assertEqual(sorted(positions), positions)
+        self.assertIn('measuredOverflowPx = layout.measuredTailOverflow()', code)
+        self.assertIn('afterContentPaddingPx = layout.afterContentPadding', code)
+        self.assertNotIn('followTailOverflow()', code)
+
+    def test_recovery_keeps_user_and_navigation_interrupt_guards(self):
+        code = self.controller
+        self.assertEqual(2, code.count(
+            'if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null)'))
+        scroll = code.split('scrollState.scroll {', 1)[1]
+        self.assertLess(scroll.index(
+            'if (!isUserScrolling && messageNavigationJob == null && shouldFollowBottom)'),
+            scroll.index('scrollBy(step)'))
+
+    def test_drawing_stays_capped_but_recovery_measurement_does_not(self):
+        drawing = self.body.split('private fun LazyListState.followTailOverflow(): Int? {', 1)[1]
+        drawing = drawing.split('private fun LazyListLayoutInfo.measuredTailOverflow', 1)[0]
+        self.assertIn('coerceAtMost(info.afterContentPadding)', drawing)
+        raw = self.body.split('private fun LazyListLayoutInfo.measuredTailOverflow(): Int? {', 1)[1]
+        raw = raw.split('private data class TailBreachSample', 1)[0]
+        self.assertIn('bottom - (viewportEndOffset - afterContentPadding)', raw)
+        self.assertNotIn('coerceAtMost', raw)
+
+    def test_pending_list_height_gate_wraps_padding_and_preserves_unmanaged_nodes(self):
+        block = self.item.split('private fun ChatMarkdownList(', 1)[1]
+        block = block.split('private fun rememberStartedRevealKeys(', 1)[0]
+        row = block.split('Row(', 1)[1]
+        self.assertIn('streamingListItemLayout(visible = firstRevealKey == null || markerVisible)', row)
+        self.assertLess(row.index('.streamingListItemLayout('), row.index('.padding('))
+        self.assertIn('alpha = if (markerVisible) 1f else 0f', row)
+
+
+if __name__ == '__main__':
+    unittest.main()

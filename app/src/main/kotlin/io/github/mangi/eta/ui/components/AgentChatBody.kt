@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -824,6 +825,7 @@ internal fun AgentConversationMessages(
     // 上提照常，标签随动画一帧一帧往上让开。
     val shouldLiftTail = shouldFollowBottom
     val shouldClipTail = shouldClipChatTail(
+        keepBottomAnchored = keepBottomAnchored,
         isUserScrolling = isUserScrolling,
         isUserDragging = isUserDragging,
         navigationActive = messageNavigationJob != null,
@@ -1079,9 +1081,17 @@ internal fun AgentConversationMessages(
                 motion.reset()
                 remainingDistancePx
             } else {
-                motion.step(remainingDistancePx, frameNanos, densityScale)
+                val smoothStep = motion.step(remainingDistancePx, frameNanos, densityScale)
+                val layout = scrollState.layoutInfo
+                // 绘制上提不能超过列表底部留白。先用真实滚动补掉超出缓冲的差额，
+                // 其余仍由原速度控制器平滑追赶；不能靠扩大裁剪或移走已被裁空的列表。
+                resolveBottomFollowViewportStep(
+                    smoothStepPx = smoothStep,
+                    measuredOverflowPx = layout.measuredTailOverflow(),
+                    afterContentPaddingPx = layout.afterContentPadding,
+                )
             }
-            // First frame establishes real timing; zero movement is not a failed scroll.
+            // Within the draw buffer, the first frame still only establishes timing.
             if (step <= 0f) continue
             var consumedStep = 0f
             try {
@@ -1108,11 +1118,25 @@ internal fun AgentConversationMessages(
         }
     }
 
-    // 输入器周围透明，手动拖动、惯性和消息导航时允许内容从后面经过。
-    // 静止线保护与跟底解耦：轻拖停止跟底后，松手仍须挡住继续增长的正文/卡片。
-    // 这里只改变绘制范围，不恢复锚点、不上提内容，也不把历史阅读位置拉回底部。
+    // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
+    // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
+    // 才追上。绘制阶段会把已经量到的尾部上提；底部锚定保护持续裁在输入框上方的静止线；
+    // 覆盖超快输出在 isStreaming 结束后、列表滚动尚未完成的过渡帧。
+    // 用户一拖动或跳转消息，锚定保护解除，内容可以正常滑到输入框后面。
     Box(
-        modifier = modifier.chatTailViewport(shouldClipTail, bottomInset),
+        modifier = modifier
+            .clipToBounds()
+            .drawWithContent {
+                // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
+                // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
+                // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
+                if (!shouldClipTail) {
+                    drawContent()
+                    return@drawWithContent
+                }
+                val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
+                clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
+            },
     ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
@@ -1695,24 +1719,15 @@ internal fun resolveBottomFollowEnabled(
     isBottomSettling: Boolean = false,
 ): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
 
-/** 静止时保护输入框，与跟底/网络输出状态无关；用户滚动和导航期间解除。 */
 internal fun shouldClipChatTail(
+    keepBottomAnchored: Boolean,
     isUserScrolling: Boolean,
     isUserDragging: Boolean,
     navigationActive: Boolean,
-): Boolean = !isUserScrolling && !isUserDragging && !navigationActive
-
-/** 外层裁剪不随内层列表的 translationY 移动；直接使用当前布局的输入器高度。 */
-internal fun Modifier.chatTailViewport(shouldClipTail: Boolean, bottomInset: Dp): Modifier =
-    clipToBounds().drawWithContent {
-        // 不读取 layoutInfo，避免手动滚动时逐帧使静止线绘制层失效。
-        if (!shouldClipTail) {
-            drawContent()
-            return@drawWithContent
-        }
-        val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
-        clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
-    }
+): Boolean = keepBottomAnchored &&
+    !isUserScrolling &&
+    !isUserDragging &&
+    !navigationActive
 
 internal fun shouldRequestInitialBottom(
     isStreaming: Boolean,
@@ -1772,16 +1787,21 @@ private suspend fun snapListToBottom(
 /** 尾部哨兵超出静止线的像素；哨兵不在可见项中时返回 null（尾部位置未知）。 */
 private fun LazyListState.followTailOverflow(): Int? {
     val info = layoutInfo
-    val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
-    val last = info.visibleItemsInfo.lastOrNull()
+    // 列表自身在布局边界裁剪；上提超过尾部留白只会在输入框上方露出空白，最多上提到留白为止。
+    return info.measuredTailOverflow()?.coerceAtMost(info.afterContentPadding)
+}
+
+/** 未经过绘制上限截断的真实布局差额，供实际滚动消化超出缓冲的部分。 */
+private fun LazyListLayoutInfo.measuredTailOverflow(): Int? {
+    val sentinel = visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
+    val last = visibleItemsInfo.lastOrNull()
     val bottom = resolveTailBottomPx(
         sentinelBottom = sentinel?.let { it.offset + it.size },
         lastVisibleIndex = last?.index,
         lastVisibleBottom = last?.let { it.offset + it.size },
-        totalItems = info.totalItemsCount,
+        totalItems = totalItemsCount,
     ) ?: return null
-    // 列表自身在布局边界裁剪；上提超过尾部留白只会在输入框上方露出空白，最多上提到留白为止。
-    return (bottom - (info.viewportEndOffset - info.afterContentPadding)).coerceAtMost(info.afterContentPadding)
+    return bottom - (viewportEndOffset - afterContentPadding)
 }
 
 private data class TailBreachSample(

@@ -1,0 +1,175 @@
+package io.github.mangi.eta.ui.components
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Pure unit tests for [resolveBottomFollowViewportStep].
+ *
+ * These pin the arithmetic of the resolver only. They are not a device frame-by-frame verification
+ * of the follow controller; the real LazyColumn draw path is covered elsewhere.
+ */
+class BottomFollowViewportStepTest {
+
+    @Test fun largeMeasuredOverflowUpgradesSmoothStepToRealDeficit() {
+        // Representative aggregate magnitudes; the 39.384 px smooth input is synthetic. The
+        // deficit the draw buffer cannot absorb is 1260 - 426 = 834 px. The normal 39.384 px smooth
+        // step is far below that, so it must be upgraded to 834 px for this frame.
+        assertEquals(
+            834f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 39.384f,
+                measuredOverflowPx = 1260,
+                afterContentPaddingPx = 426,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test fun firstFrameWithZeroSmoothStillClearsTheDeficit() {
+        assertEquals(
+            834f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 0f,
+                measuredOverflowPx = 1260,
+                afterContentPaddingPx = 426,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test fun overflowInsideDrawBufferDoesNotAccelerate() {
+        // 426 px of overflow fits exactly in the 426 px buffer, so the smooth step is untouched.
+        assertEquals(
+            39.384f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 39.384f,
+                measuredOverflowPx = 426,
+                afterContentPaddingPx = 426,
+            ),
+            0.0001f,
+        )
+        assertEquals(
+            39.384f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 39.384f,
+                measuredOverflowPx = 400,
+                afterContentPaddingPx = 426,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test fun smoothStepAboveRequiredCompensationIsKept() {
+        // Required compensation is 500 - 426 = 74 px, below the 100 px smooth step, so the smooth
+        // step wins and no extra speed is added.
+        assertEquals(
+            100f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 100f,
+                measuredOverflowPx = 500,
+                afterContentPaddingPx = 426,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test fun unknownTailOnlyReturnsTheSmoothStep() {
+        assertEquals(
+            39.384f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 39.384f,
+                measuredOverflowPx = null,
+                afterContentPaddingPx = 426,
+            ),
+            0.0001f,
+        )
+        // With an unknown tail a negative smooth input never becomes motion.
+        assertEquals(
+            0f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = -12f,
+                measuredOverflowPx = null,
+                afterContentPaddingPx = 426,
+            ),
+            0f,
+        )
+    }
+
+    @Test fun nonPositiveOverflowStops() {
+        assertEquals(0f, resolveBottomFollowViewportStep(39.384f, 0, 426), 0f)
+        assertEquals(0f, resolveBottomFollowViewportStep(39.384f, -50, 426), 0f)
+    }
+
+    @Test fun smoothStepBeyondMeasuredOverflowIsClamped() {
+        assertEquals(
+            100f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 1000f,
+                measuredOverflowPx = 100,
+                afterContentPaddingPx = 0,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test fun zeroOrNegativePaddingGivesNoBuffer() {
+        // No usable buffer, so the whole measured overflow is the deficit.
+        assertEquals(
+            300f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 5f,
+                measuredOverflowPx = 300,
+                afterContentPaddingPx = 0,
+            ),
+            0.0001f,
+        )
+        assertEquals(
+            300f,
+            resolveBottomFollowViewportStep(
+                smoothStepPx = 5f,
+                measuredOverflowPx = 300,
+                afterContentPaddingPx = -80,
+            ),
+            0.0001f,
+        )
+    }
+
+    @Test fun oneBackfillRoundLeavesResidualInsideDrawBuffer() {
+        val overflow = 1260
+        val budget = 426
+        var remaining = overflow
+        var rounds = 0
+        while (remaining > budget && rounds < 8) {
+            val step = resolveBottomFollowViewportStep(39.384f, remaining, budget)
+            assertTrue("the step must move toward the tail", step > 0f)
+            remaining -= step.toInt()
+            rounds++
+        }
+        assertEquals("the excess must clear in one controller step", 1, rounds)
+        assertTrue("the residual must fit inside the draw buffer", remaining <= budget)
+        assertEquals(
+            "the remaining drawn overflow must be zero",
+            0,
+            (remaining - budget).coerceAtLeast(0),
+        )
+    }
+
+    @Test fun legacySmoothOnlyStepWouldLeaveLargeClipping() {
+        val overflow = 1260
+        val budget = 426
+        val legacyStep = 39.384f
+
+        // A smooth-only step leaves almost the whole overflow drawn past the buffer.
+        val legacyRemaining = overflow - legacyStep.toInt()
+        val legacyClipped = (legacyRemaining - budget).coerceAtLeast(0)
+        assertTrue("a smooth-only step keeps a large clipped remainder", legacyClipped > 700)
+
+        // The resolved step clears the drawn overflow in the same round.
+        val resolved = resolveBottomFollowViewportStep(legacyStep, overflow, budget)
+        assertEquals(834f, resolved, 0.0001f)
+        val resolvedRemaining = overflow - resolved.toInt()
+        assertEquals("the resolved step clears the drawn overflow", 0, (resolvedRemaining - budget).coerceAtLeast(0))
+    }
+}
