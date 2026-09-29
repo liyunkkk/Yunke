@@ -368,8 +368,11 @@ internal class SmoothTextRevealNode(
 
     override fun ContentDrawScope.draw() {
         // 字形可能伸出行框。卡片高度只认测量高度，不把超出的部分裁掉就会盖住底边。
+        // clipRect 的 block 接收者是 DrawScope，外层 ContentDrawScope 在这里只能显式传递，
+        // 否则成员扩展函数无法用隐式接收者调用；裁剪与逐字淡入仍留在同一次绘制里。
+        val contentScope = this
         clipRect(left = 0f, top = 0f, right = size.width, bottom = size.height) {
-            drawInsideMeasuredHeight()
+            contentScope.drawInsideMeasuredHeight()
         }
     }
 
