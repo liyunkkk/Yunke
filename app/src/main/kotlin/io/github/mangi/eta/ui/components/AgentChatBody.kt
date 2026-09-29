@@ -755,7 +755,7 @@ internal fun AgentConversationMessages(
             }
     }
     // 拖动和惯性期间别让系统按速度把出帧降到 60，否则松手后减速那一段会连着掉帧。
-    HoldPeakFrameRateWhileScrolling { isUserScrolling }
+    val scrollFrameRateHold = rememberScrollFrameRateHold { isUserScrolling }
 
     var hasLeftBottom by remember { mutableStateOf(false) }
     LaunchedEffect(scrollState) {
@@ -1140,6 +1140,7 @@ internal fun AgentConversationMessages(
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
             }
         }
+        PeakFrameRateVote(scrollFrameRateHold)
         val messageActions = remember { ChatMessageActions() }
         SideEffect {
             messageActions.onSuggestionClick = onSuggestionClick
