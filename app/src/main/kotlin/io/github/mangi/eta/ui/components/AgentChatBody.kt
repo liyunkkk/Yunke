@@ -2015,7 +2015,8 @@ internal fun shouldStopOrphanSpeechPlayback(
     visibleCompletedAgentIds: Set<String>,
 ): Boolean {
     if (owner.isNullOrBlank()) return false
-    if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
+    // 试听、语音模式和 Agent 朗读工具都不绑定某条回复，不能按“回复不在可见列表里”收掉。
+    if (owner == "tts-preview" || owner == "agent-tts" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
 
