@@ -1082,10 +1082,14 @@ internal fun AgentConversationMessages(
                 val layout = scrollState.layoutInfo
                 // 绘制上提不能超过列表底部留白。先用真实滚动补掉超出缓冲的差额，
                 // 其余仍由原速度控制器平滑追赶；不能靠扩大裁剪或移走已被裁空的列表。
-                resolveBottomFollowViewportStep(
-                    smoothStepPx = smoothStep,
-                    measuredOverflowPx = layout.measuredTailOverflow(),
-                    afterContentPaddingPx = layout.afterContentPadding,
+                // 再收成整像素，避免小数滚动和整数上提把卡片底边顶开 1 像素。
+                snapFollowScrollStep(
+                    resolveBottomFollowViewportStep(
+                        smoothStepPx = smoothStep,
+                        measuredOverflowPx = layout.measuredTailOverflow(),
+                        afterContentPaddingPx = layout.afterContentPadding,
+                    ),
+                    remainingDistancePx,
                 )
             }
             // Within the draw buffer, the first frame still only establishes timing.
@@ -1162,7 +1166,9 @@ internal fun AgentConversationMessages(
                 .fillMaxSize()
                 .graphicsLayer {
                     translationY = if (shouldLiftTail) {
+                        // 与滚动步长同一套整像素，避免底边在两个相邻像素之间闪。
                         -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
+                            .toInt().toFloat()
                     } else {
                         0f
                     }

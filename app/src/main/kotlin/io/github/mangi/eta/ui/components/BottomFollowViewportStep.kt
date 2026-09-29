@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components
 
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Resolves how far the auto-follow controller should scroll the chat viewport for a single step.
@@ -39,4 +40,15 @@ internal fun resolveBottomFollowViewportStep(
     val budget = max(afterContentPaddingPx, 0)
     val requiredCompensation = max(distance - budget, 0)
     return min(distance.toFloat(), max(smooth, requiredCompensation.toFloat()))
+}
+
+/**
+ * LazyList 的滚动偏移是整数像素，平滑步长却是小数。
+ * 小数滚动和绘制上提用的整数超出量对不齐时，卡片底边会来回跳大约 1 像素。
+ * 这里只滚动整像素；不足 1 像素但确实还有距离时前进 1 像素，避免停在描边外侧。
+ */
+internal fun snapFollowScrollStep(stepPx: Float, remainingPx: Float): Float {
+    if (!stepPx.isFinite() || !remainingPx.isFinite() || stepPx <= 0f || remainingPx <= 0f) return 0f
+    val whole = stepPx.roundToInt().toFloat().coerceIn(0f, remainingPx)
+    return if (whole == 0f && remainingPx >= 1f) 1f else whole
 }

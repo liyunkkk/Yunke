@@ -52,5 +52,18 @@ class ChatTailRecoveryContractTest(unittest.TestCase):
         self.assertIn('alpha = if (markerVisible) 1f else 0f', row)
 
 
+    def test_follow_step_is_snapped_to_whole_pixels_and_card_ink_stays_inside(self):
+        code = self.controller
+        call = code.index('snapFollowScrollStep(')
+        inner = code.index('resolveBottomFollowViewportStep(', call)
+        self.assertLess(call, inner)
+        self.assertLess(inner, code.index('scrollBy(step)', inner))
+        reveal = (COMPONENTS / 'SmoothTextReveal.kt').read_text()
+        draw = reveal.split('override fun ContentDrawScope.draw() {', 1)[1].split('private fun ContentDrawScope.drawInsideMeasuredHeight', 1)[0]
+        self.assertIn('clipRect(left = 0f, top = 0f, right = size.width, bottom = size.height)', draw)
+        card = (COMPONENTS / 'AgentWorkProcessCard.kt').read_text()
+        self.assertIn('clipPath(borderPath) { this@onDrawWithContent.drawContent() }', card)
+        self.assertNotIn('clipPath(fillPath) { this@onDrawWithContent.drawContent() }', card)
+
 if __name__ == '__main__':
     unittest.main()

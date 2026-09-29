@@ -87,7 +87,8 @@ internal fun WorkProcessCardSlice(
                     clipRect {
                         drawPath(fillPath, surface)
                         if (needsPathClip) {
-                            clipPath(fillPath) { this@onDrawWithContent.drawContent() }
+                            // 填充路径含描边外沿。文字若画到那里，会露出卡片底边一点点。
+                            clipPath(borderPath) { this@onDrawWithContent.drawContent() }
                         } else {
                             this@onDrawWithContent.drawContent()
                         }

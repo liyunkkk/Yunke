@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
@@ -366,6 +367,13 @@ internal class SmoothTextRevealNode(
     }
 
     override fun ContentDrawScope.draw() {
+        // 字形可能伸出行框。卡片高度只认测量高度，不把超出的部分裁掉就会盖住底边。
+        clipRect(left = 0f, top = 0f, right = size.width, bottom = size.height) {
+            drawInsideMeasuredHeight()
+        }
+    }
+
+    private fun ContentDrawScope.drawInsideMeasuredHeight() {
         val snapshot = state.drawSnapshot()
         if (snapshot == null) {
             drawContent()
