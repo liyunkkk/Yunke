@@ -606,9 +606,19 @@ final class OwnerHandoff {
             verifyDisplay(source,unique);focus(witness);
             for(Object t:roots().values())if(number(t,"displayId")==source)throw new IllegalStateException("source occupied");
             for(Integer id:selected)owned.get(id).check(roots().get(id),0);
+            // Report gone from a FINAL snapshot so a task that vanished mid-handoff is not lost:
+            // every unselected, unremoved owned task must now be absent from the whole hierarchy.
+            Map<Integer,Task> unselected=new LinkedHashMap<Integer,Task>();
+            for(Map.Entry<Integer,Task> e:owned.entrySet()) if(!selected.contains(e.getKey())) unselected.put(e.getKey(),e.getValue());
+            OwnedTaskStates end=OwnedTaskStates.read(source,roots(),unselected);
+            if(!end.live.isEmpty()||!end.escaped.isEmpty())throw new IllegalStateException("residual owned task");
+            JSONArray gone=new JSONArray();
+            Set<Integer> removedIds=new HashSet<Integer>();
+            for(int i=0;i<removed.length();i++)removedIds.add(removed.getInt(i));
+            for(Integer id:end.gone)if(!removedIds.contains(id))gone.put(id);
             // Empty selection is cleanup: nothing is delivered; every live task was removed above.
             return new JSONObject().put("handedOff",true).put("sourceEmpty",true).put("keptTaskIds",moved).put("removedTaskIds",removed)
-                    .put("goneTaskIds",new JSONArray(states.gone)).put("cleanupOnly",selected.isEmpty())
+                    .put("goneTaskIds",gone).put("cleanupOnly",selected.isEmpty())
                     .put("focusSamples",new JSONArray(preflight.observations));
         } catch(Throwable ex) {
             // Preserve the exact failed movement phase and its historical progress. Never demote
