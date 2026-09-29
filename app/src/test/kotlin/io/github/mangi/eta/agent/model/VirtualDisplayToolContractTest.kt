@@ -58,7 +58,8 @@ class VirtualDisplayToolContractTest {
 
     @Test
     fun unmarkedFinishCleansUpWithoutDeliveryAndLaunchReusesVirtualTask() {
-        val finish = catalog(rootAvailable = false).function("finish_virtual_session").getString("description")
+        // finish_virtual_session is root-only, so read it from the rooted catalog.
+        val finish = catalog(rootAvailable = true).function("finish_virtual_session").getString("description")
         assertTrue(finish.contains("handedOff=false"))
         assertTrue(finish.contains("released=true"))
         assertTrue(finish.contains("不交付"))
