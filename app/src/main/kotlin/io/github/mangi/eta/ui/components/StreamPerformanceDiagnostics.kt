@@ -63,6 +63,12 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
     // 用显式标记而不是 0 表示“有起点”：System.nanoTime() 的原点是任意的。
     private var messageOpen = false
     private var messageLine: String? = null
+    // 当前这条消息里被 measure 包住的主线程耗时，以及其中最长的那一段。
+    private var openCoveredNs = 0L
+    private var openTopStage: String? = null
+    private var openTopNs = 0L
+    private val covered = LongArray(capacity)
+    private val tops = arrayOfNulls<String>(capacity)
     @Volatile var frameMessages = 0L
         private set
     @Volatile var otherMessages = 0L
@@ -75,6 +81,9 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             messageStartNs = now
             messageOpen = true
             messageLine = line
+            openCoveredNs = 0L
+            openTopStage = null
+            openTopNs = 0L
             return
         }
         if (!line.startsWith("<<<<<")) return
@@ -95,8 +104,20 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             starts[next] = started
             ends[next] = now
             names[next] = name
+            covered[next] = openCoveredNs
+            tops[next] = openTopStage?.let { "$it:${openTopNs / 1000}" }
             next = (next + 1) % capacity
             if (size < capacity) size++
+        }
+    }
+
+    /** 主线程上最外层 measure 结束时调用，计入当前这条消息。 */
+    internal fun addCovered(stage: String, ns: Long) {
+        if (!messageOpen) return
+        openCoveredNs += ns
+        if (ns > openTopNs) {
+            openTopNs = ns
+            openTopStage = stage
         }
     }
 
@@ -108,8 +129,11 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             val slot = (first + i) % capacity
             if (ends[slot] < fromNs || starts[slot] > toNs) continue
             if (out.size >= limit) break
-            out += "atMs=${(starts[slot] - originNs) / 1_000_000} durUs=${(ends[slot] - starts[slot]) / 1000} " +
+            var line = "atMs=${(starts[slot] - originNs) / 1_000_000} durUs=${(ends[slot] - starts[slot]) / 1000} " +
                 "msg=${toggleProbeMessageName(names[slot].orEmpty())}"
+            // 有打点覆盖时才追加：看这条长消息里有多少时间落在已知阶段，剩下的是 Compose 内部或未打点的协程。
+            if (covered[slot] > 0) line += " coveredUs=${covered[slot] / 1000} top=${tops[slot]}"
+            out += line
         }
         return out
     }
@@ -211,6 +235,8 @@ private const val FRAME_PROBE_LEAD_NS = 17_000_000L
 internal const val SPIKE_FRAME_NS = 33_000_000L
 private const val SPIKE_MAX_PER_SESSION = 40
 private const val SPIKE_LOOKBACK_NS = 200_000_000L
+internal const val NOTE_MAX_PER_SESSION = 120
+internal const val SLOW_STAGE_NS = 16_000_000L
 
 /** One visible chat window. Logging is on its worker; hot paths only update bounded counters. */
 internal object StreamPerformanceDiagnostics {
@@ -247,6 +273,19 @@ internal object StreamPerformanceDiagnostics {
     private var probeReporter: ((ToggleProbe) -> Unit)? = null
     private var probeTimeoutHandler: Handler? = null
     @Volatile private var mainLog: MainThreadMessageLog? = null
+    @Volatile private var noteSink: ((String) -> Unit)? = null
+
+    /** 当前是否有诊断会话（输出中且界面在前台）。 */
+    val enabled: Boolean get() = active != null
+
+    /**
+     * 写一条单独的诊断行，每个会话最多 [NOTE_MAX_PER_SESSION] 条。没有会话时不拼字符串。
+     * 调用方自己控制频率，只在状态变化时调用。
+     */
+    fun note(tag: String, detail: () -> String) {
+        val sink = noteSink ?: return
+        sink("$tag ${detail()}")
+    }
     private var nextToken = 0
     private var generation = 0
 
@@ -312,13 +351,28 @@ internal object StreamPerformanceDiagnostics {
         active?.record(stage, ns, value)
     }
 
+    // 只在主线程读写：嵌套的 measure 只把最外层计入当前主线程消息。
+    private var mainMeasureDepth = 0
+
     fun <T> measure(stage: String, value: Long = 0, block: () -> T): T {
         val session = active ?: return block()
+        val log = mainLog
+        val onMain = log != null && Looper.myLooper() === Looper.getMainLooper()
+        if (onMain) mainMeasureDepth++
         val started = System.nanoTime()
         Trace.beginSection("Eta.$stage")
         try { return block() } finally {
             Trace.endSection()
-            session.record(stage, System.nanoTime() - started, value)
+            val elapsed = System.nanoTime() - started
+            session.record(stage, elapsed, value)
+            if (onMain) {
+                mainMeasureDepth--
+                if (mainMeasureDepth == 0) log!!.addCovered(stage, elapsed)
+            }
+            // 单次超过一帧预算的阶段单独记一条，能和同一时刻的 spike 对上。
+            if (elapsed >= SLOW_STAGE_NS) {
+                note("slow") { "stage=$stage us=${elapsed / 1000} value=$value main=$onMain" }
+            }
         }
     }
 
@@ -347,6 +401,17 @@ internal object StreamPerformanceDiagnostics {
         }
         probeReporter = reportProbe
         probeTimeoutHandler = handler
+        var notes = 0
+        noteSink = { line ->
+            handler.post {
+                if (notes < NOTE_MAX_PER_SESSION) {
+                    notes++
+                    runCatching {
+                        AndroidAgentLogger.info("StreamDiag id=${session.id} gen=$sessionGeneration note=$notes $line")
+                    }
+                }
+            }
+        }
         var spikes = 0
         fun emit(final: Boolean) {
             runCatching {
@@ -438,6 +503,7 @@ internal object StreamPerformanceDiagnostics {
                 active = null
                 probeReporter = null
                 probeTimeoutHandler = null
+                noteSink = null
             }
             if (mainLog === log) {
                 Looper.getMainLooper().setMessageLogging(null)

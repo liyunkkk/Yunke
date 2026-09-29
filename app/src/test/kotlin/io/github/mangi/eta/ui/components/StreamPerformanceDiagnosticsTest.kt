@@ -113,6 +113,19 @@ class StreamPerformanceDiagnosticsTest {
         assertEquals(listOf("atMs=0 durUs=6000 msg=android.os.Handler/kotlinx.Job"), slow)
     }
 
+    @Test fun slowMessageReportsTimeCoveredByMeasuredStages() {
+        val log = MainThreadMessageLog(capacity = 4)
+        log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} q60@4: 0", 0)
+        log.addCovered("ui.flush", 12_000_000)
+        log.addCovered("reveal.step", 3_000_000)
+        log.onLine("<<<<< Finished to Handler (android.os.Handler) {3} x", 30_000_000)
+        val line = log.between(0, 100_000_000, originNs = 0, limit = 10).single()
+        assertTrue(line, line.endsWith("coveredUs=15000 top=ui.flush:12000"))
+        // 消息之外的计时不计入。
+        log.addCovered("ui.flush", 5_000_000)
+        assertEquals(1, log.between(0, Long.MAX_VALUE, 0, 10).size)
+    }
+
     @Test fun mainLogIgnoresMessageThatStartedBeforePrinterWasInstalled() {
         val log = MainThreadMessageLog(capacity = 4)
         log.onLine("<<<<< Finished to Handler (android.os.Handler) {3} x", 50_000_000)

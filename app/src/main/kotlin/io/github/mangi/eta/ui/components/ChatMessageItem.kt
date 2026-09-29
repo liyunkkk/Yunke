@@ -1066,10 +1066,13 @@ private fun StreamingMarkdown(
                 continue
             }
 
-            nextStreamingSnapshot(state.snapshot, parsed)?.let { published ->
-                StreamPerformanceDiagnostics.record("markdown.targetToPublish", System.nanoTime() - target.queuedAtNs)
-                StreamPerformanceDiagnostics.record("markdown.publish", value = published.originalSource.length.toLong())
-                state.snapshot = published
+            val publishTarget = target
+            StreamPerformanceDiagnostics.measure("markdown.publishBlock", publishTarget.content.length.toLong()) {
+                nextStreamingSnapshot(state.snapshot, parsed)?.let { published ->
+                    StreamPerformanceDiagnostics.record("markdown.targetToPublish", System.nanoTime() - publishTarget.queuedAtNs)
+                    StreamPerformanceDiagnostics.record("markdown.publish", value = published.originalSource.length.toLong())
+                    state.snapshot = published
+                }
             }
             if (target.isStreaming) {
                 delay(STREAMING_PARSE_PUBLISH_INTERVAL_MS)

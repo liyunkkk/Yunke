@@ -174,23 +174,25 @@ internal class SmoothTextRevealCoordinator {
                     .coerceIn(0f, MAX_FRAME_DELTA_SECONDS)
                 previousFrameNanos = frameNanos
 
-                val totalBacklog = records.values.sumOf { candidate ->
-                    max(0.0, (candidate.targetCount - candidate.progress).toDouble())
-                }.toFloat()
-                StreamPerformanceDiagnostics.record("reveal.backlog", value = totalBacklog.toLong())
-                val previous = record.progress
-                record.progress = advanceSmoothReveal(
-                    current = record.progress,
-                    target = record.targetCount,
-                    elapsedSeconds = elapsedSeconds,
-                    totalBacklog = totalBacklog,
-                )
-                val delta = record.progress - previous
-                if (delta > 0f) onRevealAdvanced?.invoke(delta)
-                if (record.progress > 0f && record.key !in startedState.value) {
-                    startedState.value = startedState.value + record.key
+                StreamPerformanceDiagnostics.measure("reveal.step") {
+                    val totalBacklog = records.values.sumOf { candidate ->
+                        max(0.0, (candidate.targetCount - candidate.progress).toDouble())
+                    }.toFloat()
+                    StreamPerformanceDiagnostics.record("reveal.backlog", value = totalBacklog.toLong())
+                    val previous = record.progress
+                    record.progress = advanceSmoothReveal(
+                        current = record.progress,
+                        target = record.targetCount,
+                        elapsedSeconds = elapsedSeconds,
+                        totalBacklog = totalBacklog,
+                    )
+                    val delta = record.progress - previous
+                    if (delta > 0f) onRevealAdvanced?.invoke(delta)
+                    if (record.progress > 0f && record.key !in startedState.value) {
+                        startedState.value = startedState.value + record.key
+                    }
+                    record.node?.onRevealDataChanged()
                 }
-                record.node?.onRevealDataChanged()
             }
         }
     }

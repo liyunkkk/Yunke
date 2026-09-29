@@ -4080,7 +4080,7 @@ internal class AgentAppState(
             delay(STREAM_UI_UPDATE_INTERVAL_MS)
             StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
             runEventFlushJobs.remove(runId)
-            flushPendingRunDelta(runId)
+            StreamPerformanceDiagnostics.measure("ui.flush") { flushPendingRunDelta(runId) }
         }
     }
 
@@ -4247,6 +4247,21 @@ internal class AgentAppState(
         event: AgentEvent,
         persistSupplement: Boolean = true,
         replaying: Boolean = false,
+    ) {
+        // 只加计时：流式增量（value=1）和其它事件分开看单次耗时。
+        StreamPerformanceDiagnostics.measure(
+            "ui.runEvent",
+            if (event is AgentEvent.AssistantBlockDelta) 1L else 0L,
+        ) {
+            applyRunEventNow(runId, event, persistSupplement, replaying)
+        }
+    }
+
+    private fun applyRunEventNow(
+        runId: String,
+        event: AgentEvent,
+        persistSupplement: Boolean,
+        replaying: Boolean,
     ) {
         modelRetryState.accept(runId, event)
         when (event) {
