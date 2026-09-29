@@ -143,7 +143,7 @@ fun AgentAppRoot(
     }.collectAsState(initial = null)
     val recordedUsage = recordedUsageState?.takeIf { it.first == usageConversationId }?.second
     val cumulativeUsage = recordedUsage?.let {
-        io.github.mangi.eta.ui.model.ConversationTokenUsageUi(it.input, it.output, it.cached)
+        io.github.mangi.eta.ui.model.ConversationTokenUsageUi(it.input, it.output, it.cached, it.cacheCreation)
     } ?: conversationTokenUsage(agentState.homeState.messages)
 
     DisposableEffect(backStack.lastOrNull(), agentState.conversationPaneState.selectedConversationId) {

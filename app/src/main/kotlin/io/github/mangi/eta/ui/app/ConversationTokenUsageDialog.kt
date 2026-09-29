@@ -60,7 +60,11 @@ internal fun ConversationTokenUsageDialog(
                     value = formatTokenCount(usage.cachedTokens),
                 )
                 UsageRow(
-                    label = stringResource(R.string.token_usage_cache_percent),
+                    label = stringResource(R.string.stats_page_cache_creation_tokens),
+                    value = formatTokenCount(usage.cacheCreationTokens),
+                )
+                UsageRow(
+                    label = stringResource(R.string.stats_model_cache_hit_rate),
                     value = formatCachePercent(usage.cachePercent),
                 )
             }
