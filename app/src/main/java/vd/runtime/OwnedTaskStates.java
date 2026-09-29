@@ -34,6 +34,15 @@ final class OwnedTaskStates {
      */
     static OwnedTaskStates classify(Iterable<Integer> ownedIds, Set<Integer> presentIds,
             Set<Integer> verifiedLive) {
+        return classify(ownedIds, presentIds, verifiedLive, true);
+    }
+
+    /**
+     * @param childrenComplete false when some root's child ids were unreadable. Absence then cannot
+     *                         be proven, so a non-live, non-root owned id is escaped, never gone.
+     */
+    static OwnedTaskStates classify(Iterable<Integer> ownedIds, Set<Integer> presentIds,
+            Set<Integer> verifiedLive, boolean childrenComplete) {
         if (ownedIds == null || presentIds == null || verifiedLive == null)
             throw new IllegalArgumentException("inventory unknown");
         Set<Integer> live = new LinkedHashSet<Integer>();
@@ -42,7 +51,7 @@ final class OwnedTaskStates {
         for (Integer id : ownedIds) {
             if (id == null || id <= 0) throw new IllegalArgumentException("owned id");
             if (verifiedLive.contains(id) && presentIds.contains(id)) live.add(id);
-            else if (!presentIds.contains(id)) gone.add(id);
+            else if (childrenComplete && !presentIds.contains(id)) gone.add(id);
             else escaped.add(id);
         }
         return new OwnedTaskStates(live, gone, escaped);
@@ -52,11 +61,15 @@ final class OwnedTaskStates {
     static OwnedTaskStates read(int source, Map<Integer, Object> roots,
             Map<Integer, OwnerHandoff.Task> owned) throws Exception {
         Set<Integer> present = new LinkedHashSet<Integer>();
+        boolean childrenComplete = true;
         for (Map.Entry<Integer, Object> entry : roots.entrySet()) {
             present.add(entry.getKey());
-            // An unreadable child array cannot prove absence, so the whole snapshot is unknown.
-            int[] children = (int[]) OwnerHandoff.field(entry.getValue(), "childTaskIds");
-            if (children == null) throw new IllegalStateException("child task ids unknown");
+            // An unreadable child array only removes the ability to prove "gone"; live tasks are
+            // still verified individually, so one odd system root cannot block every cleanup.
+            int[] children;
+            try { children = (int[]) OwnerHandoff.field(entry.getValue(), "childTaskIds"); }
+            catch (Exception ex) { children = null; }
+            if (children == null) { childrenComplete = false; continue; }
             for (int child : children) if (child > 0) present.add(child);
         }
         Set<Integer> verified = new LinkedHashSet<Integer>();
@@ -70,6 +83,6 @@ final class OwnedTaskStates {
                 // Present but not provably ours: classified as escaped.
             }
         }
-        return classify(owned.keySet(), present, verified);
+        return classify(owned.keySet(), present, verified, childrenComplete);
     }
 }

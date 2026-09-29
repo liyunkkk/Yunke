@@ -11,11 +11,15 @@ class VirtualDisplayManualCloseTest {
         var state = this@VirtualDisplayManualCloseTest.evidence()
         var marks = 0; var releases = 0; var clears = 0; var cleanups = 0
         var writable = true; var gone = true; var releaseThrows = false; var cleanupOk = true
+        var cleanupMutates = false
         override fun evidence() = state
         override fun markAttempt(): Boolean { marks++; if (writable) state = state.copy(journalBlocked = true); return writable }
         override fun cleanup(): Boolean {
             cleanups++
-            if (!cleanupOk) return false
+            if (!cleanupOk) {
+                if (cleanupMutates) state = state.copy(finishing = true, mutationUncertain = true)
+                return false
+            }
             state = state.copy(sourceState = "empty", taskCount = 0, sourceEmpty = true,
                 finishing = true, handoffComplete = true, liveCount = 0,
                 goneCount = (state.goneCount ?: 0) + (state.liveCount ?: 0), escapedCount = 0)
@@ -96,13 +100,21 @@ class VirtualDisplayManualCloseTest {
         assertEquals("blocked", VirtualDisplayManualClose().prepare(escaped).outcome)
         assertEquals(0, escaped.releases); assertEquals(0, escaped.cleanups)
     }
-    @Test fun failedCleanupDoesNotRelease() {
+    @Test fun cleanlyRejectedCleanupDoesNotReleaseAndCanBePreparedAgain() {
         val b = Fake(); b.state = cleanupEvidence(1, 0, 0); b.cleanupOk = false
         val c = VirtualDisplayManualClose(); val p = c.prepare(b)
         val closed = c.close(p.nonce!!, b)
-        assertEquals("closed_unconfirmed", closed.outcome)
-        assertEquals("HANDOFF_UNCERTAIN", closed.reason)
-        assertEquals(1, b.cleanups); assertEquals(0, b.releases)
+        assertEquals("blocked", closed.outcome)
+        assertEquals("CLEANUP_NOT_COMPLETED", closed.reason)
+        assertEquals(1, b.cleanups); assertEquals(0, b.marks); assertEquals(0, b.releases)
+        // No durable barrier was written, so a later deliberate attempt is still possible.
+        assertEquals("prepared", c.prepare(b).outcome)
+    }
+    @Test fun cleanupThatMutatedWithoutVerificationBlocksReplay() {
+        val b = Fake(); b.state = cleanupEvidence(1, 0, 0); b.cleanupOk = false; b.cleanupMutates = true
+        val c = VirtualDisplayManualClose(); val p = c.prepare(b)
+        assertEquals("blocked", c.close(p.nonce!!, b).outcome)
+        assertEquals(0, b.releases)
         assertEquals("MUTATION_UNCERTAIN_NO_REPLAY", c.prepare(b).reason)
     }
     @Test fun resultDiagnosticDoesNotLeakNonce() {

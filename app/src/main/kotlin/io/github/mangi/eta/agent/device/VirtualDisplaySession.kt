@@ -548,15 +548,20 @@ internal object VirtualDisplaySession {
             return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
         val c = s.client ?: return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
         val observed = freshHandoffState(c) ?: return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
-        val frozen = s.kept.toSet()
+        val marked = s.kept.toSet()
         val baseline = s.handoffState
         val f = observed.flags
         val action = VirtualDisplayRecoveryPolicy.finishAction(f)
+        // A marked task that the system already removed cannot be delivered; deliver the rest.
+        // Escaped (moved elsewhere / identity changed) marked tasks still fail closed below.
+        val goneDelivery = if (action == VirtualDisplayRecoveryPolicy.Action.HANDOFF)
+            observed.goneTaskIds?.let { marked.intersect(it) }.orEmpty() else emptySet()
+        val frozen = marked - goneDelivery
         val directRelease = action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isEmpty() &&
             f.sourceEmpty && observed.retainedTaskIds.isEmpty()
         val cleanup = action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isEmpty() && !directRelease
         if (action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && frozen.isNotEmpty()) {
-            // Do not drop gone/escaped ids out of the frozen selection to make delivery succeed.
+            // Never drop an escaped id out of the selection to make delivery succeed.
             VirtualDisplayHandoffRetry.frozenDeliveryCode(
                 observed.liveTaskIds, observed.goneTaskIds, observed.retainedTaskIds, frozen,
             )?.let { return reply(false, it) }
@@ -568,8 +573,13 @@ internal object VirtualDisplaySession {
         }
         if (action == VirtualDisplayRecoveryPolicy.Action.REFUSE)
             return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
-        var handedOff = action == VirtualDisplayRecoveryPolicy.Action.RELEASE_ONLY
-        var cleanedUp = false
+        val releaseOnly = action == VirtualDisplayRecoveryPolicy.Action.RELEASE_ONLY
+        // A completed cleanup-only handoff (possibly from an earlier attempt or process) delivered
+        // nothing. Unknown provenance never claims delivery.
+        val priorCleanupOnly = releaseOnly &&
+            runCatching { c.status().json?.opt("handoffCleanupOnly") }.getOrNull() != false
+        var handedOff = releaseOnly && !priorCleanupOnly
+        var cleanedUp = releaseOnly && priorCleanupOnly
         var removedForReceipt = emptySet<Int>()
         var goneForReceipt = emptySet<Int>()
         if (action == VirtualDisplayRecoveryPolicy.Action.HANDOFF && (frozen.isNotEmpty() || cleanup)) {
@@ -676,6 +686,7 @@ internal object VirtualDisplaySession {
                 released.ok && released.op == VirtualDisplayOwnerProtocol.OP_RELEASE, { released.json?.opt(it) }))
             return fail(s, released.errorCode.ifBlank { "RELEASE_UNCERTAIN" }, safeOwnerDetail(released))
         val receipt = clearReleased(ctx, s).put("handedOff", handedOff)
+        if (goneDelivery.isNotEmpty()) receipt.put("goneDeliveryTaskIds", JSONArray(goneDelivery))
         if (cleanedUp) {
             receipt.put("cleanedUp", true)
                 .put("removedTaskIds", JSONArray(removedForReceipt))
@@ -694,7 +705,18 @@ internal object VirtualDisplaySession {
             val live = s.client?.let { freshHandoffState(it)?.liveTaskIds }
             if (live != null) {
                 val owned = s.packages.values.flatten().toSet()
-                s.kept.addAll(owned.intersect(live))
+                val promoted = owned.intersect(live)
+                // Persist before use, like keep(): a restart must not turn this delivery into cleanup.
+                if (promoted.isNotEmpty()) {
+                    val persisted = runCatching { recoveryPrefs(context).edit()
+                        .putString("kept", JSONArray(promoted).toString()).commit() }.getOrDefault(false)
+                    if (!persisted) {
+                        s.receipt = reply(false, "RECOVERY_STATE_UNWRITABLE")
+                        AndroidAgentLogger.warn("Virtual display auto-finish failed; recovery retained")
+                        return
+                    }
+                    s.kept.addAll(promoted)
+                }
             }
         }
         if (s.client == null) {

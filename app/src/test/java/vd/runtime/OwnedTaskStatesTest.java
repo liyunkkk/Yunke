@@ -38,4 +38,10 @@ public class OwnedTaskStatesTest {
     @Test(expected = IllegalArgumentException.class) public void invalidOwnedIdThrows() {
         OwnedTaskStates.classify(set(0), set(), set());
     }
+    @Test public void unreadableChildrenNeverProveGone() {
+        OwnedTaskStates s = OwnedTaskStates.classify(set(190, 191), set(1, 191), set(191), false);
+        assertEquals(set(191), s.live);
+        assertTrue(s.gone.isEmpty());
+        assertEquals(set(190), s.escaped);
+    }
 }

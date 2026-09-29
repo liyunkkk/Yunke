@@ -270,6 +270,7 @@ class VirtualDisplayHandoffDiagnosticsTest {
         val proven = VirtualDisplayHandoffEvidence.completed(
             authenticatedConnection = true, responseOk = false, selectedIds = setOf(16),
             retainedIds = setOf(16), keptIds = setOf(16), removedIds = emptySet(), field = wire::opt,
+            goneIds = emptySet(),
         )
         assertFalse(proven)
         val result = diagnostics.annotate(receipt(proven), parsed, uncertain = true)

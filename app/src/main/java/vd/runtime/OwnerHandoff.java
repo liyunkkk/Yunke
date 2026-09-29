@@ -101,7 +101,7 @@ final class OwnerHandoff {
      * WindowContainerTransaction.reorder(token,true) acts inside the task's current parent, so it
      * can never move the task to another display. Identity and display are rechecked afterwards.
      */
-    static void bringOwnedToFront(int source,String unique,Task identity)throws Exception {
+    static void bringOwnedToFront(int source,String unique,Task identity,boolean[] applied)throws Exception {
         verifyDisplay(source,unique);
         Object task=roots().get(identity.id);
         identity.check(task,source);
@@ -110,7 +110,11 @@ final class OwnerHandoff {
         Class<?> tokenCl=Class.forName("android.window.WindowContainerToken");
         cl.getMethod("reorder",tokenCl,boolean.class).invoke(change,field(task,"token"),true);
         Class<?> org=Class.forName("android.window.WindowOrganizer");
-        org.getMethod("applyTransaction",cl).invoke(org.getConstructor().newInstance(),change);
+        java.lang.reflect.Method apply=org.getMethod("applyTransaction",cl);
+        Object organizer=org.getConstructor().newInstance();
+        // First and only side effect; everything above only built a local transaction.
+        applied[0]=true;
+        apply.invoke(organizer,change);
         verifyDisplay(source,unique);
         identity.check(roots().get(identity.id),source);
     }

@@ -96,11 +96,18 @@ internal object VirtualDisplayHandoffRetry {
      * Does not relax non-empty delivery checks in [freshStateAllowsRetry].
      */
     fun freshStateAllowsCleanup(before: OwnerState?, after: OwnerState?): Boolean {
-        if (!sameAuthenticatedOwner(before, after)) return false
-        val current = after ?: return false
-        val f = current.flags
+        if (before == null || after == null || !before.authenticated || !after.authenticated) return false
+        if (!before.identity.isValid() || before.identity != after.identity) return false
+        if (before.retainedTaskIds != after.retainedTaskIds) return false
+        // sourceEmpty follows live tasks disappearing; every other flag must be unchanged.
+        if (before.flags.copy(sourceEmpty = false) != after.flags.copy(sourceEmpty = false)) return false
+        val f = after.flags
         if (f.finishing || f.handoffComplete || f.releaseAttempted || f.mutationUncertain) return false
-        return inventoryAllowsMutation(current)
+        if (!inventoryAllowsMutation(before) || !inventoryAllowsMutation(after)) return false
+        // Retained is unchanged and nothing escaped, so the only allowed change is live -> gone
+        // (for example the user closed an app between attempts). gone -> live never happens.
+        return before.liveTaskIds!!.containsAll(after.liveTaskIds!!) &&
+            after.goneTaskIds!!.containsAll(before.goneTaskIds!!)
     }
 
     /**

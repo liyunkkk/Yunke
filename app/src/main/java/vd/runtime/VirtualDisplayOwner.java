@@ -40,6 +40,8 @@ public final class VirtualDisplayOwner {
     private boolean handoffComplete;
     private boolean releaseAttempted;
     private boolean mutationUncertain;
+    /** Set with handoffComplete: true when the completed handoff delivered nothing (cleanup only). */
+    private boolean handoffCleanupOnly;
     private final java.util.Map<Integer,OwnerHandoff.Task> owned = new java.util.LinkedHashMap<Integer,OwnerHandoff.Task>();
 
     private VirtualDisplayOwner(VirtualDisplayFactory.Created created, OwnerFrameStore frames,
@@ -136,6 +138,8 @@ public final class VirtualDisplayOwner {
             } catch(Exception ignored) { }
             out.put("finishing",finishing);
             out.put("handoffComplete",handoffComplete);
+            // Lets a later release-only finish report handedOff=false after a cleanup-only handoff.
+            if(handoffComplete) out.put("handoffCleanupOnly",handoffCleanupOnly);
             out.put("releaseAttempted",releaseAttempted);
             // A side effect may have been applied without a verified outcome: the recovery policy
             // treats this as "never replay" evidence.
@@ -229,8 +233,13 @@ public final class VirtualDisplayOwner {
     private JSONObject reuseOwned(int taskId, int displayId) throws OwnerException {
         OwnerHandoff.Task identity=owned.get(taskId);
         if(identity==null) throw new OwnerException(LaunchTargetOccupancy.UNKNOWN,"reuse identity");
-        try { OwnerHandoff.bringOwnedToFront(displayId,created.uniqueId,identity); }
-        catch(Exception e) { finishing=true; mutationUncertain=true; throw new OwnerException("LAUNCH_IDENTITY_UNCERTAIN"); }
+        boolean[] applied={false};
+        try { OwnerHandoff.bringOwnedToFront(displayId,created.uniqueId,identity,applied); }
+        catch(Exception e) {
+            // Checks before the transaction are read-only: refuse cleanly and keep the session usable.
+            if(!applied[0]) throw new OwnerException("REUSE_PREFLIGHT_FAILED", e.getClass().getSimpleName());
+            finishing=true; mutationUncertain=true; throw new OwnerException("LAUNCH_IDENTITY_UNCERTAIN");
+        }
         JSONObject out = new JSONObject();
         try {
             out.put("taskIds",new JSONArray(owned.keySet()));
@@ -346,6 +355,7 @@ public final class VirtualDisplayOwner {
         try {
             JSONObject out=OwnerHandoff.move(created.displayId,created.uniqueId,owned,request.optJSONArray("taskIds"));
             finishing=true; handoffComplete=true;
+            handoffCleanupOnly=out.optBoolean("cleanupOnly",false);
             return out;
         } catch(OwnerHandoff.HandoffFailure ex) {
             if(ex.sideEffectsAttempted()) {

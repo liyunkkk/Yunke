@@ -103,7 +103,7 @@ internal object AgentTaskSurface {
     ): String = when (stored) {
         AgentTaskSurfaceMode.FOREGROUND -> ""
         AgentTaskSurfaceMode.BACKGROUND ->
-            "本次选择实验性后台副屏。GUI 不得回退主屏；先 launch_app 精确包名、observe_screen 截图再坐标操作。节点、系统面板及不支持的工具会明确拒绝。任务完成前必须 keep_virtual_result 标记交付任务，再 finish_virtual_session，只有返回 handedOff=true 且 released=true 才可声称交付完成。失败保留副屏，禁止杀进程或用终端绕过关闭。提示用户期间不要从桌面启动或清理正在操作的应用。"
+            "本次选择实验性后台副屏。GUI 不得回退主屏；先 launch_app 精确包名、observe_screen 截图再坐标操作。节点、系统面板及不支持的工具会明确拒绝。要切回本次副屏已打开的应用，直接对同一包名再次 launch_app（返回 reused=true），不要强制停止应用。任务完成前用 keep_virtual_result 标记交付任务，再 finish_virtual_session，只有返回 handedOff=true 且 released=true 才可声称交付完成。没有可交付结果时也要调用 finish_virtual_session，它会清理本次中间任务并关闭副屏（handedOff=false）。收尾失败保留副屏，禁止杀进程或用终端绕过关闭。提示用户期间不要从桌面启动或清理正在操作的应用。"
         AgentTaskSurfaceMode.ASK -> "每次询问尚未支持，请明确选择前台或后台。"
     }
 

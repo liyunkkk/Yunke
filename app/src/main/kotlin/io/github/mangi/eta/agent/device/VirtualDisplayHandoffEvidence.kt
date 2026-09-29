@@ -38,7 +38,7 @@ internal object VirtualDisplayHandoffEvidence {
         keptIds: Set<Int>?,
         removedIds: Set<Int>?,
         field: (String) -> Any?,
-        goneIds: Set<Int>? = null,
+        goneIds: Set<Int>?,
     ): Boolean {
         if (!authenticatedConnection || !responseOk || !envelope(field, "handoff", true)) return false
         if (field("handedOff") != true || field("sourceEmpty") != true) return false

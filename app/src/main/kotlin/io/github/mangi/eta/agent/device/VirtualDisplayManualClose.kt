@@ -63,26 +63,27 @@ internal class VirtualDisplayManualClose(
         val reason = refusal(current)
         if (reason.isNotEmpty()) return Result("blocked", reason)
         if (ticket.evidence != current) return Result("blocked", "CLOSE_STATE_CHANGED")
-        if (!backend.markAttempt()) return Result("blocked", "RECOVERY_STATE_UNWRITABLE")
+        // Cleanup runs BEFORE the durable release barrier. A clean preflight rejection leaves the
+        // owner untouched (finishing=false) so the user may prepare again; a rejection after a side
+        // effect is recorded by the owner itself (mutationUncertain), which refusal() then honors.
         val needsCleanup = (current.retainedCount ?: 0) > 0 && current.handoffComplete != true
-        try {
-            if (needsCleanup && !backend.cleanup()) return Result("closed_unconfirmed", "HANDOFF_UNCERTAIN")
-        } catch (ex: InterruptedException) {
-            Thread.currentThread().interrupt()
-            return Result("closed_unconfirmed", "RELEASE_INTERRUPTED")
-        } catch (_: Exception) {
-            return Result("closed_unconfirmed", "HANDOFF_UNCERTAIN")
-        }
         if (needsCleanup) {
-            // The journal barrier is already set, so refusal() would now report mutation uncertainty.
-            // Confirm the owner finished the handoff phase instead of treating that barrier as failure.
+            try {
+                if (!backend.cleanup()) return Result("blocked", "CLEANUP_NOT_COMPLETED")
+            } catch (ex: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return Result("blocked", "CLEANUP_INTERRUPTED")
+            } catch (_: Exception) {
+                return Result("blocked", "CLEANUP_NOT_COMPLETED")
+            }
             val after = backend.evidence()
             if (after.key != current.key || after.handoffComplete != true || after.finishing != true ||
                 after.sourceEmpty != true || after.sourceState != "empty" || after.taskCount != 0 ||
-                after.releaseAttempted == true || after.mutationUncertain == true) {
-                return Result("closed_unconfirmed", "HANDOFF_UNCERTAIN")
+                after.releaseAttempted == true || after.mutationUncertain == true || after.journalBlocked) {
+                return Result("blocked", "CLEANUP_NOT_COMPLETED")
             }
         }
+        if (!backend.markAttempt()) return Result("blocked", "RECOVERY_STATE_UNWRITABLE")
         // Even an exception or lost reply consumes both the nonce and durable release permission.
         try { backend.release() } catch (ex: InterruptedException) {
             Thread.currentThread().interrupt()

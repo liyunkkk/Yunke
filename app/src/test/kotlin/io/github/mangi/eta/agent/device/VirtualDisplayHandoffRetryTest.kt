@@ -356,7 +356,13 @@ class VirtualDisplayHandoffRetryTest {
         )) assertFalse(blocked.toString(), VirtualDisplayHandoffRetry.freshStateAllowsCleanup(blocked, blocked))
         val occupied = state.copy(liveTaskIds = retainedIds, goneTaskIds = emptySet())
         assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied, occupied))
-        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied, cleared))
+        // Apps closed between attempts (live -> gone) do not block cleanup; gone -> live never passes.
+        assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied, cleared))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(cleared, occupied))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied,
+            cleared.copy(retainedTaskIds = setOf(16, 17, 18, 19), goneTaskIds = setOf(16, 17, 18, 19))))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied,
+            occupied.copy(identity = identity.copy(pid = 124L))))
     }
 
     @Test fun keepRejectsIdsOutsideAKnownLiveSetOnly() {
