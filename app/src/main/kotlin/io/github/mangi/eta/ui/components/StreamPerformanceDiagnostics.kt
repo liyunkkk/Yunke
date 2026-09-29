@@ -216,9 +216,11 @@ internal fun toggleProbeMessageName(line: String): String {
     val handler = line.substringAfter("(", "").substringBefore(")", "")
     val callback = line.substringAfter("} ", "").substringBefore(": ").substringBefore("@")
     // 回调名来自 Runnable.toString()，自定义 toString 可能带字段值，只留开头的类名。
-    fun className(raw: String) = raw.takeWhile { it.isLetterOrDigit() || it in "_.$" }
-    return "${className(handler)}/${className(callback)}".take(160)
+    return "${toggleProbeClassName(handler)}/${toggleProbeClassName(callback)}".take(160)
 }
+
+/** 只留开头由字母、数字和 `_.$` 组成的类名部分。 */
+internal fun toggleProbeClassName(raw: String): String = raw.takeWhile { it.isLetterOrDigit() || it in "_.$" }
 
 // 120Hz 下约 1.2 秒，盖住 180ms 展开动画、跟底追赶和暂停上提的最长 1.5 秒里的大部分。
 internal const val TOGGLE_PROBE_FRAMES = 150

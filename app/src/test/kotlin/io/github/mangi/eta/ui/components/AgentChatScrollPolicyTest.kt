@@ -363,6 +363,23 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
+    fun userInputScrollWithoutAFingerDownDoesNotCountAsUserScrolling() {
+        assertTrue(isUserScrollGesture(pointerDown = true))
+        assertFalse(isUserScrollGesture(pointerDown = false))
+    }
+
+    @Test
+    fun compactStackKeepsOnlyClassAndMethodNames() {
+        val frames = arrayOf(
+            StackTraceElement("self.Frame", "skipped", null, 1),
+            StackTraceElement("kotlin.coroutines.Continuation", "resume", null, 1),
+            StackTraceElement("a.b.C\$1", "onPreScroll", null, 1),
+            StackTraceElement("x.Y", "run secret", null, 1),
+        )
+        assertEquals("a.b.C\$1.onPreScroll<x.Y.run", compactStack(frames))
+    }
+
+    @Test
     fun drawnTailOverflowIsMeasuredAfterTheLift() {
         assertEquals(0, resolveTailDrawnOverflow(1200, 1000, 200))
         assertEquals(150, resolveTailDrawnOverflow(1150, 1000, 0))

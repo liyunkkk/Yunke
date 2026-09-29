@@ -48,6 +48,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,6 +65,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -697,10 +700,27 @@ internal fun AgentConversationMessages(
     var isUserScrolling by remember { mutableStateOf(false) }
     // Observe user motion synchronously, before the asynchronous drag collector
     // and before another scheduled follow frame can mutate the list position.
+    // 手指是否按在列表上。只观察、不消费事件。
+    val pointerDown = remember { BooleanArray(1) }
+    var programmaticUserScrolls by remember { mutableIntStateOf(0) }
     val userScrollConnection = remember(scrollState, directionTracker) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.UserInput && available.y != 0f) {
+                    // 有些滚动也用 UserInput 来源，但手指根本没按下：把某块内容带进可视区
+                    // （BringIntoView，例如取得焦点的选区）、无障碍滚动。它们不算用户滑动，
+                    // 不能关掉跟底；否则快速输出时跟底一断，已经落后的那截一帧画进输入框。
+                    if (!isUserScrollGesture(pointerDown[0])) {
+                        if (StreamPerformanceDiagnostics.enabled && programmaticUserScrolls < 6) {
+                            programmaticUserScrolls++
+                            val frames = Throwable().stackTrace
+                            StreamPerformanceDiagnostics.note("scroll") {
+                                "source=userInputWithoutPointer dy=${available.y.toInt()} " +
+                                    "follow=$shouldFollowBottom stack=${compactStack(frames)}"
+                            }
+                        }
+                        return Offset.Zero
+                    }
                     messageNavigationJob?.cancel()
                     isUserScrolling = true
                     navigationDirection = directionTracker.onScroll(available.y, userInput = true)
@@ -1127,6 +1147,14 @@ internal fun AgentConversationMessages(
                         -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
                     } else {
                         0f
+                    }
+                }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            pointerDown[0] = event.changes.any { it.pressed }
+                        }
                     }
                 }
                 .nestedScroll(userScrollConnection)
@@ -1752,6 +1780,18 @@ private data class TailBreachSample(
     val lifting: Boolean,
     val state: String,
 )
+
+/** UserInput 来源的滚动只有在手指按着时才算用户滑动；惯性走的是 SideEffect 来源，不经过这里。 */
+internal fun isUserScrollGesture(pointerDown: Boolean): Boolean = pointerDown
+
+/** 只保留类名和方法名（与主线程消息日志同一套截断规则），跳过本文件与协程、Compose 调度的帧。 */
+internal fun compactStack(frames: Array<StackTraceElement>, limit: Int = 14): String =
+    frames.asSequence()
+        .drop(1)
+        .map { "${toggleProbeClassName(it.className)}.${toggleProbeClassName(it.methodName)}" }
+        .filterNot { it.startsWith("kotlin.") || it.startsWith("java.") }
+        .take(limit)
+        .joinToString("<")
 
 /** 尾部画出来的位置越过静止线多少像素（上提之后）；尾部位置未知时为 null。 */
 internal fun resolveTailDrawnOverflow(tailBottomPx: Int?, restLinePx: Int, liftPx: Int): Int? =
