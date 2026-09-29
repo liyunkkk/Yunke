@@ -13,9 +13,11 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
@@ -2489,11 +2491,17 @@ private fun ThinkingRow(
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
 
-@Composable
-private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition = fadeIn(tween(120))
+private fun tailDetailsEnter(): androidx.compose.animation.EnterTransition =
+    fadeIn(tween(160)) + expandVertically(
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        expandFrom = Alignment.Top,
+    )
 
-@Composable
-private fun tailDetailsExit(): androidx.compose.animation.ExitTransition = fadeOut(tween(80))
+private fun tailDetailsExit(): androidx.compose.animation.ExitTransition =
+    shrinkVertically(
+        animationSpec = tween(160, easing = FastOutSlowInEasing),
+        shrinkTowards = Alignment.Top,
+    ) + fadeOut(tween(100))
 
 @Composable
 private fun ToolActivityInline(
