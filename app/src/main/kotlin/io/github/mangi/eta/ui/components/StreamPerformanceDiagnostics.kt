@@ -60,6 +60,8 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
     private var next = 0
     private var size = 0
     private var messageStartNs = 0L
+    // 用显式标记而不是 0 表示“有起点”：System.nanoTime() 的原点是任意的。
+    private var messageOpen = false
     private var messageLine: String? = null
     @Volatile var frameMessages = 0L
         private set
@@ -71,16 +73,18 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
     internal fun onLine(line: String, now: Long) {
         if (line.startsWith(">>>>>")) {
             messageStartNs = now
+            messageOpen = true
             messageLine = line
             return
         }
         if (!line.startsWith("<<<<<")) return
         val started = messageStartNs
+        val open = messageOpen
         val name = messageLine
-        messageStartNs = 0L
+        messageOpen = false
         messageLine = null
         // 装上 printer 时正在处理的那条消息没有起点，忽略。
-        if (started == 0L || name == null) return
+        if (!open || name == null) return
         if (name.contains(CHOREOGRAPHER_FRAME_RECEIVER)) {
             frameMessages++
             return
