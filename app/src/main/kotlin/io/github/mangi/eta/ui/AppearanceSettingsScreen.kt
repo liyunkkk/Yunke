@@ -6,12 +6,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -30,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -80,11 +83,14 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
     var morphLoadingExpanded by remember { mutableStateOf(false) }
     var iconExpanded by remember { mutableStateOf(false) }
     val view = LocalView.current
+    val context = LocalContext.current
     val blurSupported = isRuntimeShaderSupported()
 
     fun update(transform: (AppearanceSettings) -> AppearanceSettings) {
         coroutineScope.launch {
             AppearanceSettingsRepository.update(transform)
+            val latest = AppearanceSettingsRepository.settings()
+            LauncherIconSync.apply(context.applicationContext, latest)
         }
     }
 
@@ -206,9 +212,11 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                                 light = appearance.iconLightColor,
                                 dark = appearance.iconDarkColor,
                                 cat = appearance.iconCatColor,
+                                themeMode = appearance.themeMode,
                                 onLight = { color -> update { it.copy(iconLightColor = color) } },
                                 onDark = { color -> update { it.copy(iconDarkColor = color) } },
                                 onCat = { color -> update { it.copy(iconCatColor = color) } },
+                                onTheme = { mode -> update { it.copy(themeMode = mode) } },
                             )
                         }
                     } else {
@@ -416,17 +424,36 @@ private fun IconAppearanceEditor(
     light: Int,
     dark: Int,
     cat: Int,
+    themeMode: AppearanceThemeMode,
     onLight: (Int) -> Unit,
     onDark: (Int) -> Unit,
     onCat: (Int) -> Unit,
+    onTheme: (AppearanceThemeMode) -> Unit,
 ) {
+    val view = LocalView.current
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            AppCatIcon(background = Color(light), cat = Color(cat))
-            AppCatIcon(background = Color(dark), cat = Color(cat))
+            LauncherIconPreview(
+                background = light,
+                cat = cat,
+                selected = themeMode == AppearanceThemeMode.LIGHT,
+                onClick = {
+                    TouchHaptics.click(view)
+                    onTheme(AppearanceThemeMode.LIGHT)
+                },
+            )
+            LauncherIconPreview(
+                background = dark,
+                cat = cat,
+                selected = themeMode == AppearanceThemeMode.DARK,
+                onClick = {
+                    TouchHaptics.click(view)
+                    onTheme(AppearanceThemeMode.DARK)
+                },
+            )
         }
         IconColorChoices(stringResource(R.string.appearance_icon_light), light, onLight)
         IconColorChoices(stringResource(R.string.appearance_icon_dark), dark, onDark)
@@ -452,6 +479,37 @@ private fun IconColorChoices(title: String, selected: Int, onSelect: (Int) -> Un
                         },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun LauncherIconPreview(
+    background: Int,
+    cat: Int,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val context = LocalContext.current
+    val name = LauncherIconSync.resourceName(background, cat)
+    val id = context.resources.getIdentifier(name, "drawable", context.packageName)
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .border(
+                width = if (selected) 2.dp else 0.dp,
+                color = if (selected) MiuixTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(14.dp),
+            )
+            .clickable(onClick = onClick),
+    ) {
+        if (id != 0) {
+            androidx.compose.foundation.Image(
+                painter = androidx.compose.ui.res.painterResource(id),
+                contentDescription = null,
+                modifier = Modifier.size(56.dp),
+            )
         }
     }
 }

@@ -17,6 +17,7 @@ import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.ui.LauncherIconSync
 import io.github.mangi.eta.ui.app.PredictiveBackController
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
@@ -54,6 +55,9 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
         SettingsDataStore.init(this)
         AppFileLogger.install(this)
         applicationScope.launch {
+            runCatching {
+                LauncherIconSync.apply(this@EtaApp, AppearanceSettingsRepository.settings())
+            }
             runCatching { SettingsDataStore.incrementLaunchCount() }
             runCatching {
                 SettingsDataStore.fileLoggingEnabledFlow().collect { enabled ->
