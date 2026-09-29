@@ -91,23 +91,23 @@ class AgentChatViewportContractTest(unittest.TestCase):
         # While following streamed output, the tail is lifted to the 14dp line and
         # also clipped there. Fast output can draw a new line past the measured
         # tail before the lift catches it; the clip keeps that line out of the composer.
-        lists = list(calls(self.messages, "LazyColumn"))
-        self.assertRegex(
-            lists[0],
-            r"graphicsLayer\s*\{[^}]*if\s*\(\s*shouldLiftTail\s*\)\s*\{[^}]*"
-            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
-        )
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
         ]
         draw = boxes[0]
+        self.assertRegex(draw, r"CompositingStrategy\.Offscreen")
         self.assertRegex(draw, r"if\s*\(\s*!shouldLiftTail\s*\)")
+        self.assertRegex(
+            draw,
+            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
+        )
         self.assertRegex(
             draw,
             r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)\.toPx\(\)",
         )
         self.assertRegex(draw, r"clipRect\s*\(\s*bottom\s*=\s*restLine")
+        self.assertRegex(draw, r"translate\s*\(\s*top\s*=\s*-lift\s*\)")
 
     def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
         self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 3)

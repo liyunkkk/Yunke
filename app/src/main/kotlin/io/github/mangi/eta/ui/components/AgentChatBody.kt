@@ -66,7 +66,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -934,24 +936,32 @@ internal fun AgentConversationMessages(
     }
 
     // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
-    // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
-    // 才追上。这几帧不裁剪（裁剪会把卡片底边和半行字切掉），而是在绘制阶段把整个列表
-    // 上提尚未追上的距离：尾部始终停在输入框上方 14dp 的静止线，底边和间距都完整可见。
-    // 只有尾部不在视口内（一次性长出超过一屏）时才退回裁在静止线上。
+    // 跟底时先把列表上提到静止线，再裁掉线以下。快速出字且没有打字机时，
+    // 子项自己的绘制层会逃出普通 clipRect，所以跟底期间先画进离屏层再裁。
     // 用户一拖动 shouldFollowBottom 即为 false，上提和裁剪都解除，内容可以滑到输入框后面。
     Box(
         modifier = modifier
             .clipToBounds()
+            .graphicsLayer {
+                compositingStrategy = if (shouldLiftTail) {
+                    CompositingStrategy.Offscreen
+                } else {
+                    CompositingStrategy.Auto
+                }
+            }
             .drawWithContent {
                 // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
-                // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
-                // 跟底期间一律裁在静止线；上提仍然把已经量到的尾部停在线上方。
                 if (!shouldLiftTail) {
                     drawContent()
                     return@drawWithContent
                 }
                 val restLine = (size.height - (bottomInset + ConversationComposerGap).toPx()).coerceAtLeast(0f)
-                clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
+                val lift = resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
+                clipRect(bottom = restLine) {
+                    translate(top = -lift) {
+                        this@drawWithContent.drawContent()
+                    }
+                }
             },
     ) {
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
@@ -985,14 +995,6 @@ internal fun AgentConversationMessages(
             },
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    // 只在跟底时读取布局结果。滑动或展开期间不读，避免每帧把列表重新提交绘制。
-                    translationY = if (shouldLiftTail) {
-                        -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
-                    } else {
-                        0f
-                    }
-                }
                 .nestedScroll(userScrollConnection)
                 // Navigation already emits one explicit click/long-press haptic.
                 .then(if (messageNavigationJob == null) Modifier.scrollEndHaptic() else Modifier)
