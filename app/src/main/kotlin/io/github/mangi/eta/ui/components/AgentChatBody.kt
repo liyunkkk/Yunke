@@ -715,8 +715,9 @@ internal fun AgentConversationMessages(
                             programmaticUserScrolls++
                             val frames = Throwable().stackTrace
                             StreamPerformanceDiagnostics.note("scroll") {
+                                // 跟底状态在后面才声明；同一时刻的 follow 行已由越线诊断记录。
                                 "source=userInputWithoutPointer dy=${available.y.toInt()} " +
-                                    "follow=$shouldFollowBottom stack=${compactStack(frames)}"
+                                    "userScroll=$isUserScrolling stack=${compactStack(frames)}"
                             }
                         }
                         return Offset.Zero
