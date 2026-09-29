@@ -2225,6 +2225,21 @@ internal class AgentAppState(
                         rejectSendIfModelUnavailable()) return@withContext
                     if (homeState.isStreaming || rejectSendIfCompressing()) return@withContext
                     val runId = "run-${UUID.randomUUID()}"
+                    // 这次补了落盘路径（旧消息的信封里没有），历史里的用户消息文本随之变化。
+                    // 界面里的同一条消息也要改成同样的内容和路径，否则之后编辑、重生成、分支、删除
+                    // 都按文本对不上历史，这一轮就改不动了。
+                    val retainedMessages = homeState.messages.take(boundary.userMessageIndex + 1)
+                    val messages = if (extra.isEmpty()) retainedMessages else {
+                        retainedMessages.mapIndexed { index, message ->
+                            if (index != boundary.userMessageIndex || message !is UserMessageUi) message
+                            else message.copy(
+                                content = runtimePrompt,
+                                imageSources = if (extra.size == message.images.size) {
+                                    extra.map { it.absolutePath }
+                                } else message.imageSources,
+                            )
+                        }
+                    }
                     launchConversationRun(
                         conversationId = conversationId,
                         runId = runId,
@@ -2235,7 +2250,7 @@ internal class AgentAppState(
                             text = runtimePrompt,
                             persistedImages = persisted,
                         ),
-                        messages = homeState.messages.take(boundary.userMessageIndex + 1),
+                        messages = messages,
                         state = homeState,
                         reasoningEffort = homeState.reasoningEffort,
                         skipAutoCompress = ignoreCompression,
