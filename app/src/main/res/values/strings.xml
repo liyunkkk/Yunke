@@ -180,6 +180,8 @@
   <string name="appearance_icon_light">Light</string>
   <string name="appearance_icon_dark">Dark</string>
   <string name="appearance_icon_cat">Cat</string>
+  <string name="appearance_icon_apply">Apply</string>
+  <string name="appearance_icon_apply_summary">Update the home screen icon. Light and dark only change the icon.</string>
   <string name="appearance_group_interface">Interface &amp; Effects</string>
   <string name="appearance_theme_mode">Theme mode</string>
   <string name="appearance_theme_system">Follow system</string>

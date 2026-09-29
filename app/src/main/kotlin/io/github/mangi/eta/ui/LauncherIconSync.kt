@@ -51,6 +51,7 @@ internal object LauncherIconSync {
         val packageName = context.packageName
         val target = ComponentName(packageName, "$packageName.icon.L_%06X_%06X".format(bg, ink))
         val pm = context.packageManager
+        if (isLauncherEnabled(pm, target)) return
         pm.setComponentEnabledSetting(
             target,
             PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
@@ -73,5 +74,12 @@ internal object LauncherIconSync {
                 )
             }
         }
+    }
+
+    private fun isLauncherEnabled(pm: PackageManager, component: ComponentName): Boolean {
+        val state = pm.getComponentEnabledSetting(component)
+        if (state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) return true
+        if (state == PackageManager.COMPONENT_ENABLED_STATE_DISABLED) return false
+        return component.className.endsWith("L_F6F7F9_2491FF")
     }
 }
