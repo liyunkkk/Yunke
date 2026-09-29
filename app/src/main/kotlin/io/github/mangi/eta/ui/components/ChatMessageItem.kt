@@ -261,10 +261,10 @@ fun AITypingIndicator(modifier: Modifier = Modifier) {
 private fun rememberActivePulse(
     active: Boolean,
     label: String,
-): Float {
-    if (!active) return 1f
+): () -> Float {
+    if (!active) return StaticPulseAlpha
     val transition = rememberInfiniteTransition(label = label)
-    val alpha by transition.animateFloat(
+    val alpha = transition.animateFloat(
         initialValue = 0.58f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -273,8 +273,12 @@ private fun rememberActivePulse(
         ),
         label = "${label}_alpha",
     )
-    return alpha
+    // 只把读取交给 graphicsLayer 的绘制块：每帧的透明度变化只重画图标，
+    // 不再让整行思考、工具或工作过程标题跟着重组。
+    return remember(alpha) { { alpha.value } }
 }
+
+private val StaticPulseAlpha: () -> Float = { 1f }
 
 @Stable
 internal class ChatMessageActions {
@@ -452,7 +456,7 @@ internal fun AgentWorkProcessHeader(
                     contentDescription = null,
                     modifier = Modifier
                         .size(15.dp)
-                        .graphicsLayer(alpha = if (running && !isPaused) pulseAlpha else 1f),
+                        .graphicsLayer { alpha = if (running && !isPaused) pulseAlpha() else 1f },
                     tint = if (running && !isPaused) {
                         MiuixTheme.colorScheme.primary
                     } else {
@@ -2392,6 +2396,7 @@ private fun ThinkingRow(
                     manuallyExpanded = true
                     expandedByTap = !expanded
                     expanded = !expanded
+                    StreamPerformanceDiagnostics.markToggle("thinking", expanded)
                     reportTailResize?.invoke()
                 }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
@@ -2402,7 +2407,7 @@ private fun ThinkingRow(
                 contentDescription = null,
                 modifier = Modifier
                     .size(15.dp)
-                    .graphicsLayer(alpha = if (message.isStreaming && !isPaused) pulseAlpha else 1f),
+                    .graphicsLayer { alpha = if (message.isStreaming && !isPaused) pulseAlpha() else 1f },
                 tint = if (message.isStreaming && !isPaused) {
                     MiuixTheme.colorScheme.primary
                 } else {
@@ -2566,6 +2571,7 @@ private fun ToolActivityInline(
                 if (hasDetails) {
                     Modifier.clickable {
                         isExpanded = !isExpanded
+                        StreamPerformanceDiagnostics.markToggle("tool", isExpanded)
                         reportTailResize?.invoke()
                     }
                 } else {
@@ -2650,9 +2656,9 @@ private fun ToolActivityInline(
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            modifier = Modifier.graphicsLayer(
-                                alpha = if (status == ToolActivityStatusUi.Running) pulseAlpha else 1f
-                            ),
+                            modifier = Modifier.graphicsLayer {
+                                alpha = if (status == ToolActivityStatusUi.Running) pulseAlpha() else 1f
+                            },
                         ) {
                             Box(
                                 modifier = Modifier

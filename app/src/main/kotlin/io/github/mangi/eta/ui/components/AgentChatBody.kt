@@ -1093,6 +1093,7 @@ internal fun AgentConversationMessages(
                             expanded = entry.expanded,
                             onToggle = {
                                 if (entry.key == tailGroupKey) holdTailLift = true
+                                StreamPerformanceDiagnostics.markToggle("work", !entry.expanded)
                                 workExpansionOverrides = workExpansionOverrides + (entry.key to !entry.expanded)
                             },
                         )

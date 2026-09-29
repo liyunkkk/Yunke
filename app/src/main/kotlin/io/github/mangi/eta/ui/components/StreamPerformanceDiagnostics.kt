@@ -5,8 +5,10 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.Trace
 import android.view.FrameMetrics
+import android.util.Printer
 import android.view.Window
 import androidx.compose.runtime.*
 import androidx.compose.ui.platform.LocalView
@@ -43,6 +45,75 @@ internal class StreamTimingStats {
         "b16_32_50_100_over=${buckets.joinToString(",")} valueSum=$valueSum valueMax=$valueMax"
 }
 
+/**
+ * 点开工具、推理或工作过程后的逐帧记录。5 秒汇总看不出尖峰落在哪一下，这里只在点击后
+ * 的有限窗口内逐帧打点，并记下主线程上耗时较长的消息，定位帧开始前是谁占住了主线程。
+ * 只记录耗时和 Handler/回调的类名，不记录消息正文或 ID。
+ */
+internal class ToggleProbe(val kind: String, val expanded: Boolean, val startNs: Long) {
+    private val frames = ArrayList<String>(TOGGLE_PROBE_FRAMES)
+    private val messages = ArrayList<String>(TOGGLE_PROBE_MAX_MESSAGES)
+    private var messageStartNs = 0L
+    private var messageName: String? = null
+    var droppedMessages = 0
+        private set
+    @Volatile var finished = false
+
+    val printer = Printer { line ->
+        if (finished) return@Printer
+        val now = System.nanoTime()
+        if (line.startsWith(">>>>>")) {
+            messageStartNs = now
+            messageName = line
+        } else if (line.startsWith("<<<<<")) {
+            val started = messageStartNs
+            val name = messageName
+            messageStartNs = 0L
+            messageName = null
+            // 装上 printer 时正在处理的那条消息没有起点，忽略。
+            if (started == 0L || name == null) return@Printer
+            val duration = now - started
+            if (duration < TOGGLE_PROBE_SLOW_MESSAGE_NS) return@Printer
+            val entry = "atMs=${(started - startNs) / 1_000_000} durUs=${duration / 1000} " +
+                "msg=${toggleProbeMessageName(name)}"
+            synchronized(this) {
+                if (messages.size < TOGGLE_PROBE_MAX_MESSAGES) messages += entry else droppedMessages++
+            }
+        }
+    }
+
+    /** 返回 true 表示窗口已满，应当收尾。 */
+    @Synchronized fun addFrame(line: String): Boolean {
+        frames += line
+        return frames.size >= TOGGLE_PROBE_FRAMES
+    }
+
+    fun expired(now: Long): Boolean = now - startNs >= TOGGLE_PROBE_MAX_NS
+
+    @Synchronized fun report(sessionId: String): List<String> {
+        val prefix = "StreamDiag id=$sessionId toggle=$kind expanded=$expanded"
+        return buildList {
+            add("$prefix frames=${frames.size} slowMessages=${messages.size} droppedMessages=$droppedMessages")
+            frames.forEachIndexed { index, frame -> add("$prefix frame=$index $frame") }
+            messages.forEach { add("$prefix main $it") }
+        }
+    }
+}
+
+/** 取 Looper 日志里的 Handler 类名和回调类名，去掉对象哈希与 what 值以外的内容。 */
+internal fun toggleProbeMessageName(line: String): String {
+    val handler = line.substringAfter("(", "").substringBefore(")", "")
+    val callback = line.substringAfter("} ", "").substringBefore(": ").substringBefore("@")
+    return "$handler/$callback".take(160)
+}
+
+internal const val TOGGLE_PROBE_FRAMES = 30
+internal const val TOGGLE_PROBE_MAX_NS = 1_000_000_000L
+internal const val TOGGLE_PROBE_SLOW_MESSAGE_NS = 4_000_000L
+internal const val TOGGLE_PROBE_MAX_MESSAGES = 40
+// 点击前一帧也收进来，看点击之前主线程是否已经在忙。
+private const val FRAME_PROBE_LEAD_NS = 17_000_000L
+
 /** One visible chat window. Logging is on its worker; hot paths only update bounded counters. */
 internal object StreamPerformanceDiagnostics {
     private class Session {
@@ -74,6 +145,40 @@ internal object StreamPerformanceDiagnostics {
         }
     }
     @Volatile private var active: Session? = null
+    @Volatile private var probe: ToggleProbe? = null
+    private var probeReporter: ((ToggleProbe) -> Unit)? = null
+    private var probeTimeoutHandler: Handler? = null
+
+    /**
+     * 在主线程的点击回调里调用。没有诊断会话（不在输出中）时什么都不做。
+     * 上一次点击的窗口还没收完就再点，先把上一次的结果写出来。
+     */
+    fun markToggle(kind: String, expanded: Boolean) {
+        if (active == null) return
+        val reporter = probeReporter ?: return
+        probe?.let { finishProbe(it, reporter) }
+        val next = ToggleProbe(kind, expanded, System.nanoTime())
+        // 与 finishProbe 同一把锁：装上 printer 和登记当前窗口必须一起发生，
+        // 否则诊断线程可能在两步之间收尾，留下一个一直开着的 Looper 日志。
+        synchronized(this) {
+            probe = next
+            Looper.getMainLooper().setMessageLogging(next.printer)
+        }
+        // 点击后没有新帧也要收尾，Looper 日志不能一直开着。
+        probeTimeoutHandler?.postDelayed({ finishProbe(next, reporter) }, TOGGLE_PROBE_MAX_NS / 1_000_000 + 100)
+    }
+
+    private fun finishProbe(target: ToggleProbe, reporter: (ToggleProbe) -> Unit) {
+        synchronized(this) {
+            if (target.finished) return
+            target.finished = true
+            if (probe === target) {
+                probe = null
+                Looper.getMainLooper().setMessageLogging(null)
+            }
+        }
+        reporter(target)
+    }
 
     fun record(stage: String, ns: Long = 0, value: Long = 0) {
         active?.record(stage, ns, value)
@@ -94,6 +199,11 @@ internal object StreamPerformanceDiagnostics {
         active = session
         val thread = HandlerThread("Eta-StreamDiag").apply { start() }
         val handler = Handler(thread.looper)
+        val reportProbe: (ToggleProbe) -> Unit = { target ->
+            handler.post { runCatching { target.report(session.id).forEach(AndroidAgentLogger::info) } }
+        }
+        probeReporter = reportProbe
+        probeTimeoutHandler = handler
         fun emit(final: Boolean) {
             runCatching {
                 val runtime = Runtime.getRuntime()
@@ -135,6 +245,22 @@ internal object StreamPerformanceDiagnostics {
                 session.record("frame.vsyncLate", late.coerceAtLeast(0), if (late > 8_333_333L) 1 else 0)
                 session.record("frame.metricsDropped", 0, dropped.toLong())
                 session.record("frame.deadline", deadline, 0)
+                probe?.let { target ->
+                    val intended = frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
+                    if (!target.finished && intended >= target.startNs - FRAME_PROBE_LEAD_NS) {
+                        val line = "sinceTapMs=${(intended - target.startNs) / 1_000_000} " +
+                            "totalUs=${total / 1000} deadlineUs=${deadline / 1000} " +
+                            "miss=${if (deadline > 0 && total > deadline) 1 else 0} " +
+                            "unknownUs=${unknown / 1000} inputUs=${input / 1000} " +
+                            "animUs=${animation / 1000} layoutUs=${layout / 1000} drawUs=${draw / 1000} " +
+                            "syncUs=${sync / 1000} cmdUs=${command / 1000} vsyncLateUs=${late.coerceAtLeast(0) / 1000}"
+                        if (target.addFrame(line) || target.expired(System.nanoTime())) {
+                            finishProbe(target, reportProbe)
+                        }
+                    } else if (target.expired(System.nanoTime())) {
+                        finishProbe(target, reportProbe)
+                    }
+                }
             }
         }
         window.addOnFrameMetricsAvailableListener(listener, handler)
@@ -144,7 +270,12 @@ internal object StreamPerformanceDiagnostics {
         }
         return {
             window.removeOnFrameMetricsAvailableListener(listener)
-            if (active === session) active = null
+            if (active === session) {
+                probe?.let { finishProbe(it, reportProbe) }
+                active = null
+                probeReporter = null
+                probeTimeoutHandler = null
+            }
             handler.removeCallbacks(periodic)
             handler.post { emit(true); thread.quitSafely() }
         }
