@@ -55,10 +55,10 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun anchoredTailRemainsClippedAfterFastCompletion() {
+    fun restingTailRemainsClippedAfterFollowEnds() {
+        // 停止跟底之后的静止尾部仍然要被裁剪，否则新内容会画进输入框上方。
         assertTrue(
             shouldClipChatTail(
-                keepBottomAnchored = true,
                 isUserScrolling = false,
                 isUserDragging = false,
                 navigationActive = false,
@@ -70,7 +70,6 @@ class AgentChatScrollPolicyTest {
     fun manualScrollingReleasesComposerClip() {
         assertFalse(
             shouldClipChatTail(
-                keepBottomAnchored = true,
                 isUserScrolling = true,
                 isUserDragging = false,
                 navigationActive = false,
@@ -78,7 +77,6 @@ class AgentChatScrollPolicyTest {
         )
         assertFalse(
             shouldClipChatTail(
-                keepBottomAnchored = true,
                 isUserScrolling = false,
                 isUserDragging = true,
                 navigationActive = false,
@@ -90,10 +88,92 @@ class AgentChatScrollPolicyTest {
     fun messageNavigationReleasesComposerClip() {
         assertFalse(
             shouldClipChatTail(
-                keepBottomAnchored = true,
                 isUserScrolling = false,
                 isUserDragging = false,
                 navigationActive = true,
+            )
+        )
+    }
+
+    @Test
+    fun interactionInertiaAndNavigationOnlyReleaseTheClipWhileActive() {
+        // 惯性滑动：手指已经抬起，但列表仍在移动。
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = true,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+        // 手指按住拖动。
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = true,
+                navigationActive = false,
+            )
+        )
+        // 导航跳转同时动用了滚动与导航。
+        assertFalse(
+            shouldClipChatTail(
+                isUserScrolling = true,
+                isUserDragging = false,
+                navigationActive = true,
+            )
+        )
+        // 手势与导航结束后恢复静止裁剪。
+        assertTrue(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+    }
+
+    @Test
+    fun tinyDragAtBottomStopsFollowingYetStillClipsTheRestingTail() {
+        val afterDrag = resolveKeepBottomAnchored(
+            current = true,
+            isUserDragging = true,
+            isAtBottom = true,
+            hasLeftBottom = false,
+        )
+        assertFalse(afterDrag)
+        val afterRelease = resolveKeepBottomAnchored(
+            current = afterDrag,
+            isUserDragging = false,
+            isAtBottom = true,
+            hasLeftBottom = false,
+        )
+        assertFalse(afterRelease)
+        // 松手恢复裁剪，但不能重新启用跟底或上提来改变历史阅读位置。
+        assertTrue(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+            )
+        )
+        val following = resolveBottomFollowEnabled(
+            isStreaming = true,
+            keepBottomAnchored = afterRelease,
+            isUserDragging = false,
+            isBottomSettling = true,
+        )
+        assertFalse(following)
+        assertEquals(FollowTailLag.None, resolveFollowTailLag(following, tailOverflowPx = 151))
+    }
+
+    @Test
+    fun restingClipIsNotGatedByStreamingOrAnchorState() {
+        // 非流式（且已经停止跟底）时静止尾部同样裁剪；裁剪决策只接收交互状态，
+        // 不再接收 streaming / anchor 输入，因此两者都无法再关闭裁剪。
+        assertTrue(
+            shouldClipChatTail(
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
             )
         )
     }
@@ -382,7 +462,8 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
-    fun manualScrollNeitherLiftsNorClips() {
+    fun notFollowingReaderNeverLiftsTheTail() {
+        // 已经停止跟底：无论尾部越线多少（或未知）都不再上提，避免把读者拉回底部。
         assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = 80))
         assertEquals(FollowTailLag.None, resolveFollowTailLag(following = false, tailOverflowPx = null))
     }
