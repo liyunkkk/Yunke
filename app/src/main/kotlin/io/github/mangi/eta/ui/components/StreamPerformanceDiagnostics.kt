@@ -104,7 +104,9 @@ internal class ToggleProbe(val kind: String, val expanded: Boolean, val startNs:
 internal fun toggleProbeMessageName(line: String): String {
     val handler = line.substringAfter("(", "").substringBefore(")", "")
     val callback = line.substringAfter("} ", "").substringBefore(": ").substringBefore("@")
-    return "$handler/$callback".take(160)
+    // 回调名来自 Runnable.toString()，自定义 toString 可能带字段值，只留开头的类名。
+    fun className(raw: String) = raw.takeWhile { it.isLetterOrDigit() || it in "_.$" }
+    return "${className(handler)}/${className(callback)}".take(160)
 }
 
 internal const val TOGGLE_PROBE_FRAMES = 30
@@ -199,6 +201,8 @@ internal object StreamPerformanceDiagnostics {
         active = session
         val thread = HandlerThread("Eta-StreamDiag").apply { start() }
         val handler = Handler(thread.looper)
+        // 上一个会话留下的窗口先收掉，不能让它的 Looper 日志跟着新会话一直开着。
+        probe?.let { previous -> probeReporter?.let { finishProbe(previous, it) } }
         val reportProbe: (ToggleProbe) -> Unit = { target ->
             handler.post { runCatching { target.report(session.id).forEach(AndroidAgentLogger::info) } }
         }

@@ -52,4 +52,11 @@ class StreamPerformanceDiagnosticsTest {
         assertFalse(probe.expired(TOGGLE_PROBE_MAX_NS - 1))
         assertTrue(probe.expired(TOGGLE_PROBE_MAX_NS))
     }
+
+    @Test fun customRunnableToStringCannotLeakFieldValues() {
+        val name = toggleProbeMessageName(
+            ">>>>> Dispatching to Handler (android.os.Handler) {1a2b} Job(text=secret message, id=42): 0",
+        )
+        assertEquals("android.os.Handler/Job", name)
+    }
 }
