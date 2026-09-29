@@ -406,8 +406,12 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             ),
             cachedTokens = usage.firstNestedInt(
                 "prompt_tokens_details",
+                "input_tokens_details",
                 childKey = "cached_tokens"
-            ) ?: usage.firstInt("cache_read_input_tokens")
+            ) ?: usage.firstInt("cache_read_input_tokens"),
+            // OpenAI-compatible gateways report cache writes separately from reads.
+            // prompt_tokens already includes both, so this stays a subset.
+            cacheCreationTokens = usage.cacheCreationTokens(),
         ).takeUnless { it.isEmpty }
     }
 
@@ -422,6 +426,25 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         }
         return null
     }
+
+    private fun JSONObject.cacheCreationTokens(): Int? =
+        firstNestedInt(
+            "prompt_tokens_details",
+            "input_tokens_details",
+            childKey = "cache_creation_tokens",
+        ) ?: firstNestedInt(
+            "prompt_tokens_details",
+            "input_tokens_details",
+            childKey = "cache_creation_input_tokens",
+        ) ?: firstNestedInt(
+            "prompt_tokens_details",
+            "input_tokens_details",
+            childKey = "cache_write_tokens",
+        ) ?: firstInt(
+            "cache_creation_input_tokens",
+            "cache_creation_tokens",
+            "cache_write_input_tokens",
+        )
 
     private fun JSONObject.firstNestedInt(
         vararg parentKeys: String,
@@ -441,6 +464,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             outputTokens?.let { json.put("output_tokens", it) }
             reasoningTokens?.let { json.put("reasoning_tokens", it) }
             cachedTokens?.let { json.put("cached_tokens", it) }
+            cacheCreationTokens?.let { json.put("cache_creation_tokens", it) }
         }
 
     private fun String.compactError(): String =

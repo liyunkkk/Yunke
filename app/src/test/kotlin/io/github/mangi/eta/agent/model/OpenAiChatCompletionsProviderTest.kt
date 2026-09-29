@@ -487,7 +487,7 @@ class OpenAiChatCompletionsProviderTest {
             )
             .put(
                 "prompt_tokens_details",
-                JSONObject().put("cached_tokens", 3)
+                JSONObject().put("cached_tokens", 3).put("cache_creation_tokens", 2)
             )
         val body = buildString {
             append(sseChunk(JSONObject().put("reasoning_content", "先分析")))
@@ -521,6 +521,7 @@ class OpenAiChatCompletionsProviderTest {
             assertEquals(8, parsedUsage.outputTokens)
             assertEquals(5, parsedUsage.reasoningTokens)
             assertEquals(3, parsedUsage.cachedTokens)
+            assertEquals(2, parsedUsage.cacheCreationTokens)
 
             val request = JSONObject(requestBody.get())
             assertEquals(false, request.getBoolean("enable_thinking"))

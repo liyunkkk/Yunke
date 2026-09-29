@@ -743,7 +743,9 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             inputTokens = usage.intValue("input_tokens", "prompt_tokens"),
             outputTokens = usage.intValue("output_tokens", "completion_tokens"),
             cachedTokens = usage.optJSONObject("input_tokens_details")?.intValue("cached_tokens")
-                ?: usage.optJSONObject("prompt_tokens_details")?.intValue("cached_tokens"),
+                ?: usage.optJSONObject("prompt_tokens_details")?.intValue("cached_tokens")
+                ?: usage.intValue("cache_read_input_tokens"),
+            cacheCreationTokens = usage.cacheCreationTokens(),
             reasoningTokens = usage.optJSONObject("output_tokens_details")?.intValue("reasoning_tokens")
                 ?: usage.optJSONObject("completion_tokens_details")?.intValue("reasoning_tokens"),
         ).takeUnless { it.isEmpty }
@@ -766,6 +768,15 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         val error = response.optJSONObject("error")
         val message = error?.optString("message").orEmpty().ifBlank { "未提供错误信息" }
         throw AgentModelFailure.stream(error ?: JSONObject(), "模型接口 Responses 请求失败：${message.compactError()}")
+    }
+
+    private fun JSONObject.cacheCreationTokens(): Int? {
+        val details = listOfNotNull(optJSONObject("input_tokens_details"), optJSONObject("prompt_tokens_details"))
+        val nestedKeys = listOf("cache_creation_tokens", "cache_creation_input_tokens", "cache_write_tokens")
+        for (key in nestedKeys) {
+            details.firstNotNullOfOrNull { it.intValue(key) }?.let { return it }
+        }
+        return intValue("cache_creation_input_tokens", "cache_creation_tokens", "cache_write_input_tokens")
     }
 
     private fun JSONObject.intValue(vararg keys: String): Int? {
