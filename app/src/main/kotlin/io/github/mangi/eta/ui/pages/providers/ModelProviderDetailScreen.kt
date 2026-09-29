@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.CustomProviderSetting
@@ -97,6 +99,7 @@ internal fun ModelProviderDetailScreen(
     onSelectCurrentModel: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val scope = rememberCoroutineScope()
     val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
     var createdId by remember { mutableStateOf<String?>(null) }
@@ -195,7 +198,7 @@ internal fun ModelProviderDetailScreen(
                 TabRow(
                     tabs = listOf(context.getString(R.string.page_configuration_d7d7ce), context.getString(R.string.page_model_98fd0c)),
                     selectedTabIndex = currentTab,
-                    onTabSelected = { currentTab = it },
+                    onTabSelected = { TouchHaptics.click(view); currentTab = it },
                     modifier = Modifier.padding(
                         horizontal = sidePadding + 12.dp,
                         vertical = 8.dp,
@@ -244,6 +247,7 @@ private fun ProviderConfigTab(
     onDeleted: () -> Unit,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     var headersExpanded by rememberSaveable { mutableStateOf(false) }
     var gatewayExpanded by rememberSaveable { mutableStateOf(false) }
     var apiKeyVisible by remember { mutableStateOf(false) }
@@ -304,7 +308,10 @@ private fun ProviderConfigTab(
                             singleLine = true,
                             visualTransformation = if (apiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                             trailingIcon = {
-                                IconButton(onClick = { apiKeyVisible = !apiKeyVisible }) {
+                                IconButton(onClick = {
+                                TouchHaptics.click(view)
+                                apiKeyVisible = !apiKeyVisible
+                            }) {
                                     Icon(
                                         imageVector = if (apiKeyVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
                                         contentDescription = if (apiKeyVisible) context.getString(R.string.page_hide_bb0e7e) else context.getString(R.string.page_show_71b677),
@@ -370,6 +377,7 @@ private fun ProviderConfigTab(
                     summary = testStatus,
                     enabled = !isWorking,
                     onClick = {
+                        TouchHaptics.click(view)
                         val validationError = validateProviderDraft(context, draft)
                         if (validationError != null) {
                             testStatus = context.getString(R.string.provider_error, validationError)
@@ -486,6 +494,7 @@ private fun ProviderConfigTab(
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.textButtonColorsPrimary(),
                     onClick = {
+                        TouchHaptics.click(view)
                         val validationError = validateProviderDraft(context, draft)
                             ?: if (ProviderAuthMode.isOAuth(draft.authMode) && draft.apiKey.isBlank()) {
                                 context.getString(R.string.provider_oauth_need_sign_in)
@@ -576,6 +585,7 @@ private fun ProviderConfigTab(
                         null
                     } else {
                         {
+                            TouchHaptics.click(view)
                             if (provider.isBuiltIn) showResetDialog = true else showDeleteDialog = true
                         }
                     },

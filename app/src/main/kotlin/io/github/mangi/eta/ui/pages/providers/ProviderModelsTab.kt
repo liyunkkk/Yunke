@@ -383,6 +383,7 @@ internal fun ProviderModelsTab(
                 }
             } else {
                 item(key = "models_title", contentType = "section_title") {
+                    val view = LocalView.current
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -399,6 +400,7 @@ internal fun ProviderModelsTab(
                                     .clickable(
                                         enabled = !isFetching && !isMutatingModel,
                                         onClick = {
+                                            TouchHaptics.click(view)
                                             selectedModelIds = if (
                                                 filteredModels.isNotEmpty() &&
                                                 selectedModelIds.containsAll(filteredModels.map { it.id })
@@ -737,13 +739,18 @@ private fun ModelListItem(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     Row(
         modifier = modifier
             .fillMaxWidth()
             .combinedClickable(
                 enabled = enabled,
-                onClick = if (selectionMode) onToggleChecked else onSetCurrent,
+                onClick = {
+                    TouchHaptics.click(view)
+                    if (selectionMode) onToggleChecked() else onSetCurrent()
+                },
                 onLongClick = {
+                    TouchHaptics.longPress(view)
                     if (selectionMode) onToggleChecked() else onEnterSelection()
                 },
             )
@@ -783,7 +790,10 @@ private fun ModelListItem(
         if (selectionMode) {
             Checkbox(
                 state = if (checked) ToggleableState.On else ToggleableState.Off,
-                onClick = onToggleChecked,
+                onClick = {
+                    TouchHaptics.click(view)
+                    onToggleChecked()
+                },
                 enabled = enabled,
             )
         } else {
@@ -802,7 +812,10 @@ private fun ModelListItem(
                     )
                 }
                 IconButton(
-                    onClick = onEdit,
+                    onClick = {
+                        TouchHaptics.click(view)
+                        onEdit()
+                    },
                     enabled = enabled,
                     modifier = Modifier.size(40.dp),
                 ) {

@@ -22,10 +22,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.data.model.SessionGatewayRule
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
@@ -48,6 +50,7 @@ internal fun LazyListScope.providerSessionGateway(
 ) {
     item(key = "session_gateway") {
         ProviderSection(title = "会话 ID") {
+            val view = LocalView.current
             val chevronRotation by animateFloatAsState(if (expanded) 180f else 0f)
             BasicComponent(
                 title = "网关",
@@ -60,7 +63,10 @@ internal fun LazyListScope.providerSessionGateway(
                         modifier = Modifier.rotate(chevronRotation),
                     )
                 },
-                onClick = { onExpandedChange(!expanded) },
+                onClick = {
+                    TouchHaptics.click(view)
+                    onExpandedChange(!expanded)
+                },
             )
             if (expanded) {
                 Column(
@@ -117,6 +123,7 @@ internal fun LazyListScope.providerHeadersEditor(
     // 请求头数量很少且必须收进同一张卡片，折叠/展开态整组重排，不拆成独立 Lazy 条目。
     item(key = "custom_headers") {
         ProviderSection(title = "自定义请求头") {
+            val view = LocalView.current
             val chevronRotation by animateFloatAsState(if (expanded) 180f else 0f)
             BasicComponent(
                 title = if (headers.isEmpty()) "未设置" else "已设置 ${headers.size} 项",
@@ -129,7 +136,10 @@ internal fun LazyListScope.providerHeadersEditor(
                         modifier = Modifier.rotate(chevronRotation),
                     )
                 },
-                onClick = { onExpandedChange(!expanded) },
+                onClick = {
+                    TouchHaptics.click(view)
+                    onExpandedChange(!expanded)
+                },
             )
             if (expanded) {
                 headers.forEach { row ->
@@ -160,7 +170,10 @@ internal fun LazyListScope.providerHeadersEditor(
                             tint = MiuixTheme.colorScheme.primary,
                         )
                     },
-                    onClick = { onHeadersChange(headers + ProviderHeaderDraft()) },
+                    onClick = {
+                        TouchHaptics.click(view)
+                        onHeadersChange(headers + ProviderHeaderDraft())
+                    },
                 )
             }
         }
@@ -212,7 +225,10 @@ private fun ProviderHeaderRow(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        IconButton(onClick = onRemove) {
+        IconButton(onClick = {
+            TouchHaptics.click(LocalView.current)
+            onRemove()
+        }) {
             Icon(
                 imageVector = Icons.Rounded.Delete,
                 contentDescription = context.getString(R.string.ui_delete_3755f5),
