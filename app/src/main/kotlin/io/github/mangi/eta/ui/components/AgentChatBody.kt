@@ -754,8 +754,6 @@ internal fun AgentConversationMessages(
                 }
             }
     }
-    // 拖动和惯性期间别让系统按速度把出帧降到 60，否则松手后减速那一段会连着掉帧。
-    HoldPeakFrameRateWhileScrolling { isUserScrolling }
 
     var hasLeftBottom by remember { mutableStateOf(false) }
     LaunchedEffect(scrollState) {
