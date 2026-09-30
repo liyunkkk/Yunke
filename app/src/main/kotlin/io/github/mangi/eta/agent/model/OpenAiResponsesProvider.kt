@@ -121,6 +121,16 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             }
         }
 
+        fun reportEventUsage(event: JSONObject) {
+            val response = event.optJSONObject("response")
+            reportUsage(
+                response?.optJSONObject("usage")
+                    ?: event.optJSONObject("usage")
+                    ?: response?.takeIf { looksLikeUsage(it) }
+                    ?: event.takeIf { looksLikeUsage(it) }
+            )
+        }
+
         fun finishContentBlock(
             block: StreamingContentBlock,
             content: String = block.content.toString(),
@@ -231,7 +241,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                     sawFunctionCall = true
                 }
                 deliveryGuard.observe(event)
-                reportUsage(event.optJSONObject("response")?.optJSONObject("usage"))
+                reportEventUsage(event)
                 throwEventError(event)
                 when (val type = event.optString("type")) {
                     "response.output_text.delta" -> {
@@ -745,6 +755,10 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             else -> "incomplete"
         }
     }
+
+    private fun looksLikeUsage(json: JSONObject): Boolean =
+        listOf("total_tokens", "input_tokens", "prompt_tokens", "output_tokens", "completion_tokens")
+            .any(json::has)
 
     private fun parseUsage(usage: JSONObject?): AgentTokenUsage? {
         usage ?: return null
