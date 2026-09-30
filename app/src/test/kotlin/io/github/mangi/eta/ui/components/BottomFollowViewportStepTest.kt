@@ -181,4 +181,9 @@ class BottomFollowViewportStepTest {
         assertEquals(0f, snapFollowScrollStep(0f, 4f), 0f)
         assertEquals(0f, snapFollowScrollStep(Float.NaN, 4f), 0f)
     }
+
+    @Test fun restLineStaysAboveTheComposer() {
+        assertEquals(400f, composerRestLinePx(900f, 500f), 0f)
+        assertEquals(0f, composerRestLinePx(100f, 140f), 0f)
+    }
 }

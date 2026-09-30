@@ -63,6 +63,10 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -86,6 +90,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -1122,9 +1128,13 @@ internal fun AgentConversationMessages(
     // 才追上。绘制阶段会把已经量到的尾部上提；底部锚定保护持续裁在输入框上方的静止线；
     // 覆盖超快输出在 isStreaming 结束后、列表滚动尚未完成的过渡帧。
     // 用户一拖动或跳转消息，锚定保护解除，内容可以正常滑到输入框后面。
+    val restClip = remember(bottomInset) { ComposerRestClip(bottomInset + ConversationComposerGap) }
     Box(
         modifier = modifier
             .clipToBounds()
+            // drawWithContent 的 clipRect 裁不到子级 graphicsLayer。跟底上提就是这一层，
+            // 不在这里再裁一次，新长出的一行会画进输入框。
+            .then(if (shouldClipTail) Modifier.clip(restClip) else Modifier)
             .drawWithContent {
                 // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
                 // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
@@ -2028,4 +2038,19 @@ internal fun shouldStopOrphanSpeechPlayback(
 
 /** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
 private val ConversationComposerGap = 14.dp
+
+internal fun composerRestLinePx(heightPx: Float, occlusionPx: Float): Float =
+    (heightPx - occlusionPx).coerceAtLeast(0f)
+
+/** 把列表裁在输入框上沿加间隙处，子级 graphicsLayer 也遵守这条边界。 */
+internal class ComposerRestClip(private val occlusion: Dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val bottom = with(density) { composerRestLinePx(size.height, occlusion.toPx()) }
+        return Outline.Rectangle(Rect(0f, 0f, size.width, bottom))
+    }
+
+    override fun equals(other: Any?): Boolean = other is ComposerRestClip && other.occlusion == occlusion
+
+    override fun hashCode(): Int = occlusion.hashCode()
+}
 
