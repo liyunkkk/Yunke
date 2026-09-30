@@ -74,7 +74,7 @@ class RetainedCardDrawLayerTest {
         assertEquals(EnterExitState.Visible, entering.target)
         val elementTypes = entering.elements.map { it.javaClass }
 
-        advance(256)
+        awaitVisibilitySettled(visible = true)
         val idle = assertLayer(CompositingStrategy.Offscreen)
         assertEquals(EnterExitState.Visible, idle.current)
         assertEquals(EnterExitState.Visible, idle.target)
@@ -89,21 +89,21 @@ class RetainedCardDrawLayerTest {
 
         // Reverse before removal: changing the strategy must not change the node chain.
         compose.runOnIdle { visibility.targetState = true }
-        advance(256)
+        awaitVisibilitySettled(visible = true)
         val reversed = assertLayer(CompositingStrategy.Offscreen)
         assertEquals(elementTypes, reversed.elements.map { it.javaClass })
         assertEquals(EnterExitState.Visible, reversed.current)
         assertEquals(EnterExitState.Visible, reversed.target)
 
         compose.runOnIdle { visibility.targetState = false }
-        advance(256)
+        awaitVisibilitySettled(visible = false)
         compose.onNodeWithTag(CONTENT_TAG).assertDoesNotExist()
 
         // A new composition after full collapse still starts with an Auto layer.
         compose.runOnIdle { visibility.targetState = true }
         advance(32)
         assertEquals(elementTypes, assertLayer(CompositingStrategy.Auto).elements.map { it.javaClass })
-        advance(256)
+        awaitVisibilitySettled(visible = true)
         assertLayer(CompositingStrategy.Offscreen)
     }
 
@@ -192,6 +192,20 @@ class RetainedCardDrawLayerTest {
                 }
             }
         }
+        compose.waitForIdle()
+    }
+
+    private fun awaitVisibilitySettled(visible: Boolean) {
+        // An interrupted transition can outlive its original tween duration. Wait for
+        // the transition itself, not the expected layer strategy, so the assertions
+        // below still catch a missing layer or an incorrect caching policy.
+        compose.mainClock.advanceTimeUntil(5_000L) {
+            visibility.isIdle && visibility.currentState == visible &&
+                visibility.targetState == visible
+        }
+        compose.waitForIdle()
+        // Let the final measurement/onSizeChanged update reach the observed modifier.
+        compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
     }
 
