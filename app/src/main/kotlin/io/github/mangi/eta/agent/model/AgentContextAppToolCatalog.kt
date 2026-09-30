@@ -167,7 +167,7 @@ internal object AgentContextAppToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "delegate_to_kimi_code",
-                    description = "将复杂代码编写、重构或项目文件批量修改任务委派给内置的 Kimi Code 编程子代理执行。子代理运行在隔离的 Linux 环境中，能够就地读写代码、运行测试并汇报变更。适用于多文件代码修改、逻辑重构、写脚本等重型编码任务。",
+                    description = "将复杂代码编写、重构或项目文件批量修改任务委派给内置的 Kimi Code 编程子代理执行。子代理运行在隔离的 Linux 环境中，能够就地读写代码、运行测试并汇报变更。适用于多文件代码修改、逻辑重构、写脚本等重型编码任务。只在需要就地改代码并验证（编译/跑测试/跑命令）时使用；需要多路并行调查、审查、总结或生成媒体时，改用 delegate_task。同一份任务不要同时派给两边。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(

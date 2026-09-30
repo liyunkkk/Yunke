@@ -105,7 +105,7 @@ internal object AgentPromptBuilder {
                     "屏幕观察与 GUI 操作前会确认 YUNKe 无障碍服务；只有系统保护后端可用时才会请求有限重绑。" +
                     "若工具返回 ACCESSIBILITY_UNAVAILABLE、ACCESSIBILITY_PROTECTION_UNAVAILABLE 或 ACCESSIBILITY_REPAIR_TIMEOUT，说明动作未执行，" +
                     "不要改用坐标或 Shell 重放 GUI 动作。" +
-                    "涉及复杂代码编写、重构或多文件代码批量修改任务时，可以调用 delegate_to_kimi_code 委派给内置的 Kimi Code 编程子代理。"
+                    "涉及复杂代码编写、重构或多文件代码批量修改任务时，可以调用 delegate_to_kimi_code 委派给内置的 Kimi Code 编程子代理；需要多路并行调查、审查、总结或生成媒体时仍用 delegate_task，同一份任务不要同时派给两边。"
             )
         )
         if (config.terminalTools) {
