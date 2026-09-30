@@ -94,9 +94,10 @@ class AgentChatViewportContractTest(unittest.TestCase):
         lists = list(calls(self.messages, "LazyColumn"))
         self.assertRegex(
             lists[0],
-            r"graphicsLayer\s*\{[^}]*if\s*\(\s*shouldLiftTail\s*\)\s*\{[^}]*"
-            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
+            r"val overflow = scrollState\.followTailOverflow\(\)",
         )
+        self.assertRegex(lists[0], r"nextHeldTailLift\(")
+        self.assertLess(lists[0].index('followTailOverflow()'), lists[0].index('nextHeldTailLift('))
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)

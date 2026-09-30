@@ -186,4 +186,11 @@ class BottomFollowViewportStepTest {
         assertEquals(400f, composerRestLinePx(900f, 500f), 0f)
         assertEquals(0f, composerRestLinePx(100f, 140f), 0f)
     }
+
+    @Test fun missingTailMeasurementKeepsThePreviousLift() {
+        assertEquals(47, nextHeldTailLift(shouldLift = true, overflowPx = null, heldPx = 47))
+        assertEquals(12, nextHeldTailLift(shouldLift = true, overflowPx = 12, heldPx = 47))
+        assertEquals(0, nextHeldTailLift(shouldLift = true, overflowPx = 0, heldPx = 47))
+        assertEquals(0, nextHeldTailLift(shouldLift = false, overflowPx = null, heldPx = 47))
+    }
 }

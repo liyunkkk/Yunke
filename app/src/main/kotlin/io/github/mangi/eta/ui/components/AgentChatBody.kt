@@ -1130,6 +1130,8 @@ internal fun AgentConversationMessages(
     // 覆盖超快输出在 isStreaming 结束后、列表滚动尚未完成的过渡帧。
     // 用户一拖动或跳转消息，锚定保护解除，内容可以正常滑到输入框后面。
     val restClip = remember(bottomInset) { ComposerRestClip(bottomInset + ConversationComposerGap) }
+    // 尾部这一帧量不到时不能把上提清零，否则卡片会掉进输入框再弹回来。
+    val heldTailLift = remember { intArrayOf(0) }
     Box(
         modifier = modifier
             .clipToBounds()
@@ -1183,11 +1185,16 @@ internal fun AgentConversationMessages(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
+                    val overflow = scrollState.followTailOverflow()
                     translationY = if (shouldLiftTail) {
-                        // 与滚动步长同一套整像素，避免底边在两个相邻像素之间闪。
-                        -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
-                            .toInt().toFloat()
+                        // 与滚动步长同一套整像素。这一帧量不到尾部时沿用上一帧，避免底边掉下去再弹回。
+                        -nextHeldTailLift(
+                            shouldLift = true,
+                            overflowPx = overflow,
+                            heldPx = heldTailLift[0],
+                        ).also { heldTailLift[0] = it }.toFloat()
                     } else {
+                        heldTailLift[0] = 0
                         0f
                     }
                 }
@@ -1900,6 +1907,13 @@ internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): Fol
     tailOverflowPx == null -> FollowTailLag.Unknown
     tailOverflowPx <= 0 -> FollowTailLag.None
     else -> FollowTailLag(tailOverflowPx.toFloat())
+}
+
+/** 测量暂时缺失时保留上一帧上提，避免卡片底边在输入框附近来回跳。 */
+internal fun nextHeldTailLift(shouldLift: Boolean, overflowPx: Int?, heldPx: Int): Int = when {
+    !shouldLift -> 0
+    overflowPx == null -> heldPx.coerceAtLeast(0)
+    else -> overflowPx.coerceAtLeast(0)
 }
 
 private fun LazyListState.isConversationAtBottom(): Boolean {
