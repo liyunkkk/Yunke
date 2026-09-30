@@ -52,6 +52,8 @@ import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Slider
@@ -437,6 +439,7 @@ private fun IconAppearanceEditor(
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             LauncherIconPreview(background = draftLight, cat = draftCat)
@@ -445,11 +448,12 @@ private fun IconAppearanceEditor(
         IconColorChoices(stringResource(R.string.appearance_icon_light), draftLight) { draftLight = it }
         IconColorChoices(stringResource(R.string.appearance_icon_dark), draftDark) { draftDark = it }
         IconColorChoices(stringResource(R.string.appearance_icon_cat), draftCat) { draftCat = it }
-        BasicComponent(
-            title = stringResource(R.string.appearance_icon_apply),
+        TextButton(
+            text = stringResource(R.string.appearance_icon_apply),
             enabled = dirty,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.textButtonColorsPrimary(),
             onClick = {
-                if (!dirty) return@BasicComponent
                 TouchHaptics.click(view)
                 onConfirm(draftLight, draftDark, draftCat)
             },
