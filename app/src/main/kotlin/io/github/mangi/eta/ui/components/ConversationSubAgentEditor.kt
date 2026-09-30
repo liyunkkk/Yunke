@@ -102,6 +102,8 @@ internal class ConversationSubAgentEditor(
     }
     fun setEnabled(value: Boolean) = update { it.copy(enabled = value) }
     fun setDiagnosticsEnabled(value: Boolean) = update { it.copy(diagnosticsEnabled = value) }
+    /** 保存本会话的 Kimi Code 模型别名；null/空白表示跟随服务端 default_model。 */
+    fun saveKimiModel(model: String?) = update { it.copy(kimiModel = model?.trim()?.takeIf { value -> value.isNotBlank() }) }
     fun saveParallelLimit(id: String, providerId: String, modelId: String, apiModel: String, limit: Int) = update { old ->
         if (limit < 0 || providerId.isBlank() || apiModel.isBlank() || old.profiles.none {
                 it.id == id && it.providerId == providerId && it.modelId == modelId

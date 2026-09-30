@@ -6,6 +6,8 @@ import io.github.mangi.eta.agent.kimi.FileKimiSessionBindingStore
 import io.github.mangi.eta.agent.kimi.KimiCodeConfig
 import io.github.mangi.eta.agent.kimi.KimiPermissionMode
 import io.github.mangi.eta.agent.kimi.KimiReplyExtractor
+import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
+import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.kimi.KimiSubagentOutcome
 import io.github.mangi.eta.agent.kimi.KimiWebApiClient
 import io.github.mangi.eta.agent.kimi.KimiWebApiException
@@ -140,7 +142,7 @@ internal class KimiCodeSubagentTool(
         // 服务端若因故退出，ensureEndpoint 缓存里的端点会变成死地址；
         // 连接失败时清缓存重解析一次，避免用户必须手动重启 App 才能恢复。
         val client = service.clientFor(endpoint)
-        val model = resolveModel(client, rootfs)
+        val model = resolveModel(client, rootfs, bindingKey)
         val sessionId = try {
             service.sessionFor(
                 client = client,
@@ -382,15 +384,22 @@ internal class KimiCodeSubagentTool(
     }
 
     /**
-     * 解析应随提示词下发的模型别名，取值即容器内 `config.toml` 的 `default_model`。
+     * 解析应随提示词下发的模型别名。
      *
-     * 优先走 REST `GET /config`：服务端已把该配置文件解析成顶层 `default_model`
-     * 字段，而 rootfs 里的 `config.toml` 是 `600 root:root`，App 进程直读会失败，
-     * 直读只作为兜底。读不到时返回 null，此时仍会提交提示词，失败会经
-     * [detectTurnFailure] 如实上报。
+     * 优先级：本会话显式配置的 Kimi 模型 > 服务端 `default_model` > 容器内 `config.toml`。
+     * 读不到时返回 null，此时仍会提交提示词，失败会经 [detectTurnFailure] 如实上报。
      */
-    private fun resolveModel(client: KimiWebApiClient, rootfs: File): String? =
-        client.defaultModel() ?: KimiCodeConfig.parseDefaultModel(KimiCodeConfig.read(rootfs))
+    private fun resolveModel(client: KimiWebApiClient, rootfs: File, bindingKey: String): String? =
+        conversationKimiModel(bindingKey)
+            ?: client.defaultModel()
+            ?: KimiCodeConfig.parseDefaultModel(KimiCodeConfig.read(rootfs))
+
+    /** 本会话配置的 Kimi 模型；读取失败或未配置时返回 null。 */
+    private fun conversationKimiModel(bindingKey: String): String? = runCatching {
+        ConversationSubAgentPreferences()
+            .snapshot(SubAgentConfigKey.Conversation(bindingKey))
+            .kimiModel
+    }.getOrNull()?.takeIf { it.isNotBlank() }
 
     private fun currentIdentity(): String {
         val distribution = LinuxEnvironmentSettingsRepository.current(context)

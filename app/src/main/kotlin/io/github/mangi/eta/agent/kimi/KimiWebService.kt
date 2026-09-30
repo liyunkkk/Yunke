@@ -97,6 +97,22 @@ internal class KimiWebService(
         cachedEndpoint = null
     }
 
+    /**
+     * 只读解析：仅在**已有运行中的** `kimi web` 服务端时返回端点，绝不启动新实例。
+     *
+     * 供 UI 面板按需展示状态；返回 null 表示当前没有可用的 Kimi 会话。
+     */
+    fun runningEndpoint(): KimiWebEndpoint.Endpoint? {
+        cachedEndpoint?.let { return it }
+        val taskId = daemon.list()
+            .firstOrNull { it.running && it.command.trim() in WEB_COMMANDS }
+            ?.taskId ?: return null
+        val endpoint = daemon.logs(taskId)?.let(KimiWebEndpoint::parse) ?: return null
+        if (endpoint.token.isNullOrBlank()) return null
+        cachedEndpoint = endpoint
+        return endpoint
+    }
+
     /** 用统一注入的工厂构造客户端，避免调用点各自拼装 origin/token。 */
     fun clientFor(endpoint: KimiWebEndpoint.Endpoint): KimiWebApiClient =
         clientFactory(endpoint.origin, endpoint.token)

@@ -34,6 +34,8 @@ internal data class ConversationSubAgentConfig(
     val parallelLimits: Map<SubAgentParallelModel, Int> = emptyMap(),
     val diagnosticsEnabled: Boolean = false,
     val legacyParallelLimits: Map<String, Int> = emptyMap(),
+    /** 本会话委派给 Kimi Code 时使用的模型别名；null/空表示跟随服务端 default_model。 */
+    val kimiModel: String? = null,
 ) {
     fun detached(): ConversationSubAgentConfig = copy(
         profiles = profiles.map { it.copy(reasoningByModel = it.reasoningByModel.toMap()) }.toList(),
@@ -295,7 +297,7 @@ internal class ConversationSubAgentPreferences(
     }
     private fun encode(config: ConversationSubAgentConfig): String {
         config.validate()
-        return JSONObject().put("version", VERSION).put("enabled", config.enabled)
+        val json = JSONObject().put("version", VERSION).put("enabled", config.enabled)
             .put("diagnostics_enabled", config.diagnosticsEnabled)
             .put("agents", JSONArray(config.profiles.map { it.toJson() }))
             .put("parallel_limits", JSONArray(config.parallelLimits.map { (model, limit) ->
@@ -303,7 +305,10 @@ internal class ConversationSubAgentPreferences(
             }))
             .put("legacy_parallel_limits", JSONArray(config.legacyParallelLimits.map { (hash, limit) ->
                 JSONObject().put("hash", hash).put("limit", limit)
-            })).toString()
+            }))
+        // 空值不落字段：既保持旧存档字节不变，也避免把"跟随默认"写成一个具体别名。
+        config.kimiModel?.takeIf { it.isNotBlank() }?.let { json.put("kimi_model", it) }
+        return json.toString()
     }
     private fun string(j: JSONObject, name: String): String {
         require(j.has(name) && j.opt(name) is String) { "Invalid string: $name" }
@@ -363,7 +368,11 @@ internal class ConversationSubAgentPreferences(
         val config = ConversationSubAgentConfig(
             profiles = (0 until agents.length()).map { index -> profile(agents.getJSONObject(index)) },
             enabled = bool(json, "enabled"), parallelLimits = models.toMap(),
-            diagnosticsEnabled = bool(json, "diagnostics_enabled"), legacyParallelLimits = hashes.toMap())
+            diagnosticsEnabled = bool(json, "diagnostics_enabled"), legacyParallelLimits = hashes.toMap(),
+            // 旧存档没有该字段；存在时必须是非空字符串（类型错误不被忽略）。
+            kimiModel = if (json.has("kimi_model") && !json.isNull("kimi_model")) {
+                string(json, "kimi_model").trim().takeIf { it.isNotBlank() }
+            } else null)
         config.validate()
         return config.detached()
     }
