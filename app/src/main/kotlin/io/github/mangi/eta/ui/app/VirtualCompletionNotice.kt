@@ -19,8 +19,6 @@ internal object VirtualCompletionNotice {
         result: AgentRuntimeWire.RunResult,
     ): List<AgentChatMessageUi> {
         if (runId.isBlank() || !confirmed(result)) return messages
-        val id = messageId(runId)
-        if (messages.any { it.id == id }) return messages
         val cleaned = messages.filterNot { message ->
             val sameRunAssistant = message.id == "assistant-$runId" ||
                 message.id.startsWith("assistant-$runId-")
@@ -29,6 +27,7 @@ internal object VirtualCompletionNotice {
                 ((sameRunAssistant || message.id == "interrupted-$runId") &&
                     message is SystemNoticeMessageUi && message.code == SystemNoticeCode.EmptyResult)
         }
-        return cleaned + SystemNoticeMessageUi(id, SystemNoticeCode.Completed)
+        // 完成只走 Toast，不再往会话底部插「已完成」标注。
+        return if (cleaned.size == messages.size) messages else cleaned
     }
 }

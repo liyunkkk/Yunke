@@ -186,11 +186,16 @@ internal class AgentLocalTools(
     private val inspectedGitHubSnapshots =
         ConcurrentHashMap<String, GitHubInspectionSnapshot>()
 
-    /** Run before closing tools on successful completion; cancellation only holds the owner. */
+    /** Successful completion may deliver; abort finalization below only cleans up. */
     fun completeVirtualDelivery(): JSONObject? {
         if (!backgroundSurface) return null
         io.github.mangi.eta.agent.device.VirtualDisplaySession.onRunClosed(context, browserRunId)
         return io.github.mangi.eta.agent.device.VirtualDisplaySession.deliveryReceipt(browserRunId)
+    }
+
+    fun cleanupAbortedVirtualSession(): JSONObject? {
+        if (!backgroundSurface) return null
+        return io.github.mangi.eta.agent.device.VirtualDisplaySession.onRunAborted(context, browserRunId)
     }
 
     override fun close() {

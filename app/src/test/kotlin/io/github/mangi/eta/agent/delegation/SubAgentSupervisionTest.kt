@@ -88,6 +88,11 @@ class SubAgentSupervisionTest {
             assertEquals("", initial.getJSONObject("supervision").getString("checkpoint"))
             release.countDown()
             assertEquals("completed", call(c, "get_task_result", JSONObject().put("task_id", id).put("wait_ms", 1000)).getString("status"))
+            // 完成回调是异步投递的：给一个有时限的等待窗口，避免与调度时序赛跑（此断言此前偶发失败）。
+            val deadline = System.currentTimeMillis() + 2_000
+            while (notifications.get() < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
             assertTrue(notifications.get() >= 2)
         }
     }

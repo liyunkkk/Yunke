@@ -22,6 +22,10 @@ internal object VirtualDisplayHandoffRetry {
         val flags: VirtualDisplayRecoveryPolicy.Flags,
         val retainedTaskIds: Set<Int>,
         val sourceTaskCount: Int,
+        /** Null when status omitted liveTaskIds. Never treat omission as an empty inventory. */
+        val liveTaskIds: Set<Int>? = null,
+        /** Null when status omitted goneTaskIds. Never treat omission as an empty inventory. */
+        val goneTaskIds: Set<Int>? = null,
     )
 
     sealed interface Attempt {
@@ -72,15 +76,79 @@ internal object VirtualDisplayHandoffRetry {
      * counters can legitimately advance and are not mutation evidence. The authenticated failure
      * code supplies the no-side-effects signal (including no anchor launch); status corroborates
      * the same owner and unchanged clean state. Neither signal is sufficient on its own.
+     *
+     * Gone tasks may make sourceTaskCount smaller than retainedTaskIds. Escaped tasks, an unknown
+     * live/gone inventory, or a frozen id that is no longer live still fail closed.
      */
     fun freshStateAllowsRetry(before: OwnerState?, after: OwnerState?, frozenSelectedIds: Set<Int>): Boolean {
+        if (!sameAuthenticatedOwner(before, after)) return false
+        if (frozenSelectedIds.isEmpty() || frozenSelectedIds.any { it <= 0 }) return false
+        val current = after ?: return false
+        val f = current.flags
+        if (f.finishing || f.handoffComplete || f.releaseAttempted || f.mutationUncertain || f.sourceEmpty) return false
+        if (!inventoryAllowsMutation(current)) return false
+        val live = current.liveTaskIds ?: return false
+        return live.containsAll(frozenSelectedIds)
+    }
+
+    /**
+     * Empty-selection cleanup. sourceEmpty may be either value; escaped or unknown inventory may not.
+     * Does not relax non-empty delivery checks in [freshStateAllowsRetry].
+     */
+    fun freshStateAllowsCleanup(before: OwnerState?, after: OwnerState?): Boolean {
+        if (before == null || after == null || !before.authenticated || !after.authenticated) return false
+        if (!before.identity.isValid() || before.identity != after.identity) return false
+        if (before.retainedTaskIds != after.retainedTaskIds) return false
+        // sourceEmpty follows live tasks disappearing; every other flag must be unchanged.
+        if (before.flags.copy(sourceEmpty = false) != after.flags.copy(sourceEmpty = false)) return false
+        val f = after.flags
+        if (f.finishing || f.handoffComplete || f.releaseAttempted || f.mutationUncertain) return false
+        if (!inventoryAllowsMutation(before) || !inventoryAllowsMutation(after)) return false
+        // Retained is unchanged and nothing escaped, so the only allowed change is live -> gone
+        // (for example the user closed an app between attempts). gone -> live never happens.
+        return before.liveTaskIds!!.containsAll(after.liveTaskIds!!) &&
+            after.goneTaskIds!!.containsAll(before.goneTaskIds!!)
+    }
+
+    /**
+     * Keep must not freeze a task that status has already shown is not live.
+     * A missing live inventory returns null so the caller keeps its retained-only check.
+     */
+    fun nonLiveKeepCode(liveTaskIds: Set<Int>?, wanted: Set<Int>): String? =
+        if (liveTaskIds != null && !liveTaskIds.containsAll(wanted)) "TASK_NOT_LIVE" else null
+
+    /**
+     * A frozen delivery set that already contains a gone or escaped id is not rewritten.
+     * Unknown live/gone returns null; the caller then fails closed as owner state unknown.
+     */
+    fun frozenDeliveryCode(
+        liveTaskIds: Set<Int>?,
+        goneTaskIds: Set<Int>?,
+        retainedTaskIds: Set<Int>,
+        frozen: Set<Int>,
+    ): String? {
+        if (frozen.isEmpty() || liveTaskIds == null || goneTaskIds == null) return null
+        val escaped = retainedTaskIds - liveTaskIds - goneTaskIds
+        return if (frozen.any { it in goneTaskIds || it in escaped }) "DELIVERY_TASK_GONE" else null
+    }
+
+    private fun sameAuthenticatedOwner(before: OwnerState?, after: OwnerState?): Boolean {
         if (before == null || after == null || !before.authenticated || !after.authenticated) return false
         if (!before.identity.isValid()) return false
-        if (before != after || frozenSelectedIds.isEmpty() || frozenSelectedIds.any { it <= 0 }) return false
-        val f = after.flags
-        if (f.finishing || f.handoffComplete || f.releaseAttempted || f.mutationUncertain || f.sourceEmpty) return false
-        if (after.retainedTaskIds.any { it <= 0 } || after.sourceTaskCount < after.retainedTaskIds.size) return false
-        return after.retainedTaskIds.containsAll(frozenSelectedIds)
+        return before == after
+    }
+
+    /** live/gone known, disjoint retained subsets, nothing escaped, and the count covers every live root. */
+    private fun inventoryAllowsMutation(state: OwnerState): Boolean {
+        if (state.retainedTaskIds.any { it <= 0 } || state.sourceTaskCount < 0) return false
+        if (state.flags.sourceEmpty != (state.sourceTaskCount == 0)) return false
+        val live = state.liveTaskIds ?: return false
+        val gone = state.goneTaskIds ?: return false
+        if (live.any { it <= 0 } || gone.any { it <= 0 }) return false
+        if (!state.retainedTaskIds.containsAll(live) || !state.retainedTaskIds.containsAll(gone)) return false
+        if (live.intersect(gone).isNotEmpty()) return false
+        if ((state.retainedTaskIds - live - gone).isNotEmpty()) return false
+        return state.sourceTaskCount >= live.size
     }
 
     fun delayForRetry(retryIndex: Int): Long =

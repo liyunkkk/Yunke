@@ -60,9 +60,16 @@ final class LaunchTargetOccupancy {
     static final class Recent {
         final String base, baseActivity, topActivity, realActivity, origActivity;
         final boolean componentsKnown;
+        final int taskId; // -1 means unreadable; never proves the recent is a reusable task
 
         Recent(String base, String baseActivity, String topActivity,
                 String realActivity, String origActivity, boolean componentsKnown) {
+            this(-1, base, baseActivity, topActivity, realActivity, origActivity, componentsKnown);
+        }
+
+        Recent(int taskId, String base, String baseActivity, String topActivity,
+                String realActivity, String origActivity, boolean componentsKnown) {
+            this.taskId = taskId;
             this.base = base;
             this.baseActivity = baseActivity;
             this.topActivity = topActivity;
@@ -75,8 +82,14 @@ final class LaunchTargetOccupancy {
     static final class Decision {
         final String code;
         final String detail;
-        Decision(String code, String detail) { this.code = code; this.detail = detail; }
+        /** A live task this owner launched on its own display that may be brought back; -1 if none. */
+        final int reuseTaskId;
+        Decision(String code, String detail) { this(code, detail, -1); }
+        Decision(String code, String detail, int reuseTaskId) {
+            this.code = code; this.detail = detail; this.reuseTaskId = code == null ? reuseTaskId : -1;
+        }
         boolean rejects() { return code != null; }
+        boolean reuses() { return code == null && reuseTaskId > 0; }
     }
 
     private LaunchTargetOccupancy() { }
@@ -208,16 +221,38 @@ final class LaunchTargetOccupancy {
     }
 
     static Decision decide(String target, List<Root> roots, List<Recent> recents) {
+        return decide(target, roots, recents, java.util.Collections.<Integer>emptySet());
+    }
+
+    /**
+     * Same policy, except a target root whose id is in {@code reusableTaskIds} is not an
+     * occupancy conflict: it is this owner's own live task on its own display (the caller proves
+     * that from the same inventory snapshot) and is returned as {@link Decision#reuseTaskId}.
+     *
+     * <p>Reuse is exclusive. Any other target root or target child, more than one reusable target
+     * root, a target recent that is not that exact task id, or an unreadable recent id still
+     * refuses exactly as before. Unknown inventory still wins over reuse.
+     */
+    static Decision decide(String target, List<Root> roots, List<Recent> recents,
+            java.util.Set<Integer> reusableTaskIds) {
         if (target == null || target.isEmpty())
             return new Decision(UNKNOWN, "target package missing");
+        if (reusableTaskIds == null) return new Decision(UNKNOWN, "owned inventory missing");
         String unknown = null;
+        int reuse = -1;
         if (roots == null || roots.isEmpty()) unknown = "root inventory empty";
         if (recents == null) unknown = "recent inventory missing";
         for (Root root : roots == null ? java.util.Collections.<Root>emptyList() : roots) {
             if (root == null) { if (unknown == null) unknown = "null root"; continue; }
             if (contains(target, root.base, root.baseActivity, root.topActivity,
-                    root.realActivity, root.origActivity))
+                    root.realActivity, root.origActivity)) {
+                if (root.taskId > 0 && reusableTaskIds.contains(root.taskId) && reuse == -1
+                        && !hasForeignChild(root.taskId, root.childTaskIds)) {
+                    reuse = root.taskId;
+                    continue;
+                }
                 return new Decision(ACTIVE, "active task id=" + root.taskId);
+            }
             if (targetChild(root, target))
                 return new Decision(ACTIVE, "active child task of id=" + root.taskId);
             if (!provenNonTarget(root) && unknown == null)
@@ -226,13 +261,15 @@ final class LaunchTargetOccupancy {
         for (Recent recent : recents == null ? java.util.Collections.<Recent>emptyList() : recents) {
             if (recent == null) { if (unknown == null) unknown = "null recent"; continue; }
             if (contains(target, recent.base, recent.baseActivity,
-                    recent.topActivity, recent.realActivity, recent.origActivity))
+                    recent.topActivity, recent.realActivity, recent.origActivity)) {
+                if (reuse > 0 && recent.taskId == reuse) continue;
                 return new Decision(RECENT, "existing recent task");
+            }
             if ((!recent.componentsKnown || (recent.base == null && recent.baseActivity == null
                     && recent.topActivity == null && recent.realActivity == null
                     && recent.origActivity == null)) && unknown == null)
                 unknown = "recent identity unknown";
         }
-        return unknown == null ? new Decision(null, "") : new Decision(UNKNOWN, unknown);
+        return unknown == null ? new Decision(null, "", reuse) : new Decision(UNKNOWN, unknown);
     }
 }

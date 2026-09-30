@@ -1,6 +1,10 @@
 package io.github.mangi.eta.agent.device
 
-/** Explicit empty-display release only. No handoff, task migration, process kill or retry. */
+/**
+ * Explicit release of one authenticated owner. When retained tasks remain but live/gone prove
+ * nothing escaped, close performs one cleanup handoff (empty taskIds, no retry) and then release.
+ * It never migrates a selected task, kills a process, or replays an uncertain mutation.
+ */
 internal class VirtualDisplayManualClose(
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val random: () -> String = { java.util.UUID.randomUUID().toString() },
@@ -13,6 +17,7 @@ internal class VirtualDisplayManualClose(
         val sourceEmpty: Boolean?, val retainedCount: Int?, val finishing: Boolean?,
         val handoffComplete: Boolean?, val releaseAttempted: Boolean?,
         val mutationUncertain: Boolean?, val journalBlocked: Boolean,
+        val liveCount: Int? = null, val goneCount: Int? = null, val escapedCount: Int? = null,
     )
     data class Result(val outcome: String, val reason: String = "",
         val nonce: String? = null, val expiresInMs: Long? = null) {
@@ -23,6 +28,11 @@ internal class VirtualDisplayManualClose(
         fun evidence(): Evidence
         /** Commit before any release IPC; never erase credentials or previous evidence. */
         fun markAttempt(): Boolean
+        /**
+         * One cleanup handoff with an empty taskIds list. No automatic retry.
+         * False, including an uncertain reply, must not be followed by release.
+         */
+        fun cleanup(): Boolean
         /** Sends at most one release. A response alone is not exit confirmation. */
         fun release(): Boolean
         /** Read-only: exact display gone AND original process exited. Unknown is false. */
@@ -53,6 +63,26 @@ internal class VirtualDisplayManualClose(
         val reason = refusal(current)
         if (reason.isNotEmpty()) return Result("blocked", reason)
         if (ticket.evidence != current) return Result("blocked", "CLOSE_STATE_CHANGED")
+        // Cleanup runs BEFORE the durable release barrier. A clean preflight rejection leaves the
+        // owner untouched (finishing=false) so the user may prepare again; a rejection after a side
+        // effect is recorded by the owner itself (mutationUncertain), which refusal() then honors.
+        val needsCleanup = (current.retainedCount ?: 0) > 0 && current.handoffComplete != true
+        if (needsCleanup) {
+            try {
+                if (!backend.cleanup()) return Result("blocked", "CLEANUP_NOT_COMPLETED")
+            } catch (ex: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return Result("blocked", "CLEANUP_INTERRUPTED")
+            } catch (_: Exception) {
+                return Result("blocked", "CLEANUP_NOT_COMPLETED")
+            }
+            val after = backend.evidence()
+            if (after.key != current.key || after.handoffComplete != true || after.finishing != true ||
+                after.sourceEmpty != true || after.sourceState != "empty" || after.taskCount != 0 ||
+                after.releaseAttempted == true || after.mutationUncertain == true || after.journalBlocked) {
+                return Result("blocked", "CLEANUP_NOT_COMPLETED")
+            }
+        }
         if (!backend.markAttempt()) return Result("blocked", "RECOVERY_STATE_UNWRITABLE")
         // Even an exception or lost reply consumes both the nonce and durable release permission.
         try { backend.release() } catch (ex: InterruptedException) {
@@ -79,10 +109,28 @@ internal class VirtualDisplayManualClose(
                 e.mutationUncertain == null || e.retainedCount == null || e.retainedCount < 0 -> "OWNER_STATE_UNKNOWN"
             e.sourceState !in setOf("empty", "occupied") || e.taskCount == null ||
                 e.taskCount < 0 || e.sourceEmpty == null -> "SOURCE_STATE_UNKNOWN"
-            e.sourceState != "empty" || e.taskCount != 0 || !e.sourceEmpty -> "SOURCE_NOT_EMPTY"
             e.finishing != e.handoffComplete -> "HANDOFF_IN_PROGRESS"
-            e.retainedCount > 0 && !e.handoffComplete -> "HANDOFF_REQUIRED"
+            e.retainedCount > 0 && e.handoffComplete == false -> cleanupRefusal(e)
+            e.sourceState != "empty" || e.taskCount != 0 || !e.sourceEmpty -> "SOURCE_NOT_EMPTY"
             else -> ""
+        }
+
+        /** Known live/gone and an empty escaped set may close via one cleanup; otherwise fail closed. */
+        private fun cleanupRefusal(e: Evidence): String {
+            val live = e.liveCount
+            val gone = e.goneCount
+            val escaped = e.escapedCount
+            val retained = e.retainedCount
+            if (live == null || gone == null || escaped == null || retained == null) return "OWNER_STATE_UNKNOWN"
+            if (live < 0 || gone < 0 || escaped < 0) return "OWNER_STATE_UNKNOWN"
+            if (escaped != 0) return "HANDOFF_REQUIRED"
+            if (live + gone != retained) return "OWNER_STATE_UNKNOWN"
+            val sourceMatches = if (live == 0) {
+                e.sourceState == "empty" && e.taskCount == 0 && e.sourceEmpty == true
+            } else {
+                e.sourceState == "occupied" && e.sourceEmpty == false && (e.taskCount ?: -1) >= live
+            }
+            return if (sourceMatches) "" else "SOURCE_STATE_UNKNOWN"
         }
     }
 }

@@ -58,6 +58,7 @@ internal object AgentConversationStore {
         val conversationsById: Map<String, AgentChatHomeUiState>,
         val titles: Map<String, String>,
         val updatedAt: Map<String, Long>,
+        val createdAt: Map<String, Long> = emptyMap(),
         val folderIds: Map<String, String> = emptyMap(),
         val pinnedIds: Set<String> = emptySet(),
         val folders: List<ConversationFolderUi> = emptyList(),
@@ -436,6 +437,7 @@ internal object AgentConversationStore {
                 conversationsById = emptyMap(),
                 titles = emptyMap(),
                 updatedAt = emptyMap(),
+                createdAt = emptyMap(),
                 folders = dao.folders().toUiFolders(),
             )
         }
@@ -443,6 +445,7 @@ internal object AgentConversationStore {
         val states = linkedMapOf<String, AgentChatHomeUiState>()
         val titles = mutableMapOf<String, String>()
         val updatedAt = mutableMapOf<String, Long>()
+        val createdAt = mutableMapOf<String, Long>()
 
         val selected = dao.state()?.selectedConversationId
             ?.takeIf { id -> conversations.any { it.id == id } }
@@ -451,6 +454,7 @@ internal object AgentConversationStore {
             states[conversation.id] = loadConversationState(context, dao, conversation, !selectedOnly || conversation.id == selected)
             titles[conversation.id] = conversation.title.takeUnless { it == LEGACY_UNNAMED_TITLE }.orEmpty()
             updatedAt[conversation.id] = conversation.updatedAt
+            createdAt[conversation.id] = conversation.createdAt
         }
 
         return Snapshot(
@@ -458,6 +462,7 @@ internal object AgentConversationStore {
             conversationsById = states,
             titles = titles,
             updatedAt = updatedAt,
+            createdAt = createdAt,
             folderIds = conversations
                 .mapNotNull { conversation ->
                     conversation.folderId.takeIf { it.isNotBlank() }?.let { conversation.id to it }

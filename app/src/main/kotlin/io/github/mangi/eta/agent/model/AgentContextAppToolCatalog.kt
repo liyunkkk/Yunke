@@ -8,7 +8,7 @@ internal object AgentContextAppToolCatalog {
     fun appendTo(tools: JSONArray) {
         for ((name,description) in listOf(
             "start_virtual_session" to "启动本次后台副屏会话，重复调用不重复创建；失败不会回退主屏。",
-            "finish_virtual_session" to "移交已标记的交付任务到主屏后台，清理本次中间任务并关闭空副屏。必须检查 handedOff 和 released；失败时不杀进程，不声称交付成功。"
+            "finish_virtual_session" to "移交已标记的交付任务到主屏后台。未标记交付任务时会清理本次中间任务并关闭副屏、不交付（handedOff=false, released=true）。必须检查 handedOff 和 released；失败时不杀进程，不声称交付成功。"
         )) tools.put(AgentToolSchema.function(name=name,description=description,parameters=JSONObject().put("type","object").put("properties",JSONObject())))
         tools
             .put(
@@ -54,7 +54,7 @@ internal object AgentContextAppToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "launch_app",
-                    description = "启动一个已安装 Android 应用。优先提供 package_name；只有应用名时允许模糊匹配，匹配多个会返回候选而不会启动。",
+                    description = "启动一个已安装 Android 应用。优先提供 package_name；只有应用名时允许模糊匹配，匹配多个会返回候选而不会启动。本次副屏已经打开的应用会切回原任务（reused=true）。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(

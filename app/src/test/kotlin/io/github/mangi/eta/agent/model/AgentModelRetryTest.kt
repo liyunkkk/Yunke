@@ -207,6 +207,48 @@ class AgentModelRetryTest {
         assertSame(original, thrown)
     }
 
+    @Test fun repetitiveReasoningStopsWithoutRetryOrDeliveringRejectedDelta() {
+        var calls = 0
+        var delivered = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            complete(AgentModelRetry { _, _ -> fail("must not replay degenerate request") }, provider { _, emit ->
+                calls++
+                repeat(2000) { index ->
+                    // Changing block IDs must not reset the per-request detector.
+                    emit(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, index, "OK.\nWrite.\nNow.\nWriting.\nDONE.\n"))
+                }
+                response()
+            }, onProviderEvent = { _, event -> if (event is ProviderEvent.BlockDelta) delivered++ })
+        }
+        assertEquals("MODEL_REPETITIVE_REASONING", failure.code)
+        assertFalse(failure.retryable)
+        assertEquals(1, calls)
+        assertTrue(delivered in 1..300)
+    }
+
+    @Test fun repetitiveReasoningFailureWinsEvenIfProviderSwallowsIt() {
+        var calls = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            complete(AgentModelRetry { _, _ -> fail("must not retry") }, provider { _, emit ->
+                calls++
+                try {
+                    emit(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, 0, "Write.\n".repeat(2000)))
+                } catch (_: AgentModelFailure) { }
+                response()
+            })
+        }
+        assertEquals("MODEL_REPETITIVE_REASONING", failure.code)
+        assertEquals(1, calls)
+    }
+
+    @Test fun answerTextAndToolArgumentsAreNotReasoningRepetitions() {
+        complete(AgentModelRetry { _, _ -> fail("must not retry") }, provider { _, emit ->
+            emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "OK.\n".repeat(2000)))
+            emit(ProviderEvent.BlockDelta(AssistantBlockKind.TOOL_CALL, 1, "0,".repeat(5000)))
+            response()
+        })
+    }
+
     private fun complete(
         retry: AgentModelRetry,
         provider: AgentProviderClient,

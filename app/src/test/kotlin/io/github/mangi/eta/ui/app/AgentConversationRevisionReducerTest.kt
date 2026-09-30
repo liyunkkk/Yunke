@@ -181,17 +181,35 @@ class AgentConversationRevisionReducerTest {
     }
 
     @Test
-    fun deleteFromMiddleTurnTruncatesMessagesAndHistoryTogether() {
+    fun deleteFromMiddleTurnRemovesOnlyThatActionBarSegment() {
         val state = conversationState().copy(appliedRuntimeRunIds = listOf("run-1", "run-2"))
 
         val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-2")!!
 
         assertEquals(
-            listOf("user-1", "thinking-1", "tool-1", "assistant-1"),
+            listOf("user-1", "thinking-1", "tool-1", "assistant-1", "user-2", "user-3", "assistant-3"),
             revised.messages.map { it.id },
         )
-        assertEquals(listOf("user", "assistant", "tool", "assistant"), revised.history.map { it.role })
+        assertEquals(
+            listOf("user", "assistant", "tool", "assistant", "user", "user", "assistant"),
+            revised.history.map { it.role },
+        )
+        assertEquals("第三答", revised.history.last().content)
         assertEquals(listOf("run-1", "run-2"), revised.appliedRuntimeRunIds)
+    }
+
+    @Test
+    fun deleteUserBubbleDoesNotRemoveItsReplyOrEarlierTurns() {
+        val revised = AgentConversationRevisionReducer.deleteFromTurn(conversationState(), "user-2")!!
+        assertEquals(
+            listOf("user-1", "thinking-1", "tool-1", "assistant-1", "assistant-2", "user-3", "assistant-3"),
+            revised.messages.map { it.id },
+        )
+        assertEquals(
+            listOf("user", "assistant", "tool", "assistant", "assistant", "user", "assistant"),
+            revised.history.map { it.role },
+        )
+        assertEquals("第二答", revised.history[4].content)
     }
 
     @Test

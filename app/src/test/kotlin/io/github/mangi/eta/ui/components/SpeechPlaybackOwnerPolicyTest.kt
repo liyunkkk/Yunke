@@ -25,6 +25,16 @@ class SpeechPlaybackOwnerPolicyTest {
         )
     }
 
+    @Test fun agentToolPlaybackIsNotTreatedAsOrphan() {
+        assertFalse(
+            shouldStopOrphanSpeechPlayback(
+                owner = "agent-tts",
+                messageEditActive = false,
+                visibleCompletedAgentIds = emptySet(),
+            ),
+        )
+    }
+
     @Test fun finishedReplyPlaybackKeepsPlaying() {
         assertFalse(
             shouldStopOrphanSpeechPlayback(

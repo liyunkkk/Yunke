@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Process-local task identity for the owner.
@@ -36,6 +37,26 @@ final class OwnerTaskRegistry {
             idByBinder.put(seen.binder, Integer.valueOf(seen.taskId));
             binderById.put(Integer.valueOf(seen.taskId), seen.binder);
         }
+    }
+
+    /**
+     * Called only after a fresh marked task has passed post-launch identity verification.
+     * Ordinary inventory retains its fail-closed binder rule; only an exact gone owned identity
+     * may be replaced, with all validation completed before either index is changed.
+     */
+    void replaceGone(int id, Object expected, Object replacement, Set<Integer> beforePresent,
+            Set<Integer> beforeGone) throws OwnerException {
+        Object retained = binderById.get(id);
+        Integer replacementId = idByBinder.get(replacement);
+        if (id <= 0 || expected == null || replacement == null || beforePresent == null
+                || beforeGone == null || beforePresent.contains(id) || !beforeGone.contains(id)
+                || (retained != null && !expected.equals(retained))
+                || (replacementId != null && replacementId.intValue() != id))
+            throw new OwnerException(OwnerProtocol.ERROR_SOURCE_STATE_UNKNOWN,
+                    "ENDED_TASK_REPLACEMENT_UNPROVEN");
+        if (retained != null) idByBinder.remove(retained);
+        binderById.put(id, replacement);
+        idByBinder.put(replacement, id);
     }
 
     boolean isEmpty() {

@@ -5,7 +5,14 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -22,6 +29,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
@@ -50,7 +61,9 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
+import io.github.mangi.eta.ui.components.AppCatIcon
 import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.haptics.TouchHaptics
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -67,11 +80,24 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
     var showScaleDialog by remember { mutableStateOf(false) }
     var scaleInput by remember { mutableStateOf("") }
     var morphLoadingExpanded by remember { mutableStateOf(false) }
+    var iconExpanded by remember { mutableStateOf(false) }
+    val view = LocalView.current
+    val context = LocalContext.current
     val blurSupported = isRuntimeShaderSupported()
 
     fun update(transform: (AppearanceSettings) -> AppearanceSettings) {
         coroutineScope.launch {
             AppearanceSettingsRepository.update(transform)
+        }
+    }
+
+    fun confirmIcon(light: Int, dark: Int, cat: Int) {
+        coroutineScope.launch {
+            AppearanceSettingsRepository.update { current ->
+                current.copy(iconLightColor = light, iconDarkColor = dark, iconCatColor = cat)
+            }
+            val latest = AppearanceSettingsRepository.settings()
+            LauncherIconSync.apply(context.applicationContext, latest)
         }
     }
 
@@ -169,6 +195,35 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                     checked = appearance.pureBlackEnabled,
                     onCheckedChange = { enabled ->
                         update { current -> current.copy(pureBlackEnabled = enabled) }
+                    },
+                )
+                BasicComponent(
+                    title = stringResource(R.string.appearance_icon),
+                    summary = stringResource(R.string.appearance_icon_summary),
+                    onClick = {
+                        TouchHaptics.click(view)
+                        iconExpanded = !iconExpanded
+                    },
+                    holdDownState = iconExpanded,
+                    endActions = {
+                        Icon(
+                            imageVector = if (iconExpanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
+                            contentDescription = null,
+                            modifier = Modifier.align(Alignment.CenterVertically).padding(end = 16.dp).size(16.dp),
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                        )
+                    },
+                    bottomAction = if (iconExpanded) {
+                        {
+                            IconAppearanceEditor(
+                                light = appearance.iconLightColor,
+                                dark = appearance.iconDarkColor,
+                                cat = appearance.iconCatColor,
+                                onConfirm = ::confirmIcon,
+                            )
+                        }
+                    } else {
+                        null
                     },
                 )
             }
@@ -357,6 +412,92 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                     showScaleDialog = false
                 },
                 modifier = Modifier.padding(top = 16.dp),
+            )
+        }
+    }
+}
+
+private val iconSwatches = listOf(
+    0xFFF27A1A, 0xFF7B61FF, 0xFFF26D9A, 0xFF3DDC84, 0xFFF5C542, 0xFF2491FF,
+    0xFFF6F7F9, 0xFF1C1C1E,
+).map { it.toInt() }
+
+@Composable
+private fun IconAppearanceEditor(
+    light: Int,
+    dark: Int,
+    cat: Int,
+    onConfirm: (Int, Int, Int) -> Unit,
+) {
+    var draftLight by remember(light) { androidx.compose.runtime.mutableIntStateOf(light) }
+    var draftDark by remember(dark) { androidx.compose.runtime.mutableIntStateOf(dark) }
+    var draftCat by remember(cat) { androidx.compose.runtime.mutableIntStateOf(cat) }
+    val dirty = draftLight != light || draftDark != dark || draftCat != cat
+    val view = LocalView.current
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            LauncherIconPreview(background = draftLight, cat = draftCat)
+            LauncherIconPreview(background = draftDark, cat = draftCat)
+        }
+        IconColorChoices(stringResource(R.string.appearance_icon_light), draftLight) { draftLight = it }
+        IconColorChoices(stringResource(R.string.appearance_icon_dark), draftDark) { draftDark = it }
+        IconColorChoices(stringResource(R.string.appearance_icon_cat), draftCat) { draftCat = it }
+        BasicComponent(
+            title = stringResource(R.string.appearance_icon_apply),
+            summary = stringResource(R.string.appearance_icon_apply_summary),
+            enabled = dirty,
+            onClick = {
+                if (!dirty) return@BasicComponent
+                TouchHaptics.click(view)
+                onConfirm(draftLight, draftDark, draftCat)
+            },
+        )
+    }
+}
+
+@Composable
+private fun IconColorChoices(title: String, selected: Int, onSelect: (Int) -> Unit) {
+    val view = LocalView.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(text = title, style = MiuixTheme.textStyles.body2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            iconSwatches.forEach { color ->
+                Box(
+                    modifier = Modifier
+                        .size(if (color == selected) 28.dp else 24.dp)
+                        .clip(CircleShape)
+                        .background(Color(color))
+                        .clickable {
+                            TouchHaptics.click(view)
+                            onSelect(color)
+                        },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LauncherIconPreview(
+    background: Int,
+    cat: Int,
+) {
+    val context = LocalContext.current
+    val name = LauncherIconSync.resourceName(background, cat)
+    val id = context.resources.getIdentifier(name, "drawable", context.packageName)
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .clip(RoundedCornerShape(14.dp)),
+    ) {
+        if (id != 0) {
+            androidx.compose.foundation.Image(
+                painter = androidx.compose.ui.res.painterResource(id),
+                contentDescription = null,
+                modifier = Modifier.size(56.dp),
             )
         }
     }

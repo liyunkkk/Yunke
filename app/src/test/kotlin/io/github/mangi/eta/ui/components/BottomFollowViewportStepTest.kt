@@ -172,4 +172,13 @@ class BottomFollowViewportStepTest {
         val resolvedRemaining = overflow - resolved.toInt()
         assertEquals("the resolved step clears the drawn overflow", 0, (resolvedRemaining - budget).coerceAtLeast(0))
     }
+
+    @Test fun fractionalStepScrollsWholePixels() {
+        assertEquals(1f, snapFollowScrollStep(0.4f, 2f), 0f)
+        assertEquals(3f, snapFollowScrollStep(2.6f, 8f), 0f)
+        assertEquals(2f, snapFollowScrollStep(2.6f, 2f), 0f)
+        assertEquals(0f, snapFollowScrollStep(0.4f, 0.4f), 0f)
+        assertEquals(0f, snapFollowScrollStep(0f, 4f), 0f)
+        assertEquals(0f, snapFollowScrollStep(Float.NaN, 4f), 0f)
+    }
 }

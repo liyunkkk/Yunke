@@ -296,6 +296,7 @@ internal class AgentAppState(
     private var conversationsById: Map<String, AgentChatHomeUiState>
     private var conversationTitles: Map<String, String>
     private var conversationUpdatedAt: Map<String, Long>
+    private var conversationCreatedAt: Map<String, Long>
     private var conversationFolderIds: Map<String, String>
     private var conversationPinned: Set<String>
     private var conversationFolders: List<ConversationFolderUi>
@@ -308,6 +309,7 @@ internal class AgentAppState(
         conversationsById = initialConversations.conversationsById.mapValues { (_, state) -> orderedTerminalState(state) }
         conversationTitles = initialConversations.titles
         conversationUpdatedAt = initialConversations.updatedAt
+        conversationCreatedAt = initialConversations.createdAt
         conversationFolderIds = initialConversations.folderIds
         conversationPinned = initialConversations.pinnedIds
         conversationFolders = initialConversations.folders
@@ -1082,6 +1084,7 @@ internal class AgentAppState(
             conversationsById = snapshot.conversationsById.mapValues { (_, state) -> orderedTerminalState(state) }
             conversationTitles = snapshot.titles
             conversationUpdatedAt = snapshot.updatedAt
+            conversationCreatedAt = snapshot.createdAt
             conversationFolderIds = snapshot.folderIds
             conversationPinned = snapshot.pinnedIds
             conversationFolders = snapshot.folders
@@ -1218,6 +1221,9 @@ internal class AgentAppState(
                         updateTimestamp = !recovery.alreadyApplied,
                     )
                     stateChanged = true
+                    if (!recovery.alreadyApplied && VirtualCompletionNotice.confirmed(result)) {
+                        Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+                    }
                 }
                 acknowledgeAfterSave += runId
             }
@@ -1718,6 +1724,7 @@ internal class AgentAppState(
                             conversationsById = emptyMap()
                             conversationTitles = emptyMap()
                             conversationUpdatedAt = emptyMap()
+                            conversationCreatedAt = emptyMap()
                             conversationFolderIds = emptyMap()
                             conversationPinned = emptySet()
                             fileAttachmentOwnerVersion += 1
@@ -1757,6 +1764,7 @@ internal class AgentAppState(
         conversationsById = conversationsById - conversationId
         conversationTitles = conversationTitles - conversationId
         conversationUpdatedAt = conversationUpdatedAt - conversationId
+        conversationCreatedAt = conversationCreatedAt - conversationId
         conversationFolderIds = conversationFolderIds - conversationId
         conversationPinned = conversationPinned - conversationId
         scope.launch(Dispatchers.IO) { chatImageCache.deleteConversation(conversationId) }
@@ -2149,6 +2157,7 @@ internal class AgentAppState(
             conversationsById = conversationsById - conversationId
             conversationTitles = conversationTitles - conversationId
             conversationUpdatedAt = conversationUpdatedAt - conversationId
+        conversationCreatedAt = conversationCreatedAt - conversationId
             conversationFolderIds = conversationFolderIds - conversationId
             conversationPinned = conversationPinned - conversationId
             scope.launch(Dispatchers.IO) { chatImageCache.deleteConversation(conversationId) }
@@ -2205,6 +2214,7 @@ internal class AgentAppState(
             newId to appContext.getString(R.string.conversation_branch_title, sourceTitle)
         )
         conversationUpdatedAt = conversationUpdatedAt + (newId to System.currentTimeMillis())
+        conversationCreatedAt = conversationCreatedAt + (newId to System.currentTimeMillis())
         conversationFolderIds[sourceId]?.let { folderId ->
             conversationFolderIds = conversationFolderIds + (newId to folderId)
         }
@@ -3129,23 +3139,23 @@ internal class AgentAppState(
         showCompressionCompletedToast(conversationId, originalHistory, compressedHistory, compressorLabel)
     }
 
-    /** Called on Main only after an accepted history update, never from replay/projection. */
+    /** Called on Main only after an accepted history update, never from replay/projection.
+     *  The notice belongs to the conversation that finished, even if the user has switched away. */
     private fun showCompressionCompletedToast(
         conversationId: String?,
         originalHistory: List<AgentModelClient.ConversationMessage>,
         compressedHistory: List<AgentModelClient.ConversationMessage>,
         compressorLabel: String,
     ) {
-        if (conversationId != selectedConversationId) return
         val count = AgentContextCompactionUi.completedMessageCount(
             originalHistory, compressedHistory, compressorLabel,
         )
         if (count <= 0) return
-        Toast.makeText(
-            appContext,
-            appContext.resources.getQuantityString(R.plurals.context_compacted_messages, count, count),
-            Toast.LENGTH_SHORT,
-        ).show()
+        val body = appContext.resources.getQuantityString(R.plurals.context_compacted_messages, count, count)
+        val title = conversationId?.let { conversationTitles[it] }?.trim().orEmpty()
+            .let { raw -> if (raw.length <= 3) raw else raw.take(3) + "…" }
+        val text = if (conversationId != selectedConversationId && title.isNotBlank()) "$title：$body" else body
+        Toast.makeText(appContext, text, Toast.LENGTH_SHORT).show()
     }
 
     private fun showRevisionHistoryUnavailableNotice() {
@@ -4781,6 +4791,9 @@ internal class AgentAppState(
         }
         if (stoppedDuringRetry == null) {
             updateMessages(runId) { VirtualCompletionNotice.append(it, runId, result) }
+            if (acknowledgeRuntimeResult && VirtualCompletionNotice.confirmed(result)) {
+                Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+            }
         }
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
@@ -5066,6 +5079,9 @@ internal class AgentAppState(
             childStatusRoster = ownerContext.roster(),
         )
         conversationsById = conversationsById + (conversationId to current)
+        if (conversationId !in conversationCreatedAt) {
+            conversationCreatedAt = conversationCreatedAt + (conversationId to System.currentTimeMillis())
+        }
         if (updateTimestamp) {
             conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
         }
@@ -5166,7 +5182,7 @@ internal class AgentAppState(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
                     id in conversationPinned
                 }.thenByDescending { (id, _) ->
-                    conversationUpdatedAt[id] ?: 0L
+                    conversationCreatedAt[id] ?: conversationUpdatedAt[id] ?: 0L
                 },
             )
             .map { (id, state) ->
@@ -5205,20 +5221,17 @@ internal class AgentAppState(
                         )
                         else -> appContext.getString(R.string.conversation_preview_empty)
                     }.take(MAX_PREVIEW_CHARS),
-                    timeLabel = if (state.isStreaming) {
-                        appContext.getString(R.string.time_now)
-                    } else {
-                        conversationUpdatedAt[id]?.let { timestamp ->
-                            ConversationTimeLabels.label(
-                                timestampMillis = timestamp,
-                                locale = appContext.resources.configuration.locales[0],
-                                use24HourClock = DateFormat.is24HourFormat(appContext),
-                                yesterdayLabel = appContext.getString(R.string.time_yesterday),
-                                recentLabel = appContext.getString(R.string.time_recent),
-                            )
-                        } ?: appContext.getString(R.string.time_recent)
-                    },
+                    timeLabel = (conversationCreatedAt[id] ?: conversationUpdatedAt[id])?.let { timestamp ->
+                        ConversationTimeLabels.label(
+                            timestampMillis = timestamp,
+                            locale = appContext.resources.configuration.locales[0],
+                            use24HourClock = DateFormat.is24HourFormat(appContext),
+                            yesterdayLabel = appContext.getString(R.string.time_yesterday),
+                            recentLabel = appContext.getString(R.string.time_recent),
+                        )
+                    } ?: appContext.getString(R.string.time_recent),
                     updatedAtMillis = conversationUpdatedAt[id] ?: 0L,
+                    createdAtMillis = conversationCreatedAt[id] ?: conversationUpdatedAt[id] ?: 0L,
                     mode = ConversationModeUi.Chat,
                     isPinned = id in conversationPinned,
                     isActiveRun = state.isStreaming,

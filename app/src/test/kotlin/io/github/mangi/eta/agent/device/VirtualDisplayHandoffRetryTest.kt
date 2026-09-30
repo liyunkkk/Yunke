@@ -9,7 +9,10 @@ class VirtualDisplayHandoffRetryTest {
     private val detail = "preflight:focus:Focus_BINDER_CHANGED;moved=[] removed=[]"
     private val identity = VirtualDisplayHandoffRetry.OwnerIdentity("owner-socket", 123L, 2, "owner-unique")
     private val flags = VirtualDisplayRecoveryPolicy.Flags(false, false, false, false, false)
-    private val state = VirtualDisplayHandoffRetry.OwnerState(identity, true, flags, setOf(16, 17, 18), 3)
+    private val retainedIds = setOf(16, 17, 18)
+    private val state = VirtualDisplayHandoffRetry.OwnerState(
+        identity, true, flags, retainedIds, 3, retainedIds, emptySet(),
+    )
     private val selected = setOf(16, 17)
 
     private fun refused(c: String = code, d: String = detail, authenticated: Boolean = true) =
@@ -315,5 +318,61 @@ class VirtualDisplayHandoffRetryTest {
         } finally {
             Thread.interrupted()
         }
+    }
+
+    @Test fun goneTasksDoNotBlockAStableLiveSelection() {
+        val gone = state.copy(liveTaskIds = setOf(16, 17), goneTaskIds = setOf(18), sourceTaskCount = 2)
+        assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsRetry(gone, gone.copy(), selected))
+        assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(gone, gone))
+        assertNull(VirtualDisplayHandoffRetry.frozenDeliveryCode(gone.liveTaskIds, gone.goneTaskIds, gone.retainedTaskIds, selected))
+    }
+
+    @Test fun escapedOrMissingInventoryFailsClosedForDeliveryAndCleanup() {
+        val escaped = state.copy(liveTaskIds = setOf(16, 17), goneTaskIds = emptySet(), sourceTaskCount = 2)
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(escaped, escaped, selected))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(escaped, escaped))
+        assertEquals("DELIVERY_TASK_GONE", VirtualDisplayHandoffRetry.frozenDeliveryCode(
+            escaped.liveTaskIds, escaped.goneTaskIds, escaped.retainedTaskIds, setOf(16, 18)))
+        val unknown = state.copy(liveTaskIds = null, goneTaskIds = null)
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(unknown, unknown, selected))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(unknown, unknown))
+        assertNull(VirtualDisplayHandoffRetry.frozenDeliveryCode(null, null, retainedIds, selected))
+        val onlyLive = state.copy(goneTaskIds = null)
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(onlyLive, onlyLive, selected))
+    }
+
+    @Test fun cleanupAllowsEitherSourceEmptinessButNotDeliveryFlags() {
+        val cleared = state.copy(
+            flags = flags.copy(sourceEmpty = true), liveTaskIds = emptySet(),
+            goneTaskIds = retainedIds, sourceTaskCount = 0,
+        )
+        assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(cleared, cleared))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(cleared, cleared, selected))
+        for (blocked in listOf(
+            cleared.copy(flags = cleared.flags.copy(finishing = true)),
+            cleared.copy(flags = cleared.flags.copy(handoffComplete = true)),
+            cleared.copy(flags = cleared.flags.copy(releaseAttempted = true)),
+            cleared.copy(flags = cleared.flags.copy(mutationUncertain = true)),
+        )) assertFalse(blocked.toString(), VirtualDisplayHandoffRetry.freshStateAllowsCleanup(blocked, blocked))
+        val occupied = state.copy(liveTaskIds = retainedIds, goneTaskIds = emptySet())
+        assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied, occupied))
+        // Apps closed between attempts (live -> gone) do not block cleanup; gone -> live never passes.
+        assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied, cleared))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(cleared, occupied))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied,
+            cleared.copy(retainedTaskIds = setOf(16, 17, 18, 19), goneTaskIds = setOf(16, 17, 18, 19))))
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsCleanup(occupied,
+            occupied.copy(identity = identity.copy(pid = 124L))))
+    }
+
+    @Test fun keepRejectsIdsOutsideAKnownLiveSetOnly() {
+        assertNull(VirtualDisplayHandoffRetry.nonLiveKeepCode(null, setOf(18)))
+        assertNull(VirtualDisplayHandoffRetry.nonLiveKeepCode(setOf(16, 18), setOf(18)))
+        assertEquals("TASK_NOT_LIVE", VirtualDisplayHandoffRetry.nonLiveKeepCode(setOf(16), setOf(16, 18)))
+        val partial = state.copy(liveTaskIds = setOf(16), goneTaskIds = setOf(17, 18), sourceTaskCount = 1)
+        assertFalse(VirtualDisplayHandoffRetry.freshStateAllowsRetry(partial, partial, selected))
+        assertTrue(VirtualDisplayHandoffRetry.freshStateAllowsRetry(partial, partial, setOf(16)))
+        assertEquals("DELIVERY_TASK_GONE", VirtualDisplayHandoffRetry.frozenDeliveryCode(
+            partial.liveTaskIds, partial.goneTaskIds, partial.retainedTaskIds, selected))
     }
 }

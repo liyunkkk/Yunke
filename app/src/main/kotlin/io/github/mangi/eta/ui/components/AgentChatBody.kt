@@ -759,6 +759,8 @@ internal fun AgentConversationMessages(
                 }
             }
     }
+    // 拖动和惯性期间别让系统按速度把出帧降到 60，否则松手后减速那一段会连着掉帧。
+    val scrollFrameRateHold = rememberScrollFrameRateHold { isUserScrolling }
 
     var hasLeftBottom by remember { mutableStateOf(false) }
     LaunchedEffect(scrollState) {
@@ -1085,10 +1087,14 @@ internal fun AgentConversationMessages(
                 val layout = scrollState.layoutInfo
                 // 绘制上提不能超过列表底部留白。先用真实滚动补掉超出缓冲的差额，
                 // 其余仍由原速度控制器平滑追赶；不能靠扩大裁剪或移走已被裁空的列表。
-                resolveBottomFollowViewportStep(
-                    smoothStepPx = smoothStep,
-                    measuredOverflowPx = layout.measuredTailOverflow(),
-                    afterContentPaddingPx = layout.afterContentPadding,
+                // 再收成整像素，避免小数滚动和整数上提把卡片底边顶开 1 像素。
+                snapFollowScrollStep(
+                    resolveBottomFollowViewportStep(
+                        smoothStepPx = smoothStep,
+                        measuredOverflowPx = layout.measuredTailOverflow(),
+                        afterContentPaddingPx = layout.afterContentPadding,
+                    ),
+                    remainingDistancePx,
                 )
             }
             // Within the draw buffer, the first frame still only establishes timing.
@@ -1143,6 +1149,7 @@ internal fun AgentConversationMessages(
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
             }
         }
+        PeakFrameRateVote(scrollFrameRateHold)
         val messageActions = remember { ChatMessageActions() }
         SideEffect {
             messageActions.onSuggestionClick = onSuggestionClick
@@ -1164,7 +1171,9 @@ internal fun AgentConversationMessages(
                 .fillMaxSize()
                 .graphicsLayer {
                     translationY = if (shouldLiftTail) {
+                        // 与滚动步长同一套整像素，避免底边在两个相邻像素之间闪。
                         -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
+                            .toInt().toFloat()
                     } else {
                         0f
                     }
@@ -2053,7 +2062,8 @@ internal fun shouldStopOrphanSpeechPlayback(
     visibleCompletedAgentIds: Set<String>,
 ): Boolean {
     if (owner.isNullOrBlank()) return false
-    if (owner == "tts-preview" || owner.startsWith("voice-mode-")) return false
+    // 试听、语音模式和 Agent 朗读工具都不绑定某条回复，不能按“回复不在可见列表里”收掉。
+    if (owner == "tts-preview" || owner == "agent-tts" || owner.startsWith("voice-mode-")) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
 

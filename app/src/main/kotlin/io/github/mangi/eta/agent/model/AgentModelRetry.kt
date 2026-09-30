@@ -46,6 +46,7 @@ internal class AgentModelRetry(
             // 收集线程可能在读线程仍处于回调中时就从 complete 返回；闸门保证被取代的旧尝试的迟到
             // 回调不再进入 onProviderEvent，避免覆盖后续请求记录的 usage。
             val deliveryGate = ProviderEventDeliveryGate()
+            val repetitionGuard = ReasoningRepetitionGuard()
             val toolAttempt = request.toolDiagnostics?.beginAttempt(round, provider.id)
                 ?: request.toolDiagnosticAttempt
             val diagnosticRequest = if (toolAttempt == null) attemptRequest
@@ -74,6 +75,23 @@ internal class AgentModelRetry(
                                 sawVisibleText = true
                             }
                             try {
+                                // Stop before persisting another repetitive delta. Throwing through the
+                                // provider callback cancels SSE; callbackFailure also defeats providers
+                                // that attempt to recover partial output or swallow callback failures.
+                                callbackFailure?.let { throw it }
+                                when {
+                                    event is ProviderEvent.BlockDelta && event.kind == AssistantBlockKind.THINKING -> {
+                                        if (repetitionGuard.append(event.delta)) throw AgentModelFailure(
+                                            code = "MODEL_REPETITIVE_REASONING",
+                                            retryable = false,
+                                            message = "检测到模型思考持续高度重复，已中止本次请求，且不会自动重试；此前工具结果已保留。",
+                                        )
+                                    }
+                                    event is ProviderEvent.HostedToolStarted || event is ProviderEvent.HostedToolFinished ||
+                                        (event is ProviderEvent.BlockStart && event.kind == AssistantBlockKind.TOOL_CALL) ||
+                                        (event is ProviderEvent.BlockDelta && event.kind != AssistantBlockKind.THINKING && event.delta.isNotBlank()) ->
+                                        repetitionGuard.reset()
+                                }
                                 onProviderEvent(round, event)
                             } catch (failure: Exception) {
                                 callbackFailure = failure
