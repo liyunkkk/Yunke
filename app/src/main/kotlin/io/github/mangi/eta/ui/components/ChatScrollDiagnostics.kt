@@ -60,11 +60,16 @@ internal fun rememberChatScrollTraceEnabled(): Boolean {
  * if any), NOT a claim that either entry is the state's firstVisibleItemIndex.
  * Their index/offset/size/id plus the state anchor and viewport distinguish
  * layout-height changes from translation. No derived scroll delta is emitted.
+ * The returned plain object shares this list instance with owner point markers;
+ * it is not Compose State and does not expose geometry to the content.
  */
 @Composable
-internal fun ChatScrollMonitor(state: LazyListState, enabled: Boolean) {
+internal fun ChatScrollMonitor(state: LazyListState, enabled: Boolean): ChatScrollListTraceState {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    val instance = remember { chatScrollTraceInstances.incrementAndGet() }
+    val trace = remember {
+        ChatScrollListTraceState(chatScrollTraceInstances.incrementAndGet(), AndroidChatScrollTraceSink)
+    }
+    val instance = trace.instance
     LaunchedEffect(state, enabled, lifecycle) {
         if (!enabled) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -94,6 +99,87 @@ internal fun ChatScrollMonitor(state: LazyListState, enabled: Boolean) {
                 AndroidChatScrollTraceSink.section("chat.list.detach i=$instance")
             }
         }
+    }
+    return trace
+}
+
+/**
+ * Call directly from AgentConversationMessages, not from a child composable.
+ * execute is a point at an actual owner-body invocation, not body duration or
+ * compiler-generated composable tracing. commit is a SideEffect point after a
+ * successful owner invocation; neither marker measures composition/render time.
+ */
+internal fun traceChatListOwnerExecution(trace: ChatScrollListTraceState, enabled: Boolean) {
+    trace.execute(enabled || Trace.isEnabled())
+}
+
+/** Call from the owner's SideEffect with its already-read Boolean values. */
+internal fun traceChatListOwnerCommit(
+    trace: ChatScrollListTraceState,
+    enabled: Boolean,
+    isUserDragging: Boolean,
+    isUserScrolling: Boolean,
+    isBottomSettling: Boolean,
+    keepBottomAnchored: Boolean,
+    shouldClipTail: Boolean,
+    shouldFollowBottom: Boolean,
+    navigationActive: Boolean,
+) {
+    trace.commit(
+        enabled || Trace.isEnabled(),
+        isUserDragging, isUserScrolling, isBottomSettling, keepBottomAnchored,
+        shouldClipTail, shouldFollowBottom, navigationActive,
+    )
+}
+
+/**
+ * Plain remembered bookkeeping, never snapshot State. All output is anonymous
+ * list instance + Booleans. A disabled commit resets the baseline so a newly
+ * enabled capture receives an initial state; unchanged enabled commits emit no
+ * state marker. No collector, clock, content key or text is required.
+ * State labels map to the commit arguments: drag/scroll/settle/anchor/clip/follow/nav.
+ */
+internal class ChatScrollListTraceState(
+    val instance: Long,
+    private val sink: ChatScrollTraceSink,
+) {
+    private var previousFlags: Int? = null
+
+    fun execute(enabled: Boolean) {
+        if (!enabled) return
+        sink.section("chat.list.owner.execute i=$instance")
+    }
+
+    fun commit(
+        enabled: Boolean,
+        isUserDragging: Boolean,
+        isUserScrolling: Boolean,
+        isBottomSettling: Boolean,
+        keepBottomAnchored: Boolean,
+        shouldClipTail: Boolean,
+        shouldFollowBottom: Boolean,
+        navigationActive: Boolean,
+    ) {
+        if (!enabled) {
+            previousFlags = null
+            return
+        }
+        sink.section("chat.list.owner.commit i=$instance")
+        val drag = if (isUserDragging) 1 else 0
+        val scroll = if (isUserScrolling) 1 else 0
+        val settle = if (isBottomSettling) 1 else 0
+        val anchor = if (keepBottomAnchored) 1 else 0
+        val clip = if (shouldClipTail) 1 else 0
+        val follow = if (shouldFollowBottom) 1 else 0
+        val nav = if (navigationActive) 1 else 0
+        val flags = drag or (scroll shl 1) or (settle shl 2) or (anchor shl 3) or
+            (clip shl 4) or (follow shl 5) or (nav shl 6)
+        if (previousFlags == flags) return
+        previousFlags = flags
+        sink.section(
+            "chat.list.state i=$instance drag=$drag scroll=$scroll settle=$settle " +
+                "anchor=$anchor clip=$clip follow=$follow nav=$nav",
+        )
     }
 }
 

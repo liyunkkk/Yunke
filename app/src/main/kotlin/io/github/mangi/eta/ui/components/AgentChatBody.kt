@@ -624,7 +624,8 @@ internal fun AgentConversationMessages(
 ) {
     // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
     val scrollTraceEnabled = rememberChatScrollTraceEnabled()
-    ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
+    val chatListTrace = ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
+    traceChatListOwnerExecution(chatListTrace, scrollTraceEnabled)
     // Retain successful parses beyond individual lazy-row compositions.
     val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
     val timelineEntries = remember(visibleMessages) {
@@ -853,6 +854,19 @@ internal fun AgentConversationMessages(
         isUserDragging = isUserDragging,
         navigationActive = messageNavigationJob != null,
     )
+    SideEffect {
+        traceChatListOwnerCommit(
+            trace = chatListTrace,
+            enabled = scrollTraceEnabled,
+            isUserDragging = isUserDragging,
+            isUserScrolling = isUserScrolling,
+            isBottomSettling = isBottomSettling,
+            keepBottomAnchored = keepBottomAnchored,
+            shouldClipTail = shouldClipTail,
+            shouldFollowBottom = shouldFollowBottom,
+            navigationActive = messageNavigationJob != null,
+        )
+    }
     val isListScrollable by remember {
         derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
     }

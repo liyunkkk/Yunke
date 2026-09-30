@@ -903,6 +903,8 @@ private fun StableMarkdown(
     markdownState: MarkdownState = rememberCompletedMarkdownState(content),
     progressive: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("md", bodyTraceMount) }
     val components = remember { chatMarkdownComponents() }
     CompletedMarkdownStateHost(markdownState) {
         Markdown(
@@ -914,6 +916,7 @@ private fun StableMarkdown(
             components = components,
             modifier = modifier,
             loading = {
+                SideEffect { traceChatBodyRun("md.phase.loading", bodyTraceMount) }
                 LocalToggleProbe.current?.let { ref ->
                     SideEffect { StreamPerformanceDiagnostics.probeEvent(ref.token, "markdown", "state=loading chars=${content.length}") }
                 }
@@ -926,6 +929,7 @@ private fun StableMarkdown(
                 )
             },
             error = {
+                SideEffect { traceChatBodyRun("md.phase.error", bodyTraceMount) }
                 Text(
                     text = content,
                     style = chatMarkdownBodyStyle(tone),
@@ -934,6 +938,7 @@ private fun StableMarkdown(
                 )
             },
             success = { state, successComponents, successModifier ->
+                SideEffect { traceChatBodyRun("md.phase.success", bodyTraceMount) }
                 CacheCompletedMarkdownSuccess(content, markdownState, state)
                 ChatMarkdownDocument(
                     root = state.node,
@@ -1211,6 +1216,8 @@ private fun ChatMarkdownDocument(
     revealCoordinator: SmoothTextRevealCoordinator? = null,
     progressive: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("md.doc", bodyTraceMount) }
     val blocks = remember(root) { topLevelMarkdownBlocks(root) }
     // 用户点击展开长文档时，把整篇的组合与文字测量分摊到连续几帧，避免首帧一次性
     // 构建全部 AnnotatedString 并测量全文。只在进入组合时决定一次，历史滚入可视区
@@ -2390,6 +2397,8 @@ private fun ThinkingRow(
     compact: Boolean = false,
     isPaused: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("thinking", bodyTraceMount) }
     val expansionHoldsBottom = LocalExpansionHoldsBottom.current
     // 这一次展开或收起朝哪边长；点击时定，动画期间不变。
     var anchorBottom by remember(message.id) { mutableStateOf(false) }
@@ -2625,6 +2634,8 @@ private fun ToolActivityInline(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("tool", bodyTraceMount) }
     val expansionHoldsBottom = LocalExpansionHoldsBottom.current
     var anchorBottom by remember(message.id) { mutableStateOf(false) }
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
