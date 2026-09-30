@@ -121,6 +121,9 @@ internal class AgentLoop(
     private var overflowRecoveryAttempts = 0
     private var lastFailedCompaction: Pair<String, Int>? = null
     private var skipIneffectiveAutoCompact = false
+    /** 圆环上的云端实测曾到过 80%。后面的回执即使变小，也在下次请求前压缩。 */
+    private var autoCompactLatched = false
+    private var latchedCloudTokens = 0
     /** 上游在输出上限处截断且正文为空时，同一 round 内的自动重发预算，不跨 round 累积。 */
     private var emptyOutputLimitRetries = 0
     private var emptyOutputLimitRound = 0
@@ -246,6 +249,7 @@ internal class AgentLoop(
                             // silent anchor survives a later usage-less request.
                             silentBudget.measured(lastUsage?.inputTokens,
                                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
+                            noteRingPressure(round)
                         }
                         continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->
                             if (visibleEvent is ProviderEvent.BlockDelta &&
@@ -527,22 +531,52 @@ internal class AgentLoop(
         return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
     }
 
+    private fun noteRingPressure(round: Int) {
+        if (autoCompactLatched || skipIneffectiveAutoCompact) return
+        if (!compactPolicy.enabled || overflowPending) return
+        val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
+        val cloud = silentBudget.cloudTokens() ?: return
+        if (cloud < AgentContextCompactor.autoPressureTokens(window)) return
+        autoCompactLatched = true
+        latchedCloudTokens = cloud
+        onEvent(AgentEvent.AutoCompactWaiting(round))
+    }
+
+    private fun releaseAutoCompactWait(round: Int) {
+        if (!autoCompactLatched) return
+        autoCompactLatched = false
+        onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length()))
+    }
+
     private fun maybeCompactBeforeRound(round: Int) {
         val override = runController.takePendingCompact()
         val forced = override != null
         if (forced) { manualBudgetAttempt = true; lastFailedCompaction = null }
-        if (!forced && (!compactPolicy.enabled || overflowPending)) return
+        if (!forced && (!compactPolicy.enabled || overflowPending)) {
+            releaseAutoCompactWait(round)
+            return
+        }
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        if (!forced && skipIneffectiveAutoCompact && !requestOverBudget()) return
-        // Automatic (80%) scheduling reads only the latest real cloud receipt of this run,
-        // the same number the conversation ring shows. No receipt, a committed summary or a
-        // tool-output pruning all leave it unknown until the next receipt: a local estimate
-        // never schedules a summary. Hard input/storage limits and confirmed provider
-        // overflow are handled separately by tryBudgetCompaction.
-        if (!forced && storedHistoryChars() > persistenceCharLimit()) return
+        if (!forced && skipIneffectiveAutoCompact && !requestOverBudget()) {
+            releaseAutoCompactWait(round)
+            return
+        }
+        // 80% 只看圆环上的云端实测。一旦到过线，就等这次输出结束、下次请求之前再压，
+        // 不因为后面一张更小的回执取消。估算不排队。硬限制仍走 tryBudgetCompaction。
+        if (!forced && storedHistoryChars() > persistenceCharLimit()) {
+            releaseAutoCompactWait(round)
+            return
+        }
         val cloudTokens = silentBudget.cloudTokens()
-        if (!forced && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) return
-        var decisionTokens = if (forced) requestBudgetTokens() else requireNotNull(cloudTokens)
+        val dueToRing = autoCompactLatched &&
+            latchedCloudTokens >= AgentContextCompactor.autoPressureTokens(window)
+        if (!forced && !dueToRing && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) return
+        if (dueToRing) autoCompactLatched = false
+        var decisionTokens = when {
+            forced -> requestBudgetTokens()
+            dueToRing -> latchedCloudTokens
+            else -> requireNotNull(cloudTokens)
+        }
         budgetCompressModelConfig = override?.compressModelConfig ?: compactPolicy.compressModelConfig
         val keep = AgentContextCompactor.coerceKeepRecent(
             override?.keepRecentMessages ?: compactPolicy.keepRecentMessages,
@@ -553,11 +587,12 @@ internal class AgentLoop(
         if (cut <= 0) {
             if (forced) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
                 reason = "当前保留范围内没有可压缩的完整历史单元。"))
+            else if (dueToRing) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length()))
             return
         }
         val pruned = pruneOversizedToolResults(round, systemCount + cut)
         if (pruned) {
-            if (!forced) {
+            if (!forced && !dueToRing) {
                 // Pruning changed the context, so the receipt no longer describes the next
                 // request. Send it and let the next receipt decide whether to summarize.
                 silentBudget.cloudStale()
@@ -568,7 +603,7 @@ internal class AgentLoop(
             // Both the DTO and same-model JSON replay must come from this new snapshot.
             history = historyForCompaction()
             cut = compactionStart(history)
-            decisionTokens = requestBudgetTokens()
+            if (!dueToRing) decisionTokens = requestBudgetTokens()
         }
         if (forced && cut <= 0) {
             onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
@@ -749,6 +784,7 @@ internal class AgentLoop(
         lastUsage = null
         requestBudget.contextReplaced()
         silentBudget.contextReplaced()
+        autoCompactLatched = false
         compactionFailure = ""
         onHistoryCompacted()
         onEvent(AgentEvent.ContextCompacted(round, true, originalCount, messages.length(),

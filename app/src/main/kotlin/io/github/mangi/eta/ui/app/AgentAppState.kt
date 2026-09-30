@@ -4480,6 +4480,10 @@ internal class AgentAppState(
                 runMessageProjector.seal(runId)
             }
 
+            is AgentEvent.AutoCompactWaiting -> {
+                conversationIdForRun(runId)?.let { setConversationWaitingForCompression(it, true) }
+            }
+
             is AgentEvent.ContextCompactionStarted -> {
                 conversationIdForRun(runId)?.let { setConversationCompressing(it, true, event.modelName) }
             }

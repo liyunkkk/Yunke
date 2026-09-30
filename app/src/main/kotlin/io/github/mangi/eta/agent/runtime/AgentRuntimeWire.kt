@@ -795,6 +795,11 @@ internal object AgentRuntimeWire {
                 putInt("image_bytes", event.imageBytes)
             }
 
+            is AgentEvent.AutoCompactWaiting -> {
+                putString(KEY_TYPE, "auto_compact_waiting")
+                putInt("round", event.round)
+            }
+
             is AgentEvent.ContextCompactionStarted -> {
                 putString(KEY_TYPE, "context_compaction_started")
                 putString("model_name", event.modelName)
@@ -954,6 +959,8 @@ internal object AgentRuntimeWire {
             imageCount = bundle.getInt("image_count"),
             imageBytes = bundle.getInt("image_bytes"),
         )
+
+        "auto_compact_waiting" -> AgentEvent.AutoCompactWaiting(round = bundle.getInt("round"))
 
         "context_compaction_started" -> AgentEvent.ContextCompactionStarted(
             round = bundle.getInt("round"),

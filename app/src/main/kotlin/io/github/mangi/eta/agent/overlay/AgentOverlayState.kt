@@ -135,6 +135,8 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
 
     is AgentEvent.ChildContextUpdated -> this
 
+    is AgentEvent.AutoCompactWaiting -> this
+
     is AgentEvent.ContextCompactionStarted -> copy(
         phase = AgentOverlayPhase.RUNNING,
         round = event.round,
