@@ -4493,6 +4493,7 @@ internal class AgentAppState(
             }
 
             is AgentEvent.ProviderRequestStarted -> {
+                runMessageProjector.beginProviderRequest(runId, event.round)
                 if (contextBudgetBlockedRuns.remove(runId) != null) {
                     if (contextBudgetPrompt?.runId == runId) contextBudgetPrompt = null
                     conversationIdForRun(runId)?.let { id -> conversationState(id)?.let { updateConversation(id, it.copy(isPaused = false)) } }

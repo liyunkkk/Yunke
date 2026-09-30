@@ -26,8 +26,6 @@ internal class AgentRunMessageProjector(
         var sequence: Long = 0L,
         var lastTextSequence: Long? = null,
         var lastToolSequence: Long? = null,
-        var maxTextIndex: Int? = null,
-        val textDeltaCounts: MutableMap<Int, Int> = mutableMapOf(),
     )
 
     private data class PendingThinkingBlock(
@@ -79,6 +77,16 @@ internal class AgentRunMessageProjector(
         }
     }
 
+    /** A continued HTTP request may share its UI round, but not its ordering evidence. */
+    fun beginProviderRequest(runId: String, round: Int) {
+        if (runId.isBlank() || isSealed(runId)) return
+        // A later request's tool must not resurrect an unproven tail from the prior one.
+        // Accepted blocks keep their identities; only directly continued TEXT may reuse
+        // its mapped index across requests (see AgentContinuationBlocks).
+        discardPendingThinking(runId, round)
+        roundEventStates.remove(RoundEventKey(runId, round))
+    }
+
     fun scheduleModelRetry(
         runId: String,
         event: AgentEvent.ModelRetryScheduled,
@@ -105,7 +113,7 @@ internal class AgentRunMessageProjector(
     ): List<AgentChatMessageUi> {
         if (isSealed(runId)) return messages
         if (event.kind == AgentEvent.AssistantBlockKind.TEXT) {
-            recordTextEvent(runId, event.round, event.index, countDelta = false)
+            recordTextEvent(runId, event.round)
         }
         if (event.kind == AgentEvent.AssistantBlockKind.THINKING) {
             val key = ThinkingBlockKey(runId, event.round, event.index)
@@ -132,7 +140,7 @@ internal class AgentRunMessageProjector(
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
         if (delta.isEmpty() || isSealed(runId)) return messages
-        recordTextEvent(runId, round, index)
+        recordTextEvent(runId, round)
 
         val transitioned = transitionVisibleBlock(
             runId = runId,
@@ -507,17 +515,10 @@ internal class AgentRunMessageProjector(
         thinkingStartedAt.keys.removeAll { it.startsWith("$runId-thinking-") }
     }
 
-    private fun recordTextEvent(
-        runId: String,
-        round: Int,
-        index: Int,
-        countDelta: Boolean = true,
-    ) {
+    private fun recordTextEvent(runId: String, round: Int) {
         val state = roundEventStates.getOrPut(RoundEventKey(runId, round)) { RoundEventState() }
         state.sequence += 1
         state.lastTextSequence = state.sequence
-        state.maxTextIndex = maxOf(state.maxTextIndex ?: index, index)
-        if (countDelta) state.textDeltaCounts[index] = state.textDeltaCounts.getOrDefault(index, 0) + 1
     }
 
     private fun recordToolEvent(runId: String, round: Int) {
@@ -538,14 +539,8 @@ internal class AgentRunMessageProjector(
         if (key in pendingThinkingBlocks) return true
         val state = roundEventStates[RoundEventKey(key.runId, key.round)]
         val lastText = state?.lastTextSequence ?: return false
-        val lastTool = state.lastToolSequence
-        if (lastTool != null && lastTool > lastText) return false
-        val maxTextIndex = state.maxTextIndex ?: return true
-        // A resumed request can emit a visible reasoning block below a text index that
-        // has already received multiple text deltas across request continuations. A new
-        // tail block is at or above the current text range and remains pending.
-        val resumedText = (state.textDeltaCounts[maxTextIndex] ?: 0) >= 2
-        return !resumedText || key.index > maxTextIndex
+        val lastTool = state.lastToolSequence ?: return true
+        return lastTool <= lastText
     }
 
     private fun rememberThinkingBlock(key: ThinkingBlockKey, messages: List<AgentChatMessageUi>) {

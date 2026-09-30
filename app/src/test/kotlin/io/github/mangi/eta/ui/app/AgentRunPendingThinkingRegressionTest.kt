@@ -465,12 +465,24 @@ class AgentRunPendingThinkingRegressionTest {
     }
 
     @Test
-    fun lowerIndexReasoningAfterResumedTextRemainsVisible() {
+    fun providerRequestBoundaryAllowsVisibleReasoningInAResumedSameRound() {
         val projector = AgentRunMessageProjector { 1_000L }
-        var messages = projector.appendTextDelta(runId, 1, 10, "part1 ", emptyList())
-        messages = projector.appendTextDelta(runId, 1, 10, "part2 ", messages)
-        messages = projector.appendReasoningDelta(runId, 1, 9, "visible-later", messages)
+        var messages = projector.appendTextDelta(runId, 1, 0, "part1 ", emptyList())
+        projector.beginProviderRequest(runId, 1)
+        messages = projector.appendTextDelta(runId, 1, 0, "part2 ", messages)
+        projector.beginProviderRequest(runId, 1)
+        messages = projector.appendReasoningDelta(runId, 1, 1, "visible-later", messages)
         assertEquals(listOf("visible-later"), messages.filterIsInstance<ThinkingMessageUi>().map { it.content })
+    }
+
+    @Test
+    fun sameRequestTextStillDefersReasoningAfterAProviderBoundary() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        var messages: List<AgentChatMessageUi> = emptyList()
+        projector.beginProviderRequest(runId, 1)
+        messages = projector.appendTextDelta(runId, 1, 0, "final", messages)
+        messages = projector.appendReasoningDelta(runId, 1, 1, "late", messages)
+        assertTrue(messages.none { it is ThinkingMessageUi })
     }
 
     @Test

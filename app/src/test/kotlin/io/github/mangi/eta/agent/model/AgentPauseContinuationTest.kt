@@ -34,6 +34,10 @@ class AgentPauseContinuationTest {
                         projector.finalizeThinkingBlock("run", event.round, event.index, event.replacementContent, messages) else messages
                 is AgentEvent.AssistantReceived -> if (event.reasoningContent.isNotBlank())
                     projector.ensureCompletedThinking("run", event.round, event.reasoningContent, messages) else messages
+                is AgentEvent.ProviderRequestStarted -> {
+                    projector.beginProviderRequest("run", event.round)
+                    messages
+                }
                 is AgentEvent.RunFinished -> projector.finalizeRun("run", messages)
                 else -> messages
             }
