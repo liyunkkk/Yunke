@@ -160,8 +160,6 @@ internal class AgentExecutionService : Service() {
         builder.extras.putBundle("miui.focus.pics", focusPics())
         builder.extras.putBundle("miui.focus.actions", Bundle.EMPTY)
 
-        // 采纳上游：大图标跟随当前启动图标（图标可在外观里更换）。
-        currentLauncherBitmap()?.let { builder.setLargeIcon(it) }
         return builder.build()
     }
 
@@ -228,21 +226,6 @@ internal class AgentExecutionService : Service() {
         putParcelable(FOCUS_PIC_ICON, Icon.createWithResource(this@AgentExecutionService, R.drawable.ic_notification))
     }
 
-    /** 当前启动图标位图；图标可在外观里更换，通知大图标跟随它。 */
-    private fun currentLauncherBitmap(): android.graphics.Bitmap? {
-        val name = io.github.mangi.eta.ui.LauncherIconSync.currentIconResName(this) ?: return null
-        val id = resources.getIdentifier(name, "drawable", packageName)
-        if (id == 0) return null
-        val drawable = getDrawable(id) ?: return null
-        if (drawable is android.graphics.drawable.BitmapDrawable && drawable.bitmap != null) return drawable.bitmap
-        val width = drawable.intrinsicWidth.coerceAtLeast(1)
-        val height = drawable.intrinsicHeight.coerceAtLeast(1)
-        val bitmap = android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888)
-        val canvas = android.graphics.Canvas(bitmap)
-        drawable.setBounds(0, 0, width, height)
-        drawable.draw(canvas)
-        return bitmap
-    }
 
     companion object {
         const val CHANNEL = "eta_execution"
