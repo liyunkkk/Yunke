@@ -77,7 +77,7 @@ private fun MimoVoicesScreen(onBack: () -> Unit) {
         runCatching { withContext(Dispatchers.IO) { MimoPersonalVoices.load(context) } }
             .onSuccess { ready = true }.onFailure { notice = "声音列表读取失败，请重试" }
     }
-    DisposableEffect(Unit) { onDispose { if (SpeechPlayback.state.value.owner?.startsWith("mimo-preview:") == true) SpeechPlayback.stop() } }
+    DisposableEffect(Unit) { onDispose { if (SpeechPlayback.state.value.owner?.startsWith("mimo-preview:") == true) SpeechPlayback.stop("preview_dispose") } }
     BackHandler(enabled = !busy, onBack = onBack)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { result -> uri = result }
     Scaffold(topBar = {
@@ -142,7 +142,7 @@ private fun MimoVoicesScreen(onBack: () -> Unit) {
                                 TouchHaptics.click(view)
                                 val model = bound?.let { SpeechSynthesisModels.mergeCatalog(it) }?.firstOrNull { it.modelId == "mimo-v2.5-tts" && it.isEnabled }
                                 if (model == null) notice = "请先启用 MiMo 朗读模型" else {
-                                    SpeechPlayback.stop()
+                                    SpeechPlayback.stop("settings")
                                     ReadAloudVoiceHistory.rememberCurrent(context)
                                     Prefs.putString(Prefs.Keys.AGENT_TTS_MODE, "cloud")
                                     Prefs.putString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID, voice.providerId)
@@ -163,7 +163,7 @@ private fun MimoVoicesScreen(onBack: () -> Unit) {
         AlertDialog(onDismissRequest = { deleting = null }, title = { Text("删除“${voice.name}”？") },
             text = { Text("删除本机参考录音及记录。若正在用于朗读，删除后需要重新选择声音。") },
             confirmButton = { TextButton(onClick = {
-                TouchHaptics.click(view); SpeechPlayback.stop(); deleting = null; busy = true
+                TouchHaptics.click(view); SpeechPlayback.stop("settings"); deleting = null; busy = true
                 scope.launch {
                     try { withContext(Dispatchers.IO) { MimoPersonalVoices.remove(voice.id) }; notice = "已删除" }
                     catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; notice = "删除失败，请重试" }

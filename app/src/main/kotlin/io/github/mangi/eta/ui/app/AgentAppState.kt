@@ -3417,7 +3417,7 @@ internal class AgentAppState(
         keepChildren: Boolean = true,
         reason: AgentChildControlPolicy.Reason = AgentChildControlPolicy.Reason.USER_STOP,
     ) {
-        if (activeRunIdForSelectedConversation() == runId) io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop()
+        if (activeRunIdForSelectedConversation() == runId) io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop("run_stop")
         if (stoppingRuns.containsKey(runId)) return
         val imageGen = imageGenerationRunIds.remove(runId)
         if (imageGen) directMediaRuns.cancel(runId)

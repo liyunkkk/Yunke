@@ -43,6 +43,10 @@ import io.github.mangi.eta.agent.terminal.RootShellTerminalController
 import io.github.mangi.eta.agent.terminal.SharedFolderMounts
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.voice.tts.SpeechPlayback
+import io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_OWNER
+import io.github.mangi.eta.agent.voice.tts.AgentSpeechReport
+import io.github.mangi.eta.agent.voice.tts.AgentSpeechStatus
+import io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_START_TIMEOUT_MS
 import io.github.mangi.eta.core.AgentLogger
 import io.github.mangi.eta.core.HookSupport
 import io.github.mangi.eta.data.model.AssistantPrompt
@@ -1454,10 +1458,15 @@ internal class AgentLocalTools(
         if (SpeechPlayback.state.value.recording) {
             return errorResult("SPEECH_BUSY", "正在录音，无法朗读")
         }
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            SpeechPlayback.speak(context, "agent-tts", text)
+        val report = AgentSpeechReport()
+        val main = android.os.Looper.getMainLooper()
+        android.os.Handler(main).post {
+            SpeechPlayback.speak(context, AGENT_SPEECH_OWNER, text, listener = report)
         }
-        return JSONObject().put("ok", true).put("playing", true).toString()
+        // Callbacks arrive on main; waiting there would only time out.
+        if (main.isCurrentThread) return AgentSpeechStatus.Pending.toJson().toString()
+        // Cloud synthesis can take seconds; report what actually happened instead of assuming playback.
+        return report.await(AGENT_SPEECH_START_TIMEOUT_MS).toJson().toString()
     }
 
     private fun errorResult(code: String, message: String): String =
