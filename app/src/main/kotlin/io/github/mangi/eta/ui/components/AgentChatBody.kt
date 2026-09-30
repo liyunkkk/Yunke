@@ -607,6 +607,9 @@ internal fun AgentConversationMessages(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
+    val scrollTraceEnabled = rememberChatScrollTraceEnabled()
+    ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
     val timelineEntries = remember(visibleMessages) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
     }
@@ -1233,6 +1236,26 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
+                // No UI container or rendering modifier: record committed row identity only.
+                ChatRowTrace(
+                    rowKey = entry.key,
+                    rowType = when (entry) {
+                        is AgentTimelineRow.Message -> when (entry.message) {
+                            is UserMessageUi -> "user"
+                            is AgentMessageUi -> "agent"
+                            is ThinkingMessageUi -> "thinking"
+                            is ToolActivityMessageUi -> "tool"
+                            else -> "message"
+                        }
+                        is AgentTimelineRow.WorkHeader -> "work-header"
+                        is AgentTimelineRow.WorkStep -> when (entry.message) {
+                            is ToolActivityMessageUi -> "work-tool"
+                            is ThinkingMessageUi -> "work-thinking"
+                            else -> "work-summary"
+                        }
+                    },
+                    enabled = scrollTraceEnabled,
+                )
                 // Keep the row key/index and animate its root, including its footer.
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalExpansionHoldsBottom provides expansionHoldsBottom,
