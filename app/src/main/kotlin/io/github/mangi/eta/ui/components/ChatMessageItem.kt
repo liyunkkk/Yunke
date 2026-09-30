@@ -5,6 +5,8 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -2486,7 +2488,11 @@ private fun ThinkingRow(
             exit = tailDetailsExit(anchorBottom),
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
-            HapticSelectionContainer(modifier = Modifier.toggleProbe(toggleProbeRef, "content")) {
+            HapticSelectionContainer(
+                modifier = Modifier
+                    .retainDrawLayerWhenIdle()
+                    .toggleProbe(toggleProbeRef, "content"),
+            ) {
                 Column {
                     if (!compact) {
                         Box(
@@ -2543,6 +2549,20 @@ internal fun tailDetailsEnter(fromBottom: Boolean): androidx.compose.animation.E
         animationSpec = tween(180, easing = FastOutSlowInEasing),
         expandFrom = if (fromBottom) Alignment.Bottom else Alignment.Top,
     )
+
+
+/**
+ * 展开或收起还在进行时，内容尺寸每一帧都在变，绘制命令必须重录。
+ * 停在展开之后，把内容留在自己的绘制层里：列表滑动只平移这一层，
+ * 不再把正文的绘制命令每帧重录。文字、选择和流式更新都不变；
+ * 内容本身变化时，这一层会照常失效重录。
+ */
+@Composable
+internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(): Modifier {
+    val settled = transition.currentState == EnterExitState.Visible &&
+        transition.targetState == EnterExitState.Visible
+    return if (settled) Modifier.graphicsLayer() else Modifier
+}
 
 internal fun tailDetailsExit(toBottom: Boolean): androidx.compose.animation.ExitTransition =
     shrinkVertically(
@@ -2744,6 +2764,7 @@ private fun ToolActivityInline(
         ) {
             Column(
                 modifier = Modifier
+                    .retainDrawLayerWhenIdle()
                     .toggleProbe(toggleProbeRef, "content")
                     .fillMaxWidth()
                     .padding(start = 27.dp, top = 2.dp, bottom = 6.dp)
