@@ -52,7 +52,9 @@ class BottomFollowFirstDrawTest {
     private val height = mutableIntStateOf(100)
     private val following = mutableStateOf(false)
     private val extraRows = mutableIntStateOf(0)
-    private var revision = 0
+    // A passive draw dependency: a cached child layer must not hide its first frame
+    // from the outer recorder. This state is never read during composition/layout.
+    private var revision by mutableIntStateOf(0)
     private var measuredHeight = 0
     private var expectedCount = 22
     private lateinit var state: LazyListState
@@ -154,7 +156,7 @@ class BottomFollowFirstDrawTest {
                             state.firstVisibleItemIndex, state.firstVisibleItemScrollOffset,
                         )
                         // Keep a separate display list for each FIRST draw; never overwrite it
-                        // with later frames or use captureToImage after recovery to pass this test.
+                        // with later frames or use the host draw-pump screenshot for assertions.
                         scope.launch(start = CoroutineStart.UNDISPATCHED) {
                             images[rev] = layer.toImageBitmap().asAndroidBitmap()
                                 .copy(Bitmap.Config.ARGB_8888, false)
@@ -257,6 +259,10 @@ class BottomFollowFirstDrawTest {
         // Flush Android measure/layout/draw without advancing the manual Compose clock.
         // The immutable probe still captures the FIRST draw, never the eventual idle image.
         compose.waitForIdle()
+        // Robolectric can lay out without issuing a host draw. Pump that draw with
+        // the Compose clock still frozen. Discard this screenshot: all assertions
+        // use the immutable FIRST-draw probe/layer, even if a draw already occurred.
+        compose.onNodeWithTag(ROOT).captureToImage()
         try {
             compose.waitUntil(5_000) { probes.containsKey(revision) && images.containsKey(revision) }
         } catch (error: Throwable) {
