@@ -83,7 +83,10 @@ internal class KimiCodeSubagentTool(
         }
 
         val projectPath = args.optString("project_path").trim().ifBlank { DEFAULT_PROJECT_PATH }
-        val timeoutSeconds = args.optInt("timeout_seconds", DEFAULT_TIMEOUT_SECONDS).coerceIn(10, 600)
+        // timeout_seconds 缺失或 ≤0 一律回落默认值；正数才收敛到 10..600。避免出现「0s 预算」。
+        val timeoutSeconds = resolveTimeoutSeconds(
+            if (args.has("timeout_seconds")) args.optInt("timeout_seconds") else null,
+        )
         // 绑定键：同一个 Eta 对话始终复用同一个 Kimi 会话，避免上下文散乱重建。
         // 模型可以显式指定，缺省时用装配处注入的当前对话 id。
         val bindingKey = args.optString("conversation_id").trim()
@@ -318,15 +321,12 @@ internal class KimiCodeSubagentTool(
             if (idleStreak >= IDLE_STREAK_REQUIRED) return
             if (SystemClock.elapsedRealtime() >= deadlineAt) {
                 runCatching { client.abort(sessionId) }
-                throw KimiWebApiException("TIMEOUT", "子代理执行超过 ${timeoutSecondsLabel(deadlineAt)} 的预算，已中止本轮")
+                // abort 是尽力而为：能否真正停下未知，必须如实告知主代理并附上当前 busy。
+                val stillBusy = runCatching { client.sessionStatus(sessionId).busy }.getOrNull()
+                throw KimiWebApiException("TIMEOUT", abortedMessage(stillBusy))
             }
             Thread.sleep(POLL_INTERVAL_MS)
         }
-    }
-
-    private fun timeoutSecondsLabel(deadlineAt: Long): String {
-        val remaining = (deadlineAt - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
-        return "${remaining / 1000}s"
     }
 
     /** 采集容器内的 Git 现场；失败时返回空串，不影响答复回传。 */
@@ -421,7 +421,7 @@ internal class KimiCodeSubagentTool(
             .put("message", message)
             .toString()
 
-    private companion object {
+    internal companion object {
         const val DEFAULT_PROJECT_PATH = "/workspace"
 
         /** 未显式传入对话 id 时的绑定键，保证老调用仍能复用同一个会话。 */
@@ -450,5 +450,23 @@ internal class KimiCodeSubagentTool(
         const val POLL_INTERVAL_MS = 1_500L
         const val IDLE_STREAK_REQUIRED = 2
         const val GIT_TIMEOUT_MS = 30_000
+
+        /** timeout_seconds 缺失或 ≤0 一律回落默认值；正数收敛到 10..600。 */
+        internal fun resolveTimeoutSeconds(raw: Int?): Int =
+            if (raw == null || raw <= 0) DEFAULT_TIMEOUT_SECONDS else raw.coerceIn(10, 600)
+
+        /**
+         * 超时/中止文案：明确「任务状态未知」，并在能读到 busy 时区分是否仍在执行，
+         * 避免把一次已 `abort` 的调用误当成「任务已结束」。
+         */
+        internal fun abortedMessage(busy: Boolean?): String = buildString {
+            append("本次调用被中止，任务状态未知，请核实")
+            when (busy) {
+                true -> append("；Kimi 会话仍在执行")
+                false -> append("；Kimi 会话当前未在执行")
+                null -> append("；未能读取 Kimi 会话状态")
+            }
+            append("。")
+        }
     }
 }
