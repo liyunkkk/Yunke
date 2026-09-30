@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -21,15 +22,22 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.kimi.KimiPermissionMode
+import io.github.mangi.eta.agent.kimi.KimiSubAgentStatusAccess
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor
+import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.SubAgentEditorState
 import io.github.mangi.eta.ui.components.SubAgentDropdownMenu
 import io.github.mangi.eta.ui.components.SubAgentProfileRow
+import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.DropdownItem
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,6 +52,15 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
     var delete by remember(editor) { mutableStateOf<SubAgentProfile?>(null) }
     var name by remember(editor) { mutableStateOf("") }
     var pollGuard by remember { mutableStateOf(Prefs.isEnabled(Prefs.Keys.SUBAGENT_POLL_GUARD)) }
+    val context = LocalContext.current
+    var kimiPermission by remember {
+        mutableStateOf(KimiPermissionMode.resolve(Prefs.getString(Prefs.Keys.KIMI_PERMISSION_MODE, KimiPermissionMode.YOLO)))
+    }
+    var kimiDefaultModel by remember { mutableStateOf<String?>(null) }
+    // 默认模型按需读取一次；无运行中的服务端时为 null（显示「未启动」）。
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { kimiDefaultModel = KimiSubAgentStatusAccess.defaultModel(context) }
+    }
     val view = LocalView.current
     LaunchedEffect(editor, editable) { if (!editable) { rename = null; delete = null } }
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
@@ -109,6 +126,35 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                                         pollGuard = it
                                         Prefs.putBoolean(Prefs.Keys.SUBAGENT_POLL_GUARD, it)
                                     } })
+                            }
+                        }
+                        item {
+                            Column(Modifier.fillMaxWidth().padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Kimi Code", style = MaterialTheme.typography.titleMedium)
+                                Text("重度编码与需要编译验证的任务走 Kimi Code；并行调查 / 审查 / 媒体走原生子代理。",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            // 授权模式与主设置页同一键；全局生效，不依赖本会话是否可编辑。
+                            WindowSpinnerPreference(
+                                title = "Kimi 授权模式",
+                                summary = "默认自动批准，遇到高风险操作可切到「每次确认」。",
+                                items = listOf("自动批准（yolo）", "自动（auto）", "每次确认（manual）")
+                                    .map { DropdownItem(text = it) },
+                                selectedIndex = KimiPermissionMode.all.indexOf(kimiPermission).coerceAtLeast(0),
+                                onSelectedIndexChange = { index ->
+                                    val mode = KimiPermissionMode.all.getOrNull(index) ?: return@WindowSpinnerPreference
+                                    kimiPermission = mode
+                                    Prefs.putString(Prefs.Keys.KIMI_PERMISSION_MODE, mode)
+                                },
+                                startAction = { PreferenceIcon(icon = Icons.Rounded.Lock) },
+                            )
+                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("默认模型", style = MaterialTheme.typography.bodyLarge)
+                                    Text("服务端 default_model；本会话可在协作面板另行覆盖。", style = MaterialTheme.typography.bodySmall)
+                                }
+                                Text(kimiDefaultModel?.takeIf { it.isNotBlank() } ?: "未启动",
+                                    style = MaterialTheme.typography.bodyMedium)
                             }
                         }
                         items(profiles, key = { it.id }) { profile ->
