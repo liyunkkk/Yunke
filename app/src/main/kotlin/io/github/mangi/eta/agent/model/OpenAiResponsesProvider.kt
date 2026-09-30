@@ -124,10 +124,12 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         fun reportEventUsage(event: JSONObject) {
             val response = event.optJSONObject("response")
             reportUsage(
-                response?.optJSONObject("usage")
-                    ?: event.optJSONObject("usage")
-                    ?: response?.takeIf { looksLikeUsage(it) }
-                    ?: event.takeIf { looksLikeUsage(it) }
+                sequenceOf(
+                    response?.optJSONObject("usage"),
+                    event.optJSONObject("usage"),
+                    response?.takeIf { looksLikeUsage(it) },
+                    event.takeIf { looksLikeUsage(it) },
+                ).firstOrNull { parseUsage(it) != null }
             )
         }
 
@@ -441,7 +443,23 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             extractFinalOutput(output)
         }
 
-        fun reconcileFinalPart(part: FinalContentPart) {
+        // Freeze delivered text before reconciliation creates any terminal-only blocks.
+        // Use authoritative part positions (including content indexes), not streamed
+        // output indexes, which gateways can rewrite in the terminal snapshot.
+        val streamedTextBlocks = contentBlocks.filter {
+            it.kind == AssistantBlockKind.TEXT && it.content.isNotEmpty()
+        }
+        val terminalTextParts = finalResult.contentParts.filter { it.kind == AssistantBlockKind.TEXT }
+        val soleStreamedText = streamedTextBlocks.singleOrNull()
+        val lastStreamedTextPartIndex = finalResult.contentParts.indexOfLast { part ->
+            part.kind == AssistantBlockKind.TEXT && (
+                streamedTextBlocks.any { it.identity.matches(part.identity) } ||
+                    (terminalTextParts.size == 1 && soleStreamedText != null &&
+                        part.rawContent.startsWith(soleStreamedText.content.toString()))
+                )
+        }
+
+        fun reconcileFinalPart(partIndex: Int, part: FinalContentPart) {
             val identityMatches = contentBlocks.filter { block ->
                 block.kind == part.kind && block.identity.matches(part.identity) }
             // Some Responses gateways rewrite message IDs or output indexes in the terminal
@@ -491,14 +509,12 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 return
             }
 
-            // Terminal snapshots can backfill a reasoning summary preceding a text
-            // item that was already streamed. Emitting a new visible block now would
-            // append that earlier summary after the answer. Keep the authoritative
-            // reasoning in finalResult/protocol state, but do not reopen the UI.
-            // Matching streamed blocks above still reconcile in place, and live
-            // reasoning around hosted tools is intentionally unaffected.
+            // Only suppress an unmatched summary authoritatively before delivered text.
+            // New terminal text is not streamed evidence; reasoning after a streamed
+            // preamble or hosted tool still needs its own visible block.
+            // Matching streamed reasoning above continues to reconcile in place.
             if (part.kind == AssistantBlockKind.THINKING &&
-                contentBlocks.any { it.kind == AssistantBlockKind.TEXT }
+                partIndex < lastStreamedTextPartIndex
             ) return
 
             finishActiveVisibleBlock()
@@ -521,7 +537,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             finishContentBlock(block, content = part.content)
         }
 
-        finalResult.contentParts.forEach(::reconcileFinalPart)
+        finalResult.contentParts.forEachIndexed(::reconcileFinalPart)
         finishActiveVisibleBlock()
         contentBlocks.filter { !it.ended }.forEach(::finishContentBlock)
 
