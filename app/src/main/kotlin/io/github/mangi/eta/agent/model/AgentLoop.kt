@@ -532,13 +532,18 @@ internal class AgentLoop(
     }
 
     private fun noteRingPressure(round: Int) {
-        if (autoCompactLatched || skipIneffectiveAutoCompact) return
-        if (!compactPolicy.enabled || overflowPending) return
+        if (skipIneffectiveAutoCompact || !compactPolicy.enabled || overflowPending) return
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
         val cloud = silentBudget.cloudTokens() ?: return
-        if (cloud < AgentContextCompactor.autoPressureTokens(window)) return
-        autoCompactLatched = true
+        val hot = cloud >= AgentContextCompactor.autoPressureTokens(window)
+        if (!hot) {
+            // 同一轮后续回执把输入更正到 80% 以下时，圆环已经变小，取消这次排队。
+            releaseAutoCompactWait(round)
+            return
+        }
         latchedCloudTokens = cloud
+        if (autoCompactLatched) return
+        autoCompactLatched = true
         onEvent(AgentEvent.AutoCompactWaiting(round))
     }
 
