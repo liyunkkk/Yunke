@@ -38,6 +38,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * Exercises the real library Markdown collector and callbacks under the same
@@ -161,6 +162,7 @@ class CompletedMarkdownReentryTest {
         }
     }
 
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     @Test fun cacheHitsStillRemeasureWithWidthAndFontScaleChanges() {
         val content = ("A completed parse must still lay out its text using the current width and font scale. " +
             "Caching syntax must not freeze typography. ").repeat(3)
@@ -169,15 +171,17 @@ class CompletedMarkdownReentryTest {
         cache.put(content, parsed, emptyMap())
         val harness = showDocument(cache, content)
         assertImmediateSuccess(harness, content)
-        val wide = compose.runOnIdle { harness.sizes.last().height }
+        val wide = compose.runOnIdle { harness.sizes.last() }
         compose.runOnIdle { harness.width.value = 220.dp }
         compose.waitForIdle()
-        val narrow = compose.runOnIdle { harness.sizes.last().height }
-        assertTrue("Narrower width must reflow the cached document", narrow > wide)
+        val narrow = compose.runOnIdle { harness.sizes.last() }
+        assertTrue("Width change must reach the actual layout: $wide -> $narrow", narrow.width < wide.width)
+        assertTrue("Narrower width must reflow the cached document: $wide -> $narrow", narrow.height > wide.height)
         compose.runOnIdle { harness.fontScale.value = 1.3f }
         compose.waitForIdle()
-        val larger = compose.runOnIdle { harness.sizes.last().height }
-        assertTrue("Larger font scale must remeasure the cached document", larger > narrow)
+        val larger = compose.runOnIdle { harness.sizes.last() }
+        assertEquals("Font scaling must not change the width constraint", narrow.width, larger.width)
+        assertTrue("Larger font scale must remeasure the cached document: $narrow -> $larger", larger.height > narrow.height)
         compose.runOnIdle {
             harness.observations.forEach { observation ->
                 assertSuccess(observation.state, content)

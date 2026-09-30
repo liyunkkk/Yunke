@@ -81,6 +81,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -1138,6 +1139,9 @@ internal fun AgentConversationMessages(
     val restClip = remember(bottomInset) { ComposerRestClip(bottomInset + ConversationComposerGap) }
     // 尾部这一帧量不到时不能把上提清零，否则卡片会掉进输入框再弹回来。
     val heldTailLift = remember { intArrayOf(0) }
+    val viewportRecovery = remember(scrollState) {
+        BottomFollowViewportRecovery(scrollState, ChatBottomSentinelKey)
+    }
     Box(
         modifier = modifier
             .clipToBounds()
@@ -1202,6 +1206,19 @@ internal fun AgentConversationMessages(
                     } else {
                         heldTailLift[0] = 0
                         0f
+                    }
+                }
+                .onGloballyPositioned {
+                    // Consume only overflow that cannot fit in the existing draw buffer.
+                    // Keep the presentation layer and all card animations unchanged.
+                    val consumed = viewportRecovery.recover {
+                        shouldFollowBottom && !pointerDown[0] && !currentDragging.value &&
+                            !isUserScrolling && messageNavigationJob == null
+                    }
+                    if (consumed > 0f) {
+                        StreamPerformanceDiagnostics.record(
+                            "follow.viewportRecovery", value = (consumed * 1000).toLong(),
+                        )
                     }
                 }
                 .pointerInput(Unit) {
