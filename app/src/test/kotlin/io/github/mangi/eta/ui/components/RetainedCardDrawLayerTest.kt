@@ -196,17 +196,23 @@ class RetainedCardDrawLayerTest {
     }
 
     private fun awaitVisibilitySettled(visible: Boolean) {
-        // An interrupted transition can outlive its original tween duration. Wait for
-        // the transition itself, not the expected layer strategy, so the assertions
-        // below still catch a missing layer or an incorrect caching policy.
-        compose.mainClock.advanceTimeUntil(5_000L) {
-            visibility.isIdle && visibility.currentState == visible &&
-                visibility.targetState == visible
+        // Completion also needs Android layout/draw and disposal work. Unlike
+        // advanceTimeUntil's clock-only loop, waitUntil yields to the host between
+        // frames. Auto-advance only while settling; intermediate-state assertions
+        // must retain manual clock control after this helper returns.
+        val previousAutoAdvance = compose.mainClock.autoAdvance
+        try {
+            compose.mainClock.autoAdvance = true
+            // Drain Android measurement/drawing before checking transition completion.
+            compose.waitForIdle()
+            compose.waitUntil(5_000L) {
+                visibility.isIdle && visibility.currentState == visible &&
+                    visibility.targetState == visible
+            }
+            compose.waitForIdle()
+        } finally {
+            compose.mainClock.autoAdvance = previousAutoAdvance
         }
-        compose.waitForIdle()
-        // Let the final measurement/onSizeChanged update reach the observed modifier.
-        compose.mainClock.advanceTimeByFrame()
-        compose.waitForIdle()
     }
 
     private fun advance(milliseconds: Long) {
