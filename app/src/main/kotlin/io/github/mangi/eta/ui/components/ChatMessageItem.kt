@@ -2489,8 +2489,7 @@ private fun ThinkingRow(
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             HapticSelectionContainer(
-                modifier = Modifier
-                    .retainDrawLayerWhenIdle()
+                modifier = retainDrawLayerWhenIdle()
                     .toggleProbe(toggleProbeRef, "content"),
             ) {
                 Column {
@@ -2763,8 +2762,7 @@ private fun ToolActivityInline(
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             Column(
-                modifier = Modifier
-                    .retainDrawLayerWhenIdle()
+                modifier = retainDrawLayerWhenIdle()
                     .toggleProbe(toggleProbeRef, "content")
                     .fillMaxWidth()
                     .padding(start = 27.dp, top = 2.dp, bottom = 6.dp)
