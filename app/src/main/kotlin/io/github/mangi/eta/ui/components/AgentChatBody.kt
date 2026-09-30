@@ -828,15 +828,8 @@ internal fun AgentConversationMessages(
     // 上提照常，标签随动画一帧一帧往上让开。
     // 跟 rikkahub 一样：输出时在布局阶段请求滚到末尾，而不是等这一帧画完再 scrollBy。
     // index 超过最后一项会停在列表底，新长出的内容不会先画进输入框。
-    // 显现只改测量、不重组，SideEffect 不会跑。布局变化时再钉一次，且当时不能正在 scroll。
-    LaunchedEffect(scrollState) {
-        snapshotFlow {
-            val info = scrollState.layoutInfo
-            val tail = info.visibleItemsInfo.lastOrNull()
-            Triple(info.totalItemsCount, tail?.size, tail?.offset)
-        }.collect {
-            if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null) return@collect
-            if (scrollState.isScrollInProgress) return@collect
+    if (shouldFollowBottom && messageNavigationJob == null && !isUserScrolling) {
+        SideEffect {
             val count = scrollState.layoutInfo.totalItemsCount
             if (count > 0) scrollState.requestScrollToItem(count + 10)
         }
@@ -1115,12 +1108,6 @@ internal fun AgentConversationMessages(
             }
             // Within the draw buffer, the first frame still only establishes timing.
             if (step <= 0f) continue
-            // requestScrollToItem 在布局里钉住末尾。这里再 scrollBy 会占住滚动锁，
-            // 并把刚钉好的位置往后推，新的一行就画过静止线。
-            if (shouldFollowBottom) {
-                reset()
-                continue
-            }
             var consumedStep = 0f
             try {
                 scrollState.scroll {

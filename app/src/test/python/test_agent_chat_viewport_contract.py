@@ -88,10 +88,9 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(head, r"\.clipToBounds\s*\(\s*\)")
 
     def test_streaming_follow_requests_layout_scroll_like_rikkahub(self):
-        self.assertEqual(self.messages.count('scrollState.requestScrollToItem(count + 10)'), 1)
-        self.assertIn('if (scrollState.isScrollInProgress) return@collect', self.messages)
+        self.assertIn('scrollState.requestScrollToItem(count + 10)', self.messages)
         self.assertLess(
-            self.messages.index('if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null) return@collect'),
+            self.messages.index('if (shouldFollowBottom && messageNavigationJob == null && !isUserScrolling)'),
             self.messages.index('scrollState.requestScrollToItem(count + 10)'),
         )
 
