@@ -202,18 +202,38 @@ import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/**
+ * 返回 true 前先让出一帧。用于点击展开：点击那一帧只重组标题并启动展开动画，
+ * 正文的组合与文字测量放到下一帧。[deferOneFrame] 只在进入组合时读取一次。
+ */
+@Composable
+internal fun rememberDeferredBody(deferOneFrame: Boolean): Boolean {
+    var ready by remember { mutableStateOf(!deferOneFrame) }
+    if (!ready) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            ready = true
+        }
+    }
+    return ready
+}
+
+/**
+ * 预览图解码不在组合里做：滚动预取和展开时同步解码会直接占用那一帧。
+ * 命中缓存时立即返回，否则先返回 null（调用方占位尺寸固定），后台解码后再刷新。
+ */
 @Composable
 internal fun rememberDataUrlBitmap(
     dataUrl: String,
     fallback: String? = null,
 ): ImageBitmap? {
     val context = LocalContext.current
-    val immediate = remember(dataUrl, fallback) {
-        decodeDataUrlBitmap(dataUrl) ?: decodeDataUrlBitmap(fallback.orEmpty())
+    val cached = remember(dataUrl, fallback) {
+        ChatPreviewBitmapCache.get(dataUrl) ?: fallback?.let(ChatPreviewBitmapCache::get)
     }
-    val loaded = produceState(initialValue = immediate, dataUrl, fallback, context) {
-        if (immediate != null) {
-            value = immediate
+    val loaded = produceState(initialValue = cached, dataUrl, fallback, context) {
+        if (cached != null) {
+            value = cached
             return@produceState
         }
         if (dataUrl.isBlank() && fallback.isNullOrBlank()) {
@@ -221,11 +241,14 @@ internal fun rememberDataUrlBitmap(
             return@produceState
         }
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            loadPreviewBitmap(context, dataUrl)
+            val bitmap = decodeDataUrlBitmap(dataUrl)
+                ?: fallback?.let(::decodeDataUrlBitmap)
+                ?: loadPreviewBitmap(context, dataUrl)
                 ?: fallback?.takeIf { it != dataUrl }?.let { loadPreviewBitmap(context, it) }
+            bitmap?.also { ChatPreviewBitmapCache.put(dataUrl, it) }
         }
     }
-    return loaded.value ?: immediate
+    return loaded.value ?: cached
 }
 
 private fun loadPreviewBitmap(context: android.content.Context, source: String): ImageBitmap? {
@@ -1197,7 +1220,10 @@ private fun ChatMarkdownDocument(
     val composedBlockLimit = if (progressiveAtEntry) {
         val lengths = remember(blocks) { blocks.map { (it.endOffset - it.startOffset).coerceAtLeast(0) } }
         var limit by remember(blocks) {
-            mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
+            // 点击那一帧已经要重组标题行、启动展开动画；超出预算时这一帧不纳入任何正文块。
+            mutableIntStateOf(
+                nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS, mustAdvance = false),
+            )
         }
         val probeRef = LocalToggleProbe.current
         LaunchedEffect(lengths) {
@@ -1303,19 +1329,25 @@ internal fun shouldFreezeStreamingMarkdownBlock(
 ): Boolean = tailStartOffset != null && blockStartOffset != tailStartOffset
 
 private const val STREAMING_PARSE_PUBLISH_INTERVAL_MS = 90L
-private const val PROGRESSIVE_FIRST_FRAME_CHARS = 1_000
-private const val PROGRESSIVE_FRAME_CHARS = 800
+private const val PROGRESSIVE_FIRST_FRAME_CHARS = 240
+private const val PROGRESSIVE_FRAME_CHARS = 400
 
 /**
- * 从 [current] 开始按字符预算继续纳入顶层块。每次至少前进一块，保证单个超长块
- * 也能在有限帧内完成；返回值不超过块数。
+ * 从 [current] 开始按字符预算继续纳入顶层块；返回值不超过块数。
+ * [mustAdvance] 为 true 时每次至少前进一块，保证单个超长块也能在有限帧内完成；
+ * 为 false 时（点击那一帧）超预算的首块留到下一帧。
  */
-internal fun nextProgressiveBlockLimit(blockLengths: List<Int>, current: Int, charBudget: Int): Int {
+internal fun nextProgressiveBlockLimit(
+    blockLengths: List<Int>,
+    current: Int,
+    charBudget: Int,
+    mustAdvance: Boolean = true,
+): Int {
     var limit = current.coerceIn(0, blockLengths.size)
     var used = 0
     while (limit < blockLengths.size) {
         val length = blockLengths[limit]
-        if (used > 0 && used + length > charBudget) break
+        if (used + length > charBudget && (used > 0 || !mustAdvance)) break
         used += length
         limit++
     }
@@ -2600,6 +2632,8 @@ private fun ToolActivityInline(
     val expansionHoldsBottom = LocalExpansionHoldsBottom.current
     var anchorBottom by remember(message.id) { mutableStateOf(false) }
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    // 仅本次组合内由点击触发的展开才把命令与结果推迟一帧；不跨配置变更保存。
+    var expandedByTap by remember(message.id) { mutableStateOf(false) }
     val toggleProbeRef = remember(message.id) { ToggleProbeRef() }
     // 只有「当前浏览器」卡片订阅实时会话快照，避免每个工具行都跟随快照重组
     val browserSnapshot = if (showBrowserShortcut) {
@@ -2652,6 +2686,7 @@ private fun ToolActivityInline(
                 if (hasDetails) {
                     Modifier.clickable {
                         anchorBottom = expansionHoldsBottom()
+                        expandedByTap = !isExpanded
                         isExpanded = !isExpanded
                         toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("tool", isExpanded)
                         StreamPerformanceDiagnostics.probeEvent(
@@ -2791,6 +2826,9 @@ private fun ToolActivityInline(
                     )
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
+                // 点击那一帧只长出卡片外壳，命令与结果的组合和文字测量放到下一帧。
+                val bodyReady = rememberDeferredBody(deferOneFrame = expandedByTap)
+                if (!bodyReady) return@Column
                 if (!message.command.isNullOrBlank()) {
                     ToolCommandBlock(
                         command = message.command,
