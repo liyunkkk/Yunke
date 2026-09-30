@@ -2565,8 +2565,8 @@ private const val MAX_RETAINED_LAYER_HEIGHT_PX = 8192
 internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(): Modifier {
     val settled = transition.currentState == EnterExitState.Visible &&
         transition.targetState == EnterExitState.Visible
-    // 普通 graphicsLayer 只缓存显示列表，渲染线程仍会把文字命令重放一遍，
-    // 所以 COMMAND_ISSUE 降不下来。离屏纹理在内容不变时只做一次合成。
+    // 带代码块的 graphicsLayer 每次重组都是新实例，Compose 会作废纹理并重录。
+    // 工具行运行时整行都在重组，离屏纹理因此每帧失效。这里用稳定参数，内容不变就不重录。
     // 过高的内容超过纹理上限就会被裁切，宁可不缓存。
     var heightPx by remember { mutableIntStateOf(0) }
     val cache = settled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
@@ -2574,7 +2574,7 @@ internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(): Modifier {
         .onSizeChanged { heightPx = it.height }
         .then(
             if (cache) {
-                Modifier.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                Modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
             } else {
                 Modifier
             },
