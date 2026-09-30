@@ -275,8 +275,13 @@ class BottomFollowDrawPhaseTest {
 
     /** Only composition-driven follow transitions use this barrier; growth stays single-frame. */
     private fun awaitFollowCommitted(follow: Boolean) {
-        compose.mainClock.advanceTimeUntil(5_000L) { committedFollow == follow }
-        // Android measure/draw are not driven by MainTestClock. Flush pending UI work after commit.
+        // Yield to Android between frames so snapshot-apply notifications can schedule recomposition.
+        // advanceTimeUntil runs its whole loop on the UI thread and cannot provide that host yield.
+        compose.waitUntil(timeoutMillis = 5_000L) {
+            if (committedFollow != follow) compose.mainClock.advanceTimeByFrame()
+            committedFollow == follow
+        }
+        // Flush Android measure/draw after the composition parameter has actually been committed.
         compose.waitForIdle()
     }
 
