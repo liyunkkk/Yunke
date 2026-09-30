@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,6 +36,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -154,7 +156,7 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
  * 空 assistant 占位不参与布局，避免刚发送时出现一个无内容消息节点。
  */
 @Composable
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 internal fun AgentChatBody(
     voiceController: VoiceModeController,
     messages: List<AgentChatMessageUi>,
@@ -267,7 +269,19 @@ internal fun AgentChatBody(
     val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
         visibleMessages.toTimelineEntries().size + if (isCompressingContext || isWaitingForCompression || childContexts.any { it.isCompacting }) 1 else 0
     }
-    val scrollState = rememberLazyListState(initialFirstVisibleItemIndex = initialBottomItemIndex)
+    // A default one-item prefetch is too shallow for mixed short tool rows and tall Markdown.
+    // Keep one viewport on both sides: ahead prepares incoming rows; behind prevents
+    // immediate disposal/recomposition when expansion or a direction reversal moves the boundary.
+    val chatCacheWindow = remember {
+        LazyLayoutCacheWindow(
+            aheadFraction = CHAT_CACHE_AHEAD_VIEWPORTS,
+            behindFraction = CHAT_CACHE_BEHIND_VIEWPORTS,
+        )
+    }
+    val scrollState = rememberLazyListState(
+        cacheWindow = chatCacheWindow,
+        initialFirstVisibleItemIndex = initialBottomItemIndex,
+    )
     val currentBrowserMessageId = remember(
         visibleMessages,
         browserShortcut,
@@ -1743,6 +1757,9 @@ private fun isModelOutputMessage(message: AgentChatMessageUi): Boolean = when (m
 }
 
 private val ChatBackToBottomButtonSlot = 52.dp
+
+private const val CHAT_CACHE_AHEAD_VIEWPORTS = 1f
+private const val CHAT_CACHE_BEHIND_VIEWPORTS = 1f
 
 private const val ChatBottomSentinelKey = "agent-chat-bottom-sentinel"
 private const val ChatContextCompressingKey = "agent-chat-context-compressing"
