@@ -1188,20 +1188,10 @@ internal fun AgentConversationMessages(
             },
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer {
-                    val overflow = scrollState.followTailOverflow()
-                    translationY = if (shouldLiftTail) {
-                        // 与滚动步长同一套整像素。这一帧量不到尾部时沿用上一帧，避免底边掉下去再弹回。
-                        -nextHeldTailLift(
-                            shouldLift = true,
-                            overflowPx = overflow,
-                            heldPx = heldTailLift[0],
-                        ).also { heldTailLift[0] = it }.toFloat()
-                    } else {
-                        heldTailLift[0] = 0
-                        0f
-                    }
-                }
+                .bottomFollowLayer(
+                    shouldLift = shouldLiftTail,
+                    heldLiftPx = heldTailLift,
+                ) { scrollState.followTailOverflow() }
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
