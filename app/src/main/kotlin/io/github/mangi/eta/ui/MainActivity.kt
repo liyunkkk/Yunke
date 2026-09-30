@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui
 
 import android.content.Intent
 import android.os.Parcelable
+import android.os.Trace
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -26,6 +27,10 @@ class MainActivity : ComponentActivity() {
     private var assistantConversationKey by mutableStateOf<String?>(null)
     private var inboundShareUris by mutableStateOf<List<String>>(emptyList())
     private var appliedPredictiveBackEnabled = true
+    private var refreshRateWindowResumed = false
+    private var previousPreferredRefreshRate: Float? = null
+    private var requestedPreferredRefreshRate: Float? = null
+    private val refreshRateRequest = Runnable { applyPreferredRefreshRate() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,11 +80,57 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        refreshRateWindowResumed = true
+        applyPreferredRefreshRate()
+        // Retry when the decor is attached; never leave a request queued after pause.
+        window.decorView.post(refreshRateRequest)
+    }
+
+    override fun onPause() {
+        refreshRateWindowResumed = false
+        window.decorView.removeCallbacks(refreshRateRequest)
+        val previous = previousPreferredRefreshRate
+        if (previous != null && window.attributes.preferredRefreshRate == requestedPreferredRefreshRate) {
+            val attributes = window.attributes
+            attributes.preferredRefreshRate = previous
+            window.attributes = attributes
+        }
+        previousPreferredRefreshRate = null
+        requestedPreferredRefreshRate = null
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         updateAssistantHandoff(intent)
         consumeShareIntent(intent)
+    }
+
+    private fun applyPreferredRefreshRate() {
+        if (!refreshRateWindowResumed || isFinishing || isDestroyed) return
+        val preferredRefreshRate = highestSupportedRefreshRate(
+            window.decorView.display?.supportedModes
+                ?.map { mode -> mode.refreshRate }
+                .orEmpty(),
+        )
+        if (preferredRefreshRate <= 0f) return
+
+        val attributes = window.attributes
+        if (attributes.preferredRefreshRate == preferredRefreshRate) return
+        if (previousPreferredRefreshRate == null) {
+            previousPreferredRefreshRate = attributes.preferredRefreshRate
+        }
+        requestedPreferredRefreshRate = preferredRefreshRate
+        Trace.beginSection("Eta.refresh.request hz=$preferredRefreshRate")
+        try {
+            attributes.preferredRefreshRate = preferredRefreshRate
+            window.attributes = attributes
+        } finally {
+            Trace.endSection()
+        }
     }
 
     private fun consumeShareIntent(intent: Intent?) {
