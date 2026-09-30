@@ -465,6 +465,26 @@ class AgentRunPendingThinkingRegressionTest {
     }
 
     @Test
+    fun oldToolDoesNotUnlockLateThinkingAfterSameTextIndexResumes() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        var messages = projector.appendTextDelta(runId, 1, 0, "工具前说明", emptyList())
+        messages = projector.startHostedTool(
+            runId, AgentEvent.HostedToolStarted(1, "old-tool", "search"), messages,
+        )
+        messages = projector.appendTextDelta(runId, 1, 0, "最终回答", messages)
+        val afterAnswer = messages
+
+        messages = projector.appendReasoningDelta(runId, 1, 1, "迟到推理", messages)
+        assertEquals(afterAnswer, messages)
+        assertTrue(messages.none { it is ThinkingMessageUi })
+
+        messages = projector.finalizeRun(runId, messages)
+        assertEquals(afterAnswer.map { it.id }, messages.map { it.id })
+        assertTrue(messages.none { it is ThinkingMessageUi })
+        assertEquals("工具前说明最终回答", messages.filterIsInstance<AgentMessageUi>().single().content)
+    }
+
+    @Test
     fun flushedCardStillAcceptsLiteralDeltasAndReplacementsAtItsOriginalLocation() {
         val projector = AgentRunMessageProjector { 1_000L }
         var messages = projector.appendTextDelta(runId, 1, 0, "说明", emptyList())

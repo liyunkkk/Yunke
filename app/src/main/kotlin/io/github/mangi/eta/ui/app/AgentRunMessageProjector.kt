@@ -20,6 +20,14 @@ internal class AgentRunMessageProjector(
 
     private data class ThinkingBlockKey(val runId: String, val round: Int, val index: Int)
 
+    private data class RoundEventKey(val runId: String, val round: Int)
+
+    private data class RoundEventState(
+        var sequence: Long = 0L,
+        var lastTextSequence: Long? = null,
+        var lastToolSequence: Long? = null,
+    )
+
     private data class PendingThinkingBlock(
         val afterMessageId: String?,
         var message: ThinkingMessageUi,
@@ -31,6 +39,9 @@ internal class AgentRunMessageProjector(
     // Text alone does not tell us whether it is commentary or a final answer. New reasoning
     // after text stays private until a subsequent tool in the SAME run/round provides evidence.
     private val pendingThinkingBlocks = linkedMapOf<ThinkingBlockKey, PendingThinkingBlock>()
+    // Message-list position is not event order: a resumed text block can stay before an old tool.
+    // Keep the ordering evidence separately so an old tool cannot unlock a later late-thinking block.
+    private val roundEventStates = mutableMapOf<RoundEventKey, RoundEventState>()
 
     fun isSealed(runId: String): Boolean = runId in sealedRunIds
 
@@ -38,6 +49,7 @@ internal class AgentRunMessageProjector(
         if (runId.isNotBlank()) sealedRunIds += runId
         discardPendingThinking(runId)
         thinkingBlockAnchors.keys.removeAll { it.runId == runId }
+        roundEventStates.keys.removeAll { it.runId == runId }
     }
 
     /** 回放从该 run 的空轨迹重建；仅重排有回放事件的补充输入，旧 handoff 独有的输入必须保留。 */
@@ -72,6 +84,7 @@ internal class AgentRunMessageProjector(
     ): List<AgentChatMessageUi> {
         if (isSealed(runId)) return messages
         discardPendingThinking(runId, event.round)
+        roundEventStates.remove(RoundEventKey(runId, event.round))
         val finalized = finalizeTextRound(
             runId, event.round, finalizeThinkingRound(runId, event.round, messages),
         )
@@ -89,6 +102,9 @@ internal class AgentRunMessageProjector(
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
         if (isSealed(runId)) return messages
+        if (event.kind == AgentEvent.AssistantBlockKind.TEXT) {
+            recordTextEvent(runId, event.round)
+        }
         if (event.kind == AgentEvent.AssistantBlockKind.THINKING) {
             val key = ThinkingBlockKey(runId, event.round, event.index)
             if (shouldDeferThinking(key, messages)) {
@@ -114,6 +130,7 @@ internal class AgentRunMessageProjector(
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
         if (delta.isEmpty() || isSealed(runId)) return messages
+        recordTextEvent(runId, round)
 
         val transitioned = transitionVisibleBlock(
             runId = runId,
@@ -381,6 +398,7 @@ internal class AgentRunMessageProjector(
             command = event.command,
         )
         if (isSealed(runId) || messages.any { it.id == message.id }) return messages
+        recordToolEvent(runId, event.round)
         return flushPendingThinking(runId, event.round, messages) + message
     }
 
@@ -428,6 +446,7 @@ internal class AgentRunMessageProjector(
             argumentsSummary = "",
         )
         if (isSealed(runId) || messages.any { it.id == message.id }) return messages
+        recordToolEvent(runId, event.round)
         return flushPendingThinking(runId, event.round, messages) + message
     }
 
@@ -482,7 +501,20 @@ internal class AgentRunMessageProjector(
     fun clearRun(runId: String) {
         discardPendingThinking(runId)
         thinkingBlockAnchors.keys.removeAll { it.runId == runId }
+        roundEventStates.keys.removeAll { it.runId == runId }
         thinkingStartedAt.keys.removeAll { it.startsWith("$runId-thinking-") }
+    }
+
+    private fun recordTextEvent(runId: String, round: Int) {
+        val state = roundEventStates.getOrPut(RoundEventKey(runId, round)) { RoundEventState() }
+        state.sequence += 1
+        state.lastTextSequence = state.sequence
+    }
+
+    private fun recordToolEvent(runId: String, round: Int) {
+        val state = roundEventStates.getOrPut(RoundEventKey(runId, round)) { RoundEventState() }
+        state.sequence += 1
+        state.lastToolSequence = state.sequence
     }
 
     /** Identity, not content prefixes, distinguishes a resumed delta from a new block. */
@@ -495,16 +527,10 @@ internal class AgentRunMessageProjector(
             return false
         }
         if (key in pendingThinkingBlocks) return true
-        val lastTextIndex = messages.indexOfLast { message ->
-            message is AgentMessageUi &&
-                isAssistantMessageForRound(message.id, key.runId, key.round) &&
-                message.content.isNotBlank()
-        }
-        if (lastTextIndex < 0) return false
-        return messages.drop(lastTextIndex + 1).none { message ->
-            message is ToolActivityMessageUi &&
-                message.id.startsWith("${key.runId}-tool-${key.round}-")
-        }
+        val state = roundEventStates[RoundEventKey(key.runId, key.round)]
+        val lastText = state?.lastTextSequence ?: return false
+        val lastTool = state.lastToolSequence ?: return true
+        return lastTool <= lastText
     }
 
     private fun rememberThinkingBlock(key: ThinkingBlockKey, messages: List<AgentChatMessageUi>) {
