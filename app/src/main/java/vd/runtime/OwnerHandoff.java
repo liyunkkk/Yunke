@@ -482,6 +482,12 @@ final class OwnerHandoff {
             if(!validRootChildMarkers(id,kids)) throw new IllegalStateException("child task ids unknown");
         }
     }
+    /** Cleanup removal is settled only once the task is gone. A still-present task is never success. */
+    static boolean unselectedRemovalSettled(Object removeResult, boolean stillPresent) {
+        if (stillPresent) return false;
+        // False/thrown remove of a task that is already absent is settled. A live task is not.
+        return removeResult == null || Boolean.TRUE.equals(removeResult) || Boolean.FALSE.equals(removeResult);
+    }
     static boolean validRootChildMarkers(int selfId,int[] childIds) {
         if(selfId<=0 || childIds==null) return false;
         Set<Integer> markers=new HashSet<Integer>();
@@ -647,8 +653,15 @@ final class OwnerHandoff {
                 Task identity=owned.get(id);
                 if(identity==null||selected.contains(id))throw new IllegalStateException("unexpected residual task");
                 verifyDisplay(source,unique);identity.check(roots().get(id),source);focus(witness);
-                phase="remove:"+id;Object ok=invokeAtm("removeTask",new Class<?>[]{int.class},id);
-                if(!Boolean.TRUE.equals(ok)||roots().containsKey(id))throw new IllegalStateException("remove not verified");removed.put(id);
+                phase="remove:"+id;
+                Object ok;
+                try { ok=invokeAtm("removeTask",new Class<?>[]{int.class},id); }
+                catch(java.lang.reflect.InvocationTargetException alreadyGone) { ok=Boolean.FALSE; }
+                // removeTask rejects a task the system already finished. Wait briefly, then
+                // accept absence so a vanished intermediate task cannot pin the virtual display.
+                for(int attempt=0;attempt<20 && roots().containsKey(id);attempt++) Thread.sleep(100L);
+                if(!unselectedRemovalSettled(ok,roots().containsKey(id))) throw new IllegalStateException("remove not verified");
+                removed.put(id);
             }
             verifyDisplay(source,unique);focus(witness);
             anchor.check(roots().get(anchor.id),source);
