@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,6 +81,7 @@ class BottomFollowDrawPhaseTest {
     private val markerColor = mutableStateOf(Color.Green)
     private val heldLift = intArrayOf(0)
     private var overflowReads = 0
+    @Volatile private var committedFollow: Boolean? = null
     private var taps = 0
     private lateinit var state: LazyListState
     private lateinit var scope: CoroutineScope
@@ -138,17 +140,21 @@ class BottomFollowDrawPhaseTest {
         advanceFrame()
         assertBottomMatches(known, capture())
         assertEquals(32, heldLift[0])
+        val anchoredBounds = compose.onNodeWithTag(MARKER).fetchSemanticsNode().boundsInRoot
         val readsBeforeRelease = overflowReads
 
         // The production caller removes the composer clip when a user starts scrolling.
         compose.runOnIdle { following.value = false }
-        advanceFrame()
+        awaitFollowCommitted(false)
         capture()
         assertEquals(0, heldLift[0])
         assertEquals(readsBeforeRelease, overflowReads)
+        val releasedBounds = compose.onNodeWithTag(MARKER).fetchSemanticsNode().boundsInRoot
+        assertEquals(anchoredBounds.top + 32f, releasedBounds.top, 0.5f)
+        assertEquals(anchoredBounds.bottom + 32f, releasedBounds.bottom, 0.5f)
 
         compose.runOnIdle { measurableTail.value = true; following.value = true }
-        advanceFrame()
+        awaitFollowCommitted(true)
         val resumed = capture()
         assertEquals(32, heldLift[0])
         assertBottomMatches(known, resumed)
@@ -188,6 +194,7 @@ class BottomFollowDrawPhaseTest {
                     state = rememberLazyListState()
                     scope = rememberCoroutineScope()
                     val follow = following.value
+                    SideEffect { committedFollow = follow }
                     Box(Modifier.size(WIDTH.dp, HEIGHT.dp).testTag(VIEWPORT).drawBehind {
                         drawRect(BACKGROUND)
                         drawRect(INPUT, topLeft = Offset(0f, REST.toFloat()),
@@ -263,6 +270,13 @@ class BottomFollowDrawPhaseTest {
 
     private fun advanceFrame() {
         compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+    }
+
+    /** Only composition-driven follow transitions use this barrier; growth stays single-frame. */
+    private fun awaitFollowCommitted(follow: Boolean) {
+        compose.mainClock.advanceTimeUntil(5_000L) { committedFollow == follow }
+        // Android measure/draw are not driven by MainTestClock. Flush pending UI work after commit.
         compose.waitForIdle()
     }
 
