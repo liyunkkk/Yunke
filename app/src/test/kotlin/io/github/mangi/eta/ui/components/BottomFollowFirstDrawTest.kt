@@ -198,7 +198,7 @@ class BottomFollowFirstDrawTest {
                             item(key = TAIL) {
                                 Column(
                                     Modifier.fillMaxWidth().layout { measurable, constraints ->
-                                        // This State is only read during measurement, not composition.
+                                        // Row composition does not read height; only its measurement does.
                                         val h = height.intValue
                                         val child = measurable.measure(constraints.copy(minHeight = h, maxHeight = h))
                                         measuredHeight = h
@@ -254,8 +254,20 @@ class BottomFollowFirstDrawTest {
             height.intValue += px
         }
         compose.mainClock.advanceTimeByFrame()
-        // Host waiting may finish the draw; it cannot advance the frozen Compose clock.
-        compose.waitUntil(5_000) { probes.containsKey(revision) && images.containsKey(revision) }
+        // Flush Android measure/layout/draw without advancing the manual Compose clock.
+        // The immutable probe still captures the FIRST draw, never the eventual idle image.
+        compose.waitForIdle()
+        try {
+            compose.waitUntil(5_000) { probes.containsKey(revision) && images.containsKey(revision) }
+        } catch (error: Throwable) {
+            throw AssertionError(
+                "First-draw capture stalled: revision=$revision measured=$measuredHeight " +
+                    "target=${height.intValue} expectedCount=$expectedCount " +
+                    "actualCount=${state.layoutInfo.totalItemsCount} " +
+                    "probes=$probes images=${images.keys} callbacks=$callbacks consumed=$consumed",
+                error,
+            )
+        }
         assertFalse(compose.mainClock.autoAdvance)
         return checkNotNull(probes[revision])
     }
