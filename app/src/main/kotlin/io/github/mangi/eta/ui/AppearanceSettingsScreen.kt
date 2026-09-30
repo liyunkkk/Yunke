@@ -447,7 +447,6 @@ private fun IconAppearanceEditor(
         IconColorChoices(stringResource(R.string.appearance_icon_cat), draftCat) { draftCat = it }
         BasicComponent(
             title = stringResource(R.string.appearance_icon_apply),
-            summary = stringResource(R.string.appearance_icon_apply_summary),
             enabled = dirty,
             onClick = {
                 if (!dirty) return@BasicComponent

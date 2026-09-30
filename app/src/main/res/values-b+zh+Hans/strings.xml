@@ -210,7 +210,6 @@
   <string name="appearance_icon_dark">暗色</string>
   <string name="appearance_icon_cat">猫咪颜色</string>
   <string name="appearance_icon_apply">确定</string>
-  <string name="appearance_icon_apply_summary">更换桌面图标。浅色和暗色只影响图标，不切换主题。</string>
   <string name="appearance_group_interface">界面与效果</string>
   <string name="appearance_theme_mode">主题模式</string>
   <string name="appearance_theme_system">跟随系统</string>
