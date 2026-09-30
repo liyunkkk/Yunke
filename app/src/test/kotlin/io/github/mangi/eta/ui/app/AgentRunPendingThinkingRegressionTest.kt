@@ -465,6 +465,15 @@ class AgentRunPendingThinkingRegressionTest {
     }
 
     @Test
+    fun lowerIndexReasoningAfterResumedTextRemainsVisible() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        var messages = projector.appendTextDelta(runId, 1, 10, "part1 ", emptyList())
+        messages = projector.appendTextDelta(runId, 1, 10, "part2 ", messages)
+        messages = projector.appendReasoningDelta(runId, 1, 9, "visible-later", messages)
+        assertEquals(listOf("visible-later"), messages.filterIsInstance<ThinkingMessageUi>().map { it.content })
+    }
+
+    @Test
     fun oldToolDoesNotUnlockLateThinkingAfterSameTextIndexResumes() {
         val projector = AgentRunMessageProjector { 1_000L }
         var messages = projector.appendTextDelta(runId, 1, 0, "工具前说明", emptyList())
