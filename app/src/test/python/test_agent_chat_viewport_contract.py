@@ -87,13 +87,6 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertNotRegex(head, r"\.padding\s*\(")
         self.assertRegex(head, r"\.clipToBounds\s*\(\s*\)")
 
-    def test_streaming_follow_requests_layout_scroll_like_rikkahub(self):
-        self.assertIn('scrollState.requestScrollToItem(count + 10)', self.messages)
-        self.assertLess(
-            self.messages.index('if (shouldFollowBottom && messageNavigationJob == null && !isUserScrolling)'),
-            self.messages.index('scrollState.requestScrollToItem(count + 10)'),
-        )
-
     def test_following_output_lifts_the_tail_instead_of_clipping_it(self):
         # While following streamed output, the tail is lifted to the 14dp line and
         # also clipped there. Fast output can draw a new line past the measured

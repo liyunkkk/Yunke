@@ -825,14 +825,6 @@ internal fun AgentConversationMessages(
     // 以前点开最底部一行时先暂停上提，让内容从上沿往下长过静止线、再由跟底滚动追回来，
     // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
     // 上提照常，标签随动画一帧一帧往上让开。
-    // 跟 rikkahub 一样：输出时在布局阶段请求滚到末尾，而不是等这一帧画完再 scrollBy。
-    // index 超过最后一项会停在列表底，新长出的内容不会先画进输入框。
-    if (shouldFollowBottom && messageNavigationJob == null && !isUserScrolling) {
-        SideEffect {
-            val count = scrollState.layoutInfo.totalItemsCount
-            if (count > 0) scrollState.requestScrollToItem(count + 10)
-        }
-    }
     val shouldLiftTail = shouldFollowBottom
     val shouldClipTail = shouldClipChatTail(
         keepBottomAnchored = keepBottomAnchored,
