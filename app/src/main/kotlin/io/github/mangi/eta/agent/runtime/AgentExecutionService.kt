@@ -256,6 +256,11 @@ internal class AgentExecutionService : Service() {
         @Volatile var backupMaintenance: Boolean = false
             private set
 
+        /** 外观里换过图标后，刷新正在执行的通知（大图标跟随当前启动图标）。 */
+        fun refreshIcon() {
+            mainHandler.post { instance?.refreshNotification() }
+        }
+
         @Synchronized fun beginBackupMaintenance() {
             check(!backupMaintenance && leases.count() == 0) { "请先停止 Agent 任务并关闭终端会话，再备份或恢复" }
             backupMaintenance = true
