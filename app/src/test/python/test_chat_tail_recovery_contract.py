@@ -67,8 +67,9 @@ class ChatTailRecoveryContractTest(unittest.TestCase):
 
     def test_rest_line_clip_is_a_layer_above_the_follow_translation(self):
         box = self.body.split('输入器悬浮在会话之上', 1)[1].split('LazyColumn(', 1)[0]
-        self.assertIn('Modifier.clip(restClip)', box)
-        self.assertLess(box.index('Modifier.clip(restClip)'), box.index('.drawWithContent'))
+        self.assertIn('compositingStrategy = CompositingStrategy.Offscreen', box)
+        self.assertIn('shape = restClip', box)
+        self.assertLess(box.index('shape = restClip'), box.index('.drawWithContent'))
         self.assertIn('clipRect(bottom = restLine)', box)
 
 if __name__ == '__main__':

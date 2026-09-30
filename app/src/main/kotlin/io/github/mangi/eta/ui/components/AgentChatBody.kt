@@ -80,6 +80,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -1132,9 +1133,19 @@ internal fun AgentConversationMessages(
     Box(
         modifier = modifier
             .clipToBounds()
-            // drawWithContent 的 clipRect 裁不到子级 graphicsLayer。跟底上提就是这一层，
-            // 不在这里再裁一次，新长出的一行会画进输入框。
-            .then(if (shouldClipTail) Modifier.clip(restClip) else Modifier)
+            // clipRect 和普通 clip 都裁不到子级 graphicsLayer（跟底上提、思考卡片的离屏纹理）。
+            // 先把整列画进一张按静止线裁切的离屏纹理，文字才不会露进输入框。
+            .then(
+                if (shouldClipTail) {
+                    Modifier.graphicsLayer {
+                        compositingStrategy = CompositingStrategy.Offscreen
+                        clip = true
+                        shape = restClip
+                    }
+                } else {
+                    Modifier
+                },
+            )
             .drawWithContent {
                 // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
                 // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
