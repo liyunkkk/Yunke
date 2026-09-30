@@ -146,7 +146,6 @@ import com.mikepenz.markdown.model.State
 import com.mikepenz.markdown.model.markdownAnimations
 import com.mikepenz.markdown.model.markdownDimens
 import com.mikepenz.markdown.model.markdownPadding
-import com.mikepenz.markdown.model.rememberMarkdownState
 import com.mikepenz.markdown.utils.getUnescapedTextInNode
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -901,51 +900,51 @@ private fun StableMarkdown(
     content: String,
     modifier: Modifier = Modifier,
     tone: ChatMarkdownTone = ChatMarkdownTone.Answer,
-    markdownState: MarkdownState = rememberMarkdownState(
-        content = content,
-        retainState = true,
-    ),
+    markdownState: MarkdownState = rememberCompletedMarkdownState(content),
     progressive: Boolean = false,
 ) {
     val components = remember { chatMarkdownComponents() }
-    Markdown(
-        markdownState = markdownState,
-        colors = chatMarkdownColors(tone),
-        typography = chatMarkdownTypography(tone),
-        padding = chatMarkdownPadding(),
-        dimens = chatMarkdownDimens(),
-        components = components,
-        modifier = modifier,
-        loading = {
-            LocalToggleProbe.current?.let { ref ->
-                SideEffect { StreamPerformanceDiagnostics.probeEvent(ref.token, "markdown", "state=loading chars=${content.length}") }
-            }
-            // 保留与最终正文接近的高度，避免历史消息异步解析完成后越界绘制。
-            Text(
-                text = content,
-                style = chatMarkdownBodyStyle(tone),
-                color = chatMarkdownTextColor(tone),
-                modifier = it,
-            )
-        },
-        error = {
-            Text(
-                text = content,
-                style = chatMarkdownBodyStyle(tone),
-                color = chatMarkdownTextColor(tone),
-                modifier = it,
-            )
-        },
-        success = { state, successComponents, successModifier ->
-            ChatMarkdownDocument(
-                root = state.node,
-                content = state.content,
-                components = successComponents,
-                modifier = successModifier,
-                progressive = progressive,
-            )
-        },
-    )
+    CompletedMarkdownStateHost(markdownState) {
+        Markdown(
+            markdownState = markdownState,
+            colors = chatMarkdownColors(tone),
+            typography = chatMarkdownTypography(tone),
+            padding = chatMarkdownPadding(),
+            dimens = chatMarkdownDimens(),
+            components = components,
+            modifier = modifier,
+            loading = {
+                LocalToggleProbe.current?.let { ref ->
+                    SideEffect { StreamPerformanceDiagnostics.probeEvent(ref.token, "markdown", "state=loading chars=${content.length}") }
+                }
+                // 保留与最终正文接近的高度，避免历史消息异步解析完成后越界绘制。
+                Text(
+                    text = content,
+                    style = chatMarkdownBodyStyle(tone),
+                    color = chatMarkdownTextColor(tone),
+                    modifier = it,
+                )
+            },
+            error = {
+                Text(
+                    text = content,
+                    style = chatMarkdownBodyStyle(tone),
+                    color = chatMarkdownTextColor(tone),
+                    modifier = it,
+                )
+            },
+            success = { state, successComponents, successModifier ->
+                CacheCompletedMarkdownSuccess(content, markdownState, state)
+                ChatMarkdownDocument(
+                    root = state.node,
+                    content = state.content,
+                    components = successComponents,
+                    modifier = successModifier,
+                    progressive = progressive,
+                )
+            },
+        )
+    }
 }
 
 /**
@@ -2418,10 +2417,7 @@ private fun ThinkingRow(
     // 解析完成后正文高度会再次变化；状态挂在行级还能在收起/展开循环中存活，
     // 避免每次展开都重新走一遍异步解析。
     val stableMarkdownState = if (!message.isStreaming) {
-        rememberMarkdownState(
-            content = message.content,
-            retainState = true,
-        )
+        rememberCompletedMarkdownState(message.content)
     } else {
         null
     }

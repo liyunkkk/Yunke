@@ -610,6 +610,8 @@ internal fun AgentConversationMessages(
     // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
     val scrollTraceEnabled = rememberChatScrollTraceEnabled()
     ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
+    // Retain successful parses beyond individual lazy-row compositions.
+    val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
     val timelineEntries = remember(visibleMessages) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
     }
@@ -1249,6 +1251,7 @@ internal fun AgentConversationMessages(
                 // Keep the row key/index and animate its root, including its footer.
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalExpansionHoldsBottom provides expansionHoldsBottom,
+                    LocalCompletedMarkdownCache provides completedMarkdownCache,
                 ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
