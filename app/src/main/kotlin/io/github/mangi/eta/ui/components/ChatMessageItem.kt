@@ -2572,11 +2572,12 @@ internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(): Modifier {
     val cache = settled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
     return Modifier
         .onSizeChanged { heightPx = it.height }
-        .then(
-            if (cache) {
-                Modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+        // 保留同一个绘制层节点，只切换合成策略；展开终态或高度越界时不插拔正文绘制层。
+        .graphicsLayer(
+            compositingStrategy = if (cache) {
+                CompositingStrategy.Offscreen
             } else {
-                Modifier
+                CompositingStrategy.Auto
             },
         )
 }
