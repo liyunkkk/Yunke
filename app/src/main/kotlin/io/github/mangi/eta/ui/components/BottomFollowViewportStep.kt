@@ -1,7 +1,5 @@
 package io.github.mangi.eta.ui.components
 
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.layout
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -53,30 +51,4 @@ internal fun snapFollowScrollStep(stepPx: Float, remainingPx: Float): Float {
     if (!stepPx.isFinite() || !remainingPx.isFinite() || stepPx <= 0f || remainingPx <= 0f) return 0f
     val whole = stepPx.roundToInt().toFloat().coerceIn(0f, remainingPx)
     return if (whole == 0f && remainingPx >= 1f) 1f else whole
-}
-
-/**
- * Observe the measured tail in placement, after measuring the list, rather than in the layer's
- * parameter callback. A streaming child may remeasure while the viewport keeps the same size;
- * its layoutInfo change must request placement before the new content is drawn under the rest clip.
- *
- * Measurement constraints, reported size and the child's layout position are unchanged. Only the
- * layer moves, so drawing, pointer hit testing and semantic bounds share the same transform. The
- * caller still caps [overflowPx] to the real draw buffer; unknown tails keep the last measured lift.
- */
-internal fun Modifier.bottomFollowLayer(
-    shouldLift: Boolean,
-    heldLiftPx: IntArray,
-    overflowPx: () -> Int?,
-): Modifier = layout { measurable, constraints ->
-    val placeable = measurable.measure(constraints)
-    layout(placeable.width, placeable.height) {
-        val lift = nextHeldTailLift(
-            shouldLift = shouldLift,
-            overflowPx = if (shouldLift) overflowPx() else null,
-            heldPx = heldLiftPx[0],
-        )
-        heldLiftPx[0] = lift
-        placeable.placeWithLayer(0, 0) { translationY = -lift.toFloat() }
-    }
 }
