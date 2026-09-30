@@ -92,6 +92,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -2552,15 +2554,31 @@ internal fun tailDetailsEnter(fromBottom: Boolean): androidx.compose.animation.E
 
 /**
  * 展开或收起还在进行时，内容尺寸每一帧都在变，绘制命令必须重录。
- * 停在展开之后，把内容留在自己的绘制层里：列表滑动只平移这一层，
- * 不再把正文的绘制命令每帧重录。文字、选择和流式更新都不变；
- * 内容本身变化时，这一层会照常失效重录。
+ * 停在展开之后，把内容画进一张与屏幕同分辨率的离屏纹理。
+ * 之后滑动只移动这张纹理，渲染线程不再重放正文的文字命令。
+ * 文字、选择和流式更新都不变；内容变化时纹理会重画。
+ * 高于 [MAX_RETAINED_LAYER_HEIGHT_PX] 的内容不缓存，避免纹理被裁切。
  */
+private const val MAX_RETAINED_LAYER_HEIGHT_PX = 8192
+
 @Composable
 internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(): Modifier {
     val settled = transition.currentState == EnterExitState.Visible &&
         transition.targetState == EnterExitState.Visible
-    return if (settled) Modifier.graphicsLayer() else Modifier
+    // 普通 graphicsLayer 只缓存显示列表，渲染线程仍会把文字命令重放一遍，
+    // 所以 COMMAND_ISSUE 降不下来。离屏纹理在内容不变时只做一次合成。
+    // 过高的内容超过纹理上限就会被裁切，宁可不缓存。
+    var heightPx by remember { mutableIntStateOf(0) }
+    val cache = settled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    return Modifier
+        .onSizeChanged { heightPx = it.height }
+        .then(
+            if (cache) {
+                Modifier.graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            } else {
+                Modifier
+            },
+        )
 }
 
 internal fun tailDetailsExit(toBottom: Boolean): androidx.compose.animation.ExitTransition =
