@@ -481,6 +481,16 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 return
             }
 
+            // Terminal snapshots can backfill a reasoning summary preceding a text
+            // item that was already streamed. Emitting a new visible block now would
+            // append that earlier summary after the answer. Keep the authoritative
+            // reasoning in finalResult/protocol state, but do not reopen the UI.
+            // Matching streamed blocks above still reconcile in place, and live
+            // reasoning around hosted tools is intentionally unaffected.
+            if (part.kind == AssistantBlockKind.THINKING &&
+                contentBlocks.any { it.kind == AssistantBlockKind.TEXT }
+            ) return
+
             finishActiveVisibleBlock()
             val block = StreamingContentBlock(
                 kind = part.kind,

@@ -436,6 +436,11 @@ internal class AgentRunMessageProjector(
     /**
      * 回答已经出来后，部分接口会把完整 reasoning 再推一遍。
      * 这时不要再展开一轮看起来像“又在思考”的卡片。
+     *
+     * provider 异常时也可能在工具之后的新 round 里先把正文推完、再补这一轮的 reasoning。
+     * 那种 round 还没有任何 thinking block，旧逻辑会放行并新建卡片，显示成“模型回答后继续
+     * 思考”。因此同 round 已有非空正文且其后没有工具时，不再新建 thinking block；
+     * 工具后的合法新推理及已有 block 的增量仍保留。
      */
     private fun shouldIgnoreLateThinking(
         runId: String,
@@ -443,16 +448,28 @@ internal class AgentRunMessageProjector(
         messages: List<AgentChatMessageUi>,
         incoming: String? = null,
     ): Boolean {
-        val thinkings = messages.filterIsInstance<ThinkingMessageUi>().filter { message ->
-            isThinkingMessageForRound(message.id, runId, round)
-        }
-        if (thinkings.isEmpty()) return false
         val hasAnswer = messages.any { message ->
             message is AgentMessageUi &&
                 isAssistantMessageForRound(message.id, runId, round) &&
                 message.content.isNotBlank()
         }
         if (!hasAnswer) return false
+        // Text before a hosted tool is commentary, not the final answer.
+        // Preserve legitimate reasoning (including BlockStart) after that tool.
+        val lastAnswerIndex = messages.indexOfLast { message ->
+            message is AgentMessageUi &&
+                isAssistantMessageForRound(message.id, runId, round) &&
+                message.content.isNotBlank()
+        }
+        val hasToolAfterAnswer = messages.drop(lastAnswerIndex + 1).any { message ->
+            message is ToolActivityMessageUi &&
+                message.id.startsWith("$runId-tool-$round-")
+        }
+        if (hasToolAfterAnswer) return false
+        val thinkings = messages.filterIsInstance<ThinkingMessageUi>().filter { message ->
+            isThinkingMessageForRound(message.id, runId, round)
+        }
+        if (thinkings.isEmpty()) return true
         val completed = thinkings.filterNot(ThinkingMessageUi::isStreaming)
         if (completed.isEmpty()) return false
         if (incoming == null) return true
