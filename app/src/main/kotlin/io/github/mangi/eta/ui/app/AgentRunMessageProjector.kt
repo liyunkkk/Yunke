@@ -545,7 +545,7 @@ internal class AgentRunMessageProjector(
         // has already received multiple text deltas across request continuations. A new
         // tail block is at or above the current text range and remains pending.
         val resumedText = (state.textDeltaCounts[maxTextIndex] ?: 0) >= 2
-        return !resumedText || key.index >= maxTextIndex
+        return !resumedText || key.index > maxTextIndex
     }
 
     private fun rememberThinkingBlock(key: ThinkingBlockKey, messages: List<AgentChatMessageUi>) {
