@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.voice.doubao
 
 import io.github.mangi.eta.agent.voice.VoiceDiagnostics
+import java.io.File
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -12,7 +13,7 @@ class PersonalVoicePreviewTest {
         var starts = 0
         var releases = 0
         var position = 0
-        override fun prepare(url: String, ready: () -> Unit, completed: () -> Unit,
+        override fun prepare(filePath: String, ready: () -> Unit, completed: () -> Unit,
             error: (Int, Int) -> Unit, buffering: (Int) -> Unit) {
             this.ready = ready; this.completed = completed; this.error = error
         }
@@ -24,7 +25,10 @@ class PersonalVoicePreviewTest {
     private fun controller(players: MutableList<Player>, logs: MutableList<String> = mutableListOf()) =
         PersonalVoicePreview(factory = { Player().also { players.add(it) } },
             traceFactory = { VoiceDiagnostics("personal-preview", { logs.add(it) }, { 0L }) },
-            after = { _, action -> action(); {} })
+            after = { _, action -> action(); {} },
+            background = { it() },
+            postToMain = { it() },
+            fetch = { File.createTempFile("voice-preview", ".wav") })
 
     @Test fun loadingAndPlayingAreBothStoppableWithoutRestart() {
         val players = mutableListOf<Player>(); val owner = controller(players)
@@ -90,18 +94,40 @@ class PersonalVoicePreviewTest {
     @Test fun prepareExceptionClearsLoadingAndReleasesPlayer() {
         val player = object : VoicePreviewPlayer {
             var released = false
-            override fun prepare(url: String, ready: () -> Unit, completed: () -> Unit,
+            override fun prepare(filePath: String, ready: () -> Unit, completed: () -> Unit,
                 error: (Int, Int) -> Unit, buffering: (Int) -> Unit) { throw IllegalStateException("prepare failed") }
             override fun start() = Unit
             override fun position() = 0
             override fun duration() = 0
             override fun release() { released = true }
         }
-        val owner = PersonalVoicePreview({ player }, { VoiceDiagnostics("test", {}) })
+        val owner = PersonalVoicePreview(
+            factory = { player },
+            traceFactory = { VoiceDiagnostics("test", {}) },
+            background = { it() },
+            postToMain = { it() },
+            fetch = { File.createTempFile("voice-preview", ".wav") },
+        )
         owner.toggle("a", "v", "https://example.test/demo")
         assertTrue(player.released)
         assertFalse(owner.state.value.active)
         assertNotNull(owner.state.value.error)
+    }
+
+    @Test fun downloadFailureReportsDownloadErrorNotPlaybackFailure() {
+        val players = mutableListOf<Player>()
+        val owner = PersonalVoicePreview(
+            factory = { Player().also { players.add(it) } },
+            traceFactory = { VoiceDiagnostics("test", {}) },
+            after = { _, action -> action(); {} },
+            background = { it() },
+            postToMain = { it() },
+            fetch = { null },
+        )
+        owner.toggle("a", "v", "https://example.test/demo")
+        assertEquals(0, players.size)
+        assertFalse(owner.state.value.active)
+        assertEquals("试听音频下载失败，请检查网络后重试。", owner.state.value.error)
     }
 
     @Test fun earlyCompletionKeepsPlayerAndStopButtonUntilTailGraceExpires() {
@@ -112,6 +138,9 @@ class PersonalVoicePreviewTest {
             factory = { Player().also { players.add(it) } },
             traceFactory = { VoiceDiagnostics("test", {}) },
             after = { ms, action -> delay = ms; deferred = action; {} },
+            background = { it() },
+            postToMain = { it() },
+            fetch = { File.createTempFile("voice-preview", ".wav") },
         )
         owner.toggle("a", "v", "https://example.test/demo")
         players[0].ready(); players[0].position = 7324; players[0].completed()
@@ -131,6 +160,9 @@ class PersonalVoicePreviewTest {
             factory = { Player().also { players.add(it) } },
             traceFactory = { VoiceDiagnostics("test", {}) },
             after = { _, action -> callbacks.add(action); { cancelled++ } },
+            background = { it() },
+            postToMain = { it() },
+            fetch = { File.createTempFile("voice-preview", ".wav") },
         )
         owner.toggle("a", "one", "https://example.test/one")
         players[0].ready(); players[0].completed(); players[0].completed()

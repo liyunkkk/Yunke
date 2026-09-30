@@ -34,6 +34,7 @@ import io.github.mangi.eta.agent.voice.doubao.PersonalVoices
 import io.github.mangi.eta.agent.voice.doubao.VoiceCatalogPreferences
 import io.github.mangi.eta.agent.voice.doubao.VoiceCatalogSecretStore
 import io.github.mangi.eta.agent.voice.doubao.VoiceProjectCatalog
+import io.github.mangi.eta.agent.voice.doubao.VoicePreviewDownloader
 import io.github.mangi.eta.ui.components.EtaMaterialDropdownMenu
 import io.github.mangi.eta.ui.components.EtaMaterialDropdownMenuItem
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -77,7 +78,10 @@ internal fun DoubaoVoiceSettings(page: String, onBack: () -> Unit) {
     var consent by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     androidx.activity.compose.BackHandler { if (!busy && !importBusy) back() }
-    val preview = remember { PersonalVoicePreview() }
+    val preview = remember(context) {
+        // 先下载并规范化 WAV 长度，再交给 MediaPlayer 播本地文件。
+        PersonalVoicePreview(fetch = VoicePreviewDownloader(context.cacheDir)::fetch)
+    }
     val previewState by preview.state.collectAsState()
     LaunchedEffect(previewState.error) {
         previewState.error?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
