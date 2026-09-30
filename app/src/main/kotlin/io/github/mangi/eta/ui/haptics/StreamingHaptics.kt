@@ -80,14 +80,20 @@ internal object StreamingHaptics {
         scheduleBackgroundTick()
     }
 
+    private fun claimForeground(conversationId: String?, view: View?) {
+        if (conversationId.isNullOrBlank()) return
+        if (conversationId != foregroundConversationId) cancelBackgroundTicks()
+        foregroundConversationId = conversationId
+        if (view != null) foregroundView = view
+    }
+
     private fun rememberForeground() {
+        // 暂停的会话也算当前页，否则切过去时原来还在跑的会话会继续震。
         val resumed = gates.firstOrNull { gate ->
-            !gate.conversationId.isNullOrBlank() && gate.enabled() &&
+            !gate.conversationId.isNullOrBlank() &&
                 gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         } ?: return
-        if (resumed.conversationId != foregroundConversationId) cancelBackgroundTicks()
-        foregroundConversationId = resumed.conversationId
-        foregroundView = resumed.view
+        claimForeground(resumed.conversationId, resumed.view)
     }
 
     private fun currentConversationView(conversationId: String?): View? {
@@ -95,7 +101,8 @@ internal object StreamingHaptics {
         return synchronized(gates) {
             rememberForeground()
             if (conversationId != foregroundConversationId) return@synchronized null
-            gates.firstOrNull { it.conversationId == conversationId }?.view ?: foregroundView
+            val gate = gates.firstOrNull { it.conversationId == conversationId && it.enabled() }
+            gate?.view ?: if (gates.none { it.conversationId == conversationId }) foregroundView else null
         }
     }
 
@@ -139,16 +146,14 @@ internal object StreamingHaptics {
         DisposableEffect(view, lifecycle, conversationId) {
             val gate = Gate(view, lifecycle, conversationId) { active }
             val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME && !conversationId.isNullOrBlank() && active) {
-                    synchronized(gates) { foregroundConversationId = conversationId }
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    synchronized(gates) { claimForeground(conversationId, view) }
                 }
             }
             synchronized(gates) {
                 gates += gate
-                if (!conversationId.isNullOrBlank() && active &&
-                    lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-                ) {
-                    foregroundConversationId = conversationId
+                if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    claimForeground(conversationId, view)
                 }
             }
             lifecycle.addObserver(observer)
