@@ -103,6 +103,7 @@ import io.github.mangi.eta.agent.voice.VoiceChatSnapshot
 import io.github.mangi.eta.agent.voice.VoiceEntryMode
 import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.agent.voice.VoiceModeState
+import io.github.mangi.eta.agent.voice.VOICE_MODE_SPEECH_OWNER_PREFIX
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
@@ -259,7 +260,7 @@ internal fun AgentChatBody(
             (message as? AgentMessageUi)?.takeIf { !it.isStreaming }?.id
         }.toSet()
         if (shouldStopOrphanSpeechPlayback(owner, messageEdit != null, visibleCompletedIds)) {
-            io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop()
+            io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop("orphan_reply")
         }
     }
     val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
@@ -2057,7 +2058,7 @@ internal fun shouldStopOrphanSpeechPlayback(
 ): Boolean {
     if (owner.isNullOrBlank()) return false
     // 试听、语音模式和 Agent 朗读工具都不绑定某条回复，不能按“回复不在可见列表里”收掉。
-    if (owner == "tts-preview" || owner == "agent-tts" || owner.startsWith("voice-mode-")) return false
+    if (owner == "tts-preview" || owner == io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_OWNER || owner.startsWith(VOICE_MODE_SPEECH_OWNER_PREFIX)) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
 

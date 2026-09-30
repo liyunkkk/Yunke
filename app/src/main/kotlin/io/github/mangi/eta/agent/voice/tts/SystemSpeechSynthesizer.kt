@@ -16,10 +16,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** One engine per playback session. No shared listeners, blocking latches or recycled utterance IDs. */
 internal class SystemSpeechSynthesizer {
-    suspend fun speak(context: Context, sentences: List<String>, onReady: (String) -> Unit) = withContext(Dispatchers.Main.immediate) {
+    /** [onFirstSentence] fires from the engine's binder thread when the first real sentence starts playing. */
+    suspend fun speak(context: Context, sentences: List<String>, onFirstSentence: () -> Unit = {}, onReady: (String) -> Unit) = withContext(Dispatchers.Main.immediate) {
         if (sentences.isEmpty()) return@withContext
         val initialized = CompletableDeferred<Int>()
         val pending = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+        val sentenceIds = ConcurrentHashMap.newKeySet<String>()
         val engine = TextToSpeech(context.applicationContext) { initialized.complete(it) }
         try {
             speechCheck(withTimeout(8_000) { initialized.await() } == TextToSpeech.SUCCESS) { "系统朗读引擎不可用" }
@@ -31,7 +33,7 @@ internal class SystemSpeechSynthesizer {
             speechCheck(engine.setVoice(voice) == TextToSpeech.SUCCESS) { "系统音色不可用" }
             engine.setAudioAttributes(SpeechPlayback.audioAttributes)
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
+                override fun onStart(utteranceId: String?) { if (utteranceId != null && sentenceIds.remove(utteranceId)) { sentenceIds.clear(); onFirstSentence() } }
                 override fun onDone(utteranceId: String?) { utteranceId?.let { pending.remove(it)?.complete(Unit) } }
                 @Deprecated("Deprecated in Java")
                 override fun onError(utteranceId: String?) { fail(utteranceId) }
@@ -43,9 +45,9 @@ internal class SystemSpeechSynthesizer {
             })
             warmup(engine, pending)
             onReady(voice.name)
-            for (sentence in sentences) {
+            for ((index, sentence) in sentences.withIndex()) {
                 currentCoroutineContext().ensureActive()
-                awaitSpeak(engine, pending, sentence, TextToSpeech.QUEUE_ADD)
+                awaitSpeak(engine, pending, sentence, TextToSpeech.QUEUE_ADD) { id -> if (index == 0) sentenceIds.add(id) }
             }
         } finally {
             initialized.cancel()
@@ -77,10 +79,12 @@ internal class SystemSpeechSynthesizer {
         pending: ConcurrentHashMap<String, CompletableDeferred<Unit>>,
         sentence: String,
         queueMode: Int,
+        beforeQueue: (String) -> Unit = {},
     ) {
         val id = UUID.randomUUID().toString()
         val done = CompletableDeferred<Unit>()
         pending[id] = done
+        beforeQueue(id)
         speechCheck(engine.speak(sentence, queueMode, null, id) == TextToSpeech.SUCCESS) { "系统语音无法播放" }
         withTimeout(90_000) { done.await() }
         pending.remove(id)

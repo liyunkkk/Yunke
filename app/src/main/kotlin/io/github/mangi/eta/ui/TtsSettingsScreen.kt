@@ -95,7 +95,7 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
                     insideMargin = PaddingValues(16.dp),
                     onCheckedChange = {
                         TouchHaptics.click(view)
-                        SpeechPlayback.stop()
+                        SpeechPlayback.stop("settings")
                         cloud = it
                         Prefs.putString(Prefs.Keys.AGENT_TTS_MODE, if (it) "cloud" else "system")
                     },
@@ -139,7 +139,7 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
         state = models, show = picker, onDismiss = { picker = false },
         title = stringResource(R.string.tts_model),
         onModelSelected = { provider, model ->
-            SpeechPlayback.stop()
+            SpeechPlayback.stop("settings")
             if (providerId != provider || modelId != model) {
                 ReadAloudVoiceHistory.remember(context, providerId, modelId, voice)
                 voice = ReadAloudVoiceHistory.restore(context, provider, model)
@@ -159,7 +159,7 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
         title = stringResource(R.string.tts_voice),
         onDismiss = { voicePicker = false },
         onSelected = { id ->
-            SpeechPlayback.stop()
+            SpeechPlayback.stop("settings")
             voice = id
             Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, id)
             ReadAloudVoiceHistory.remember(context, providerId, modelId, id)

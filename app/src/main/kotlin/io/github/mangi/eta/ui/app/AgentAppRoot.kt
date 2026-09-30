@@ -147,7 +147,7 @@ fun AgentAppRoot(
     } ?: conversationTokenUsage(agentState.homeState.messages)
 
     DisposableEffect(backStack.lastOrNull(), agentState.conversationPaneState.selectedConversationId) {
-        onDispose { io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop() }
+        onDispose { io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stopUiBound("route_change") }
     }
     val speechPlayback by io.github.mangi.eta.agent.voice.tts.SpeechPlayback.state.collectAsState()
     AgentTaskSurfacePrompt()
@@ -170,7 +170,7 @@ fun AgentAppRoot(
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_PAUSE -> {
-                    io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop()
+                    io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stopUiBound("pause")
                     keyboard?.hide()
                     focusManager.clearFocus(force = true)
                 }
