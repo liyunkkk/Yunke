@@ -127,13 +127,9 @@ class AgentChatViewportContractTest(unittest.TestCase):
             self.messages,
             r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)",
         )
-        self.assertRegex(
-            self.messages,
-            r"bottom\s*=\s*if\s*\(\s*shouldClipTail\s*\)\s*0\.dp\s*else\s*ConversationComposerGap\s*\+\s*bottomInset",
-        )
-        self.assertRegex(self.messages, r"constraints\.maxHeight\s*-\s*inset")
+        self.assertRegex(self.messages, r"bottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset")
         self.assertRegex(self.messages, r"bottom\s*=\s*12\.dp\s*\+\s*bottomInset")
-        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 6)
+        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 5)
 
     def test_lazy_column_rests_above_the_composer(self):
         lists = list(calls(self.messages, "LazyColumn"))
@@ -141,10 +137,7 @@ class AgentChatViewportContractTest(unittest.TestCase):
         paddings = list(calls(lists[0], "PaddingValues"))
         self.assertEqual(len(paddings), 1)
         # The resting line and the streaming clip line are the same constant.
-        self.assertRegex(
-            paddings[0],
-            r"bottom\s*=\s*if\s*\(\s*shouldClipTail\s*\)\s*0\.dp\s*else\s*ConversationComposerGap\s*\+\s*bottomInset",
-        )
+        self.assertRegex(paddings[0], r"\bbottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset\b")
         self.assertRegex(self.source, r"private\s+val\s+ConversationComposerGap\s*=\s*14\.dp")
 
     def test_navigation_stays_above_composer(self):

@@ -79,7 +79,6 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -1192,22 +1191,6 @@ internal fun AgentConversationMessages(
                 Arrangement.Top
             },
             modifier = Modifier
-                // 跟底时列表的布局高度就停在静止线。形状裁剪裁不住子级图层，缩短后的边界可以。
-                .layout { measurable, constraints ->
-                    val inset = (bottomInset + ConversationComposerGap).roundToPx()
-                    val limit = if (shouldClipTail) {
-                        (constraints.maxHeight - inset).coerceAtLeast(0)
-                    } else {
-                        constraints.maxHeight
-                    }
-                    val placeable = measurable.measure(
-                        constraints.copy(minHeight = 0, maxHeight = limit),
-                    )
-                    layout(placeable.width, placeable.height) {
-                        placeable.place(0, 0)
-                    }
-                }
-                .clipToBounds()
                 .fillMaxSize()
                 .graphicsLayer {
                     val overflow = scrollState.followTailOverflow()
@@ -1238,8 +1221,7 @@ internal fun AgentConversationMessages(
             // 最后一条静止时停在输入框上方 14dp；手动滑动时内容可以滚到输入框后面。
             contentPadding = PaddingValues(
                 top = 14.dp,
-                // 列表已经被截到静止线时不能再垫一整段输入框高度，否则尾部会停得过高。
-                bottom = if (shouldClipTail) 0.dp else ConversationComposerGap + bottomInset,
+                bottom = ConversationComposerGap + bottomInset,
             ),
             overscrollEffect = null,
         ) {
