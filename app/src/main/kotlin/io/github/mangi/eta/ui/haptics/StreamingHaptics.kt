@@ -68,6 +68,12 @@ internal object StreamingHaptics {
         TouchHaptics.onLiveToolActivity(view, toolId)
     }
 
+    /** 推理块从「正在推理」变成「推理已完成」时轻触一次，和工具标签共用去重与排队。 */
+    fun noteReasoningCompleted(thinkingId: String, conversationId: String? = null) {
+        if (thinkingId.isBlank()) return
+        noteToolAppeared("$thinkingId-completed", conversationId)
+    }
+
     fun noteBackgroundOutput(graphemes: Int, conversationId: String? = null) {
         if (graphemes <= 0) return
         // 当前页还在打字时由可见打字机震动。离开页面、展开侧栏或退到后台仍补震，直到换成另一条会话。

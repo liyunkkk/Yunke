@@ -4274,6 +4274,60 @@ internal class AgentAppState(
         replaying: Boolean,
     ) {
         modelRetryState.accept(runId, event)
+        val thinkingEvent = event.opensThinking()
+        if (thinkingEvent && !replaying) runsWithLiveReasoning += runId
+        // 流式增量很密，只在这次运行确实有推理块在跑时才扫一遍消息。
+        val reasoningBefore = if (replaying || thinkingEvent || event is AgentEvent.RunFailed ||
+            runId !in runsWithLiveReasoning
+        ) {
+            emptySet()
+        } else {
+            streamingThinkingIds(runId).also { if (it.isEmpty()) runsWithLiveReasoning -= runId }
+        }
+        applyRunEventBody(runId, event, persistSupplement, replaying)
+        if (reasoningBefore.isNotEmpty()) noteCompletedReasoning(runId, reasoningBefore)
+        if (event is AgentEvent.RunFinished || event is AgentEvent.RunFailed) runsWithLiveReasoning -= runId
+    }
+
+    private fun AgentEvent.opensThinking(): Boolean = when (this) {
+        is AgentEvent.AssistantBlockStart -> kind == AgentEvent.AssistantBlockKind.THINKING
+        is AgentEvent.AssistantBlockDelta -> kind == AgentEvent.AssistantBlockKind.THINKING
+        else -> false
+    }
+
+    /** 有推理块可能还在「正在推理」的运行；只在主线程读写。 */
+    private val runsWithLiveReasoning = mutableSetOf<String>()
+
+    /** 本次运行里仍在「正在推理」的思考块。没有时返回空集，事件处理后不用再比。 */
+    private fun streamingThinkingIds(runId: String): Set<String> {
+        val state = conversationState(conversationIdForRun(runId)) ?: return emptySet()
+        val prefix = "$runId-thinking-"
+        var ids: MutableSet<String>? = null
+        for (message in state.messages) {
+            if (message is ThinkingMessageUi && message.isStreaming && message.id.startsWith(prefix)) {
+                (ids ?: mutableSetOf<String>().also { ids = it }).add(message.id)
+            }
+        }
+        return ids ?: emptySet()
+    }
+
+    /** 处理前在推理、处理后已结束的块各震一次；失败或停止不算完成。 */
+    private fun noteCompletedReasoning(runId: String, before: Set<String>) {
+        val conversationId = conversationIdForRun(runId) ?: return
+        val state = conversationState(conversationId) ?: return
+        state.messages.forEach { message ->
+            if (message is ThinkingMessageUi && !message.isStreaming && message.id in before) {
+                io.github.mangi.eta.ui.haptics.StreamingHaptics.noteReasoningCompleted(message.id, conversationId)
+            }
+        }
+    }
+
+    private fun applyRunEventBody(
+        runId: String,
+        event: AgentEvent,
+        persistSupplement: Boolean,
+        replaying: Boolean,
+    ) {
         when (event) {
             is AgentEvent.AssistantBlockStart -> {
                 updateRunTrace(runId) { messages ->
