@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Deliberate opt-in for a separately verified V2419A experimental build. -->
-    <bool name="vivo_text_bridge_enabled">false</bool>
+    <!-- Build capability only. Independent persisted user consent defaults to false. -->
+    <bool name="vivo_text_bridge_enabled">true</bool>
 </resources>

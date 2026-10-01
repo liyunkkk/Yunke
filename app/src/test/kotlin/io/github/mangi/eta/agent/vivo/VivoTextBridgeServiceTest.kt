@@ -19,14 +19,14 @@ class VivoTextBridgeServiceTest {
         val controller = Robolectric.buildService(VivoTextBridgeService::class.java).create()
         try {
             val service = controller.get()
-            assertFalse(service.resources.getBoolean(R.bool.vivo_text_bridge_enabled))
+            assertTrue(service.resources.getBoolean(R.bool.vivo_text_bridge_enabled))
             assertNull(service.onBind(Intent()))
         } finally {
             controller.destroy()
         }
     }
 
-    @Test fun manifestDisablesComponentBeforeBinding() {
+    @Test fun componentCanBeAddressedButConsentStillGatesBinding() {
         val controller = Robolectric.buildService(VivoTextBridgeService::class.java).create()
         try {
             val service = controller.get()
@@ -35,7 +35,8 @@ class VivoTextBridgeServiceTest {
                 ComponentName(service, VivoTextBridgeService::class.java),
                 PackageManager.MATCH_DISABLED_COMPONENTS,
             )
-            assertFalse(info.enabled)
+            assertTrue(info.enabled)
+            assertNull(service.onBind(Intent()))
             assertTrue(info.exported)
         } finally {
             controller.destroy()

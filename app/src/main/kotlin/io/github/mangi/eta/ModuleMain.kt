@@ -19,6 +19,7 @@ import io.github.mangi.eta.hook.hyperos.HyperOsLauncherHooks
 import io.github.mangi.eta.hook.hyperos.HyperOsScreenSearchHooks
 import io.github.mangi.eta.hook.system.SystemServerHooks
 import io.github.mangi.eta.hook.system.SystemUiHooks
+import io.github.mangi.eta.hook.vivo.VivoHooks
 import io.github.mangi.eta.hook.xiaoai.XiaoAiHooks
 
 class ModuleMain : XposedModule() {
@@ -99,6 +100,12 @@ class ModuleMain : XposedModule() {
                 }
             }
 
+            VivoHooks.PACKAGE -> {
+                if (param.isFirstPackage && currentProcessName == VivoHooks.PACKAGE) {
+                    recordInstallation(VivoHooks.install(this, logger, param.classLoader))
+                }
+            }
+
             ModuleConfig.XIAOAI_PACKAGE -> {
                 if (isCurrentPackageProcess(ModuleConfig.XIAOAI_PACKAGE)) {
                     recordInstallation(HyperOsScreenSearchHooks.install(this, logger, param.classLoader))
@@ -135,6 +142,7 @@ class ModuleMain : XposedModule() {
             isPackageProcess(processName, ModuleConfig.COLOR_DIRECT_PACKAGE) ||
             isPackageProcess(processName, ModuleConfig.BREENO_PACKAGE) ||
             processName == ModuleConfig.COLOROS_MEMORY_PACKAGE ||
+            processName == VivoHooks.PACKAGE ||
             isPackageProcess(processName, ModuleConfig.XIAOAI_PACKAGE)
     }
 

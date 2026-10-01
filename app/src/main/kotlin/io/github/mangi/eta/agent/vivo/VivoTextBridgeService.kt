@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.vivo
 
 import android.app.Service
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,6 +12,8 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import io.github.mangi.eta.R
+import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.config.VivoBridgeConsent
 import io.github.mangi.eta.agent.model.ModelFeatureCompletion
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import kotlinx.coroutines.runBlocking
@@ -36,11 +39,24 @@ class VivoTextBridgeService : Service() {
         lateinit var timeout: Runnable
     }
 
+    private val consentListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Prefs.Keys.VIVO_TEXT_BRIDGE && !VivoBridgeConsent.localEnabled()) {
+            main.post { active?.let { stop(it, "CANCELLED") } }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        Prefs.initLocal(applicationContext)
+        Prefs.localAgentPreferences()?.registerOnSharedPreferenceChangeListener(consentListener)
+    }
+
     override fun onBind(intent: Intent?): IBinder? =
         if (enabled()) messenger.binder else null
 
     private fun enabled() = VivoTextBridgePolicy.deviceAllowed(
-        resources.getBoolean(R.bool.vivo_text_bridge_enabled), Build.MODEL, Build.VERSION.SDK_INT,
+        resources.getBoolean(R.bool.vivo_text_bridge_enabled) && VivoBridgeConsent.localEnabled(),
+        Build.MODEL, Build.VERSION.SDK_INT,
     )
 
     private fun authorized(uid: Int): Boolean = try {
@@ -86,6 +102,7 @@ class VivoTextBridgeService : Service() {
         }
         val call = Call(msg.sendingUid, command.id, reply)
         active = call
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_ACCEPTED)
         call.timeout = Runnable { stop(call, "TIMEOUT") }
         call.death = IBinder.DeathRecipient { main.post { stop(call, "CALLER_GONE", notify = false) } }
         call.thread = Thread({
@@ -99,9 +116,11 @@ class VivoTextBridgeService : Service() {
                     // No user-supplied system prompt, history, model override, URL or credentials.
                     val messages = JSONArray().put(JSONObject().put("role", "user")
                         .put("content", command.prompt!!))
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_STARTED)
                     val text = ModelFeatureCompletion.complete(config, messages, call.controller,
                         sessionId = "vivo-text-${call.id}", timeoutMs = VivoTextBridgePolicy.TIMEOUT_MS,
                         outputLimit = 2048)
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FINISHED)
                     if (text.length > VivoTextBridgePolicy.MAX_RESULT) code = "RESULT_TOO_LARGE"
                     else { answer = text; code = "OK" }
                 }
@@ -130,6 +149,7 @@ class VivoTextBridgeService : Service() {
 
     private fun stop(call: Call, code: String, notify: Boolean = true) {
         if (call.terminal.get()) return
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_CANCELLED)
         call.controller.cancel()
         call.thread.interrupt()
         finish(call, code, notify = notify)
@@ -138,6 +158,7 @@ class VivoTextBridgeService : Service() {
 
     private fun finish(call: Call, code: String, text: String? = null, notify: Boolean = true) {
         if (!call.terminal.compareAndSet(false, true)) return
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_TERMINAL)
         main.removeCallbacks(call.timeout)
         try { call.reply.binder.unlinkToDeath(call.death, 0) } catch (_: Exception) { }
         if (notify && !destroyed) send(call.reply, VivoTextBridgePolicy.RESULT, call.id, code, text)
@@ -157,6 +178,7 @@ class VivoTextBridgeService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        Prefs.localAgentPreferences()?.unregisterOnSharedPreferenceChangeListener(consentListener)
         active?.let { stop(it, "SERVICE_STOPPED", notify = false) }
         super.onDestroy()
     }
