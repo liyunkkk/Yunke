@@ -474,6 +474,9 @@ fun AgentAppRoot(
     val swipeDismiss = swipeBackDirection.takeIf {
         LocalAppearanceSettings.current.swipeDismissEnabled
     }
+    // 副屏恢复进行中不能被滑走；其余时间任务偏好页跟其他设置页一样可以横滑返回。
+    var taskRecoveryWorking by remember { mutableStateOf(false) }
+    val taskPreferenceSwipeDismiss = if (taskRecoveryWorking) NavSwipeDirection.None else swipeDismiss
     CompositionLocalProvider(
         io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor provides subAgentEditor,
     ) {
@@ -633,12 +636,18 @@ fun AgentAppRoot(
             entry<AppRoute.Haptics>(swipeDismiss = swipeDismiss) {
                 HapticsSettingsScreen(onBack = ::popRoute)
             }
-            entry<AppRoute.AgentTaskPreference>(swipeDismiss = null) {
-                AgentTaskPreferenceScreen(onBack = ::popRoute)
+            entry<AppRoute.AgentTaskPreference>(swipeDismiss = taskPreferenceSwipeDismiss) {
+                AgentTaskPreferenceScreen(
+                    onBack = ::popRoute,
+                    onRecoveryWorkingChanged = { taskRecoveryWorking = it },
+                )
             }
             // Compatibility alias for a restored old back stack; there is no separate recovery page.
-            entry<AppRoute.VirtualDisplayRecovery>(swipeDismiss = null) {
-                AgentTaskPreferenceScreen(onBack = ::popRoute)
+            entry<AppRoute.VirtualDisplayRecovery>(swipeDismiss = taskPreferenceSwipeDismiss) {
+                AgentTaskPreferenceScreen(
+                    onBack = ::popRoute,
+                    onRecoveryWorkingChanged = { taskRecoveryWorking = it },
+                )
             }
             entry<AppRoute.Tools>(swipeDismiss = swipeDismiss) {
                 AgentToolsScreen(

@@ -53,7 +53,10 @@ import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 /** Material 3 骨架：小标题顶栏 + 返回；内容可滚动并沿用已有页面的宽屏限宽。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun AgentTaskPreferenceScreen(onBack: () -> Unit) {
+internal fun AgentTaskPreferenceScreen(
+    onBack: () -> Unit,
+    onRecoveryWorkingChanged: (Boolean) -> Unit = {},
+) {
     val moduleInstalled = rememberTaskBackendInstalled()
     var previouslyInstalled by remember { mutableStateOf(false) }
     var recoveryWorking by remember { mutableStateOf(false) }
@@ -168,7 +171,10 @@ internal fun AgentTaskPreferenceScreen(onBack: () -> Unit) {
                                 }
                             }
                         }
-                        VirtualDisplayRecoveryControls(onWorkingChanged = { recoveryWorking = it })
+                        VirtualDisplayRecoveryControls(onWorkingChanged = {
+                            recoveryWorking = it
+                            onRecoveryWorkingChanged(it)
+                        })
                     }
                 }
             }
