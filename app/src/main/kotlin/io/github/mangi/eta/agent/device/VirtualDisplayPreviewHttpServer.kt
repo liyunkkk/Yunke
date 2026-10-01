@@ -20,6 +20,7 @@ internal class VirtualDisplayPreviewHttpServer(
     private val capture: (Identity?) -> Frame,
     private val prepareClose: ((Identity) -> VirtualDisplayManualClose.Result)? = null,
     private val commitClose: ((Identity, String) -> VirtualDisplayManualClose.Result)? = null,
+    private val resumeTicket: Ticket? = null,
 ) {
     data class Identity(val displayId: Int, val uniqueId: String)
     data class Display(val displayId: Int, val uniqueId: String, val phase: String) {
@@ -36,8 +37,16 @@ internal class VirtualDisplayPreviewHttpServer(
     data class Request(val method: String, val path: String, val headers: Map<String, String>) {
         override fun toString() = "PreviewRequest(method=$method, headers=redacted)"
     }
-    private val token = capability()
-    private val controlToken = if (prepareClose != null && commitClose != null) capability() else null
+    init {
+        require((prepareClose == null) == (commitClose == null))
+        if (resumeTicket != null) {
+            require(VirtualDisplayPreviewPairing.valid(resumeTicket))
+            require((resumeTicket.controlToken != null) == (prepareClose != null))
+        }
+    }
+    private val token = resumeTicket?.token ?: capability()
+    private val controlToken = if (prepareClose != null && commitClose != null)
+        resumeTicket?.controlToken ?: capability() else null
     private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private val captureLock = ReentrantLock()
     private val closeGrant = VirtualDisplayCloseGrant()
@@ -50,14 +59,14 @@ internal class VirtualDisplayPreviewHttpServer(
     @Volatile private var running = false
 
     @Synchronized fun start(): Ticket {
-        check(listener == null)
-        // No wildcard-address fallback, even when binding fails.
-        val server = ServerSocket(0, 4, InetAddress.getByName("127.0.0.1"))
+        check(listener == null && !workers.isShutdown)
+        // A paired port is stable. Never fall back to another port or a wildcard address.
+        val server = ServerSocket(resumeTicket?.port ?: 0, 4, InetAddress.getByName("127.0.0.1"))
         listener = server
         running = true
         Thread({
             while (running) {
-                val socket = try { server.accept() } catch (_: Exception) { break }
+                val socket = try { server.accept() } catch (_: Exception) { running = false; break }
                 clients.add(socket)
                 try { workers.execute { serve(socket, server.localPort) } }
                 catch (_: Exception) { clients.remove(socket); runCatching { socket.close() } }
@@ -65,6 +74,8 @@ internal class VirtualDisplayPreviewHttpServer(
         }, "eta-vd-preview-listener").apply { isDaemon = true }.start()
         return Ticket(server.localPort, token, controlToken)
     }
+
+    fun isRunning(): Boolean = running
 
     @Synchronized fun stop() {
         running = false

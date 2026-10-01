@@ -18,11 +18,11 @@ class VirtualDisplayRecoveryUiContractTest {
         assertTrue(source.contains("VirtualDisplayRecoveryControls("))
     }
 
-    @Test fun inlineRecoveryHasThreeWrappingMaterialActionsAndManualClosePreview() {
+    @Test fun inlineRecoveryHasWrappingActionsAndExplicitWebRevocation() {
         val source = File(ui, "VirtualDisplayRecoveryScreen.kt").readText()
         val actions = source.substring(source.indexOf("FlowRow("))
-        assertEquals(3, Regex("""TouchHaptics\.click\(view\)""").findAll(actions).count())
-        assertEquals(3, Regex("""maxLines = 1""").findAll(actions).count())
+        assertEquals(4, Regex("""TouchHaptics\.click\(view\)""").findAll(actions).count())
+        assertEquals(4, Regex("""maxLines = 1""").findAll(actions).count())
         assertTrue(actions.contains("Button(") && actions.contains("OutlinedButton(") && actions.contains("TextButton("))
         assertTrue(source.contains("!present -> R.string.vd_recovery_empty"))
         assertTrue(source.contains("VirtualDisplayWebPreview.openWithManualClose(context)"))
@@ -33,6 +33,13 @@ class VirtualDisplayRecoveryUiContractTest {
             assertFalse(source.contains(explanation))
         }
         assertTrue(source.contains("recover(context.applicationContext)"))
-        assertTrue(source.contains("VirtualDisplayWebPreview.stop()"))
+        assertFalse(source.contains("VirtualDisplayWebPreview.stop()"))
+        assertTrue(source.contains("VirtualDisplayWebPreview.revoke(context)"))
+        assertTrue(source.contains("vd_preview_revoke"))
+        assertTrue(source.contains("val showWeb = installed == true || webPaired"))
+        val previewButton = actions.substringBefore("R.string.vd_preview_open")
+        assertFalse(previewButton.contains("optBoolean(\"present\")"))
+        val leaving = source.substringAfter("DisposableEffect(Unit)").substringBefore("val snapshot")
+        assertFalse(leaving.contains("VirtualDisplayWebPreview."))
     }
 }

@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.device.RootAccess
+import io.github.mangi.eta.agent.device.VirtualDisplayWebPreview
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -88,6 +89,13 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
         // Complete legacy accounting migration before any UI/runtime can issue a new request.
         runBlocking(Dispatchers.IO) {
             io.github.mangi.eta.data.repository.UsageStatsRepository.initializeConversationUsage(this@EtaApp)
+        }
+        // Restore only an explicit, device-local web pairing, never create a virtual display.
+        applicationScope.launch {
+            runCatching { VirtualDisplayWebPreview.restore(this@EtaApp) }
+                .onFailure { throwable ->
+                    AndroidAgentLogger.warn("Virtual display web preview restore failed: type=${throwable.safeLogType()}")
+                }
         }
         XposedServiceHelper.registerListener(this)
         applicationScope.launch {

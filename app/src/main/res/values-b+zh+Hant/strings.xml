@@ -1483,6 +1483,7 @@
   <string name="vd_recovery_refresh">重新整理狀態</string>
   <string name="vd_recovery_explanation">將本工作階段任務交付到主螢幕背景，確認副螢幕為空後關閉。身分或狀態無法驗證時，保留副螢幕並顯示錯誤，不會強制停止應用程式。</string>
   <string name="vd_preview_open">網頁即時預覽</string>
+  <string name="vd_preview_revoke">撤銷網頁授權</string>
   <string name="vd_preview_stop">停止網頁預覽授權</string>
   <string name="vd_preview_note">唯讀本機畫面，使用暫時查看授權，需要配套新版 3070 網頁。網頁可見時持續重新整理，不會新建或控制副螢幕。</string>
   <string name="vd_preview_control_open">網頁預覽與手動關閉</string>

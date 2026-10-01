@@ -45,18 +45,20 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.device.AgentTaskSurface
+import io.github.mangi.eta.agent.device.VirtualDisplayPreviewLifecycle
 import io.github.mangi.eta.agent.device.VirtualDisplaySession
 import io.github.mangi.eta.agent.device.VirtualDisplayWebPreview
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
  * Inline controls on the Agent task preference page. Reading status never changes the display.
- * 只有存在恢复记录（或读取失败、刚结束一次操作）时才显示卡片，避免把内部状态码当正文展示。
+ * 网页授权独立于副屏是否存在；离开设置页不会撤销已配对浏览器。
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -74,6 +76,7 @@ internal fun VirtualDisplayRecoveryControls(
     var working by remember { mutableStateOf(false) }
     var state by remember { mutableStateOf<JSONObject?>(null) }
     var result by remember { mutableStateOf<JSONObject?>(null) }
+    var webPaired by remember { mutableStateOf(false) }
 
     fun setWorking(value: Boolean) {
         working = value
@@ -81,7 +84,16 @@ internal fun VirtualDisplayRecoveryControls(
     }
 
     LaunchedEffect(installed, working) {
-        if (installed == false && !working) VirtualDisplayWebPreview.stop()
+        if (installed == false && !working) {
+            try {
+                withContext(NonCancellable + Dispatchers.IO) { VirtualDisplayWebPreview.revoke(context) }
+                webPaired = false
+            } catch (ex: CancellationException) {
+                throw ex
+            } catch (_: Exception) {
+                result = JSONObject().put("ok", false).put("error", "WEB_PREVIEW_REVOKE_FAILED")
+            }
+        }
     }
 
     fun refresh() {
@@ -89,6 +101,7 @@ internal fun VirtualDisplayRecoveryControls(
         setWorking(true)
         scope.launch {
             try {
+                webPaired = withContext(Dispatchers.IO) { VirtualDisplayWebPreview.hasPairing(context) }
                 state = withContext(Dispatchers.IO) { readStatus(context.applicationContext) }
             } catch (ex: CancellationException) {
                 throw ex
@@ -107,10 +120,9 @@ internal fun VirtualDisplayRecoveryControls(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // A browser pauses the page; stop only when the controls really leave composition.
+    // Navigation is not revocation. The explicit revoke action owns the pairing lifetime.
     DisposableEffect(Unit) {
         onDispose {
-            VirtualDisplayWebPreview.stop()
             onWorkingChanged(false)
         }
     }
@@ -122,9 +134,11 @@ internal fun VirtualDisplayRecoveryControls(
     val present = snapshot?.optBoolean("present") == true
     val busy = snapshot?.optBoolean("busy") == true
     val phase = snapshot?.optString("phase", RECOVERY_PHASE_PENDING) ?: RECOVERY_PHASE_PENDING
-    // 没有恢复记录时不显示这张卡片；读取失败和刚结束的操作仍需可见，便于排查与确认。
+    // 没有副屏也能首次授权网页；已有配对时始终可撤销。
     // 首次读取期间 working=true 会吞掉返回键，此时也显示卡片（带进度），避免“无响应”。
-    if (result == null && !working && !(snapshot != null && (!readable || present))) return
+    val showRecovery = result != null || working || (snapshot != null && (!readable || present))
+    val showWeb = installed == true || webPaired
+    if (!showRecovery && !showWeb) return
 
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -227,7 +241,7 @@ internal fun VirtualDisplayRecoveryControls(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     OutlinedButton(
-                        enabled = installed == true && !working && snapshot?.optBoolean("present") == true,
+                        enabled = installed == true && !working,
                         onClick = {
                             if (!working) {
                                 TouchHaptics.click(view)
@@ -236,15 +250,22 @@ internal fun VirtualDisplayRecoveryControls(
                                     try {
                                         val uri = withContext(Dispatchers.IO) { VirtualDisplayWebPreview.openWithManualClose(context) }
                                         val stillInstalled = withContext(Dispatchers.IO) { AgentTaskSurface.moduleInstalled() }
-                                        check(stillInstalled) { "Backend module removed" }
+                                        if (!stillInstalled) {
+                                            withContext(NonCancellable + Dispatchers.IO) { VirtualDisplayWebPreview.revoke(context) }
+                                            webPaired = false
+                                            error("Backend module removed")
+                                        }
+                                        webPaired = true
                                         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri))
                                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                                     } catch (ex: CancellationException) {
-                                        VirtualDisplayWebPreview.stop()
                                         throw ex
-                                    } catch (_: Exception) {
-                                        VirtualDisplayWebPreview.stop()
-                                        result = JSONObject().put("ok", false).put("error", "WEB_PREVIEW_OPEN_FAILED")
+                                    } catch (ex: Exception) {
+                                        // A partial disk commit with failed cleanup is not an ordinary offline error.
+                                        webPaired = true // Always leave an explicit revoke action available after failure.
+                                        val error = if (ex is VirtualDisplayPreviewLifecycle.PersistenceCleanupException)
+                                            "WEB_PREVIEW_REVOKE_FAILED" else "WEB_PREVIEW_OPEN_FAILED"
+                                        result = JSONObject().put("ok", false).put("error", error)
                                     } finally { setWorking(false) }
                                 }
                             }
@@ -252,6 +273,32 @@ internal fun VirtualDisplayRecoveryControls(
                     ) {
                         Text(
                             text = stringResource(R.string.vd_preview_open),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    OutlinedButton(
+                        enabled = webPaired && !working,
+                        onClick = {
+                            if (!working) {
+                                TouchHaptics.click(view)
+                                setWorking(true)
+                                scope.launch {
+                                    try {
+                                        withContext(NonCancellable + Dispatchers.IO) { VirtualDisplayWebPreview.revoke(context) }
+                                        webPaired = false
+                                        result = null
+                                    } catch (ex: CancellationException) {
+                                        throw ex
+                                    } catch (_: Exception) {
+                                        result = JSONObject().put("ok", false).put("error", "WEB_PREVIEW_REVOKE_FAILED")
+                                    } finally { setWorking(false) }
+                                }
+                            }
+                        },
+                    ) {
+                        Text(
+                            text = stringResource(R.string.vd_preview_revoke),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
