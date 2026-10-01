@@ -147,7 +147,7 @@ internal object AgentPromptBuilder {
         if (config.browserTools) {
             messages.put(
                 systemMessage(
-                    "网页浏览、读取、交互和截图使用 browser_use：它是 Agent 共享的离屏浏览器，不会把页面显式交给外部应用；" +
+                    "网页浏览、读取、交互和截图使用 browser_use：它是主代理当前会话的离屏浏览器，不会把页面显式交给外部应用；" +
                         "每次调用只执行一个 action。navigate 接受完整 URL、域名或搜索词；Linux 的 /workspace 网页可用 file 路径打开。" +
                         "默认桌面 Chrome 身份，可用 set_user_agent 在 desktop_chrome 与 mobile_chrome 之间切换，也可用 set_viewport 改视口。" +
                         "通常先 navigate，再用 get_readable 提取 Markdown 正文（支持 offset/max_chars 分页），或用 find_elements / get_backbone 了解结构。" +
@@ -157,7 +157,7 @@ internal object AgentPromptBuilder {
                         "Linux 的 /var/minis/workspace、/offloads、/browser、/skills 映射到当前工作区与已安装 Skills，minis:// 也可在 navigate 中打开。" +
                         "screenshot 默认识口，full_page=true 可尽量截整页。" +
                         "点击、输入、滚动、悬停成功后会附带一张预览图，仍可用 screenshot 获取更清晰画面。" +
-                        "用户打开 Agent 浏览器页会接管同一 WebView，期间网页工具会暂停。保留 go_back / go_forward / reload。" +
+                        "用户打开 Agent 浏览器页会接管主代理当前会话的 WebView，期间该会话网页工具会暂停，不接管子任务的独立标签。保留 go_back / go_forward / reload。" +
                         "只有需要把 URI 交给外部应用时才使用 open_uri；open_uri 不用于读取网页。"
                 )
             )
@@ -232,8 +232,8 @@ internal object AgentPromptBuilder {
     private const val DELEGATION_RULE =
         "本轮已公开子代理。这是调度规则，不是可选建议。" +
             "只要任务里有两处或以上可以分开阅读的源码、协议或界面路径，必须在同一轮并行调用 delegate_task，不要先自己读完这些文件再决定要不要委派。" +
-            "research 与 review 可以使用 read_file 和 list_directory，但不能执行 shell、GUI 或浏览器。" +
-            "因此需要终端、日志、数据库或实机请求时，只把那一部分留在主代理；不能据此把源码阅读也留在主代理。" +
+            "research 与 review 可以使用 read_file 和 list_directory，但不能执行 shell 或 Android GUI。启用网页浏览工具时，文本子代理（包括工作树代理）可使用独立标签页的 browser_use 搜索、读取网页和截图；不开放点击、表单、任意 JS、Cookie、下载或本地网页，登录状态可能共享。需要这些交互时由主代理处理，不能因交互限制就把可独立完成的网页资料阅读全部留给主代理。" +
+            "因此需要终端、日志、数据库或 Android 实机操作时，只把那一部分留在主代理；不能据此把源码阅读也留在主代理。" +
             "多文件调查不是琐碎任务。不要把一句问答、一次状态查询、重复的付费生图，或同一文件的连续修改拆开。" +
             "按互不重叠的文件或模块划分，同一轮发出全部委派；有数据依赖、同文件写冲突或必须基于成品的审查才保持顺序。" +
             "同一个子代理没有委派次数上限。兼容代理只有一个时，也要在同一轮对它发出多路 delegate_task，不要等它空闲，也不要改成串行或把活留在主代理。供应商或模型的并行上限为 0 表示不限制。" +

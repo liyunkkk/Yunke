@@ -112,6 +112,56 @@ class SubAgentRunnerTest {
         assertEquals("verified step; next inspect", reported)
     }
 
+    @Test fun researchAndWorkspaceChildrenReceiveRestrictedBrowserAndSeparateExecutor() {
+        for (workspace in listOf(false, true)) {
+            val model = AgentModelClient.ModelConfig(baseUrl = "https://example.com", apiKey = "test",
+                model = "child", systemPrompt = "", browserTools = false)
+            var rounds = 0
+            var browserCalls = 0
+            val provider = scripted { request, _ ->
+                val schemas = (0 until request.tools.length()).map { request.tools.getJSONObject(it).getJSONObject("function") }
+                val browser = schemas.single { it.getString("name") == "browser_use" }
+                assertFalse(browser.getJSONObject("parameters").getJSONObject("properties").has("script"))
+                assertFalse(schemas.any { it.getString("name") == "terminal" })
+                assertTrue(request.messages.toString().contains("标签页"))
+                if (++rounds == 1) ProviderResponse(JSONObject().put("role", "assistant").put("content", "")
+                    .put("finish_reason", "tool_calls").put("tool_calls", JSONArray().put(JSONObject()
+                        .put("id", "page").put("type", "function").put("function", JSONObject()
+                            .put("name", "browser_use").put("arguments", "{\"action\":\"navigate\",\"url\":\"example.org\"}")))))
+                else {
+                    assertTrue(request.messages.toString().contains("child page evidence"))
+                    ProviderResponse(JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop"))
+                }
+            }
+            val result = SubAgentRunner.run(model, "research", JSONArray(),
+                { error("Browser must never use the parent/workspace executor") }, AgentRunController(), provider,
+                workspaceMode = workspace, writable = workspace, compactPolicy = AgentLoop.CompactPolicy.Disabled,
+                browserExecutor = {
+                    assertEquals("https://example.org", JSONObject(it.argumentsJson).getString("url"))
+                    browserCalls++
+                    AgentModelClient.ToolResult("child page evidence")
+                })
+            assertEquals("done", result)
+            assertEquals(1, browserCalls)
+        }
+    }
+
+    @Test fun parentCatalogAndChildConfigCannotGrantBrowserWithoutOwnedExecutor() {
+        for (workspace in listOf(false, true)) {
+            val model = AgentModelClient.ModelConfig(baseUrl = "https://example.com", apiKey = "test",
+                model = "child", systemPrompt = "", browserTools = true)
+            val tools = JSONArray().also(AgentBrowserToolCatalog::appendTo)
+            val provider = scripted { request, _ ->
+                assertFalse(request.config.browserTools)
+                assertFalse(request.tools.toString().contains("browser_use"))
+                assertTrue(request.messages.toString().contains("未启用子任务网页浏览工具"))
+                ProviderResponse(JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop"))
+            }
+            SubAgentRunner.run(model, "task", tools, { error("No browser granted") }, AgentRunController(), provider,
+                workspaceMode = workspace, compactPolicy = AgentLoop.CompactPolicy.Disabled)
+        }
+    }
+
     private fun scripted(block: (ProviderRequest, (ProviderEvent) -> Unit) -> ProviderResponse) = object : AgentProviderClient {
         override val id = "test"
         override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, false, false, false, false, false, false)

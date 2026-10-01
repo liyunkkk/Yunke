@@ -50,6 +50,7 @@ class BrowserUseManager(
     private val sessionIdProvider: () -> String? = { null },
     /** App context for the session-scoped path resolver. Null disables it. */
     private val appContext: android.content.Context? = null,
+    private val researchMode: Boolean = false,
 ) {
     companion object {
         private const val TAG = "BrowserUseManager"
@@ -237,13 +238,21 @@ class BrowserUseManager(
 
     init {
         configureWebView(webView, profile)
-        webView.addJavascriptInterface(jsBridge, "__minis__")
+        if (researchMode) {
+            webView.settings.apply {
+                allowFileAccess = false
+                allowContentAccess = false
+                setSupportMultipleWindows(false)
+                javaScriptCanOpenWindowsAutomatically = false
+            }
+        } else webView.addJavascriptInterface(jsBridge, "__minis__")
         setupWebViewClient()
         setupWebChromeClient()
         // Intercept page-triggered downloads (Content-Disposition attachment,
         // <a download>, unrenderable MIME types). Without a listener, WebView
         // silently drops these — the user taps "download" and nothing happens.
         webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
+            if (researchMode) return@setDownloadListener
             Log.i(TAG, "onDownloadStart: ${url.take(120)} mime=$mimetype len=$contentLength")
             when {
                 // blob: object URLs only exist inside the page — read via JS.
@@ -353,6 +362,7 @@ class BrowserUseManager(
                 view: WebView,
                 request: WebResourceRequest,
             ): Boolean {
+                if (researchMode) return !io.github.mangi.eta.agent.browser.ChildBrowserPolicy.isWebUrl(request.url.toString())
                 // Eta does not automatically open external Google auth or other apps.
                 return io.github.mangi.eta.agent.browser.ported.ui.browser.BrowserExternalSchemeHandler
                     .handle(
@@ -364,6 +374,15 @@ class BrowserUseManager(
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                if (researchMode && url != "about:blank" &&
+                    !io.github.mangi.eta.agent.browser.ChildBrowserPolicy.isWebUrl(url.orEmpty())) {
+                    view.stopLoading()
+                    navigationError = "Child browser only permits HTTP/HTTPS pages"
+                    _isLoading.value = false
+                    navigationDeferred?.complete(Unit)
+                    navigationDeferred = null
+                    return
+                }
                 navigationError = null
                 _isLoading.value = true
                 _currentURL.value = url.orEmpty()
@@ -380,7 +399,7 @@ class BrowserUseManager(
                 // Record in browser history
                 val histUrl = url ?: ""
                 val histTitle = view.title ?: ""
-                if (histUrl.isNotEmpty() && histUrl != "about:blank") {
+                if (!researchMode && histUrl.isNotEmpty() && histUrl != "about:blank") {
                     BrowserHistoryStore.getInstance(view.context).record(histUrl, histTitle)
                 }
                 // T-webview-popup-d3c6e10f (Issue 1): after the pool WebView's
@@ -413,6 +432,10 @@ class BrowserUseManager(
                 view: WebView, request: WebResourceRequest
             ): android.webkit.WebResourceResponse? {
                 val url = request.url ?: return null
+                if (researchMode && !io.github.mangi.eta.agent.browser.ChildBrowserPolicy.isWebUrl(url.toString())) {
+                    return android.webkit.WebResourceResponse("text/plain", "UTF-8", 403, "Forbidden",
+                        emptyMap(), "Child browser blocks local and external schemes".byteInputStream())
+                }
                 if (url.scheme != "minis") return null
                 return interceptMinisURL(url)
             }
@@ -535,6 +558,7 @@ class BrowserUseManager(
             override fun onCreateWindow(
                 view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message
             ): Boolean {
+                if (researchMode) return false
                 onNewWindow?.invoke(resultMsg)
                 return onNewWindow != null
             }
@@ -741,6 +765,9 @@ class BrowserUseManager(
         if (urlString.isNullOrEmpty()) return BrowserActionResult.error("Missing 'url' parameter")
 
         val normalized = normalizeURL(urlString)
+        if (researchMode && !io.github.mangi.eta.agent.browser.ChildBrowserPolicy.isWebUrl(normalized)) {
+            return BrowserActionResult.error("Child browser only permits HTTP/HTTPS pages")
+        }
 
         val deferred = CompletableDeferred<Unit>()
         navigationDeferred = deferred
@@ -1483,6 +1510,9 @@ class BrowserUseManager(
 
     fun loadURL(urlString: String) {
         val normalized = normalizeURL(urlString)
+        if (researchMode && !io.github.mangi.eta.agent.browser.ChildBrowserPolicy.isWebUrl(normalized)) {
+            return BrowserActionResult.error("Child browser only permits HTTP/HTTPS pages")
+        }
         _isLoading.value = true
         webView.loadUrl(normalized)
     }

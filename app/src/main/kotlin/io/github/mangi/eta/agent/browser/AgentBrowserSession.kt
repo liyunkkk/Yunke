@@ -277,7 +277,7 @@ internal object AgentBrowserSession {
         }
     }
 
-    private suspend fun toToolResult(action: String, args: JSONObject, result: BrowserActionResult, browser: BrowserTabPool): BrowserToolResult {
+    internal suspend fun toToolResult(action: String, args: JSONObject, result: BrowserActionResult, browser: BrowserTabPool): BrowserToolResult {
         val body = if (action in setOf("get_text", "get_readable", "get_cookies")) {
             runCatching { JSONObject(result.text.substringBeforeLast("\n  tab_id:", result.text)) }.getOrNull()
         } else null

@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.runtime
 import android.content.Context
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.delegation.*
+import io.github.mangi.eta.agent.browser.ChildBrowserSession
 import io.github.mangi.eta.agent.model.AgentToolCatalog
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeper
 import io.github.mangi.eta.agent.model.AgentModelClient
@@ -208,6 +209,35 @@ internal class AgentRuntimeRunExecutor(
                 var children: SubAgentCoordinator? = null
                 try {
                     val workspace = childWorkspace
+                    // Each invocation/continuation owns its own ephemeral browser; never forward it
+                    // to the parent's AgentLocalTools (which is bound to the parent's browser page).
+                    fun runTextChild(config: AgentModelClient.ModelConfig, prompt: String,
+                        controller: AgentRunController, project: String, id: String?, writable: Boolean,
+                        progress: (AgentEvent) -> Unit = {}): String {
+                        val browser = if (allowBrowser && currentPermissions().browserTools)
+                            ChildBrowserSession(appContext, controller) { allowBrowser && currentPermissions().browserTools }
+                        else null
+                        try {
+                            if (id != null) {
+                                val backend = requireNotNull(workspace)
+                                return SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
+                                    backend.childExecutor(project, id, writable, controller), controller,
+                                    workspaceMode = true, writable = writable, sessionId = childSessionId,
+                                    onProgress = progress, browserExecutor = browser?.executor)
+                            }
+                            val readTools = SubAgentTools.filter(AgentToolCatalog.build(
+                                terminalTools = allowTerminal && currentPermissions().terminalTools,
+                                browserTools = false, // Installed separately with a task-owned executor.
+                                deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
+                                deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
+                                memoryTools = memoryEnabled,
+                                capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
+                            return SubAgentRunner.run(config, prompt, readTools, executor, controller,
+                                sessionId = childSessionId, onProgress = progress, browserExecutor = browser?.executor)
+                        } finally {
+                            browser?.release()
+                        }
+                    }
                     var generationForCallback: String? = null
                     val poolScope = "${request.effectiveModelSessionId}:${request.runId}:${UUID.randomUUID()}"
                     children = SubAgentCoordinator(childModels,
@@ -230,38 +260,13 @@ internal class AgentRuntimeRunExecutor(
                             appContext, childSessionId, config, prompt, controller, video = true) },
                         onContext = { stats -> childContextSink.get()?.invoke(stats) },
                         executeObservedChild = { config, prompt, controller, project, id, writable, progress ->
-                            if (id != null) {
-                                val backend = requireNotNull(workspace)
-                                SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
-                                    backend.childExecutor(project, id, writable, controller), controller,
-                                    workspaceMode = true, writable = writable, sessionId = childSessionId, onProgress = progress)
-                            } else {
-                                val readTools = SubAgentTools.filter(AgentToolCatalog.build(
-                                    terminalTools = allowTerminal && currentPermissions().terminalTools,
-                                    browserTools = false,
-                                    deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
-                                    deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
-                                    memoryTools = memoryEnabled,
-                                    capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
-                                SubAgentRunner.run(config, prompt, readTools, executor, controller,
-                                    sessionId = childSessionId, onProgress = progress)
-                            }
+                            runTextChild(config, prompt, controller, project, id, writable, progress)
                         },
                         executeWorkspaceChild = { config, prompt, controller, project, id, writable ->
-                            val backend = requireNotNull(workspace)
-                            SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
-                                backend.childExecutor(project, id, writable, controller), controller,
-                                workspaceMode = true, writable = writable, sessionId = childSessionId)
+                            runTextChild(config, prompt, controller, project, id, writable)
                         },
                     ) { config, prompt, controller ->
-                        val readTools = SubAgentTools.filter(AgentToolCatalog.build(
-                            terminalTools = allowTerminal && currentPermissions().terminalTools,
-                            browserTools = false,
-                            deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
-                            deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
-                            memoryTools = memoryEnabled,
-                            capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
-                        SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = childSessionId)
+                        runTextChild(config, prompt, controller, "", null, false)
                     }
                     val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
                         releaseTools = { ownership.release() }, workspaceEnvironment = workspaceEnvironment,

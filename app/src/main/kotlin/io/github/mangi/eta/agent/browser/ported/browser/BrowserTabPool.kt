@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,7 +33,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Manages up to 3 browser tabs for the agent, mirroring iOS BrowserTabPool.
  * All tabs share the same cookie store by default on Android.
  */
-class BrowserTabPool(private val context: Context) {
+class BrowserTabPool(private val context: Context, private val researchMode: Boolean = false) {
 
     companion object {
         private const val TAG = "BrowserTabPool"
@@ -108,6 +109,7 @@ class BrowserTabPool(private val context: Context) {
      * to separate (free / freshly-created) tabs in [acquireTab] so two
      * tab-less navigates run in parallel instead of deadlocking on one tab.
      */
+    private val tabLimit = if (researchMode) 1 else MAX_TABS
     private val tabLocks = ConcurrentHashMap<Int, Mutex>()
 
     private fun lockForTab(id: Int): Mutex = tabLocks.getOrPut(id) { Mutex() }
@@ -220,7 +222,7 @@ class BrowserTabPool(private val context: Context) {
         idleTimeoutMs = storedMinutes.coerceIn(MIN_IDLE_TIMEOUT_MINUTES, MAX_IDLE_TIMEOUT_MINUTES) * 60_000L
 
         // Start idle tab eviction timer (60-second interval, matching iOS)
-        evictionJob = evictionScope.launch {
+        evictionJob = if (researchMode) null else evictionScope.launch {
             while (isActive) {
                 delay(IDLE_CHECK_INTERVAL_MS)
                 withContext(Dispatchers.Main) { evictIdleTabs() }
@@ -252,7 +254,7 @@ class BrowserTabPool(private val context: Context) {
 
     fun setSession(sessionId: String) {
         this.sessionId = sessionId
-        loadSavedState()
+        if (!researchMode) loadSavedState()
     }
 
     // -- Downloads --
@@ -817,9 +819,9 @@ class BrowserTabPool(private val context: Context) {
     }
 
     private fun createTab(tabs: MutableList<Tab>, url: String? = null): Tab? {
-        if (tabs.size >= MAX_TABS) return null
+        if (tabs.size >= tabLimit) return null
 
-        val id = (0 until MAX_TABS).first { candidate -> tabs.none { it.id == candidate } }
+        val id = (0 until tabLimit).first { candidate -> tabs.none { it.id == candidate } }
         val webView = WebView(context)
         // [T-android-minis-url-session-scope] Hand the manager a LIVE reader of
         // this pool's session id (set later via setSession) plus a context, so
@@ -830,6 +832,7 @@ class BrowserTabPool(private val context: Context) {
             userAgentProfile,
             sessionIdProvider = { sessionId },
             appContext = context.applicationContext,
+            researchMode = researchMode,
         )
         if (userAgentProfile == UserAgentProfile.CUSTOM && !customUserAgentString.isNullOrEmpty()) {
             manager.setUserAgent(userAgentProfile, customUserAgentString)
@@ -868,7 +871,7 @@ class BrowserTabPool(private val context: Context) {
 
     private suspend fun newTab(url: String?): BrowserActionResult = withContext(Dispatchers.Main) {
         val currentTabs = _tabs.value.toMutableList()
-        if (currentTabs.size >= MAX_TABS) {
+        if (currentTabs.size >= tabLimit) {
             return@withContext BrowserActionResult.error("Maximum $MAX_TABS tabs reached")
         }
         val tab = createTab(currentTabs, url)
@@ -925,17 +928,18 @@ class BrowserTabPool(private val context: Context) {
 
     private fun handleNewWindow(resultMsg: Message) {
         val currentTabs = _tabs.value.toMutableList()
-        if (currentTabs.size >= MAX_TABS) {
+        if (currentTabs.size >= tabLimit) {
             Log.w(TAG, "window.open rejected: max tabs reached")
             return
         }
-        val id = (0 until MAX_TABS).first { candidate -> currentTabs.none { it.id == candidate } }
+        val id = (0 until tabLimit).first { candidate -> currentTabs.none { it.id == candidate } }
         val newWebView = WebView(context)
         val manager = BrowserUseManager(
             newWebView,
             userAgentProfile,
             sessionIdProvider = { sessionId },
             appContext = context.applicationContext,
+            researchMode = researchMode,
         )
         if (userAgentProfile == UserAgentProfile.CUSTOM && !customUserAgentString.isNullOrEmpty()) {
             manager.setUserAgent(userAgentProfile, customUserAgentString)
@@ -985,7 +989,7 @@ class BrowserTabPool(private val context: Context) {
     /** Create a new tab from the UI (user tapped + button). */
     suspend fun newTabFromUI(): Tab? = withContext(Dispatchers.Main) {
         val currentTabs = _tabs.value.toMutableList()
-        if (currentTabs.size >= MAX_TABS) return@withContext null
+        if (currentTabs.size >= tabLimit) return@withContext null
         val tab = createTab(currentTabs) ?: return@withContext null
         _selectedTabId.value = tab.id
         if (tab.needsInitialBlankPage) {
@@ -1096,7 +1100,9 @@ class BrowserTabPool(private val context: Context) {
     // -- Release --
 
     fun destroy() {
-        _tabs.value.forEach { it.manager.destroy() }
+        evictionScope.cancel()
+        downloadScope.cancel()
+        _tabs.value.forEach { it.inUseGraceJob?.cancel(); it.manager.destroy() }
         _tabs.value = emptyList()
     }
 
@@ -1108,6 +1114,7 @@ class BrowserTabPool(private val context: Context) {
     // -- Idle Eviction (call from a timer) --
 
     fun evictIdleTabs() {
+        if (researchMode) return // The child execution owns these tabs until its finally block.
         val owner = sessionId
         if (owner != null && io.github.mangi.eta.agent.browser.AgentBrowserSession.isControlling(owner)) return
         val now = System.currentTimeMillis()
@@ -1239,6 +1246,7 @@ class BrowserTabPool(private val context: Context) {
     // -- Disk Persistence --
 
     private fun saveState() {
+        if (researchMode) return
         val sid = sessionId ?: return
         try {
             val dir = File(context.filesDir, "browser_tabs")
