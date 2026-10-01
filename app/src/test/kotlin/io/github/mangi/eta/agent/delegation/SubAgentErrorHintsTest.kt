@@ -88,7 +88,79 @@ class SubAgentErrorHintsTest {
         assertTrue(delegate.contains("execution_stopped=true"))
         assertTrue(delegate.contains("different agent_id"))
         assertTrue(delegate.contains("missing shell is not a reason for the parent to read that source itself"))
-        assertTrue(description("supervise_task").contains("exactly running"))
+        assertTrue(description("supervise_task").contains("need status exactly running"))
+        assertTrue(description("supervise_task").contains("allowed_actions"))
         assertTrue(description("manage_agent_workspace").contains("WORKSPACE_IN_USE"))
+    }
+
+    private fun awaitStatus(c: SubAgentCoordinator, id: String, status: String) {
+        val deadline = System.currentTimeMillis() + 2_000
+        while (JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", id))).content).getString("status") != status) {
+            assertTrue(System.currentTimeMillis() < deadline)
+            Thread.sleep(10)
+        }
+    }
+
+    @Test fun unknownTaskListsKnownIds() {
+        SubAgentCoordinator(listOf(model)) { _, _, _ -> "done" }.use { c ->
+            val id = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "inspect"))).content).getString("task_id")
+            val result = JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", "missing"))).content)
+            assertEquals("TASK_NOT_FOUND", result.getString("code"))
+            assertEquals(id, result.getJSONArray("known_task_ids").getString(0))
+        }
+    }
+
+    @Test fun pausingAPausedTaskSucceedsAndGuideReportsStatus() {
+        val release = java.util.concurrent.CountDownLatch(1)
+        SubAgentCoordinator(listOf(model)) { _, _, controller -> release.await(); controller.throwIfCancelled(); "done" }.use { c ->
+            try {
+                val id = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "inspect"))).content).getString("task_id")
+                awaitStatus(c, id, "running")
+                val first = JSONObject(c.execute(call("supervise_task", JSONObject().put("task_id", id).put("action", "pause"))).content)
+                assertEquals("awaiting_decision", first.getString("status"))
+                val again = JSONObject(c.execute(call("supervise_task", JSONObject().put("task_id", id).put("action", "pause"))).content)
+                assertTrue(again.getBoolean("ok"))
+                assertEquals("awaiting_decision", again.getString("status"))
+                assertTrue(again.getString("note").contains("continue_task"))
+                val guide = JSONObject(c.execute(call("supervise_task", JSONObject().put("task_id", id).put("action", "guide").put("guidance", "x"))).content)
+                assertEquals("TASK_NOT_RUNNING_TEXT", guide.getString("code"))
+                assertEquals("awaiting_decision", guide.getString("status"))
+                assertEquals("continue_task", guide.getJSONArray("allowed_actions").getString(0))
+                c.execute(call("continue_task", JSONObject().put("task_id", id)))
+                val resumed = JSONObject(c.execute(call("continue_task", JSONObject().put("task_id", id))).content)
+                assertEquals("TASK_NOT_AWAITING_DECISION", resumed.getString("code"))
+                assertTrue(resumed.getString("status") in setOf("queued", "running"))
+            } finally {
+                release.countDown()
+            }
+        }
+    }
+
+    @Test fun finishedTaskOnlyAllowsReading() {
+        SubAgentCoordinator(listOf(model)) { _, _, _ -> "done" }.use { c ->
+            val id = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "inspect"))).content).getString("task_id")
+            awaitStatus(c, id, "completed")
+            val result = JSONObject(c.execute(call("supervise_task", JSONObject().put("task_id", id).put("action", "pause"))).content)
+            assertEquals("TASK_NOT_RUNNING_TEXT", result.getString("code"))
+            assertEquals("completed", result.getString("status"))
+            assertEquals(1, result.getJSONArray("allowed_actions").length())
+            assertEquals("get_task_result", result.getJSONArray("allowed_actions").getString(0))
+        }
+    }
+
+    @Test fun oversizedPagingIsClampedNotRejected() {
+        val tools = JSONArray().also { SubAgentTools.appendTo(it, listOf("a"), workspaceEnabled = false) }
+        val get = (0 until tools.length()).map { tools.getJSONObject(it).getJSONObject("function") }
+            .single { it.getString("name") == "get_task_result" }
+        val properties = get.getJSONObject("parameters").getJSONObject("properties")
+        assertFalse(properties.getJSONObject("event_limit").has("maximum"))
+        assertFalse(properties.getJSONObject("wait_ms").has("maximum"))
+        SubAgentCoordinator(listOf(model)) { _, _, _ -> "done" }.use { c ->
+            val id = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "inspect"))).content).getString("task_id")
+            awaitStatus(c, id, "completed")
+            val result = JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", id).put("event_limit", 100))).content)
+            assertTrue(result.getBoolean("ok"))
+            assertEquals(32, result.getInt("event_limit_used"))
+        }
     }
 }

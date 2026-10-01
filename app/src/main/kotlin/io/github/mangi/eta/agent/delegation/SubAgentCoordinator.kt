@@ -206,7 +206,7 @@ internal class SubAgentCoordinator(
             }
         } catch (error: ImageGenerationParameterException) {
             JSONObject().put("ok", false).put("code", "IMAGE_GENERATION_INVALID_OPTIONS").put("message", error.message)
-        } catch (_: UnknownTaskException) { errorResult("TASK_NOT_FOUND") }
+        } catch (_: UnknownTaskException) { errorResult("TASK_NOT_FOUND").put("known_task_ids", JSONArray(recentTaskIds())) }
         catch (error: IllegalArgumentException) { invalidArguments(error.message) }
         catch (error: org.json.JSONException) { invalidArguments(error.message) }
         SubAgentErrorHints.annotate(json)
@@ -260,7 +260,9 @@ internal class SubAgentCoordinator(
                 if (workspace == null || executeWorkspaceChild == null) return errorResult("WORKSPACE_UNAVAILABLE")
                 require(Regex("/workspace/[^/]+").matches(project)) { "implementation 和带 workspace_id 的任务需要 project=/workspace/<仓库名>" }
             }
-            if (workspaceId != null && tasks.values.any { it.project == project && it.workspaceId == workspaceId && active(it) }) return errorResult("WORKSPACE_IN_USE")
+            if (workspaceId != null && tasks.values.any { it.project == project && it.workspaceId == workspaceId && active(it) }) {
+                return workspaceInUse(tasks.values.filter { it.project == project && it.workspaceId == workspaceId && active(it) })
+            }
             require(role != "implementation" || workspaceId == null) { "implementation 会自己创建工作树，不能带 workspace_id；审查已有工作区用 role=review" }
             if (predecessor != null) {
                 if (predecessor.role in MEDIA || role != predecessor.role) return errorResult("REPLACEMENT_ROLE_MISMATCH")
@@ -533,13 +535,24 @@ internal class SubAgentCoordinator(
             catch (_: java.util.concurrent.TimeoutException) { } catch (_: java.util.concurrent.CancellationException) { }
             catch (_: java.util.concurrent.ExecutionException) { } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
-        return snapshot(task, args.optLong("after_seq", 0), args.optInt("event_limit", 16))
+        val limit = args.optInt("event_limit", 16)
+        return snapshot(task, args.optLong("after_seq", 0), limit).also { json ->
+            if (limit > MAX_EVENT_LIMIT) json.put("event_limit_used", MAX_EVENT_LIMIT)
+            if (args.optLong("wait_ms", 0) > MAX_WAIT_MS) json.put("wait_ms_used", MAX_WAIT_MS)
+        }
     }
     private fun supervise(args: JSONObject): JSONObject {
         val task = find(args.getString("task_id")); val action = args.getString("action")
+        require(action in setOf("guide", "checkpoint", "pause")) { "action 只能是 guide/checkpoint/pause" }
         synchronized(task) {
             if (stopping) return errorResult("RUN_CLOSED")
-            if (task.state != "running" || task.role in MEDIA) return errorResult("TASK_NOT_RUNNING_TEXT")
+            if (task.role in MEDIA) return notRunning(task)
+            if (action == "pause" && task.state == "awaiting_decision") {
+                // 模型常在已暂停的任务上再暂停一次；状态已经是想要的结果，不算失败。
+                return snapshot(task).put("note", "任务已经暂停，没有重复暂停。用 continue_task 继续，或 cancel_task 取消。")
+            }
+            if (action == "pause" && task.state == "queued") { pause(task, "SUB_AGENT_MANUAL_PAUSE"); return snapshot(task) }
+            if (task.state != "running") return notRunning(task)
             when (action) {
                 "guide" -> { val guidance = args.optString("guidance"); require(guidance.isNotBlank() && guidance.length <= 2000) { "action=guide 需要非空 guidance（不超过 2000 字）" }; if (!task.controller.queueBoundaryGuidance(guidance)) return errorResult("TASK_NOT_ACCEPTING_GUIDANCE"); task.journal.mark("guidance_accepted") }
                 "checkpoint" -> { if (!task.controller.queueBoundaryGuidance("请在下一轮调用 report_task_progress，报告已核实工作、下一步及阻碍的高层摘要；不包含私有思维、密钥或敏感参数，然后继续原任务。")) return errorResult("TASK_NOT_ACCEPTING_GUIDANCE"); task.journal.mark("checkpoint_requested") }
@@ -553,7 +566,9 @@ internal class SubAgentCoordinator(
         val task = find(args.getString("task_id"))
         synchronized(task) {
             if (stopping) return errorResult("RUN_CLOSED")
-            if (task.state != "awaiting_decision" || task.role in MEDIA) return errorResult("TASK_NOT_AWAITING_DECISION")
+            if (task.state != "awaiting_decision" || task.role in MEDIA) {
+                return errorResult("TASK_NOT_AWAITING_DECISION").put("status", task.state).put("allowed_actions", JSONArray(allowedActions(task)))
+            }
             resumeTask(task); return snapshot(task)
         }
     }
@@ -602,10 +617,24 @@ internal class SubAgentCoordinator(
         val backend = workspace ?: return errorResult("WORKSPACE_UNAVAILABLE")
         val action = args.getString("action"); require(action in setOf("list", "inspect", "merge", "discard")) { "action 只能是 list/inspect/merge/discard" }
         val project = args.getString("project"); val id = (args.opt("workspace_id") as? String)?.takeIf { it.isNotBlank() }
-        if (tasks.values.any { it.project == project && (id == null || it.workspaceId == id) && active(it) }) return errorResult("WORKSPACE_IN_USE")
+        val holders = tasks.values.filter { it.project == project && (id == null || it.workspaceId == id) && active(it) }
+        if (holders.isNotEmpty()) return workspaceInUse(holders)
         return backend.operation(project, action, id)
     }
     private fun errorResult(code: String) = JSONObject().put("ok", false).put("code", code)
+    private fun notRunning(task: Task) = errorResult("TASK_NOT_RUNNING_TEXT")
+        .put("status", task.state).put("allowed_actions", JSONArray(allowedActions(task)))
+    /** 下一步能对这个任务做什么；只按当前状态列出，不代表一定会成功。 */
+    private fun allowedActions(task: Task): List<String> = when {
+        task.state !in ACTIVE -> listOf("get_task_result")
+        task.role in MEDIA -> listOf("get_task_result", "cancel_task")
+        task.state == "awaiting_decision" -> listOf("continue_task", "cancel_task", "get_task_result")
+        task.state == "queued" -> listOf("get_task_result", "supervise_task:pause", "cancel_task")
+        else -> listOf("supervise_task", "get_task_result", "cancel_task")
+    }
+    private fun workspaceInUse(holders: List<Task>) = errorResult("WORKSPACE_IN_USE")
+        .put("active_task_ids", JSONArray(holders.map { it.id }))
+    @Synchronized private fun recentTaskIds(): List<String> = tasks.keys.toList().takeLast(10).asReversed()
     private fun invalidArguments(detail: String?) = errorResult("INVALID_TASK_ARGUMENTS").also { json ->
         detail?.takeIf { it.isNotBlank() }?.let { json.put("detail", it.take(300)) }
     }
@@ -613,6 +642,8 @@ internal class SubAgentCoordinator(
     private companion object {
         val MEDIA = setOf("image_generation", "video_generation")
         val ACTIVE = setOf("queued", "running", "awaiting_decision")
+        const val MAX_EVENT_LIMIT = 32
+        const val MAX_WAIT_MS = 10_000L
         val ROLES = setOf("research", "implementation", "review", "summary", "image_generation", "video_generation")
         const val IMAGE_TIMEOUT_MS = 180_000L
         const val STALL_WARNING_MS = 120_000L
