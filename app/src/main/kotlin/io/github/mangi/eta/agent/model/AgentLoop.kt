@@ -469,7 +469,7 @@ internal class AgentLoop(
                 val finishReason = assistantMessage.optString("finish_reason")
                 if (truncatedWithoutBody) {
                     val outputTokens = lastUsage?.outputTokens
-                    error(
+                    throw AgentOutputLimitException(
                         "模型接口第 $round 轮在输出上限处截断且未返回正文" +
                             "（finish_reason=${finishReason.ifBlank { "unknown" }}" +
                             "，模型=${config.providerType}/${config.modelDisplayName.trim().ifBlank { config.model }}" +

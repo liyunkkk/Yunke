@@ -391,6 +391,7 @@ internal class SubAgentCoordinator(
                                     t.errorCode = when {
                                         error is ImageGenerationParameterException -> "IMAGE_GENERATION_INVALID_OPTIONS"
                                         error is SubAgentContextLimitException -> "SUB_AGENT_CONTEXT_LIMIT"
+                                        error is io.github.mangi.eta.agent.model.AgentOutputLimitException -> "SUB_AGENT_OUTPUT_LIMIT"
                                         error is WorkspaceOperationException -> error.code
                                         providerFailure != null -> "SUB_AGENT_PROVIDER_UNAVAILABLE"
                                         role == "image_generation" -> "IMAGE_GENERATION_FAILED"
@@ -400,8 +401,12 @@ internal class SubAgentCoordinator(
                                     if (t.result.isBlank()) t.result = when {
                                         error is ImageGenerationParameterException -> error.message.orEmpty()
                                         error is SubAgentContextLimitException -> "子代理上下文不足，自动压缩不可用或未能释放足够空间。请拆分任务；已有工作树改动保留。"
+                                        // Built from runtime-owned fields only; no provider or tool text.
+                                        error is io.github.mangi.eta.agent.model.AgentOutputLimitException -> "子代理模型连续在输出上限处截断，未产出正文或工具调用（${workers[worker].providerName} / ${workers[worker].model}）。已有工作树改动保留；请拆小任务或调整该模型的推理档位。"
                                         providerFailure != null -> "子代理供应商不可用（${providerFailure.code.replace('_', ' ')}）：${workerNames[worker]}（${workers[worker].providerName} / ${workers[worker].model}）。这不是任务结论；不要自动重试副作用或付费请求。"
-                                        else -> "子代理未完成，请主代理接手；不会自动重新执行。（${error.javaClass.simpleName}）"
+                                        // The class and the first Eta frame locate the failure; the message may carry
+                                        // provider bodies, paths or prompt text, so it is never echoed.
+                                        else -> "子代理未完成，请主代理接手；不会自动重新执行。（${error.javaClass.simpleName}${failureOrigin(error)?.let { " @ $it" }.orEmpty()}）"
                                     }
                                     t.state = "failed"
                                 }
@@ -449,6 +454,10 @@ internal class SubAgentCoordinator(
         task.dispatchGate.countDown()
         return snapshot(task)
     }
+
+    private fun failureOrigin(error: Throwable): String? = error.stackTrace
+        .firstOrNull { it.className.startsWith("io.github.mangi.eta.") }
+        ?.let { "${it.className.substringAfterLast('.')}:${it.lineNumber}" }
 
     private fun renewWorkspaceLease(task: Task) = synchronized(task) {
         if (!task.workspaceLeaseOpen || task.leaseRenewal != null) return@synchronized

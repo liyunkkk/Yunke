@@ -67,6 +67,9 @@ class SubAgentDiagnosticsTest {
             val task=JSONObject(c.execute(io.github.mangi.eta.agent.model.AgentModelClient.ToolCall("id","delegate_task","""{"task":"work"}""")).content).getString("task_id")
             val done=JSONObject(c.execute(io.github.mangi.eta.agent.model.AgentModelClient.ToolCall("id","get_task_result",JSONObject().put("task_id",task).put("wait_ms",3000).toString())).content)
             assertEquals("failed",done.getString("status"));assertEquals("SUB_AGENT_FAILED",done.getString("error_code"))
+            // The failure text names the class but never echoes the provider body.
+            assertTrue(done.getString("result").contains("IllegalStateException"))
+            assertFalse(done.getString("result").contains("private-provider-body"))
             assertTrue("worker_released diagnostic was not delivered", diagnosticsDelivered.await(5, TimeUnit.SECONDS))
             val captured = synchronized(lines) { lines.toList() }
             val error=captured.map{JSONObject(it.removePrefix("SubAgentDiag "))}.single{it.getString("stage")=="worker_exception"}

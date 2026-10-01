@@ -28,6 +28,18 @@ class SubAgentCoordinatorTest {
         }
     }
 
+    @Test fun outputLimitFailureIsClassifiedWithoutEchoingProviderText() {
+        SubAgentCoordinator(listOf(model)) { _, _, _ ->
+            throw io.github.mangi.eta.agent.model.AgentOutputLimitException("private-thinking-text")
+        }.use { c ->
+            val done = get(c, start(c).getString("task_id"), 3000)
+            assertEquals("failed", done.getString("status"))
+            assertEquals("SUB_AGENT_OUTPUT_LIMIT", done.getString("error_code"))
+            assertTrue(done.getString("result").contains("输出上限"))
+            assertFalse(done.getString("result").contains("private-thinking-text"))
+        }
+    }
+
     @Test fun dynamicWorkersRunInParallelAndBusyWorkerQueues() {
         val started = CountDownLatch(6)
         val release = CountDownLatch(1)
