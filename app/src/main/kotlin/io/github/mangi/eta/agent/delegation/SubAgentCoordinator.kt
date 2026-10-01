@@ -555,7 +555,6 @@ internal class SubAgentCoordinator(
         // 样本记录失败不应影响任务收尾。
         runCatching { onSample(plan.scope, SubAgentSample(tokens = tokens, rounds = rounds, ok = task.state == "completed")) }
     }
-    @Synchronized private fun find(id: String): Task = requireNotNull(tasks[id]) { "Task does not belong to this session" }
     @Synchronized private fun find(id: String): Task = tasks[id] ?: throw UnknownTaskException()
     private fun get(args: JSONObject): JSONObject {
         if (!args.has("task_id")) {
