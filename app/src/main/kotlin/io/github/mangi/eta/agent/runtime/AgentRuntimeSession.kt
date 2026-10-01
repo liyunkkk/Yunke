@@ -20,9 +20,22 @@ internal class AgentRuntimeSession(
     eventSink: ((AgentEvent) -> Unit)? = null,
     resultSink: ((AgentRuntimeWire.RunResult) -> Unit)? = null,
     // Freeze once for both execution and presentation, including late terminal callbacks.
-    val taskSurfaceMode: AgentTaskSurfaceMode =
+    taskSurfaceMode: AgentTaskSurfaceMode =
         runCatching { AgentTaskSurface.stored() }.getOrDefault(AgentTaskSurfaceMode.ASK),
 ) {
+    /** “每次询问”在用户选定后改成前台或后台一次，之后不再变。 */
+    @Volatile
+    var taskSurfaceMode: AgentTaskSurfaceMode = taskSurfaceMode
+        private set
+
+    private val surfaceLock = Any()
+
+    fun resolveTaskSurface(mode: AgentTaskSurfaceMode): Boolean = synchronized(surfaceLock) {
+        if (taskSurfaceMode != AgentTaskSurfaceMode.ASK || mode == AgentTaskSurfaceMode.ASK) return@synchronized false
+        taskSurfaceMode = mode
+        true
+    }
+
     private enum class State {
         RUNNING,
         STOPPING,

@@ -24,6 +24,12 @@ import org.junit.Test;
  * 不启动 owner，也不读取设备。
  */
 public class OwnerHandoffTest {
+    @Test public void vanishedIntermediateTaskDoesNotBlockRemoval() {
+        assertTrue(OwnerHandoff.unselectedRemovalSettled(Boolean.FALSE, false));
+        assertTrue(OwnerHandoff.unselectedRemovalSettled(Boolean.TRUE, false));
+        assertFalse(OwnerHandoff.unselectedRemovalSettled(Boolean.TRUE, true));
+        assertFalse(OwnerHandoff.unselectedRemovalSettled(Boolean.FALSE, true));
+    }
     @Test public void flattenedComponentYieldsItsPackage() {
         assertEquals("com.bbk.launcher2",
                 OwnerHandoff.childNamePackage("com.bbk.launcher2/.MainActivity"));

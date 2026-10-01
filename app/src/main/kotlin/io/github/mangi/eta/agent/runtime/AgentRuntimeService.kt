@@ -368,7 +368,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         AgentChildRunControl.begin(session)
         sessions.put(session)
         if (overlayRunId == request.runId) {
-            if (AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)) {
+            // ASK 选前台后才会用悬浮窗，先按前台保留入口；选后台时后续事件不会再显示。
+            if (AgentOverlayVisibilityPolicy.mayUseOverlay(session.taskSurfaceMode)) {
                 overlaySession = session
             } else {
                 // Only retire the replaced run's windows, never another foreground run's.
@@ -385,7 +386,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 "Agent runtime keep-alive start failed: type=${throwable.safeLogType()}"
             }
         }
-        if (AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)) {
+        if (AgentOverlayVisibilityPolicy.mayUseOverlay(session.taskSurfaceMode)) {
             mainHandler.removeCallbacksAndMessages(hideToken)
             state.value = AgentOverlayState.Initial
             collapsed.value = true

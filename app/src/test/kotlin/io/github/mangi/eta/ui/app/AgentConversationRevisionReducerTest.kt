@@ -21,7 +21,7 @@ class AgentConversationRevisionReducerTest {
         val state = conversationState().copy(history = conversationState().history.drop(4))
         val before = state.copy()
         assertNull(AgentConversationRevisionReducer.boundary(state, "user-1"))
-        assertNull(AgentConversationRevisionReducer.deleteFromTurn(state, "user-1"))
+        assertNull(AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-1"))
         assertNull(AgentConversationRevisionReducer.branchPrefix(state, "assistant-1"))
         assertEquals(before, state)
     }
@@ -181,35 +181,124 @@ class AgentConversationRevisionReducerTest {
     }
 
     @Test
-    fun deleteFromMiddleTurnRemovesOnlyThatActionBarSegment() {
+    fun deleteFromMiddleSegmentAlsoRemovesSegmentsBelow() {
         val state = conversationState().copy(appliedRuntimeRunIds = listOf("run-1", "run-2"))
 
         val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-2")!!
 
         assertEquals(
-            listOf("user-1", "thinking-1", "tool-1", "assistant-1", "user-2", "user-3", "assistant-3"),
+            listOf("user-1", "thinking-1", "tool-1", "assistant-1", "user-2"),
             revised.messages.map { it.id },
         )
         assertEquals(
-            listOf("user", "assistant", "tool", "assistant", "user", "user", "assistant"),
+            listOf("user", "assistant", "tool", "assistant", "user"),
             revised.history.map { it.role },
         )
-        assertEquals("第三答", revised.history.last().content)
+        assertEquals("第二问", revised.history.last().content)
         assertEquals(listOf("run-1", "run-2"), revised.appliedRuntimeRunIds)
+        assertEquals(2, AgentConversationRevisionReducer.laterSegmentCount(state, "assistant-2"))
     }
 
     @Test
-    fun deleteUserBubbleDoesNotRemoveItsReplyOrEarlierTurns() {
+    fun deleteLastSegmentKeepsEverythingAbove() {
+        val state = conversationState()
+
+        val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-3")!!
+
+        assertEquals(state.messages.dropLast(1), revised.messages)
+        assertEquals(state.history.dropLast(1), revised.history)
+        assertEquals(0, AgentConversationRevisionReducer.laterSegmentCount(state, "assistant-3"))
+    }
+
+    @Test
+    fun deleteUserBubbleRemovesItAndEverythingBelowButNotEarlierTurns() {
         val revised = AgentConversationRevisionReducer.deleteFromTurn(conversationState(), "user-2")!!
         assertEquals(
-            listOf("user-1", "thinking-1", "tool-1", "assistant-1", "assistant-2", "user-3", "assistant-3"),
+            listOf("user-1", "thinking-1", "tool-1", "assistant-1"),
             revised.messages.map { it.id },
         )
         assertEquals(
-            listOf("user", "assistant", "tool", "assistant", "assistant", "user", "assistant"),
+            listOf("user", "assistant", "tool", "assistant"),
             revised.history.map { it.role },
         )
-        assertEquals("第二答", revised.history[4].content)
+    }
+
+    @Test
+    fun deleteLaterReplySegmentInsideOneTurnKeepsEarlierReplyAndItsTools() {
+        val state = conversationState().copy(
+            messages = listOf(
+                UserMessageUi(id = "user-run-a", content = "任务"),
+                AgentMessageUi(id = "assistant-a-1", content = "先查一下"),
+                io.github.mangi.eta.ui.model.SystemNoticeMessageUi(
+                    id = "notice-a", code = io.github.mangi.eta.ui.model.SystemNoticeCode.Completed,
+                ),
+                AgentMessageUi(id = "assistant-a-2", content = "查完了"),
+            ),
+            history = listOf(
+                AgentModelClient.ConversationMessage("user", "任务", turnId = "run-a"),
+                AgentModelClient.ConversationMessage("assistant", "先查一下", toolCallsJson = "[{}]", turnId = "run-a"),
+                AgentModelClient.ConversationMessage("tool", "结果", turnId = "run-a"),
+                AgentModelClient.ConversationMessage("assistant", "查完了", turnId = "run-a"),
+            ),
+        )
+        val segments = AgentConversationRevisionReducer.actionBarSegments(state.messages)
+        assertEquals(listOf("user-run-a", "assistant-a-1", "assistant-a-2"), segments.map { it.ownerId })
+
+        val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-a-2")!!
+
+        assertEquals(listOf("user-run-a", "assistant-a-1", "notice-a"), revised.messages.map { it.id })
+        assertEquals(listOf("user", "assistant", "tool"), revised.history.map { it.role })
+    }
+
+    @Test
+    fun deleteInsideCompactedRegionRebuildsFromMarkerSummary() {
+        val base = conversationState()
+        val marker = io.github.mangi.eta.ui.model.ContextCompactedMessageUi("marker-1", 4, "第一轮已归档")
+        val messages = base.messages.take(4) + marker + base.messages.drop(4)
+        val state = base.copy(
+            messages = messages,
+            history = listOf(
+                AgentModelClient.ConversationMessage(role = "user", content = "[对话摘要]\n第一、二轮已归档"),
+                AgentModelClient.ConversationMessage(role = "user", content = "第三问"),
+                AgentModelClient.ConversationMessage(role = "assistant", content = "第三答"),
+            ),
+        )
+
+        // 第二问已被压缩进摘要：从上下文末尾去掉被删的部分，摘要原样保留。
+        val fromSecond = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-2")!!
+        assertEquals(listOf("user-1", "thinking-1", "tool-1", "assistant-1", "marker-1", "user-2"),
+            fromSecond.messages.map { it.id })
+        assertEquals(listOf("[对话摘要]\n第一、二轮已归档"), fromSecond.history.map { it.content })
+
+        // 第一轮在标记之前：没有更早的摘要，按可见消息重建。
+        val fromFirst = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-1")!!
+        assertEquals(listOf("user-1"), fromFirst.messages.map { it.id })
+        assertEquals(listOf("第一问"), fromFirst.history.map { it.content })
+
+        // 仍在上下文里的轮次照常精确截断。
+        val fromThird = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-3")!!
+        assertEquals(listOf("[对话摘要]\n第一、二轮已归档", "第三问"), fromThird.history.map { it.content })
+    }
+
+    @Test
+    fun deleteBeforeAnOlderMarkerUsesThatMarkersSummary() {
+        val base = conversationState()
+        val older = io.github.mangi.eta.ui.model.ContextCompactedMessageUi("marker-old", 4, "旧摘要")
+        val newer = io.github.mangi.eta.ui.model.ContextCompactedMessageUi("marker-new", 2, "新摘要")
+        val messages = base.messages.take(4) + older + base.messages.subList(4, 6) + newer + base.messages.drop(6)
+        val state = base.copy(
+            messages = messages,
+            history = listOf(
+                AgentModelClient.ConversationMessage(role = "user", content = "[对话摘要]\n新摘要"),
+                AgentModelClient.ConversationMessage(role = "user", content = "第三问"),
+                AgentModelClient.ConversationMessage(role = "assistant", content = "第三答"),
+            ),
+        )
+        val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-2")!!
+        assertEquals("marker-old", revised.messages[4].id)
+        assertEquals(listOf("user", "user"), revised.history.map { it.role })
+        assertTrue(revised.history.first().content.endsWith("旧摘要"))
+        assertEquals("第二问", revised.history.last().content)
     }
 
     @Test

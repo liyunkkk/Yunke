@@ -60,6 +60,14 @@
   <string name="haptics_touch_feedback_summary">Vibrate when tapping buttons, switches and menus</string>
   <string name="haptics_message_generation">Message generation haptic</string>
   <string name="haptics_message_generation_summary">Light vibration while the model is writing or a tool step appears</string>
+  <string name="haptics_background">Background haptics</string>
+  <string name="haptics_background_summary_off">No vibration after the app goes to the background</string>
+  <string name="haptics_background_summary_reasoning">In the background, output, reasoning and tool steps vibrate</string>
+  <string name="haptics_background_summary_tools">In the background, output and tool steps vibrate; reasoning ticks once when done</string>
+  <string name="haptics_background_expand">Show background haptic options</string>
+  <string name="haptics_background_collapse">Hide background haptic options</string>
+  <string name="haptics_background_reasoning">Reasoning haptics</string>
+  <string name="haptics_background_reasoning_summary">Vibrate during reasoning in the background. When off, only tool labels and finished reasoning tick once</string>
   <string name="haptics_intensity_title">Haptic intensity</string>
   <string name="haptics_intensity_default">Default</string>
   <string name="haptics_intensity_low">Low</string>
@@ -181,7 +189,6 @@
   <string name="appearance_icon_dark">Dark</string>
   <string name="appearance_icon_cat">Cat</string>
   <string name="appearance_icon_apply">Apply</string>
-  <string name="appearance_icon_apply_summary">Update the home screen icon. Light and dark only change the icon.</string>
   <string name="appearance_group_interface">Interface &amp; Effects</string>
   <string name="appearance_theme_mode">Theme mode</string>
   <string name="appearance_theme_system">Follow system</string>
@@ -269,8 +276,8 @@
   <string name="conversation_delete_message_title">Delete message?</string>
   <string name="conversation_delete_message_body">This message will be deleted.</string>
   <plurals name="conversation_delete_later_turns">
-    <item quantity="one">This message and %d later turn will be deleted.</item>
-    <item quantity="other">This message and %d later turns will be deleted.</item>
+    <item quantity="one">This section and %d section below it will be deleted.</item>
+    <item quantity="other">This section and %d sections below it will be deleted.</item>
   </plurals>
   <string name="conversation_regenerate_title">Regenerate response?</string>
   <plurals name="conversation_regenerate_later_turns">
@@ -1360,6 +1367,10 @@
   <string name="ui_balance_preset_new_api">NewAPI</string>
   <string name="ui_balance_preset_custom_summary">Enter the API path and JSON result key</string>
   <string name="ui_balance_preset_new_api_summary">Query /api/user/self and convert quota with data.quota / 500000</string>
+  <string name="ui_balance_preset_sub2api">Sub2API</string>
+  <string name="ui_balance_preset_deepseek">DeepSeek</string>
+  <string name="ui_balance_preset_sub2api_summary">Fills /usage and remaining; you can still edit them</string>
+  <string name="ui_balance_preset_deepseek_summary">Fills /user/balance and balance_infos[0].total_balance; you can still edit them</string>
   <string name="ui_balance_access_token">Access token</string>
   <string name="ui_balance_access_token_summary">From NewAPI personal security settings. Leave blank to use the provider API key</string>
 

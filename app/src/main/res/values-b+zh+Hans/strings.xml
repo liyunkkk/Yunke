@@ -89,6 +89,14 @@
   <string name="haptics_touch_feedback_summary">点击按钮、开关和菜单时震动</string>
   <string name="haptics_message_generation">消息生成触控反馈</string>
   <string name="haptics_message_generation_summary">模型输出内容或出现工具步骤时提供轻触反馈</string>
+  <string name="haptics_background">后台震动</string>
+  <string name="haptics_background_summary_off">应用回到后台后不震动</string>
+  <string name="haptics_background_summary_reasoning">回到后台后，输出、推理和工具步骤都会震动</string>
+  <string name="haptics_background_summary_tools">回到后台后，输出和工具步骤会震动，推理完成时震一下</string>
+  <string name="haptics_background_expand">展开后台震动选项</string>
+  <string name="haptics_background_collapse">收起后台震动选项</string>
+  <string name="haptics_background_reasoning">推理过程震动</string>
+  <string name="haptics_background_reasoning_summary">在后台时推理输出也震动；关闭后只在工具标签出现和推理完成时震一下</string>
   <string name="haptics_intensity_title">震动幅度</string>
   <string name="haptics_intensity_default">默认</string>
   <string name="haptics_intensity_low">低</string>
@@ -210,7 +218,6 @@
   <string name="appearance_icon_dark">暗色</string>
   <string name="appearance_icon_cat">猫咪颜色</string>
   <string name="appearance_icon_apply">确定</string>
-  <string name="appearance_icon_apply_summary">更换桌面图标。浅色和暗色只影响图标，不切换主题。</string>
   <string name="appearance_group_interface">界面与效果</string>
   <string name="appearance_theme_mode">主题模式</string>
   <string name="appearance_theme_system">跟随系统</string>
@@ -298,7 +305,7 @@
   <string name="conversation_delete_message_title">删除消息？</string>
   <string name="conversation_delete_message_body">这条消息将被删除。</string>
   <plurals name="conversation_delete_later_turns">
-    <item quantity="other">这条消息及之后 %d 轮对话将被删除。</item>
+    <item quantity="other">这段消息及下面 %d 段消息将被删除。</item>
   </plurals>
   <string name="conversation_regenerate_title">重新生成回复？</string>
   <plurals name="conversation_regenerate_later_turns">
@@ -1371,6 +1378,10 @@
   <string name="ui_balance_preset_new_api">NewAPI</string>
   <string name="ui_balance_preset_custom_summary">自行填写接口路径和 JSON 结果键</string>
   <string name="ui_balance_preset_new_api_summary">请求 /api/user/self，并用 data.quota / 500000 换算额度</string>
+  <string name="ui_balance_preset_sub2api">Sub2API</string>
+  <string name="ui_balance_preset_deepseek">DeepSeek</string>
+  <string name="ui_balance_preset_sub2api_summary">填入 /usage 和 remaining，可以再改</string>
+  <string name="ui_balance_preset_deepseek_summary">填入 /user/balance 和 balance_infos[0].total_balance，可以再改</string>
   <string name="ui_balance_access_token">访问令牌</string>
   <string name="ui_balance_access_token_summary">来自 NewAPI 个人安全设置。留空则使用提供商 API Key</string>
 

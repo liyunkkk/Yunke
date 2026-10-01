@@ -1176,6 +1176,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             is AgentEvent.ProviderResponseStarted,
             is AgentEvent.ToolImagesAttached,
             is AgentEvent.RoundStarted,
+            is AgentEvent.AutoCompactWaiting,
             is AgentEvent.ContextCompactionStarted,
             is AgentEvent.ContextCompacted,
             -> Unit

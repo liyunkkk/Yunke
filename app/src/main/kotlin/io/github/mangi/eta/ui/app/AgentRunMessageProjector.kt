@@ -18,10 +18,38 @@ internal class AgentRunMessageProjector(
     /** 终态之后不再接受思考/正文增量，避免回答已经结束后又展开一轮推理。 */
     private val sealedRunIds = mutableSetOf<String>()
 
+    private data class ThinkingBlockKey(val runId: String, val round: Int, val index: Int)
+
+    private data class RoundEventKey(val runId: String, val round: Int)
+
+    private data class RoundEventState(
+        var sequence: Long = 0L,
+        var lastTextSequence: Long? = null,
+        var lastToolSequence: Long? = null,
+    )
+
+    private data class PendingThinkingBlock(
+        val afterMessageId: String?,
+        var message: ThinkingMessageUi,
+    )
+
+    // BlockStart can precede the first nonempty delta. Remember its identity and position,
+    // without displaying an empty card or mistaking it for a new block after later text.
+    private val thinkingBlockAnchors = mutableMapOf<ThinkingBlockKey, String?>()
+    // Text alone does not tell us whether it is commentary or a final answer. New reasoning
+    // after text stays private until a subsequent tool in the SAME run/round provides evidence.
+    private val pendingThinkingBlocks = linkedMapOf<ThinkingBlockKey, PendingThinkingBlock>()
+    // Message-list position is not event order: a resumed text block can stay before an old tool.
+    // Keep the ordering evidence separately so an old tool cannot unlock a later late-thinking block.
+    private val roundEventStates = mutableMapOf<RoundEventKey, RoundEventState>()
+
     fun isSealed(runId: String): Boolean = runId in sealedRunIds
 
     fun seal(runId: String) {
         if (runId.isNotBlank()) sealedRunIds += runId
+        discardPendingThinking(runId)
+        thinkingBlockAnchors.keys.removeAll { it.runId == runId }
+        roundEventStates.keys.removeAll { it.runId == runId }
     }
 
     /** 回放从该 run 的空轨迹重建；仅重排有回放事件的补充输入，旧 handoff 独有的输入必须保留。 */
@@ -49,12 +77,24 @@ internal class AgentRunMessageProjector(
         }
     }
 
+    /** A continued HTTP request may share its UI round, but not its ordering evidence. */
+    fun beginProviderRequest(runId: String, round: Int) {
+        if (runId.isBlank() || isSealed(runId)) return
+        // A later request's tool must not resurrect an unproven tail from the prior one.
+        // Accepted blocks keep their identities; only directly continued TEXT may reuse
+        // its mapped index across requests (see AgentContinuationBlocks).
+        discardPendingThinking(runId, round)
+        roundEventStates.remove(RoundEventKey(runId, round))
+    }
+
     fun scheduleModelRetry(
         runId: String,
         event: AgentEvent.ModelRetryScheduled,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
         if (isSealed(runId)) return messages
+        discardPendingThinking(runId, event.round)
+        roundEventStates.remove(RoundEventKey(runId, event.round))
         val finalized = finalizeTextRound(
             runId, event.round, finalizeThinkingRound(runId, event.round, messages),
         )
@@ -72,11 +112,16 @@ internal class AgentRunMessageProjector(
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
         if (isSealed(runId)) return messages
-        if (
-            event.kind == AgentEvent.AssistantBlockKind.THINKING &&
-            shouldIgnoreLateThinking(runId, event.round, messages)
-        ) {
-            return messages
+        if (event.kind == AgentEvent.AssistantBlockKind.TEXT) {
+            recordTextEvent(runId, event.round)
+        }
+        if (event.kind == AgentEvent.AssistantBlockKind.THINKING) {
+            val key = ThinkingBlockKey(runId, event.round, event.index)
+            if (shouldDeferThinking(key, messages)) {
+                pendingThinkingBlock(key, messages)
+                return messages
+            }
+            rememberThinkingBlock(key, messages)
         }
         return transitionVisibleBlock(
             runId = runId,
@@ -95,6 +140,7 @@ internal class AgentRunMessageProjector(
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
         if (delta.isEmpty() || isSealed(runId)) return messages
+        recordTextEvent(runId, round)
 
         val transitioned = transitionVisibleBlock(
             runId = runId,
@@ -136,7 +182,18 @@ internal class AgentRunMessageProjector(
         visible: Boolean = true,
     ): List<AgentChatMessageUi> {
         if (delta.isEmpty() || isSealed(runId) || !visible) return messages
-        if (shouldIgnoreLateThinking(runId, round, messages, incoming = delta)) return messages
+        val key = ThinkingBlockKey(runId, round, index)
+        if (shouldDeferThinking(key, messages)) {
+            val pending = pendingThinkingBlock(key, messages)
+            pending.message = pending.message.copy(
+                content = pending.message.content + delta,
+                isStreaming = true,
+                elapsedSeconds = elapsedSeconds(pending.message.id),
+                collapsed = false,
+            )
+            return messages
+        }
+        rememberThinkingBlock(key, messages)
 
         val transitioned = transitionVisibleBlock(
             runId = runId,
@@ -163,12 +220,15 @@ internal class AgentRunMessageProjector(
         }
         if (updated) return next
 
-        return next + ThinkingMessageUi(
-            id = thinkingId,
-            content = delta,
-            isStreaming = true,
-            elapsedSeconds = elapsedSeconds,
-            collapsed = false,
+        return next.insertAfterThinkingAnchor(
+            thinkingBlockAnchors[key],
+            ThinkingMessageUi(
+                id = thinkingId,
+                content = delta,
+                isStreaming = true,
+                elapsedSeconds = elapsedSeconds,
+                collapsed = false,
+            ),
         )
     }
 
@@ -182,8 +242,12 @@ internal class AgentRunMessageProjector(
         if (isSealed(runId) || !visible) return messages
         if (messages.any {
                 it is ThinkingMessageUi && isThinkingMessageForRound(it.id, runId, round)
+            } || pendingThinkingBlocks.any { (key, pending) ->
+                key.runId == runId && key.round == round && pending.message.content.isNotEmpty()
             }
         ) {
+            // A streamed block (even one awaiting tool evidence) owns its content/identity.
+            // The response summary must not create a second fallback copy of that block.
             return finalizeThinkingRound(runId, round, messages)
         }
 
@@ -201,14 +265,16 @@ internal class AgentRunMessageProjector(
         )
     }
 
-    fun finalizeThinking(runId: String, messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> =
-        messages.map { message ->
+    fun finalizeThinking(runId: String, messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> {
+        finishPendingThinking(runId)
+        return messages.map { message ->
             if (message is ThinkingMessageUi && message.id.startsWith("$runId-thinking-")) {
                 message.finished()
             } else {
                 message
             }
         }
+    }
 
     /** 终态不依赖各块结束事件全部到齐；缺少工具结果时只能标为未知，不能推断执行成功。 */
     fun finalizeRun(runId: String, messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> {
@@ -231,6 +297,9 @@ internal class AgentRunMessageProjector(
         round: Int,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
+        // HostedToolStarted is preceded by this call in AgentAppState. Finish, but do not
+        // discard, deferred blocks: startHostedTool still needs to flush them in event order.
+        finishPendingThinking(runId, round)
         return messages.map { message ->
             if (message is ThinkingMessageUi && isThinkingMessageForRound(message.id, runId, round)) {
                 message.finished()
@@ -247,7 +316,16 @@ internal class AgentRunMessageProjector(
         replacementContent: String?,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
+        if (isSealed(runId)) return messages
         val thinkingId = thinkingMessageId(runId, round, index)
+        val pending = pendingThinkingBlocks[ThinkingBlockKey(runId, round, index)]
+        if (pending != null) {
+            if (!replacementContent.isNullOrEmpty()) elapsedSeconds(thinkingId)
+            // BlockEnd is a full replacement, unlike a delta. Empty replacement clears it;
+            // null only ends streaming. Neither changes the original insertion anchor.
+            pending.message = pending.message.finished(replacementContent)
+            return messages
+        }
         return messages.map { message ->
             if (message is ThinkingMessageUi && message.id == thinkingId) {
                 message.finished(replacementContent)
@@ -330,7 +408,8 @@ internal class AgentRunMessageProjector(
             command = event.command,
         )
         if (isSealed(runId) || messages.any { it.id == message.id }) return messages
-        return messages + message
+        recordToolEvent(runId, event.round)
+        return flushPendingThinking(runId, event.round, messages) + message
     }
 
     fun finishTool(
@@ -377,7 +456,8 @@ internal class AgentRunMessageProjector(
             argumentsSummary = "",
         )
         if (isSealed(runId) || messages.any { it.id == message.id }) return messages
-        return messages + message
+        recordToolEvent(runId, event.round)
+        return flushPendingThinking(runId, event.round, messages) + message
     }
 
     fun finishHostedTool(
@@ -429,38 +509,111 @@ internal class AgentRunMessageProjector(
         }
 
     fun clearRun(runId: String) {
+        discardPendingThinking(runId)
+        thinkingBlockAnchors.keys.removeAll { it.runId == runId }
+        roundEventStates.keys.removeAll { it.runId == runId }
         thinkingStartedAt.keys.removeAll { it.startsWith("$runId-thinking-") }
     }
 
+    private fun recordTextEvent(runId: String, round: Int) {
+        val state = roundEventStates.getOrPut(RoundEventKey(runId, round)) { RoundEventState() }
+        state.sequence += 1
+        state.lastTextSequence = state.sequence
+    }
 
-    /**
-     * 回答已经出来后，部分接口会把完整 reasoning 再推一遍。
-     * 这时不要再展开一轮看起来像“又在思考”的卡片。
-     */
-    private fun shouldIgnoreLateThinking(
+    private fun recordToolEvent(runId: String, round: Int) {
+        val state = roundEventStates.getOrPut(RoundEventKey(runId, round)) { RoundEventState() }
+        state.sequence += 1
+        state.lastToolSequence = state.sequence
+    }
+
+    /** Identity, not content prefixes, distinguishes a resumed delta from a new block. */
+    private fun shouldDeferThinking(
+        key: ThinkingBlockKey,
+        messages: List<AgentChatMessageUi>,
+    ): Boolean {
+        val thinkingId = thinkingMessageId(key.runId, key.round, key.index)
+        if (key in thinkingBlockAnchors || messages.any { it is ThinkingMessageUi && it.id == thinkingId }) {
+            return false
+        }
+        if (key in pendingThinkingBlocks) return true
+        val state = roundEventStates[RoundEventKey(key.runId, key.round)]
+        val lastText = state?.lastTextSequence ?: return false
+        val lastTool = state.lastToolSequence ?: return true
+        return lastTool <= lastText
+    }
+
+    private fun rememberThinkingBlock(key: ThinkingBlockKey, messages: List<AgentChatMessageUi>) {
+        if (key !in thinkingBlockAnchors) thinkingBlockAnchors[key] = messages.lastOrNull()?.id
+    }
+
+    private fun pendingThinkingBlock(
+        key: ThinkingBlockKey,
+        messages: List<AgentChatMessageUi>,
+    ): PendingThinkingBlock {
+        finishPendingThinking(key.runId, key.round, except = key)
+        return pendingThinkingBlocks.getOrPut(key) {
+            PendingThinkingBlock(
+                afterMessageId = messages.lastOrNull()?.id,
+                message = ThinkingMessageUi(
+                    id = thinkingMessageId(key.runId, key.round, key.index),
+                    content = "",
+                    isStreaming = true,
+                    elapsedSeconds = 0,
+                    collapsed = false,
+                ),
+            )
+        }
+    }
+
+    private fun finishPendingThinking(runId: String, round: Int? = null, except: ThinkingBlockKey? = null) {
+        pendingThinkingBlocks.forEach { (key, pending) ->
+            if (key.runId == runId && (round == null || key.round == round) && key != except &&
+                pending.message.isStreaming
+            ) {
+                pending.message = pending.message.finished()
+            }
+        }
+    }
+
+    private fun discardPendingThinking(runId: String, round: Int? = null) {
+        val keys = pendingThinkingBlocks.keys.filter { it.runId == runId && (round == null || it.round == round) }
+        keys.forEach { key ->
+            pendingThinkingBlocks.remove(key)?.let { thinkingStartedAt.remove(it.message.id) }
+        }
+    }
+
+    private fun flushPendingThinking(
         runId: String,
         round: Int,
         messages: List<AgentChatMessageUi>,
-        incoming: String? = null,
-    ): Boolean {
-        val thinkings = messages.filterIsInstance<ThinkingMessageUi>().filter { message ->
-            isThinkingMessageForRound(message.id, runId, round)
+    ): List<AgentChatMessageUi> {
+        val pending = pendingThinkingBlocks.filterKeys { it.runId == runId && it.round == round }
+        if (pending.isEmpty()) return messages
+        finishPendingThinking(runId, round)
+        var next = messages
+        // Reverse insertion preserves event order when several blocks share the same anchor.
+        // Using message IDs (not offsets or block indexes) also preserves interleaved text.
+        pending.entries.toList().asReversed().forEach { (key, block) ->
+            pendingThinkingBlocks.remove(key)
+            if (block.message.content.isEmpty()) {
+                thinkingStartedAt.remove(block.message.id)
+            } else if (next.none { it.id == block.message.id }) {
+                next = next.insertAfterThinkingAnchor(block.afterMessageId, block.message)
+                thinkingBlockAnchors[key] = block.afterMessageId
+            }
         }
-        if (thinkings.isEmpty()) return false
-        val hasAnswer = messages.any { message ->
-            message is AgentMessageUi &&
-                isAssistantMessageForRound(message.id, runId, round) &&
-                message.content.isNotBlank()
-        }
-        if (!hasAnswer) return false
-        val completed = thinkings.filterNot(ThinkingMessageUi::isStreaming)
-        if (completed.isEmpty()) return false
-        if (incoming == null) return true
-        return completed.any { existing ->
-            incoming == existing.content ||
-                existing.content.startsWith(incoming) ||
-                incoming.startsWith(existing.content)
-        }
+        return next
+    }
+
+    private fun List<AgentChatMessageUi>.insertAfterThinkingAnchor(
+        afterMessageId: String?,
+        message: ThinkingMessageUi,
+    ): List<AgentChatMessageUi> {
+        val anchorIndex = if (afterMessageId == null) -1 else indexOfLast { it.id == afterMessageId }
+        // A replaced/cleared trace must not resurrect a deferred card at an arbitrary tail.
+        if (afterMessageId != null && anchorIndex < 0) return this
+        return toMutableList().apply { add(anchorIndex + 1, message) }
     }
 
     private fun ThinkingMessageUi.finished(authoritativeContent: String? = null): ThinkingMessageUi =
@@ -485,6 +638,10 @@ internal class AgentRunMessageProjector(
         index: Int,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> {
+        finishPendingThinking(
+            runId, round,
+            except = if (kind == AgentEvent.AssistantBlockKind.THINKING) ThinkingBlockKey(runId, round, index) else null,
+        )
         val activeAssistantId = if (kind == AgentEvent.AssistantBlockKind.TEXT) {
             assistantMessageId(runId, round, index)
         } else {

@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -38,6 +39,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,6 +69,10 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -80,6 +86,8 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -91,6 +99,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -101,6 +111,7 @@ import io.github.mangi.eta.agent.voice.VoiceChatSnapshot
 import io.github.mangi.eta.agent.voice.VoiceEntryMode
 import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.agent.voice.VoiceModeState
+import io.github.mangi.eta.agent.voice.VOICE_MODE_SPEECH_OWNER_PREFIX
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
@@ -150,7 +161,7 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
  * 空 assistant 占位不参与布局，避免刚发送时出现一个无内容消息节点。
  */
 @Composable
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 internal fun AgentChatBody(
     voiceController: VoiceModeController,
     messages: List<AgentChatMessageUi>,
@@ -257,13 +268,25 @@ internal fun AgentChatBody(
             (message as? AgentMessageUi)?.takeIf { !it.isStreaming }?.id
         }.toSet()
         if (shouldStopOrphanSpeechPlayback(owner, messageEdit != null, visibleCompletedIds)) {
-            io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop()
+            io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop("orphan_reply")
         }
     }
     val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
         visibleMessages.toTimelineEntries().size + if (isCompressingContext || isWaitingForCompression || childContexts.any { it.isCompacting }) 1 else 0
     }
-    val scrollState = rememberLazyListState(initialFirstVisibleItemIndex = initialBottomItemIndex)
+    // A default one-item prefetch is too shallow for mixed short tool rows and tall Markdown.
+    // Keep one viewport on both sides: ahead prepares incoming rows; behind prevents
+    // immediate disposal/recomposition when expansion or a direction reversal moves the boundary.
+    val chatCacheWindow = remember {
+        LazyLayoutCacheWindow(
+            aheadFraction = CHAT_CACHE_AHEAD_VIEWPORTS,
+            behindFraction = CHAT_CACHE_BEHIND_VIEWPORTS,
+        )
+    }
+    val scrollState = rememberLazyListState(
+        cacheWindow = chatCacheWindow,
+        initialFirstVisibleItemIndex = initialBottomItemIndex,
+    )
     val currentBrowserMessageId = remember(
         visibleMessages,
         browserShortcut,
@@ -604,6 +627,12 @@ internal fun AgentConversationMessages(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
+    val scrollTraceEnabled = rememberChatScrollTraceEnabled()
+    val chatListTrace = ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
+    traceChatListOwnerExecution(chatListTrace, scrollTraceEnabled)
+    // Retain successful parses beyond individual lazy-row compositions.
+    val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
     val timelineEntries = remember(visibleMessages) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
     }
@@ -759,8 +788,6 @@ internal fun AgentConversationMessages(
                 }
             }
     }
-    // 拖动和惯性期间别让系统按速度把出帧降到 60，否则松手后减速那一段会连着掉帧。
-    val scrollFrameRateHold = rememberScrollFrameRateHold { isUserScrolling }
 
     var hasLeftBottom by remember { mutableStateOf(false) }
     LaunchedEffect(scrollState) {
@@ -832,6 +859,19 @@ internal fun AgentConversationMessages(
         isUserDragging = isUserDragging,
         navigationActive = messageNavigationJob != null,
     )
+    SideEffect {
+        traceChatListOwnerCommit(
+            trace = chatListTrace,
+            enabled = scrollTraceEnabled,
+            isUserDragging = isUserDragging,
+            isUserScrolling = isUserScrolling,
+            isBottomSettling = isBottomSettling,
+            keepBottomAnchored = keepBottomAnchored,
+            shouldClipTail = shouldClipTail,
+            shouldFollowBottom = shouldFollowBottom,
+            navigationActive = messageNavigationJob != null,
+        )
+    }
     val isListScrollable by remember {
         derivedStateOf { scrollState.canScrollForward || scrollState.canScrollBackward }
     }
@@ -1129,9 +1169,28 @@ internal fun AgentConversationMessages(
     // 才追上。绘制阶段会把已经量到的尾部上提；底部锚定保护持续裁在输入框上方的静止线；
     // 覆盖超快输出在 isStreaming 结束后、列表滚动尚未完成的过渡帧。
     // 用户一拖动或跳转消息，锚定保护解除，内容可以正常滑到输入框后面。
+    val restClip = remember(bottomInset) { ComposerRestClip(bottomInset + ConversationComposerGap) }
+    // 尾部这一帧量不到时不能把上提清零，否则卡片会掉进输入框再弹回来。
+    val heldTailLift = remember { intArrayOf(0) }
+    val viewportRecovery = remember(scrollState) {
+        BottomFollowViewportRecovery(scrollState, ChatBottomSentinelKey)
+    }
     Box(
         modifier = modifier
             .clipToBounds()
+            // clipRect 和普通 clip 都裁不到子级 graphicsLayer（跟底上提、思考卡片的离屏纹理）。
+            // 先把整列画进一张按静止线裁切的离屏纹理，文字才不会露进输入框。
+            .then(
+                if (shouldClipTail) {
+                    Modifier.graphicsLayer {
+                        compositingStrategy = CompositingStrategy.Offscreen
+                        clip = true
+                        shape = restClip
+                    }
+                } else {
+                    Modifier
+                },
+            )
             .drawWithContent {
                 // 不跟底时不要读 layoutInfo，否则每次滑动都让绘制层失效。
                 // 上提用的是本帧布局。输出很快时，新长出的一行会先画过静止线、进到输入框里。
@@ -1149,7 +1208,6 @@ internal fun AgentConversationMessages(
                 visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
             }
         }
-        PeakFrameRateVote(scrollFrameRateHold)
         val messageActions = remember { ChatMessageActions() }
         SideEffect {
             messageActions.onSuggestionClick = onSuggestionClick
@@ -1170,12 +1228,30 @@ internal fun AgentConversationMessages(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
+                    val overflow = scrollState.followTailOverflow()
                     translationY = if (shouldLiftTail) {
-                        // 与滚动步长同一套整像素，避免底边在两个相邻像素之间闪。
-                        -resolveFollowTailLag(true, scrollState.followTailOverflow()).liftPx
-                            .toInt().toFloat()
+                        // 与滚动步长同一套整像素。这一帧量不到尾部时沿用上一帧，避免底边掉下去再弹回。
+                        -nextHeldTailLift(
+                            shouldLift = true,
+                            overflowPx = overflow,
+                            heldPx = heldTailLift[0],
+                        ).also { heldTailLift[0] = it }.toFloat()
                     } else {
+                        heldTailLift[0] = 0
                         0f
+                    }
+                }
+                .onGloballyPositioned {
+                    // Consume only overflow that cannot fit in the existing draw buffer.
+                    // Keep the presentation layer and all card animations unchanged.
+                    val consumed = viewportRecovery.recover {
+                        shouldFollowBottom && !pointerDown[0] && !currentDragging.value &&
+                            !isUserScrolling && messageNavigationJob == null
+                    }
+                    if (consumed > 0f) {
+                        StreamPerformanceDiagnostics.record(
+                            "follow.viewportRecovery", value = (consumed * 1000).toLong(),
+                        )
                     }
                 }
                 .pointerInput(Unit) {
@@ -1212,9 +1288,30 @@ internal fun AgentConversationMessages(
                     }
                 },
             ) { entry ->
+                // No UI container or rendering modifier: record committed row identity only.
+                ChatRowTrace(
+                    rowKey = entry.key,
+                    rowType = when (entry) {
+                        is AgentTimelineRow.Message -> when (entry.message) {
+                            is UserMessageUi -> "user"
+                            is AgentMessageUi -> "agent"
+                            is ThinkingMessageUi -> "thinking"
+                            is ToolActivityMessageUi -> "tool"
+                            else -> "message"
+                        }
+                        is AgentTimelineRow.WorkHeader -> "work-header"
+                        is AgentTimelineRow.WorkStep -> when (entry.message) {
+                            is ToolActivityMessageUi -> "work-tool"
+                            is ThinkingMessageUi -> "work-thinking"
+                            else -> "work-summary"
+                        }
+                    },
+                    enabled = scrollTraceEnabled,
+                )
                 // Keep the row key/index and animate its root, including its footer.
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalExpansionHoldsBottom provides expansionHoldsBottom,
+                    LocalCompletedMarkdownCache provides completedMarkdownCache,
                 ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
@@ -1680,6 +1777,9 @@ private fun isModelOutputMessage(message: AgentChatMessageUi): Boolean = when (m
 
 private val ChatBackToBottomButtonSlot = 52.dp
 
+private const val CHAT_CACHE_AHEAD_VIEWPORTS = 1f
+private const val CHAT_CACHE_BEHIND_VIEWPORTS = 1f
+
 private const val ChatBottomSentinelKey = "agent-chat-bottom-sentinel"
 private const val ChatContextCompressingKey = "agent-chat-context-compressing"
 
@@ -1889,6 +1989,13 @@ internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): Fol
     else -> FollowTailLag(tailOverflowPx.toFloat())
 }
 
+/** 测量暂时缺失时保留上一帧上提，避免卡片底边在输入框附近来回跳。 */
+internal fun nextHeldTailLift(shouldLift: Boolean, overflowPx: Int?, heldPx: Int): Int = when {
+    !shouldLift -> 0
+    overflowPx == null -> heldPx.coerceAtLeast(0)
+    else -> overflowPx.coerceAtLeast(0)
+}
+
 private fun LazyListState.isConversationAtBottom(): Boolean {
     val info = layoutInfo
     val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
@@ -2063,10 +2170,25 @@ internal fun shouldStopOrphanSpeechPlayback(
 ): Boolean {
     if (owner.isNullOrBlank()) return false
     // 试听、语音模式和 Agent 朗读工具都不绑定某条回复，不能按“回复不在可见列表里”收掉。
-    if (owner == "tts-preview" || owner == "agent-tts" || owner.startsWith("voice-mode-")) return false
+    if (owner == "tts-preview" || owner == io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_OWNER || owner.startsWith(VOICE_MODE_SPEECH_OWNER_PREFIX)) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
 
 /** 最后一条消息静止时与输入框上沿的间距；跟底输出时正文也被裁在这条线上。 */
 private val ConversationComposerGap = 14.dp
+
+internal fun composerRestLinePx(heightPx: Float, occlusionPx: Float): Float =
+    (heightPx - occlusionPx).coerceAtLeast(0f)
+
+/** 把列表裁在输入框上沿加间隙处，子级 graphicsLayer 也遵守这条边界。 */
+internal class ComposerRestClip(private val occlusion: Dp) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val bottom = with(density) { composerRestLinePx(size.height, occlusion.toPx()) }
+        return Outline.Rectangle(Rect(0f, 0f, size.width, bottom))
+    }
+
+    override fun equals(other: Any?): Boolean = other is ComposerRestClip && other.occlusion == occlusion
+
+    override fun hashCode(): Int = occlusion.hashCode()
+}
 

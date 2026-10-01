@@ -44,6 +44,10 @@ import io.github.mangi.eta.agent.terminal.RootShellTerminalController
 import io.github.mangi.eta.agent.terminal.SharedFolderMounts
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.voice.tts.SpeechPlayback
+import io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_OWNER
+import io.github.mangi.eta.agent.voice.tts.AgentSpeechReport
+import io.github.mangi.eta.agent.voice.tts.AgentSpeechStatus
+import io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_START_TIMEOUT_MS
 import io.github.mangi.eta.core.AgentLogger
 import io.github.mangi.eta.core.HookSupport
 import io.github.mangi.eta.data.model.AssistantPrompt
@@ -106,12 +110,24 @@ internal class AgentLocalTools(
     private val runSkillsRoot: File? = null,
     pendingSkillConflict: PendingSkillConflictCapability? = null,
     private val rootAvailable: () -> Boolean = { RootAccess.isGranted },
-    private val frozenSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = runCatching {
+    frozenSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = runCatching {
         io.github.mangi.eta.agent.device.AgentTaskSurface.stored()
     }.getOrDefault(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK),
+    /**
+     * “每次询问”时由运行时弹窗问用户，阻塞到选完；返回 null 表示取消或超时。
+     * toolName 是触发选择的工具；cancelled 是本工具执行器自己的关闭状态，等待期间要一起检查。
+     */
+    private val chooseSurface: ((toolName: String, cancelled: () -> Boolean) -> io.github.mangi.eta.agent.device.AgentTaskSurfaceMode?)? = null,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
-    private val backgroundSurface = frozenSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
+    /** ASK 只在第一次界面操作前问一次，之后整轮 run 都用选定的位置。 */
+    @Volatile
+    var runSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = frozenSurface
+        private set
+    /** 本次回复只问一次：选定后复用，取消或超时后记住，不再弹窗。 */
+    private val surfaceChoice = io.github.mangi.eta.agent.device.AgentTaskSurfaceChoiceGate()
+    private val backgroundSurface: Boolean
+        get() = runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
     private val virtualLifecycle = setOf("start_virtual_session", "keep_virtual_result", "finish_virtual_session")
     private fun virtualRouted(name: String) = backgroundSurface &&
         (io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(name) || name in virtualLifecycle)
@@ -223,8 +239,59 @@ internal class AgentLocalTools(
         terminalController.sessionIdentity(sessionId)
 
     override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
+        var chosenNow: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode? = null
+        if (runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK &&
+            io.github.mangi.eta.agent.device.AgentTaskSurface.needsSurfaceChoice(toolCall.name)
+        ) {
+            val outcome = resolveAskedSurface(toolCall.name)
+            if (outcome == null) {
+                return textResult(
+                    if (closed.get()) errorResult("RUN_CLOSED", "任务已关闭")
+                    else errorResult(
+                        "TASK_SURFACE_CANCELLED",
+                        "用户没有选择或已取消执行位置，本次未执行，本次回复内不会再询问；不要再调用界面工具，改用其他方式或说明情况",
+                    ),
+                )
+            }
+            if (outcome.second) chosenNow = outcome.first
+        }
+        val result = executeOnSurface(toolCall)
+        return chosenNow?.let { withSurfaceNote(result, it) } ?: result
+    }
+
+    /** 返回选定的位置，以及是否是这次调用刚选的（需要告诉模型）。 */
+    private fun resolveAskedSurface(toolName: String): Pair<io.github.mangi.eta.agent.device.AgentTaskSurfaceMode, Boolean>? {
+        if (closed.get()) return null
+        var askedNow = false
+        val chosen = surfaceChoice.resolve {
+            askedNow = true
+            try {
+                chooseSurface?.invoke(toolName) { closed.get() }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                null
+            } catch (_: RuntimeException) {
+                null
+            }
+        } ?: return null
+        // 并行调用在门里排队：只有真正弹窗选出结果的那一次才告诉模型。
+        runSurface = chosen
+        return chosen to askedNow
+    }
+
+    private fun withSurfaceNote(
+        result: AgentModelClient.ToolResult,
+        mode: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode,
+    ): AgentModelClient.ToolResult {
+        val surface = mode.wire
+        val note = runCatching { JSONObject(result.content).put("task_surface", surface).toString() }
+            .getOrElse { "{\"task_surface\":\"$surface\"}\n" + result.content }
+        return result.copy(content = note)
+    }
+
+    private fun executeOnSurface(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
         val handoffBlocksGui = runCatching {
-            io.github.mangi.eta.agent.device.AgentTaskSurface.blocksGuiTool(toolCall.name, frozenSurface) && !backgroundSurface
+            io.github.mangi.eta.agent.device.AgentTaskSurface.blocksGuiTool(toolCall.name, runSurface) && !backgroundSurface
         }.getOrDefault(true)
         if (handoffBlocksGui) {
             return textResult(errorResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.NOT_READY, "副屏交接未就绪，本次未执行；请在设置改为前台"))
@@ -1480,10 +1547,15 @@ internal class AgentLocalTools(
         if (SpeechPlayback.state.value.recording) {
             return errorResult("SPEECH_BUSY", "正在录音，无法朗读")
         }
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            SpeechPlayback.speak(context, "agent-tts", text)
+        val report = AgentSpeechReport()
+        val main = android.os.Looper.getMainLooper()
+        android.os.Handler(main).post {
+            SpeechPlayback.speak(context, AGENT_SPEECH_OWNER, text, listener = report)
         }
-        return JSONObject().put("ok", true).put("playing", true).toString()
+        // Callbacks arrive on main; waiting there would only time out.
+        if (main.isCurrentThread) return AgentSpeechStatus.Pending.toJson().toString()
+        // Cloud synthesis can take seconds; report what actually happened instead of assuming playback.
+        return report.await(AGENT_SPEECH_START_TIMEOUT_MS).toJson().toString()
     }
 
     private fun errorResult(code: String, message: String): String =

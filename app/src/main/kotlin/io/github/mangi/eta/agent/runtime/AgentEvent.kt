@@ -200,6 +200,10 @@ internal sealed interface AgentEvent {
                 "images=$imageCount, image_bytes=$imageBytes"
     }
 
+    data class AutoCompactWaiting(val round: Int) : AgentEvent {
+        override fun toLogLine(): String = "auto_compact_waiting round=$round"
+    }
+
     data class ContextCompactionStarted(
         val round: Int,
         val modelName: String = "",

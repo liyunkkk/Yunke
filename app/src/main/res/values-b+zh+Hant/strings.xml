@@ -89,6 +89,14 @@
   <string name="haptics_touch_feedback_summary">點擊按鈕、開關和選單時震動</string>
   <string name="haptics_message_generation">訊息生成觸控回饋</string>
   <string name="haptics_message_generation_summary">模型輸出內容或出現工具步驟時提供輕觸回饋</string>
+  <string name="haptics_background">背景震動</string>
+  <string name="haptics_background_summary_off">應用回到背景後不震動</string>
+  <string name="haptics_background_summary_reasoning">回到背景後，輸出、推理和工具步驟都會震動</string>
+  <string name="haptics_background_summary_tools">回到背景後，輸出和工具步驟會震動，推理完成時震一下</string>
+  <string name="haptics_background_expand">展開背景震動選項</string>
+  <string name="haptics_background_collapse">收起背景震動選項</string>
+  <string name="haptics_background_reasoning">推理過程震動</string>
+  <string name="haptics_background_reasoning_summary">在背景時推理輸出也震動；關閉後只在工具標籤出現和推理完成時震一下</string>
   <string name="haptics_intensity_title">震動幅度</string>
   <string name="haptics_intensity_default">預設</string>
   <string name="haptics_intensity_low">低</string>
@@ -291,7 +299,7 @@
   <string name="conversation_delete_message_title">要刪除訊息嗎？</string>
   <string name="conversation_delete_message_body">此訊息將被刪除。</string>
   <plurals name="conversation_delete_later_turns">
-    <item quantity="other">此訊息及後續 %d 輪對話將被刪除。</item>
+    <item quantity="other">這段訊息及下方 %d 段訊息將被刪除。</item>
   </plurals>
   <string name="conversation_regenerate_title">要重新產生回覆嗎？</string>
   <plurals name="conversation_regenerate_later_turns">
@@ -1364,6 +1372,10 @@
   <string name="ui_balance_preset_new_api">NewAPI</string>
   <string name="ui_balance_preset_custom_summary">自行填寫介面路徑與 JSON 結果鍵</string>
   <string name="ui_balance_preset_new_api_summary">請求 /api/user/self，並以 data.quota / 500000 換算額度</string>
+  <string name="ui_balance_preset_sub2api">Sub2API</string>
+  <string name="ui_balance_preset_deepseek">DeepSeek</string>
+  <string name="ui_balance_preset_sub2api_summary">填入 /usage 與 remaining，可以再改</string>
+  <string name="ui_balance_preset_deepseek_summary">填入 /user/balance 與 balance_infos[0].total_balance，可以再改</string>
   <string name="ui_balance_access_token">存取權杖</string>
   <string name="ui_balance_access_token_summary">來自 NewAPI 個人安全設定。留空則使用供應商 API Key</string>
 

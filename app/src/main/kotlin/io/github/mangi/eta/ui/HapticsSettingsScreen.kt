@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -13,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -61,6 +63,13 @@ internal fun HapticsSettingsScreen(onBack: () -> Unit) {
     var messageGenerationEnabled by remember {
         mutableStateOf(Prefs.isEnabled(Prefs.Keys.HAPTIC_MESSAGE_GENERATION))
     }
+    var backgroundEnabled by remember {
+        mutableStateOf(Prefs.isEnabled(Prefs.Keys.HAPTIC_BACKGROUND))
+    }
+    var backgroundReasoningEnabled by remember {
+        mutableStateOf(Prefs.isEnabled(Prefs.Keys.HAPTIC_BACKGROUND_REASONING))
+    }
+    var backgroundExpanded by remember { mutableStateOf(false) }
     var intensity by remember { mutableStateOf(TouchHaptics.currentIntensity()) }
     var showIntensityDialog by remember { mutableStateOf(false) }
 
@@ -76,6 +85,18 @@ internal fun HapticsSettingsScreen(onBack: () -> Unit) {
                 }
                 Prefs.Keys.HAPTIC_MESSAGE_GENERATION -> {
                     messageGenerationEnabled = changed.getBoolean(
+                        key,
+                        Prefs.Keys.BOOLEAN_DEFAULTS.getValue(key),
+                    )
+                }
+                Prefs.Keys.HAPTIC_BACKGROUND -> {
+                    backgroundEnabled = changed.getBoolean(
+                        key,
+                        Prefs.Keys.BOOLEAN_DEFAULTS.getValue(key),
+                    )
+                }
+                Prefs.Keys.HAPTIC_BACKGROUND_REASONING -> {
+                    backgroundReasoningEnabled = changed.getBoolean(
                         key,
                         Prefs.Keys.BOOLEAN_DEFAULTS.getValue(key),
                     )
@@ -173,6 +194,88 @@ internal fun HapticsSettingsScreen(onBack: () -> Unit) {
                         PreferenceIcon(icon = Icons.Rounded.GraphicEq, enabled = touchEnabled)
                     },
                     enabled = touchEnabled,
+                )
+                val generationOn = touchEnabled && messageGenerationEnabled
+                val backgroundOn = generationOn && backgroundEnabled
+                val showBackgroundOptions = backgroundOn && backgroundExpanded
+                BasicComponent(
+                    title = stringResource(R.string.haptics_background),
+                    summary = stringResource(
+                        when {
+                            !backgroundOn -> R.string.haptics_background_summary_off
+                            backgroundReasoningEnabled -> R.string.haptics_background_summary_reasoning
+                            else -> R.string.haptics_background_summary_tools
+                        },
+                    ),
+                    onClick = {
+                        if (backgroundOn) {
+                            TouchHaptics.click(view)
+                            backgroundExpanded = !backgroundExpanded
+                        } else if (onToggle(Prefs.Keys.HAPTIC_BACKGROUND, true, false)) {
+                            backgroundEnabled = true
+                            backgroundExpanded = true
+                        }
+                    },
+                    holdDownState = showBackgroundOptions,
+                    startAction = {
+                        PreferenceIcon(icon = Icons.Rounded.Layers, enabled = generationOn)
+                    },
+                    endActions = {
+                        if (backgroundOn) {
+                            Icon(
+                                imageVector = if (backgroundExpanded) {
+                                    Icons.Rounded.ExpandMore
+                                } else {
+                                    Icons.Rounded.ChevronRight
+                                },
+                                contentDescription = stringResource(
+                                    if (backgroundExpanded) {
+                                        R.string.haptics_background_collapse
+                                    } else {
+                                        R.string.haptics_background_expand
+                                    },
+                                ),
+                                modifier = Modifier
+                                    .align(Alignment.CenterVertically)
+                                    .padding(end = 6.dp)
+                                    .size(16.dp),
+                                tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                            )
+                        }
+                        Switch(
+                            checked = backgroundOn,
+                            onCheckedChange = { value ->
+                                if (onToggle(Prefs.Keys.HAPTIC_BACKGROUND, value, backgroundOn)) {
+                                    backgroundEnabled = value
+                                    backgroundExpanded = value
+                                }
+                            },
+                            enabled = generationOn,
+                        )
+                    },
+                    bottomAction = if (showBackgroundOptions) {
+                        {
+                            SwitchPreference(
+                                title = stringResource(R.string.haptics_background_reasoning),
+                                summary = stringResource(R.string.haptics_background_reasoning_summary),
+                                checked = backgroundReasoningEnabled,
+                                onCheckedChange = { value ->
+                                    if (onToggle(
+                                            Prefs.Keys.HAPTIC_BACKGROUND_REASONING,
+                                            value,
+                                            backgroundReasoningEnabled,
+                                        )
+                                    ) {
+                                        backgroundReasoningEnabled = value
+                                    }
+                                },
+                                insideMargin = PaddingValues(0.dp),
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                    enabled = generationOn,
                 )
             }
         }

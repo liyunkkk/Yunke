@@ -38,6 +38,28 @@ internal class SpeechPlaybackEpoch {
     fun isCurrent(token: Long): Boolean = token == value
 }
 
+/** Owner used by the Agent `text_to_speech` tool. */
+internal const val AGENT_SPEECH_OWNER = "agent-tts"
+
+/**
+ * Speech the Agent was asked to produce is not bound to a screen: pausing the activity, switching
+ * routes or conversations must not silence it. Only explicit stops (run stop, recording, settings) do.
+ */
+internal fun survivesUiTeardown(owner: String?): Boolean = owner == AGENT_SPEECH_OWNER
+
+internal sealed interface SpeechOutcome {
+    data object Completed : SpeechOutcome
+    data class Failed(val message: String) : SpeechOutcome
+    /** [reason] is the stop call site, e.g. `pause`, `superseded`, `focus_loss`. */
+    data class Cancelled(val reason: String) : SpeechOutcome
+}
+
+/** Callbacks run on the main thread; each fires at most once per playback. */
+internal interface SpeechPlaybackListener {
+    fun onAudible() {}
+    fun onFinished(outcome: SpeechOutcome) {}
+}
+
 /** Single UI-process output controller. No Agent messages, turns or tool calls are created here. */
 internal object SpeechPlayback {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -45,21 +67,60 @@ internal object SpeechPlayback {
     private val epoch = SpeechPlaybackEpoch()
     private var job: Job? = null
     private var recordingToken: Long? = null
+    private var session: Session? = null
+
+    /** Main-thread only. Records why a playback ended so a silent failure can be traced to its caller. */
+    private class Session(val diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics, private val listener: SpeechPlaybackListener?) {
+        var stopReason: String? = null
+        private var audible = false
+        private var finished = false
+        fun audible() {
+            if (audible || finished) return
+            audible = true
+            runCatching { listener?.onAudible() }
+        }
+        fun finish(outcome: SpeechOutcome) {
+            if (finished) return
+            finished = true
+            runCatching { listener?.onFinished(outcome) }
+        }
+    }
     private val mutableState = MutableStateFlow(SpeechPlaybackState())
     val state = mutableState.asStateFlow()
     val audioAttributes: AudioAttributes = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
 
     // Call from main; cancellation never affects the Agent run.
-    fun stop() {
+    fun stop(reason: String = "unspecified") {
+        session?.let { current ->
+            current.stopReason = reason
+            current.diagnostic.mark("stop.$reason")
+            current.finish(SpeechOutcome.Cancelled(reason))
+        }
+        session = null
         epoch.next()
         job?.cancel()
         job = null
         mutableState.value = SpeechPlaybackState(recording = recordingToken != null)
     }
 
+    /** Pause, route change and conversation switch: keeps Agent speech playing. */
+    fun stopUiBound(reason: String) {
+        if (survivesUiTeardown(state.value.owner)) {
+            session?.diagnostic?.mark("stop.skipped.$reason")
+            return
+        }
+        stop(reason)
+    }
+
+    /** Stops only playback whose owner matches, e.g. voice mode must not end a reply read-aloud. */
+    fun stopOwned(reason: String, owns: (String) -> Boolean) {
+        val owner = state.value.owner ?: return
+        if (owns(owner)) stop(reason)
+    }
+
     suspend fun beginInput(): Long {
-        stop()
+        stop("recording")
         val token = epoch.next()
         recordingToken = token
         mutableState.value = SpeechPlaybackState(recording = true)
@@ -80,28 +141,47 @@ internal object SpeechPlayback {
         }
     }
 
-    fun speak(context: Context, owner: String, markdown: String, diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts")) {
-        if (recordingToken != null) { diagnostic.mark("tts.blocked_recording"); return }
-        stop()
-        start(context, owner, markdown, diagnostic)
+    fun speak(
+        context: Context,
+        owner: String,
+        markdown: String,
+        diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts"),
+        listener: SpeechPlaybackListener? = null,
+    ) {
+        if (recordingToken != null) {
+            diagnostic.mark("tts.blocked_recording")
+            runCatching { listener?.onFinished(SpeechOutcome.Failed("正在录音，无法朗读")) }
+            return
+        }
+        stop("superseded")
+        start(context, owner, markdown, diagnostic, listener = listener)
     }
 
     fun toggle(context: Context, owner: String, markdown: String) {
         if (recordingToken != null) return
-        if (state.value.owner == owner) { stop(); return }
+        if (state.value.owner == owner) { stop("toggle"); return }
         start(context, owner, markdown)
     }
 
     fun previewMimo(context: Context, voice: io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.Voice, text: String) {
         val owner = "mimo-preview:${voice.id}"
         if (recordingToken != null) return
-        if (state.value.owner == owner) { stop(); return }
+        if (state.value.owner == owner) { stop("toggle"); return }
         start(context, owner, text, overrideVoice = voice)
     }
 
-    private fun start(context: Context, owner: String, markdown: String, diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts"), overrideVoice: io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.Voice? = null) {
-        stop()
+    private fun start(
+        context: Context,
+        owner: String,
+        markdown: String,
+        diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts"),
+        overrideVoice: io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.Voice? = null,
+        listener: SpeechPlaybackListener? = null,
+    ) {
+        stop("superseded")
         val token = epoch.next()
+        val playback = Session(diagnostic, listener)
+        session = playback
         val app = context.applicationContext
         // Capture preferences once: settings changed while loading must not mix provider/model/voice.
         val cloud = overrideVoice != null || Prefs.getString(Prefs.Keys.AGENT_TTS_MODE) == "cloud"
@@ -113,7 +193,10 @@ internal object SpeechPlayback {
         job = scope.launch {
             // A new player cannot overlap the previous player's finally/shutdown.
             mutex.withLock {
-                if (!epoch.isCurrent(token)) return@withLock
+                if (!epoch.isCurrent(token)) {
+                    playback.finish(SpeechOutcome.Cancelled(playback.stopReason ?: "superseded"))
+                    return@withLock
+                }
                 try {
                     withContext(Dispatchers.IO) {
                         File(app.cacheDir, "speech-playback").listFiles()?.filter { it.extension in setOf("mp3", "wav", "ogg") }?.forEach { it.delete() }
@@ -124,7 +207,12 @@ internal object SpeechPlayback {
                     diagnostic.mark("tts.sentences", "count" to sentences.size)
                     withAudioFocus(app, token, diagnostic) {
                         if (!cloud) {
-                            SystemSpeechSynthesizer().speak(app, sentences) { voice ->
+                            SystemSpeechSynthesizer().speak(
+                                app,
+                                sentences,
+                                // Engine callback thread; hop to main where the session lives.
+                                onFirstSentence = { scope.launch { playback.audible() } },
+                            ) { voice ->
                                 if (epoch.isCurrent(token)) mutableState.value = SpeechPlaybackState(owner, source = "系统本地音色 · $voice")
                             }
                         } else {
@@ -165,27 +253,33 @@ internal object SpeechPlayback {
                                     if (index < sentences.lastIndex) next = async { synth.synthesize(config, sentences[index + 1], voice) }
                                     currentCoroutineContext().ensureActive()
                                     if (epoch.isCurrent(token)) mutableState.value = SpeechPlaybackState(owner, source = "$label · ${index + 1}/${sentences.size}")
-                                    playMp3(app, bytes, diagnostic)
+                                    playMp3(app, bytes, diagnostic) { playback.audible() }
                                 }
                             }
                         }
                     }
                     diagnostic.mark("tts.completed")
+                    playback.finish(SpeechOutcome.Completed)
                     if (epoch.isCurrent(token)) mutableState.value = SpeechPlaybackState()
                 } catch (e: TimeoutCancellationException) {
                     diagnostic.mark("tts.timeout")
+                    playback.finish(SpeechOutcome.Failed("朗读等待超时，请重试或检查系统语音引擎"))
                     if (epoch.isCurrent(token)) mutableState.value = SpeechPlaybackState(error = "朗读等待超时，请重试或检查系统语音引擎")
                 } catch (e: CancellationException) {
                     diagnostic.mark("tts.cancelled")
+                    playback.finish(SpeechOutcome.Cancelled(playback.stopReason ?: "cancelled"))
                     throw e
                 } catch (e: Exception) {
                     diagnostic.mark("tts.failed")
                     // Config/decoder exceptions may include URLs, never surface them verbatim.
-                    if (epoch.isCurrent(token)) mutableState.value = SpeechPlaybackState(error = when (e) {
+                    val message = when (e) {
                         is SpeechPlaybackFailure -> e.message
-                        else -> "朗读失败，请检查引擎、网络、模型和音色"
-                    })
+                        else -> null
+                    } ?: "朗读失败，请检查引擎、网络、模型和音色"
+                    playback.finish(SpeechOutcome.Failed(message))
+                    if (epoch.isCurrent(token)) mutableState.value = SpeechPlaybackState(error = message)
                 } finally {
+                    if (session === playback) session = null
                     if (epoch.isCurrent(token)) {
                         job = null
                         if (mutableState.value.owner != null) mutableState.value = SpeechPlaybackState()
@@ -201,14 +295,14 @@ internal object SpeechPlayback {
             .setAudioAttributes(audioAttributes).setWillPauseWhenDucked(true)
             .setOnAudioFocusChangeListener { change ->
                 diagnostic.mark("focus.changed", "change" to change)
-                if (change < 0 && epoch.isCurrent(token)) stop()
+                if (change < 0 && epoch.isCurrent(token)) stop("focus_loss")
             }.build()
         val focusResult = audio.requestAudioFocus(request)
         diagnostic.mark("focus.request", "result" to focusResult, "volume" to audio.getStreamVolume(AudioManager.STREAM_MUSIC))
         speechCheck(focusResult == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "暂时无法取得音频焦点，请稍后朗读" }
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                if (epoch.isCurrent(token)) stop()
+                if (epoch.isCurrent(token)) stop("noisy")
             }
         }
         var registered = false
@@ -222,7 +316,7 @@ internal object SpeechPlayback {
         }
     }
 
-    private suspend fun playMp3(context: Context, bytes: ByteArray, diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics) {
+    private suspend fun playMp3(context: Context, bytes: ByteArray, diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics, onStarted: () -> Unit) {
         diagnostic.mark("player.prepare", "bytes" to bytes.size)
         val directory = File(context.cacheDir, "speech-playback")
         val payload = DoubaoSpeech.decodeAudio(bytes)
@@ -241,7 +335,7 @@ internal object SpeechPlayback {
                     player.setOnPreparedListener {
                         if (continuation.isActive) {
                             diagnostic.mark("player.prepared", "durationMs" to it.duration)
-                            try { it.start(); diagnostic.mark("player.started") } catch (_: Exception) {
+                            try { it.start(); diagnostic.mark("player.started"); onStarted() } catch (_: Exception) {
                                 if (continuation.isActive) continuation.resumeWithException(SpeechPlaybackFailure("音频播放器启动失败"))
                             }
                         }

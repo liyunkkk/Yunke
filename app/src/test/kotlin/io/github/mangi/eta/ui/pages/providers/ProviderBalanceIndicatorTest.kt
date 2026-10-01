@@ -1,7 +1,10 @@
 package io.github.mangi.eta.ui.pages.providers
 
 import io.github.mangi.eta.data.repository.ProviderBalanceState
+import java.math.BigDecimal
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,5 +45,26 @@ class ProviderBalanceIndicatorTest {
                 ProviderBalanceState(refreshing = true, error = "Balance query failed; retry shortly"),
             ),
         )
+    }
+
+    @Test
+    fun effectLevelFollowsDeductionSize() {
+        assertEquals(BalanceEffectLevel.Light, balanceEffectLevel(BigDecimal("-0.52")))
+        assertEquals(BalanceEffectLevel.Light, balanceEffectLevel(BigDecimal("-0.994")))
+        assertEquals(BalanceEffectLevel.Strong, balanceEffectLevel(BigDecimal("-1")))
+        assertEquals(BalanceEffectLevel.Strong, balanceEffectLevel(BigDecimal("-0.995")))
+        assertEquals(BalanceEffectLevel.Strong, balanceEffectLevel(BigDecimal("-12.30")))
+        assertEquals(BalanceEffectLevel.Increase, balanceEffectLevel(BigDecimal("5")))
+        // 浮点误差级别的变化不提示。
+        assertNull(balanceEffectLevel(BigDecimal("-0.000000001")))
+        assertNull(balanceEffectLevel(BigDecimal.ZERO))
+    }
+
+    @Test
+    fun deltaTextHasSignAndTwoDecimals() {
+        assertEquals("-0.52", formatBalanceDelta(BigDecimal("-0.52")))
+        assertEquals("-1.52", formatBalanceDelta(BigDecimal("-1.520000000001")))
+        assertEquals("+5.00", formatBalanceDelta(BigDecimal("5")))
+        assertEquals("-1234.50", formatBalanceDelta(BigDecimal("-1234.5")))
     }
 }

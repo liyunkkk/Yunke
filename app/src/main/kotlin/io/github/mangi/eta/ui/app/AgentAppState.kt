@@ -2142,6 +2142,12 @@ internal class AgentAppState(
             MessageRevisionImpact(laterTurnCount = boundary.laterTurnCount)
         }
 
+    /** 删除确认框：按操作栏分段，统计目标段下面会一起删掉的段数。 */
+    fun messageDeleteImpact(messageId: String): MessageRevisionImpact? =
+        AgentConversationRevisionReducer.laterSegmentCount(homeState, messageId)?.let { count ->
+            MessageRevisionImpact(laterTurnCount = count)
+        }
+
     fun deleteMessageTurn(messageId: String) {
         if (homeState.isStreaming || homeState.isPaused) return
         if (rejectConversationArchiveMutation()) return
@@ -3498,7 +3504,7 @@ internal class AgentAppState(
         keepChildren: Boolean = true,
         reason: AgentChildControlPolicy.Reason = AgentChildControlPolicy.Reason.USER_STOP,
     ) {
-        if (activeRunIdForSelectedConversation() == runId) io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop()
+        if (activeRunIdForSelectedConversation() == runId) io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop("run_stop")
         if (stoppingRuns.containsKey(runId)) return
         val imageGen = imageGenerationRunIds.remove(runId)
         if (imageGen) directMediaRuns.cancel(runId)
@@ -4355,6 +4361,60 @@ internal class AgentAppState(
         replaying: Boolean,
     ) {
         modelRetryState.accept(runId, event)
+        val thinkingEvent = event.opensThinking()
+        if (thinkingEvent && !replaying) runsWithLiveReasoning += runId
+        // 流式增量很密，只在这次运行确实有推理块在跑时才扫一遍消息。
+        val reasoningBefore = if (replaying || thinkingEvent || event is AgentEvent.RunFailed ||
+            runId !in runsWithLiveReasoning
+        ) {
+            emptySet()
+        } else {
+            streamingThinkingIds(runId).also { if (it.isEmpty()) runsWithLiveReasoning -= runId }
+        }
+        applyRunEventBody(runId, event, persistSupplement, replaying)
+        if (reasoningBefore.isNotEmpty()) noteCompletedReasoning(runId, reasoningBefore)
+        if (event is AgentEvent.RunFinished || event is AgentEvent.RunFailed) runsWithLiveReasoning -= runId
+    }
+
+    private fun AgentEvent.opensThinking(): Boolean = when (this) {
+        is AgentEvent.AssistantBlockStart -> kind == AgentEvent.AssistantBlockKind.THINKING
+        is AgentEvent.AssistantBlockDelta -> kind == AgentEvent.AssistantBlockKind.THINKING
+        else -> false
+    }
+
+    /** 有推理块可能还在「正在推理」的运行；只在主线程读写。 */
+    private val runsWithLiveReasoning = mutableSetOf<String>()
+
+    /** 本次运行里仍在「正在推理」的思考块。没有时返回空集，事件处理后不用再比。 */
+    private fun streamingThinkingIds(runId: String): Set<String> {
+        val state = conversationState(conversationIdForRun(runId)) ?: return emptySet()
+        val prefix = "$runId-thinking-"
+        var ids: MutableSet<String>? = null
+        for (message in state.messages) {
+            if (message is ThinkingMessageUi && message.isStreaming && message.id.startsWith(prefix)) {
+                (ids ?: mutableSetOf<String>().also { ids = it }).add(message.id)
+            }
+        }
+        return ids ?: emptySet()
+    }
+
+    /** 处理前在推理、处理后已结束的块各震一次；失败或停止不算完成。 */
+    private fun noteCompletedReasoning(runId: String, before: Set<String>) {
+        val conversationId = conversationIdForRun(runId) ?: return
+        val state = conversationState(conversationId) ?: return
+        state.messages.forEach { message ->
+            if (message is ThinkingMessageUi && !message.isStreaming && message.id in before) {
+                io.github.mangi.eta.ui.haptics.StreamingHaptics.noteReasoningCompleted(message.id, conversationId)
+            }
+        }
+    }
+
+    private fun applyRunEventBody(
+        runId: String,
+        event: AgentEvent,
+        persistSupplement: Boolean,
+        replaying: Boolean,
+    ) {
         when (event) {
             is AgentEvent.AssistantBlockStart -> {
                 updateRunTrace(runId) { messages ->
@@ -4390,6 +4450,7 @@ internal class AgentAppState(
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(
                         event.deltaChars.coerceAtLeast(event.delta.length),
                         conversationIdForRun(runId),
+                        reasoning = event.kind == AgentEvent.AssistantBlockKind.THINKING,
                     )
                 }
             }
@@ -4561,6 +4622,10 @@ internal class AgentAppState(
                 runMessageProjector.seal(runId)
             }
 
+            is AgentEvent.AutoCompactWaiting -> {
+                conversationIdForRun(runId)?.let { setConversationWaitingForCompression(it, true) }
+            }
+
             is AgentEvent.ContextCompactionStarted -> {
                 conversationIdForRun(runId)?.let { setConversationCompressing(it, true, event.modelName) }
             }
@@ -4570,6 +4635,7 @@ internal class AgentAppState(
             }
 
             is AgentEvent.ProviderRequestStarted -> {
+                runMessageProjector.beginProviderRequest(runId, event.round)
                 if (contextBudgetBlockedRuns.remove(runId) != null) {
                     if (contextBudgetPrompt?.runId == runId) contextBudgetPrompt = null
                     conversationIdForRun(runId)?.let { id -> conversationState(id)?.let { updateConversation(id, it.copy(isPaused = false)) } }
@@ -5633,11 +5699,14 @@ internal class AgentAppState(
     }
 
     private fun shouldKeepCompressingIndicator(conversationId: String?): Boolean {
-        if (compressionJob?.isActive == true) return true
-        val pending = pendingManualCompress ?: return false
-        return conversationId == null ||
-            pending.conversationId == null ||
-            pending.conversationId == conversationId
+        val pending = pendingManualCompress
+        return keepsCompressingIndicator(
+            conversationId = conversationId,
+            jobActive = compressionJob?.isActive == true,
+            jobConversationId = compressionJobConversationId,
+            hasPending = pending != null,
+            pendingConversationId = pending?.conversationId,
+        )
     }
 
     private fun startPendingManualCompress() {
@@ -5866,6 +5935,23 @@ internal data class MessageRevisionImpact(
 )
 
 private const val EXTERNAL_ARCHIVE_CONVERSATION_PREFIX = "archive-"
+
+/**
+ * 运行结束时是否保留「正在压缩」提示。只认属于这个会话的压缩任务或待办：
+ * 别的会话在压缩时，这里结束的回复不能被标成压缩中，否则那边压完不会回来清它。
+ * 会话未知（null）时保持旧行为，按匹配处理。
+ */
+internal fun keepsCompressingIndicator(
+    conversationId: String?,
+    jobActive: Boolean,
+    jobConversationId: String?,
+    hasPending: Boolean,
+    pendingConversationId: String?,
+): Boolean {
+    fun matches(owner: String?) = conversationId == null || owner == null || owner == conversationId
+    if (jobActive && matches(jobConversationId)) return true
+    return hasPending && matches(pendingConversationId)
+}
 
 private fun String.isReadOnlyExternalArchiveConversation(): Boolean =
     startsWith(EXTERNAL_ARCHIVE_CONVERSATION_PREFIX)

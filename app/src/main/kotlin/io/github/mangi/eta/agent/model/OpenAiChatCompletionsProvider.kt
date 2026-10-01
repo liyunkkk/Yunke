@@ -164,11 +164,14 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                     return@sseEvent
                 }
                 val chunk = JSONObject(payload)
-                throwStreamingErrorIfPresent(chunk)
+                // Some gateways put billable usage on the same SSE frame as an error.
+                // Capture it before propagating the error so a completed/failed request
+                // cannot disappear from the local ledger.
                 parseUsage(chunk)?.let { parsedUsage ->
                     usage = parsedUsage
                     onEvent(ProviderEvent.Usage(parsedUsage))
                 }
+                throwStreamingErrorIfPresent(chunk)
                 val choices = chunk.optJSONArray("choices")
                 if (choices == null || choices.length() == 0) return@sseEvent
                 val choice = choices.optJSONObject(0) ?: return@sseEvent
@@ -400,8 +403,12 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         )
     }
 
-    private fun parseUsage(chunk: JSONObject): AgentTokenUsage? {
-        val usage = chunk.optJSONObject("usage") ?: return null
+    private fun parseUsage(chunk: JSONObject): AgentTokenUsage? =
+        parseUsageObject(chunk.optJSONObject("usage"))
+            ?: parseUsageObject(chunk.optJSONObject("response")?.optJSONObject("usage"))
+
+    private fun parseUsageObject(usage: JSONObject?): AgentTokenUsage? {
+        usage ?: return null
         return AgentTokenUsage(
             contextTokens = usage.firstInt("total_tokens"),
             inputTokens = usage.firstInt("prompt_tokens", "input_tokens"),

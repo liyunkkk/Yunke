@@ -59,6 +59,14 @@ internal fun Context.activityLifecycleOwnerOrNull(): LifecycleOwner? {
     return current as? LifecycleOwner
 }
 
+/** 下拉框顺序与预设一一对应。 */
+private val BalancePresets = listOf(
+    BalanceOption.PRESET_CUSTOM,
+    BalanceOption.PRESET_NEW_API,
+    BalanceOption.PRESET_SUB2API,
+    BalanceOption.PRESET_DEEPSEEK,
+)
+
 @Composable
 internal fun ProviderBalanceOptionFields(
     balanceOption: BalanceOption,
@@ -95,26 +103,28 @@ internal fun ProviderBalanceOptionFields(
 
         AnimatedVisibility(visible = expanded) {
             Column {
+                val presetIndex = BalancePresets.indexOf(resolved.preset).coerceAtLeast(0)
                 WindowSpinnerPreference(
                     items = listOf(
                         DropdownItem(text = stringResource(R.string.ui_balance_preset_custom)),
                         DropdownItem(text = stringResource(R.string.ui_balance_preset_new_api)),
+                        DropdownItem(text = stringResource(R.string.ui_balance_preset_sub2api)),
+                        DropdownItem(text = stringResource(R.string.ui_balance_preset_deepseek)),
                     ),
-                    selectedIndex = if (isNewApi) 1 else 0,
+                    selectedIndex = presetIndex,
                     title = stringResource(R.string.ui_balance_preset),
-                    summary = if (isNewApi) {
-                        stringResource(R.string.ui_balance_preset_new_api_summary)
-                    } else {
-                        stringResource(R.string.ui_balance_preset_custom_summary)
-                    },
+                    summary = stringResource(
+                        when (BalancePresets[presetIndex]) {
+                            BalanceOption.PRESET_NEW_API -> R.string.ui_balance_preset_new_api_summary
+                            BalanceOption.PRESET_SUB2API -> R.string.ui_balance_preset_sub2api_summary
+                            BalanceOption.PRESET_DEEPSEEK -> R.string.ui_balance_preset_deepseek_summary
+                            else -> R.string.ui_balance_preset_custom_summary
+                        },
+                    ),
                     onSelectedIndexChange = { selectedIndex ->
                         onBalanceOptionChange(
                             BalanceOption.applyPreset(
-                                if (selectedIndex == 1) {
-                                    BalanceOption.PRESET_NEW_API
-                                } else {
-                                    BalanceOption.PRESET_CUSTOM
-                                },
+                                BalancePresets.getOrElse(selectedIndex) { BalanceOption.PRESET_CUSTOM },
                                 balanceOption.copy(enabled = switchOn),
                             ),
                         )
@@ -259,16 +269,25 @@ internal fun hasBalanceIndicatorContent(state: ProviderBalanceState?): Boolean =
  * 顶部栏与模型选择器共用的余额只读指示器。
  *
  * - 只展示最后一次成功金额；刷新继续在后台更新数字，但不再显示刷新中/已刷新等提示。
- * - 金额与图标始终使用主题中性文字色，缓存过期或刷新失败不改变颜色。
+ * - 金额与图标默认使用主题中性文字色，缓存过期或刷新失败不改变颜色。
  * - 只读：不响应点击，也不弹出余额详情。
+ * - [animateChanges] 为 true 时（仅顶部栏），余额变化会播放一次动画：
+ *   扣费不足 1 时在金额下方飘出小号差值；扣费满 1 时数字滚动到新值、差值加粗弹出、
+ *   图标抖动并短暂变红；余额上升只飘出绿色差值。动画只作用于绘制层，不改变指示器尺寸；
+ *   过时事件或系统关闭动画时不播放，播放中再次变化会合并为一个差值。
  */
 @Composable
 internal fun ProviderBalanceIndicator(
     state: ProviderBalanceState?,
     modifier: Modifier = Modifier,
+    animateChanges: Boolean = false,
 ) {
     if (state == null) return
     val amount = state.amount ?: return
+    if (animateChanges) {
+        AnimatedProviderBalanceIndicator(state = state, amount = amount, modifier = modifier)
+        return
+    }
     val amountColor = MiuixTheme.colorScheme.onSurfaceVariantSummary
     Row(
         verticalAlignment = Alignment.CenterVertically,

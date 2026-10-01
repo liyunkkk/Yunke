@@ -121,6 +121,18 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             }
         }
 
+        fun reportEventUsage(event: JSONObject) {
+            val response = event.optJSONObject("response")
+            reportUsage(
+                sequenceOf(
+                    response?.optJSONObject("usage"),
+                    event.optJSONObject("usage"),
+                    response?.takeIf { looksLikeUsage(it) },
+                    event.takeIf { looksLikeUsage(it) },
+                ).firstOrNull { parseUsage(it) != null }
+            )
+        }
+
         fun finishContentBlock(
             block: StreamingContentBlock,
             content: String = block.content.toString(),
@@ -231,7 +243,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                     sawFunctionCall = true
                 }
                 deliveryGuard.observe(event)
-                reportUsage(event.optJSONObject("response")?.optJSONObject("usage"))
+                reportEventUsage(event)
                 throwEventError(event)
                 when (val type = event.optString("type")) {
                     "response.output_text.delta" -> {
@@ -431,7 +443,23 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             extractFinalOutput(output)
         }
 
-        fun reconcileFinalPart(part: FinalContentPart) {
+        // Freeze delivered text before reconciliation creates any terminal-only blocks.
+        // Use authoritative part positions (including content indexes), not streamed
+        // output indexes, which gateways can rewrite in the terminal snapshot.
+        val streamedTextBlocks = contentBlocks.filter {
+            it.kind == AssistantBlockKind.TEXT && it.content.isNotEmpty()
+        }
+        val terminalTextParts = finalResult.contentParts.filter { it.kind == AssistantBlockKind.TEXT }
+        val soleStreamedText = streamedTextBlocks.singleOrNull()
+        val lastStreamedTextPartIndex = finalResult.contentParts.indexOfLast { part ->
+            part.kind == AssistantBlockKind.TEXT && (
+                streamedTextBlocks.any { it.identity.matches(part.identity) } ||
+                    (terminalTextParts.size == 1 && soleStreamedText != null &&
+                        part.rawContent.startsWith(soleStreamedText.content.toString()))
+                )
+        }
+
+        fun reconcileFinalPart(partIndex: Int, part: FinalContentPart) {
             val identityMatches = contentBlocks.filter { block ->
                 block.kind == part.kind && block.identity.matches(part.identity) }
             // Some Responses gateways rewrite message IDs or output indexes in the terminal
@@ -481,6 +509,14 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 return
             }
 
+            // Only suppress an unmatched summary authoritatively before delivered text.
+            // New terminal text is not streamed evidence; reasoning after a streamed
+            // preamble or hosted tool still needs its own visible block.
+            // Matching streamed reasoning above continues to reconcile in place.
+            if (part.kind == AssistantBlockKind.THINKING &&
+                partIndex < lastStreamedTextPartIndex
+            ) return
+
             finishActiveVisibleBlock()
             val block = StreamingContentBlock(
                 kind = part.kind,
@@ -501,7 +537,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             finishContentBlock(block, content = part.content)
         }
 
-        finalResult.contentParts.forEach(::reconcileFinalPart)
+        finalResult.contentParts.forEachIndexed(::reconcileFinalPart)
         finishActiveVisibleBlock()
         contentBlocks.filter { !it.ended }.forEach(::finishContentBlock)
 
@@ -735,6 +771,10 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             else -> "incomplete"
         }
     }
+
+    private fun looksLikeUsage(json: JSONObject): Boolean =
+        listOf("total_tokens", "input_tokens", "prompt_tokens", "output_tokens", "completion_tokens")
+            .any(json::has)
 
     private fun parseUsage(usage: JSONObject?): AgentTokenUsage? {
         usage ?: return null

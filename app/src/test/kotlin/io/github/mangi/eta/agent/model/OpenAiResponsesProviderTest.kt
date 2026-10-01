@@ -71,6 +71,48 @@ class OpenAiResponsesProviderTest {
     }
 
     @Test
+    fun terminalOnlyReasoningDoesNotOpenANewBlockAfterStreamedAnswer() {
+        val body = responseTextEvent("response.output_text.delta", "msg_1", 1, "delta", "最终正文") +
+            responseTextEvent("response.output_text.done", "msg_1", 1, "text", "最终正文") +
+            event("response.completed", JSONObject().put("response", JSONObject()
+                .put("status", "completed").put("output", JSONArray()
+                    .put(reasoningItem("rs_1", "此前的摘要"))
+                    .put(messageItem("msg_1", "最终正文")))))
+        withSseServer(body) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            val result = OpenAiResponsesProvider.complete(
+                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
+            )
+            assertEquals("最终正文", result.assistantMessage.getString("content"))
+            assertEquals("此前的摘要", result.assistantMessage.getString("reasoning_content"))
+            assertFalse(events.filterIsInstance<ProviderEvent.BlockStart>().any {
+                it.kind == AssistantBlockKind.THINKING
+            })
+            assertFalse(events.filterIsInstance<ProviderEvent.BlockDelta>().any {
+                it.kind == AssistantBlockKind.THINKING
+            })
+            assertNotNull(result.assistantMessage.optJSONObject(ResponsesReasoningState.KEY))
+        }
+    }
+
+    @Test
+    fun terminalOnlyResponseStillDeliversReasoningBeforeItsAnswer() {
+        val body = event("response.completed", JSONObject().put("response", JSONObject()
+            .put("status", "completed").put("output", JSONArray()
+                .put(reasoningItem("rs_1", "先判断"))
+                .put(messageItem("msg_1", "最终正文")))))
+        withSseServer(body) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            val result = OpenAiResponsesProvider.complete(
+                ProviderRequest(config(baseUrl), JSONArray(), JSONArray()), AgentRunController(), events::add,
+            )
+            assertEquals("最终正文", result.assistantMessage.getString("content"))
+            assertEquals(listOf(AssistantBlockKind.THINKING, AssistantBlockKind.TEXT),
+                events.filterIsInstance<ProviderEvent.BlockStart>().map { it.kind })
+        }
+    }
+
+    @Test
     fun identicalTextInDistinctTerminalPartsMustRemainDistinct() {
         val body = responseTextEvent("response.output_text.delta", "msg_1", 0, "delta", "相同内容") +
             responseTextEvent("response.output_text.done", "msg_1", 0, "text", "相同内容") +

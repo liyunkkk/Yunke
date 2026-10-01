@@ -5,6 +5,8 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -90,6 +92,8 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -142,7 +146,6 @@ import com.mikepenz.markdown.model.State
 import com.mikepenz.markdown.model.markdownAnimations
 import com.mikepenz.markdown.model.markdownDimens
 import com.mikepenz.markdown.model.markdownPadding
-import com.mikepenz.markdown.model.rememberMarkdownState
 import com.mikepenz.markdown.utils.getUnescapedTextInNode
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -198,18 +201,38 @@ import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/**
+ * 返回 true 前先让出一帧。用于点击展开：点击那一帧只重组标题并启动展开动画，
+ * 正文的组合与文字测量放到下一帧。[deferOneFrame] 只在进入组合时读取一次。
+ */
+@Composable
+internal fun rememberDeferredBody(deferOneFrame: Boolean): Boolean {
+    var ready by remember { mutableStateOf(!deferOneFrame) }
+    if (!ready) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            ready = true
+        }
+    }
+    return ready
+}
+
+/**
+ * 预览图解码不在组合里做：滚动预取和展开时同步解码会直接占用那一帧。
+ * 命中缓存时立即返回，否则先返回 null（调用方占位尺寸固定），后台解码后再刷新。
+ */
 @Composable
 internal fun rememberDataUrlBitmap(
     dataUrl: String,
     fallback: String? = null,
 ): ImageBitmap? {
     val context = LocalContext.current
-    val immediate = remember(dataUrl, fallback) {
-        decodeDataUrlBitmap(dataUrl) ?: decodeDataUrlBitmap(fallback.orEmpty())
+    val cached = remember(dataUrl, fallback) {
+        ChatPreviewBitmapCache.get(dataUrl) ?: fallback?.let(ChatPreviewBitmapCache::get)
     }
-    val loaded = produceState(initialValue = immediate, dataUrl, fallback, context) {
-        if (immediate != null) {
-            value = immediate
+    val loaded = produceState(initialValue = cached, dataUrl, fallback, context) {
+        if (cached != null) {
+            value = cached
             return@produceState
         }
         if (dataUrl.isBlank() && fallback.isNullOrBlank()) {
@@ -217,11 +240,14 @@ internal fun rememberDataUrlBitmap(
             return@produceState
         }
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            loadPreviewBitmap(context, dataUrl)
+            val bitmap = decodeDataUrlBitmap(dataUrl)
+                ?: fallback?.let(::decodeDataUrlBitmap)
+                ?: loadPreviewBitmap(context, dataUrl)
                 ?: fallback?.takeIf { it != dataUrl }?.let { loadPreviewBitmap(context, it) }
+            bitmap?.also { ChatPreviewBitmapCache.put(dataUrl, it) }
         }
     }
-    return loaded.value ?: immediate
+    return loaded.value ?: cached
 }
 
 private fun loadPreviewBitmap(context: android.content.Context, source: String): ImageBitmap? {
@@ -447,7 +473,7 @@ internal fun AgentWorkProcessHeader(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onToggle)
+                    .clickable(interactionSource = null, indication = null, onClick = onToggle)
                     .padding(horizontal = 13.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -874,51 +900,56 @@ private fun StableMarkdown(
     content: String,
     modifier: Modifier = Modifier,
     tone: ChatMarkdownTone = ChatMarkdownTone.Answer,
-    markdownState: MarkdownState = rememberMarkdownState(
-        content = content,
-        retainState = true,
-    ),
+    markdownState: MarkdownState = rememberCompletedMarkdownState(content),
     progressive: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("md", bodyTraceMount) }
     val components = remember { chatMarkdownComponents() }
-    Markdown(
-        markdownState = markdownState,
-        colors = chatMarkdownColors(tone),
-        typography = chatMarkdownTypography(tone),
-        padding = chatMarkdownPadding(),
-        dimens = chatMarkdownDimens(),
-        components = components,
-        modifier = modifier,
-        loading = {
-            LocalToggleProbe.current?.let { ref ->
-                SideEffect { StreamPerformanceDiagnostics.probeEvent(ref.token, "markdown", "state=loading chars=${content.length}") }
-            }
-            // 保留与最终正文接近的高度，避免历史消息异步解析完成后越界绘制。
-            Text(
-                text = content,
-                style = chatMarkdownBodyStyle(tone),
-                color = chatMarkdownTextColor(tone),
-                modifier = it,
-            )
-        },
-        error = {
-            Text(
-                text = content,
-                style = chatMarkdownBodyStyle(tone),
-                color = chatMarkdownTextColor(tone),
-                modifier = it,
-            )
-        },
-        success = { state, successComponents, successModifier ->
-            ChatMarkdownDocument(
-                root = state.node,
-                content = state.content,
-                components = successComponents,
-                modifier = successModifier,
-                progressive = progressive,
-            )
-        },
-    )
+    CompletedMarkdownStateHost(markdownState) {
+        Markdown(
+            markdownState = markdownState,
+            colors = chatMarkdownColors(tone),
+            typography = chatMarkdownTypography(tone),
+            padding = chatMarkdownPadding(),
+            dimens = chatMarkdownDimens(),
+            components = components,
+            modifier = modifier,
+            loading = {
+                SideEffect { traceChatBodyRun("md.phase.loading", bodyTraceMount) }
+                LocalToggleProbe.current?.let { ref ->
+                    SideEffect { StreamPerformanceDiagnostics.probeEvent(ref.token, "markdown", "state=loading chars=${content.length}") }
+                }
+                // 保留与最终正文接近的高度，避免历史消息异步解析完成后越界绘制。
+                Text(
+                    text = content,
+                    style = chatMarkdownBodyStyle(tone),
+                    color = chatMarkdownTextColor(tone),
+                    modifier = it,
+                )
+            },
+            error = {
+                SideEffect { traceChatBodyRun("md.phase.error", bodyTraceMount) }
+                Text(
+                    text = content,
+                    style = chatMarkdownBodyStyle(tone),
+                    color = chatMarkdownTextColor(tone),
+                    modifier = it,
+                )
+            },
+            success = { state, successComponents, successModifier ->
+                SideEffect { traceChatBodyRun("md.phase.success", bodyTraceMount) }
+                CacheCompletedMarkdownSuccess(content, markdownState, state)
+                ChatMarkdownDocument(
+                    root = state.node,
+                    content = state.content,
+                    components = successComponents,
+                    modifier = successModifier,
+                    progressive = progressive,
+                )
+            },
+        )
+    }
 }
 
 /**
@@ -1185,6 +1216,8 @@ private fun ChatMarkdownDocument(
     revealCoordinator: SmoothTextRevealCoordinator? = null,
     progressive: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("md.doc", bodyTraceMount) }
     val blocks = remember(root) { topLevelMarkdownBlocks(root) }
     // 用户点击展开长文档时，把整篇的组合与文字测量分摊到连续几帧，避免首帧一次性
     // 构建全部 AnnotatedString 并测量全文。只在进入组合时决定一次，历史滚入可视区
@@ -1193,7 +1226,10 @@ private fun ChatMarkdownDocument(
     val composedBlockLimit = if (progressiveAtEntry) {
         val lengths = remember(blocks) { blocks.map { (it.endOffset - it.startOffset).coerceAtLeast(0) } }
         var limit by remember(blocks) {
-            mutableIntStateOf(nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS))
+            // 点击那一帧已经要重组标题行、启动展开动画；超出预算时这一帧不纳入任何正文块。
+            mutableIntStateOf(
+                nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS, mustAdvance = false),
+            )
         }
         val probeRef = LocalToggleProbe.current
         LaunchedEffect(lengths) {
@@ -1299,19 +1335,25 @@ internal fun shouldFreezeStreamingMarkdownBlock(
 ): Boolean = tailStartOffset != null && blockStartOffset != tailStartOffset
 
 private const val STREAMING_PARSE_PUBLISH_INTERVAL_MS = 90L
-private const val PROGRESSIVE_FIRST_FRAME_CHARS = 1_000
-private const val PROGRESSIVE_FRAME_CHARS = 800
+private const val PROGRESSIVE_FIRST_FRAME_CHARS = 240
+private const val PROGRESSIVE_FRAME_CHARS = 400
 
 /**
- * 从 [current] 开始按字符预算继续纳入顶层块。每次至少前进一块，保证单个超长块
- * 也能在有限帧内完成；返回值不超过块数。
+ * 从 [current] 开始按字符预算继续纳入顶层块；返回值不超过块数。
+ * [mustAdvance] 为 true 时每次至少前进一块，保证单个超长块也能在有限帧内完成；
+ * 为 false 时（点击那一帧）超预算的首块留到下一帧。
  */
-internal fun nextProgressiveBlockLimit(blockLengths: List<Int>, current: Int, charBudget: Int): Int {
+internal fun nextProgressiveBlockLimit(
+    blockLengths: List<Int>,
+    current: Int,
+    charBudget: Int,
+    mustAdvance: Boolean = true,
+): Int {
     var limit = current.coerceIn(0, blockLengths.size)
     var used = 0
     while (limit < blockLengths.size) {
         val length = blockLengths[limit]
-        if (used > 0 && used + length > charBudget) break
+        if (used + length > charBudget && (used > 0 || !mustAdvance)) break
         used += length
         limit++
     }
@@ -2355,6 +2397,8 @@ private fun ThinkingRow(
     compact: Boolean = false,
     isPaused: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("thinking", bodyTraceMount) }
     val expansionHoldsBottom = LocalExpansionHoldsBottom.current
     // 这一次展开或收起朝哪边长；点击时定，动画期间不变。
     var anchorBottom by remember(message.id) { mutableStateOf(false) }
@@ -2382,10 +2426,7 @@ private fun ThinkingRow(
     // 解析完成后正文高度会再次变化；状态挂在行级还能在收起/展开循环中存活，
     // 避免每次展开都重新走一遍异步解析。
     val stableMarkdownState = if (!message.isStreaming) {
-        rememberMarkdownState(
-            content = message.content,
-            retainState = true,
-        )
+        rememberCompletedMarkdownState(message.content)
     } else {
         null
     }
@@ -2415,24 +2456,27 @@ private fun ThinkingRow(
             )
     }
 
-    Column(modifier = containerModifier) {
+    // 跟工具行一样，整块都能点：点标题展开，展开后点正文也能收起。
+    // 正文里的链接和长按选择先拿到手势，不会被这里吃掉。
+    Column(
+        modifier = containerModifier
+            .clickable(interactionSource = null, indication = null) {
+                anchorBottom = expansionHoldsBottom()
+                manuallyExpanded = true
+                expandedByTap = !expanded
+                expanded = !expanded
+                toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("thinking", expanded)
+                StreamPerformanceDiagnostics.probeEvent(
+                    toggleProbeRef.token,
+                    "item",
+                    "chars=${message.content.length} streaming=${message.isStreaming} " +
+                        "anchor=${if (anchorBottom) "bottom" else "top"}",
+                )
+            },
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .clickable {
-                    anchorBottom = expansionHoldsBottom()
-                    manuallyExpanded = true
-                    expandedByTap = !expanded
-                    expanded = !expanded
-                    toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("thinking", expanded)
-                    StreamPerformanceDiagnostics.probeEvent(
-                        toggleProbeRef.token,
-                        "item",
-                        "chars=${message.content.length} streaming=${message.isStreaming} " +
-                            "anchor=${if (anchorBottom) "bottom" else "top"}",
-                    )
-                }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -2486,7 +2530,10 @@ private fun ThinkingRow(
             exit = tailDetailsExit(anchorBottom),
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
-            HapticSelectionContainer(modifier = Modifier.toggleProbe(toggleProbeRef, "content")) {
+            HapticSelectionContainer(
+                modifier = retainDrawLayerWhenIdle()
+                    .toggleProbe(toggleProbeRef, "content"),
+            ) {
                 Column {
                     if (!compact) {
                         Box(
@@ -2544,6 +2591,37 @@ internal fun tailDetailsEnter(fromBottom: Boolean): androidx.compose.animation.E
         expandFrom = if (fromBottom) Alignment.Bottom else Alignment.Top,
     )
 
+
+/**
+ * 展开或收起还在进行时，内容尺寸每一帧都在变，绘制命令必须重录。
+ * 停在展开之后，把内容画进一张与屏幕同分辨率的离屏纹理。
+ * 之后滑动只移动这张纹理，渲染线程不再重放正文的文字命令。
+ * 文字、选择和流式更新都不变；内容变化时纹理会重画。
+ * 高于 [MAX_RETAINED_LAYER_HEIGHT_PX] 的内容不缓存，避免纹理被裁切。
+ */
+private const val MAX_RETAINED_LAYER_HEIGHT_PX = 8192
+
+@Composable
+internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(): Modifier {
+    val settled = transition.currentState == EnterExitState.Visible &&
+        transition.targetState == EnterExitState.Visible
+    // 带代码块的 graphicsLayer 每次重组都是新实例，Compose 会作废纹理并重录。
+    // 工具行运行时整行都在重组，离屏纹理因此每帧失效。这里用稳定参数，内容不变就不重录。
+    // 过高的内容超过纹理上限就会被裁切，宁可不缓存。
+    var heightPx by remember { mutableIntStateOf(0) }
+    val cache = settled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    return Modifier
+        .onSizeChanged { heightPx = it.height }
+        // 保留同一个绘制层节点，只切换合成策略；展开终态或高度越界时不插拔正文绘制层。
+        .graphicsLayer(
+            compositingStrategy = if (cache) {
+                CompositingStrategy.Offscreen
+            } else {
+                CompositingStrategy.Auto
+            },
+        )
+}
+
 internal fun tailDetailsExit(toBottom: Boolean): androidx.compose.animation.ExitTransition =
     shrinkVertically(
         animationSpec = tween(160, easing = FastOutSlowInEasing),
@@ -2559,9 +2637,13 @@ private fun ToolActivityInline(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("tool", bodyTraceMount) }
     val expansionHoldsBottom = LocalExpansionHoldsBottom.current
     var anchorBottom by remember(message.id) { mutableStateOf(false) }
     var isExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    // 仅本次组合内由点击触发的展开才把命令与结果推迟一帧；不跨配置变更保存。
+    var expandedByTap by remember(message.id) { mutableStateOf(false) }
     val toggleProbeRef = remember(message.id) { ToggleProbeRef() }
     // 只有「当前浏览器」卡片订阅实时会话快照，避免每个工具行都跟随快照重组
     val browserSnapshot = if (showBrowserShortcut) {
@@ -2612,8 +2694,9 @@ private fun ToolActivityInline(
             .clip(RoundedCornerShape(10.dp))
             .then(
                 if (hasDetails) {
-                    Modifier.clickable {
+                    Modifier.clickable(interactionSource = null, indication = null) {
                         anchorBottom = expansionHoldsBottom()
+                        expandedByTap = !isExpanded
                         isExpanded = !isExpanded
                         toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("tool", isExpanded)
                         StreamPerformanceDiagnostics.probeEvent(
@@ -2743,7 +2826,7 @@ private fun ToolActivityInline(
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             Column(
-                modifier = Modifier
+                modifier = retainDrawLayerWhenIdle()
                     .toggleProbe(toggleProbeRef, "content")
                     .fillMaxWidth()
                     .padding(start = 27.dp, top = 2.dp, bottom = 6.dp)
@@ -2753,6 +2836,9 @@ private fun ToolActivityInline(
                     )
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
+                // 点击那一帧只长出卡片外壳，命令与结果的组合和文字测量放到下一帧。
+                val bodyReady = rememberDeferredBody(deferOneFrame = expandedByTap)
+                if (!bodyReady) return@Column
                 if (!message.command.isNullOrBlank()) {
                     ToolCommandBlock(
                         command = message.command,

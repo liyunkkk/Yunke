@@ -54,6 +54,9 @@ data class VoiceChatSnapshot(
 )
 
 /** Owns either the cascaded chat loop or the direct SeedDuplex call, never both. */
+/** Owner prefix of utterances spoken by voice mode; one owner per reply turn. */
+internal const val VOICE_MODE_SPEECH_OWNER_PREFIX = "voice-mode-"
+
 internal class VoiceModeController(
     context: Context,
     private val scope: CoroutineScope,
@@ -164,7 +167,7 @@ internal class VoiceModeController(
                     withTimeout(20_000) {
                         chat.first { it.isStreaming || it.lastAgentId != baseline }
                     }
-                    val owner = "voice-mode-${UUID.randomUUID()}"
+                    val owner = "$VOICE_MODE_SPEECH_OWNER_PREFIX${UUID.randomUUID()}"
                     var spoken = 0
                     var speakingMessageId: String? = null
                     withTimeout(240_000) {
@@ -218,7 +221,8 @@ internal class VoiceModeController(
                     error = e.message ?: "语音对话失败",
                 )
             } finally {
-                SpeechPlayback.stop()
+                // Only this conversation's utterances; Agent speech and reply read-aloud keep playing.
+                SpeechPlayback.stopOwned("voice_mode_end") { it.startsWith(VOICE_MODE_SPEECH_OWNER_PREFIX) }
             }
         }
     }
@@ -296,7 +300,7 @@ internal class VoiceModeController(
         job = null
         duplex?.close()
         duplex = null
-        SpeechPlayback.stop()
+        SpeechPlayback.stopOwned("voice_mode_stop") { it.startsWith(VOICE_MODE_SPEECH_OWNER_PREFIX) }
         mutableState.value = VoiceModeState()
         mutableLevel.value = 0f
         mutableFinish.value = false

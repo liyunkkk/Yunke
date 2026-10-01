@@ -301,11 +301,14 @@ internal object StreamPerformanceDiagnostics {
     val probeRequests = mutableIntStateOf(0)
 
     /**
-     * 在主线程的点击回调里调用。没有诊断会话（不在输出中）时返回 0，什么都不做。
+     * 在主线程的点击回调里调用。系统追踪开启时先记录轻量点击标记；
+     * 没有流式诊断会话（不在输出中）时仍返回 0，不启动重型探针。
      * 上一次点击的窗口还没收完就再点，先把上一次的结果写出来。
      * 返回这次点击的 token，被点开的那一项用它把自己的高度和组合进度记进同一个窗口。
      */
     fun markToggle(kind: String, expanded: Boolean): Int {
+        // The point marker also works in idle chats; it does not attach the stream monitor.
+        traceChatToggle(kind, expanded)
         if (active == null) return 0
         val reporter = probeReporter ?: return 0
         probe?.let { finishProbe(it, reporter) }

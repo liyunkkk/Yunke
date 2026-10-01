@@ -73,6 +73,14 @@ internal object TouchHaptics {
     fun isMessageGenerationEnabled(): Boolean =
         isTouchEnabled() && Prefs.isEnabled(Prefs.Keys.HAPTIC_MESSAGE_GENERATION)
 
+    /** 应用退到后台后是否继续震。依赖消息生成震动开着。 */
+    fun isBackgroundEnabled(): Boolean =
+        isMessageGenerationEnabled() && Prefs.isEnabled(Prefs.Keys.HAPTIC_BACKGROUND)
+
+    /** 后台时推理正文是否也跟着震；关掉后只剩工具标签和推理完成那一下。 */
+    fun isBackgroundReasoningEnabled(): Boolean =
+        isBackgroundEnabled() && Prefs.isEnabled(Prefs.Keys.HAPTIC_BACKGROUND_REASONING)
+
     fun currentIntensity(): HapticIntensity {
         cachedIntensity?.let { return it }
         val loaded = HapticIntensity.fromWire(

@@ -94,9 +94,10 @@ class AgentChatViewportContractTest(unittest.TestCase):
         lists = list(calls(self.messages, "LazyColumn"))
         self.assertRegex(
             lists[0],
-            r"graphicsLayer\s*\{[^}]*if\s*\(\s*shouldLiftTail\s*\)\s*\{[^}]*"
-            r"resolveFollowTailLag\s*\(\s*true\s*,\s*scrollState\.followTailOverflow\(\)\s*\)\.liftPx",
+            r"val overflow = scrollState\.followTailOverflow\(\)",
         )
+        self.assertRegex(lists[0], r"nextHeldTailLift\(")
+        self.assertLess(lists[0].index('followTailOverflow()'), lists[0].index('nextHeldTailLift('))
         boxes = [
             call for call in calls(self.messages, "Box")
             if re.search(r"\bmodifier\s*=\s*modifier\b", call)
@@ -110,7 +111,18 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(draw, r"clipRect\s*\(\s*bottom\s*=\s*restLine")
 
     def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
-        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 3)
+        # Rest clip (remember key + value), follow clip, list padding, navigation.
+        self.assertRegex(
+            self.messages,
+            r"remember\s*\(\s*bottomInset\s*\)\s*\{\s*ComposerRestClip\s*\(\s*bottomInset\s*\+",
+        )
+        self.assertRegex(
+            self.messages,
+            r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)",
+        )
+        self.assertRegex(self.messages, r"bottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset")
+        self.assertRegex(self.messages, r"bottom\s*=\s*12\.dp\s*\+\s*bottomInset")
+        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 5)
 
     def test_lazy_column_rests_above_the_composer(self):
         lists = list(calls(self.messages, "LazyColumn"))

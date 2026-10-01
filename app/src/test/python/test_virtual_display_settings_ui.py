@@ -58,7 +58,14 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         root = (UI / "app/AgentAppRoot.kt").read_text()
         self.assertIn("entry<AppRoute.VirtualDisplayRecovery>", root)
         self.assertNotIn("VirtualDisplayRecoveryScreen(onBack = ::popRoute)", root)
-        self.assertIn("AgentTaskPreferenceScreen(onBack = ::popRoute)", root)
+        self.assertIn("onBack = ::popRoute,\n                    onRecoveryWorkingChanged = { taskRecoveryWorking = it },", root)
+
+    def test_task_preference_swipe_back_follows_setting_except_during_recovery(self):
+        root = (UI / "app/AgentAppRoot.kt").read_text()
+        self.assertIn("if (taskRecoveryWorking) NavSwipeDirection.None else swipeDismiss", root)
+        self.assertIn("entry<AppRoute.AgentTaskPreference>(swipeDismiss = taskPreferenceSwipeDismiss)", root)
+        self.assertIn("entry<AppRoute.VirtualDisplayRecovery>(swipeDismiss = taskPreferenceSwipeDismiss)", root)
+        self.assertNotIn("entry<AppRoute.AgentTaskPreference>(swipeDismiss = null)", root)
 
     def test_installation_is_rechecked_on_resume_not_live_backend_status(self):
         source = (UI / "TaskBackendInstallation.kt").read_text()

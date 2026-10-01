@@ -7,6 +7,19 @@ internal class AgentSilentContextBudget {
     private var measuredLocal: Int = 0
 
     /**
+     * True while [measuredInput] came from [seed], i.e. the previous run's receipt
+     * projected onto this request, rather than from a receipt of this run.
+     *
+     * A seed is an estimate, so it must not serve as the baseline of the growth check
+     * in [isPlausible]. Observed on a 272k window: the seed was ~153k, the first real
+     * receipt of the new run was 209964 (cache miss, local growth ~0). The +57k step
+     * exceeded the ~21.8k slack and was refused; every later receipt (88%, 92%, 95%)
+     * was then compared with the same stale seed and refused too, so [cloudInput]
+     * stayed null and automatic compaction never ran while the ring showed 95%.
+     */
+    private var anchorIsSeed: Boolean = false
+
+    /**
      * Ratio between what the provider billed and what the local heuristic counted for
      * the same request, learned from accepted receipts and deliberately kept across
      * [contextReplaced].
@@ -61,6 +74,7 @@ internal class AgentSilentContextBudget {
         if (!isPlausible(inputTokens, contextWindow)) return
         measuredInput = inputTokens
         measuredLocal = requestLocal
+        anchorIsSeed = false
         cloudInput = inputTokens
         learnScale(inputTokens)
     }
@@ -75,6 +89,7 @@ internal class AgentSilentContextBudget {
         if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, contextWindow?.takeIf { it > 0 })) return
         measuredInput = inputTokens
         measuredLocal = requestLocal
+        anchorIsSeed = true
     }
 
     /** 自动压缩用的云端实测；见 [cloudInput]。 */
@@ -93,6 +108,8 @@ internal class AgentSilentContextBudget {
     private fun isPlausible(inputTokens: Int, contextWindow: Int?): Boolean {
         val window = contextWindow?.takeIf { it > 0 }
         if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) return false
+        // A seeded estimate is not a receipt: the first bill of a run has no baseline.
+        if (anchorIsSeed) return true
         val previous = measuredInput?.takeIf { it > 0 } ?: return true
         val billedGrowth = inputTokens.toLong() - previous
         if (billedGrowth <= 0) return true
@@ -134,6 +151,7 @@ internal class AgentSilentContextBudget {
         measuredInput = null
         measuredLocal = 0
         requestLocal = 0
+        anchorIsSeed = false
         cloudInput = null
         // underCountScale is a property of the model's tokenizer, not of this context.
     }

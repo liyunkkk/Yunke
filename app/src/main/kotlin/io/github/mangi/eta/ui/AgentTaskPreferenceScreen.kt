@@ -53,7 +53,10 @@ import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
 /** Material 3 骨架：小标题顶栏 + 返回；内容可滚动并沿用已有页面的宽屏限宽。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun AgentTaskPreferenceScreen(onBack: () -> Unit) {
+internal fun AgentTaskPreferenceScreen(
+    onBack: () -> Unit,
+    onRecoveryWorkingChanged: (Boolean) -> Unit = {},
+) {
     val moduleInstalled = rememberTaskBackendInstalled()
     var previouslyInstalled by remember { mutableStateOf(false) }
     var recoveryWorking by remember { mutableStateOf(false) }
@@ -168,7 +171,10 @@ internal fun AgentTaskPreferenceScreen(onBack: () -> Unit) {
                                 }
                             }
                         }
-                        VirtualDisplayRecoveryControls(onWorkingChanged = { recoveryWorking = it })
+                        VirtualDisplayRecoveryControls(onWorkingChanged = {
+                            recoveryWorking = it
+                            onRecoveryWorkingChanged(it)
+                        })
                     }
                 }
             }
@@ -176,13 +182,10 @@ internal fun AgentTaskPreferenceScreen(onBack: () -> Unit) {
     }
 }
 
-/**
- * 每项的执行说明。ASK 在本阶段不可保存（[AgentTaskSurface.allowsPersist] 为 false），
- * 沿用既有"尚未就绪"资源，避免把不可选模式描述成可用能力。
- */
+/** 每项的执行说明。ASK 在第一次操作手机前弹窗，由用户为本次回复选前台或后台。 */
 private val AgentTaskSurfaceMode.hintRes: Int
     get() = when (this) {
-        AgentTaskSurfaceMode.ASK -> R.string.agent_task_surface_ask_not_ready
+        AgentTaskSurfaceMode.ASK -> R.string.agent_task_preference_mode_hint_ask
         AgentTaskSurfaceMode.FOREGROUND -> R.string.agent_task_preference_mode_hint_foreground
         AgentTaskSurfaceMode.BACKGROUND -> R.string.agent_task_preference_mode_hint_background
     }

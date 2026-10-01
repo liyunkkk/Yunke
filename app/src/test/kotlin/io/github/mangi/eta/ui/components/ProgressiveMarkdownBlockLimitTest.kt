@@ -21,12 +21,21 @@ class ProgressiveMarkdownBlockLimitTest {
         assertEquals(0, nextProgressiveBlockLimit(emptyList(), 0, 800))
     }
 
+    @Test fun tapFrameLeavesAnOversizedFirstBlockForTheNextFrame() {
+        // 点击那一帧：首块超预算时不纳入，交给下一帧。
+        assertEquals(0, nextProgressiveBlockLimit(listOf(5_000, 10), 0, 240, mustAdvance = false))
+        // 首块在预算内照常纳入，后续超预算的块停下。
+        assertEquals(2, nextProgressiveBlockLimit(listOf(100, 120, 900), 0, 240, mustAdvance = false))
+        // 下一帧恢复“至少前进一块”，超长块也能完成。
+        assertEquals(1, nextProgressiveBlockLimit(listOf(5_000, 10), 0, 400))
+    }
+
     @Test fun everyDocumentFinishesInBoundedSteps() {
         val lengths = List(200) { if (it % 7 == 0) 3_000 else 120 }
-        var limit = 0
+        var limit = nextProgressiveBlockLimit(lengths, 0, 240, mustAdvance = false)
         var steps = 0
         while (limit < lengths.size) {
-            val next = nextProgressiveBlockLimit(lengths, limit, 800)
+            val next = nextProgressiveBlockLimit(lengths, limit, 400)
             check(next > limit)
             limit = next
             steps++

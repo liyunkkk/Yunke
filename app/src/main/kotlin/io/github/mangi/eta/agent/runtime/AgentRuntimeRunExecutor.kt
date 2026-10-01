@@ -67,6 +67,8 @@ internal class AgentRuntimeRunExecutor(
         var toolsOwner: AgentChildToolOwnership? = null
         var groupGeneration: String? = null
         val childContextSink = AtomicReference<((SubAgentContextStats) -> Unit)?>(null)
+        // “每次询问”选前台后补给服务的 ToolStarted 来源。
+        val foregroundReplay = AgentForegroundReplay()
         val childSessionId = request.effectiveModelSessionId
         val allowBrowser = request.config.browserTools
         val allowTerminal = request.config.terminalTools
@@ -119,7 +121,10 @@ internal class AgentRuntimeRunExecutor(
                 }
             }
             val runSurface = session.taskSurfaceMode
-            val runVirtualDisplay = runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
+            // ASK 选定前也要让界面工具可见；选了前台后按真实无障碍状态收起。
+            val runVirtualDisplay = {
+                session.taskSurfaceMode != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND
+            }
             val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
             val executor = AgentLocalTools(
                 context = appContext, logger = AndroidAgentLogger, browserRunId = request.runId,
@@ -128,6 +133,24 @@ internal class AgentRuntimeRunExecutor(
                     it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE
                 }?.let { AgentUiHandoffPayload.from(it.payload).conversationId }.orEmpty(),
                 frozenSurface = runSurface,
+                chooseSurface = { toolName, toolsClosed ->
+                    // 先写会话再等弹窗退场；返回值取自会话，工具侧与会话保持一致。
+                    AgentTaskSurfaceChoice.choose(
+                        session = session,
+                        await = {
+                            io.github.mangi.eta.agent.device.AgentTaskPrompt.await(
+                                runId = request.runId,
+                                cancelled = { toolsClosed() || runController.isCancelled },
+                                show = { prompt -> io.github.mangi.eta.ui.AgentTaskSurfaceDialogActivity.launch(appContext, prompt.id) },
+                            )
+                        },
+                        awaitHostHidden = { io.github.mangi.eta.agent.device.AgentTaskPrompt.awaitHostHidden() },
+                        // 选前台前 ToolStarted 已发出但服务没处理：只补给服务做悬浮窗与前台记录，不进对话记录和回放。
+                        onForegroundResolved = {
+                            onAcceptedEvent(foregroundReplay.startedEvent(toolName), entrySurfaceGuard)
+                        },
+                    )
+                },
                 browserToolsEnabled = { allowBrowser && currentPermissions().browserTools },
                 terminalToolsEnabled = { allowTerminal && currentPermissions().terminalTools },
                 deviceDirectToolsEnabled = { allowDirect && currentPermissions().deviceDirectTools },
@@ -225,7 +248,7 @@ internal class AgentRuntimeRunExecutor(
                                     deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
                                     deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
                                     memoryTools = memoryEnabled,
-                                    capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay)))
+                                    capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
                                 SubAgentRunner.run(config, prompt, readTools, executor, controller,
                                     sessionId = childSessionId, onProgress = progress,
                                     maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
@@ -305,7 +328,7 @@ internal class AgentRuntimeRunExecutor(
             runController.throwIfCancelled()
             val completedResponse = AgentModelClient.complete(
                 config = request.config, sessionId = request.effectiveModelSessionId,
-                capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay) },
+                capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay()) },
                 prompt = promptWithChildHandoff, toolExecutor = delegatedExecutor, images = request.images,
                 history = request.history, skipHistoryTrimming = true,
                 compactionArchive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, request.effectiveModelSessionId),
@@ -332,6 +355,7 @@ internal class AgentRuntimeRunExecutor(
                 compactPolicy = compactPolicy,
                 onEvent = { event ->
                     timing.accept(event)
+                    foregroundReplay.accept(event)
                     acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
                 },
             )
