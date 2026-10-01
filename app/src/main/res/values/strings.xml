@@ -276,8 +276,8 @@
   <string name="conversation_delete_message_title">Delete message?</string>
   <string name="conversation_delete_message_body">This message will be deleted.</string>
   <plurals name="conversation_delete_later_turns">
-    <item quantity="one">This message and %d later turn will be deleted.</item>
-    <item quantity="other">This message and %d later turns will be deleted.</item>
+    <item quantity="one">This section and %d section below it will be deleted.</item>
+    <item quantity="other">This section and %d sections below it will be deleted.</item>
   </plurals>
   <string name="conversation_regenerate_title">Regenerate response?</string>
   <plurals name="conversation_regenerate_later_turns">

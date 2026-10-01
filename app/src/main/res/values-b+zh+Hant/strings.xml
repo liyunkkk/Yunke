@@ -299,7 +299,7 @@
   <string name="conversation_delete_message_title">要刪除訊息嗎？</string>
   <string name="conversation_delete_message_body">此訊息將被刪除。</string>
   <plurals name="conversation_delete_later_turns">
-    <item quantity="other">此訊息及後續 %d 輪對話將被刪除。</item>
+    <item quantity="other">這段訊息及下方 %d 段訊息將被刪除。</item>
   </plurals>
   <string name="conversation_regenerate_title">要重新產生回覆嗎？</string>
   <plurals name="conversation_regenerate_later_turns">

@@ -305,7 +305,7 @@
   <string name="conversation_delete_message_title">删除消息？</string>
   <string name="conversation_delete_message_body">这条消息将被删除。</string>
   <plurals name="conversation_delete_later_turns">
-    <item quantity="other">这条消息及之后 %d 轮对话将被删除。</item>
+    <item quantity="other">这段消息及下面 %d 段消息将被删除。</item>
   </plurals>
   <string name="conversation_regenerate_title">重新生成回复？</string>
   <plurals name="conversation_regenerate_later_turns">

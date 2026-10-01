@@ -527,7 +527,7 @@ fun AgentAppRoot(
                                 is AgentHomeAction.EditMessage -> agentState.beginMessageEdit(action.id)
                                 AgentHomeAction.CancelMessageEdit -> agentState.cancelMessageEdit()
                                 is AgentHomeAction.DeleteMessage -> {
-                                    agentState.messageRevisionImpact(action.id)?.let { impact ->
+                                    agentState.messageDeleteImpact(action.id)?.let { impact ->
                                         messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
                                     }
                                 }
@@ -598,7 +598,7 @@ fun AgentAppRoot(
                                 is AgentChatAction.EditMessage -> agentState.beginMessageEdit(action.id)
                                 AgentChatAction.CancelMessageEdit -> agentState.cancelMessageEdit()
                                 is AgentChatAction.DeleteMessage -> {
-                                    agentState.messageRevisionImpact(action.id)?.let { impact ->
+                                    agentState.messageDeleteImpact(action.id)?.let { impact ->
                                         messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
                                     }
                                 }

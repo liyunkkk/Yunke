@@ -72,16 +72,15 @@ internal object AgentConversationRevisionReducer {
     }
 
     /**
-     * 操作栏只删它和上一条操作栏之间的消息。用户气泡自己的栏不带走回复，
-     * 回复栏也不回头删掉提问或更早一段。
+     * 按操作栏分段删除：删掉目标所在的一段以及它下面的所有段，上面的段原样保留。
+     * 删最后一段时只去掉这一段。模型上下文在同一位置截断；该位置已被压缩时，
+     * 保留压缩摘要，或用时间线标记上的摘要加之后的可见消息重建，而不是拒绝删除。
      */
     fun deleteFromTurn(state: AgentChatUiState, targetMessageId: String): AgentChatUiState? {
         val segments = actionBarSegments(state.messages)
         val segment = segments.firstOrNull { it.ownerId == targetMessageId } ?: return null
-        val history = historyWithoutSegment(state, segment, segments) ?: return null
-        val messages = state.messages.filterIndexed { index, _ ->
-            index < segment.start || index > segment.endInclusive
-        }
+        val messages = state.messages.take(segment.start)
+        val history = if (messages.isEmpty()) emptyList() else historyBefore(state, segment.start) ?: return null
         return state.copy(
             messages = messages,
             history = history,
@@ -91,6 +90,13 @@ internal object AgentConversationRevisionReducer {
             cloudHistoryTokens = null,
             cloudRequestOverheadTokens = null,
         )
+    }
+
+    /** 删除确认框用：目标段下面还会被一起删掉的段数。 */
+    fun laterSegmentCount(state: AgentChatUiState, targetMessageId: String): Int? {
+        val segments = actionBarSegments(state.messages)
+        val index = segments.indexOfFirst { it.ownerId == targetMessageId }
+        return if (index < 0) null else segments.size - 1 - index
     }
 
     internal data class ActionBarSegment(val start: Int, val endInclusive: Int, val ownerId: String)
@@ -138,50 +144,108 @@ internal object AgentConversationRevisionReducer {
         return segments
     }
 
-    private fun historyWithoutSegment(
-        state: AgentChatUiState,
-        segment: ActionBarSegment,
-        segments: List<ActionBarSegment>,
-    ): List<AgentModelClient.ConversationMessage>? {
-        val message = state.messages[segment.start]
-        if (segment.start == segment.endInclusive && message is UserMessageUi) {
-            val index = historyUserIndex(state, segment.start) ?: return null
-            return state.history.filterIndexed { historyIndex, _ -> historyIndex != index }
+    /** 与展示消息 [0, cut) 对应的模型上下文。 */
+    private fun historyBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? =
+        tailHistoryBefore(state, cut) ?: exactHistoryBefore(state, cut) ?: compactedHistoryBefore(state, cut)
+
+    /**
+     * 从上下文末尾往回去掉被删的部分：被删的提问逐条对上，被删的回复按正文对上，
+     * 中间的工具调用随之去掉。被删区域里有压缩标记或对不上时返回 null。
+     * 当前轮次的提问已被压缩时也能用，且保留未删部分的工具记录。
+     */
+    private fun tailHistoryBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? {
+        val deleted = state.messages.subList(cut, state.messages.size)
+        if (deleted.any { it is ContextCompactedMessageUi }) return null
+        var usersLeft = deleted.count { it is UserMessageUi }
+        val replies = deleted.filterIsInstance<AgentMessageUi>()
+            .map { it.content.trim() }.filter { it.isNotEmpty() }.toSet()
+        // 被删的段里没有提问也没有正文（例如只有一条停止提示），上下文不用动。
+        if (usersLeft == 0 && replies.isEmpty()) return state.history
+        var removedReplies = 0
+        var end = state.history.size
+        while (end > 0) {
+            val message = state.history[end - 1]
+            if (AgentContextCompactor.isCompressionSummary(message)) break
+            if (message.role == "user" && isHiddenContinuePrompt(message)) {
+                // 暂停后自动续写的隐藏提示，界面上没有对应气泡，跟着被删区域一起去掉。
+            } else if (message.role == "user") {
+                if (usersLeft == 0) break
+                usersLeft--
+            } else if (message.role == "assistant" && message.content.isNotBlank()) {
+                if (message.content.trim() !in replies) break
+                removedReplies++
+            }
+            end--
         }
-        val previousUser = (segment.start - 1 downTo 0).firstOrNull { index ->
-            val candidate = state.messages[index]
-            candidate is UserMessageUi && !candidate.isSteerSupplement()
+        if (usersLeft != 0 || (replies.isNotEmpty() && removedReplies == 0)) return null
+        // 保留的提问一条都不在上下文里、又没有摘要：不是压缩，不能当成可删。
+        if (end == 0 && state.messages.take(cut).any { it is UserMessageUi }) return null
+        // 保留下来的回复若发起过工具调用，结果一并保留，避免孤立的 tool_call。
+        if (end > 0 && state.history[end - 1].role == "assistant" && state.history[end - 1].toolCallsJson.isNotBlank()) {
+            while (end < state.history.size && state.history[end].role == "tool") end++
         }
-        val nextUser = (segment.endInclusive + 1 until state.messages.size).firstOrNull { index ->
-            val candidate = state.messages[index]
-            candidate is UserMessageUi && !candidate.isSteerSupplement()
+        return state.history.take(end)
+    }
+
+    private fun isHiddenContinuePrompt(message: AgentModelClient.ConversationMessage): Boolean =
+        AgentContextCompactor.isSteeringUserMessage(message) &&
+            !message.content.trimStart().startsWith(AgentContextCompactor.STEERING_USER_PREFIX)
+
+    private fun exactHistoryBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? {
+        if (cut < state.messages.size && state.messages[cut] is UserMessageUi) {
+            return historyUserIndex(state, cut)?.let(state.history::take)
         }
-        val historyFrom = previousUser?.let { historyUserIndex(state, it)?.plus(1) ?: return null } ?: 0
-        val historyTo = nextUser?.let { historyUserIndex(state, it) ?: return null } ?: state.history.size
-        if (historyFrom > historyTo || historyFrom > state.history.size) return null
-        val replySegments = segments.filter { candidate ->
-            candidate.start >= (previousUser?.plus(1) ?: 0) &&
-                (nextUser == null || candidate.endInclusive < nextUser) &&
-                state.messages[candidate.start] !is UserMessageUi
+        val anchor = (cut - 1 downTo 0).firstOrNull { state.messages[it] is UserMessageUi } ?: return null
+        val anchorIndex = historyUserIndex(state, anchor) ?: return null
+        val between = state.messages.subList(anchor + 1, cut)
+        // 中途压缩过时，历史里这一段已不是逐条对应，交给摘要重建。
+        if (between.any { it is ContextCompactedMessageUi }) return null
+        val keepReplies = between.count { it is AgentMessageUi && it.content.isNotBlank() }
+        var end = anchorIndex + 1
+        var seen = 0
+        while (seen < keepReplies && end < state.history.size) {
+            val message = state.history[end]
+            if (message.role == "user") return null
+            end++
+            if (message.role == "assistant" && message.content.isNotBlank()) seen++
         }
-        if (replySegments.size <= 1) {
-            return state.history.filterIndexed { index, _ -> index !in historyFrom until historyTo }
+        if (seen < keepReplies) return null
+        // 已保留回复发起的工具调用要带上结果，避免留下孤立的 tool_call。
+        while (end < state.history.size && state.history[end].role == "tool") end++
+        return state.history.take(end)
+    }
+
+    /**
+     * 截断点已被压缩：取截断点之前最近一次压缩的摘要，再接上摘要之后到截断点的可见消息。
+     * 该摘要就是当前上下文里的那份时，直接用原摘要；否则用时间线标记上保存的摘要正文。
+     */
+    private fun compactedHistoryBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? {
+        val markerIndex = (cut - 1 downTo 0).firstOrNull { index ->
+            val message = state.messages[index]
+            message is ContextCompactedMessageUi && message.compactedCount > 0 && message.summary.isNotBlank()
         }
-        val drop = mutableSetOf<Int>()
-        val buckets = replySegments.associateWith { mutableListOf<Int>() }
-        var bucket = 0
-        for (offset in 0 until (historyTo - historyFrom)) {
-            val role = state.history[historyFrom + offset].role
-            if (role != "assistant" && role != "tool") continue
-            val target = replySegments[bucket.coerceAtMost(replySegments.lastIndex)]
-            buckets.getValue(target) += historyFrom + offset
-            val needed = state.messages.subList(target.start, target.endInclusive + 1).count { item ->
-                (item is AgentMessageUi && item.content.isNotBlank()) || item is ToolActivityMessageUi
-            }.coerceAtLeast(1)
-            if (bucket < replySegments.lastIndex && buckets.getValue(target).size >= needed) bucket++
+        val currentSummaries = state.history.filter(AgentContextCompactor::isCompressionSummary)
+        if (markerIndex == null) {
+            // 没有时间线标记的旧会话：只有上下文里确有摘要时才视为压缩过，否则保持拒绝。
+            if (currentSummaries.isEmpty()) return null
+            return reconstructHistory(state.messages.take(cut))
         }
-        buckets[segment]?.let(drop::addAll)
-        return state.history.filterIndexed { index, _ -> index !in drop }
+        val laterMarker = (markerIndex + 1 until state.messages.size).any { index ->
+            val message = state.messages[index]
+            message is ContextCompactedMessageUi && message.compactedCount > 0 && message.summary.isNotBlank()
+        }
+        val summary = if (!laterMarker && currentSummaries.isNotEmpty()) {
+            currentSummaries
+        } else {
+            val marker = state.messages[markerIndex] as ContextCompactedMessageUi
+            listOf(
+                AgentModelClient.ConversationMessage(
+                    role = "user",
+                    content = "${AgentContextCompactor.SUMMARY_PREFIX_ZH}\n${marker.summary.trim()}",
+                ),
+            )
+        }
+        return summary + reconstructHistory(state.messages.subList(markerIndex + 1, cut))
     }
 
     /**

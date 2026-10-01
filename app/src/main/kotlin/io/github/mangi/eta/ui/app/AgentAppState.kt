@@ -2077,6 +2077,12 @@ internal class AgentAppState(
             MessageRevisionImpact(laterTurnCount = boundary.laterTurnCount)
         }
 
+    /** 删除确认框：按操作栏分段，统计目标段下面会一起删掉的段数。 */
+    fun messageDeleteImpact(messageId: String): MessageRevisionImpact? =
+        AgentConversationRevisionReducer.laterSegmentCount(homeState, messageId)?.let { count ->
+            MessageRevisionImpact(laterTurnCount = count)
+        }
+
     fun deleteMessageTurn(messageId: String) {
         if (homeState.isStreaming || homeState.isPaused) return
         if (rejectConversationArchiveMutation()) return
