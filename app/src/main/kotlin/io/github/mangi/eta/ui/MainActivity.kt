@@ -86,9 +86,11 @@ class MainActivity : ComponentActivity() {
         applyPreferredRefreshRate()
         // Retry when the decor is attached; never leave a request queued after pause.
         window.decorView.post(refreshRateRequest)
+        isForeground = true
     }
 
     override fun onPause() {
+        isForeground = false
         refreshRateWindowResumed = false
         window.decorView.removeCallbacks(refreshRateRequest)
         val previous = previousPreferredRefreshRate
@@ -213,15 +215,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        isForeground = true
-    }
-
-    override fun onPause() {
-        super.onPause()
-        isForeground = false
-    }
 
     @Suppress("DEPRECATION")
     private fun recreateWithoutTransition() {

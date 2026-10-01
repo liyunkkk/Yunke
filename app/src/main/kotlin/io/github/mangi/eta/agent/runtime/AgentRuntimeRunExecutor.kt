@@ -268,7 +268,7 @@ internal class AgentRuntimeRunExecutor(
                             deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
                             deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
                             memoryTools = memoryEnabled,
-                            capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay)))
+                            capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
                         SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = childSessionId,
                             maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
                     }
