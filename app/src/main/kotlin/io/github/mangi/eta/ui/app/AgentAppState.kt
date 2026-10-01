@@ -4363,6 +4363,7 @@ internal class AgentAppState(
                     io.github.mangi.eta.ui.haptics.StreamingHaptics.noteBackgroundOutput(
                         event.deltaChars.coerceAtLeast(event.delta.length),
                         conversationIdForRun(runId),
+                        reasoning = event.kind == AgentEvent.AssistantBlockKind.THINKING,
                     )
                 }
             }

@@ -60,6 +60,14 @@
   <string name="haptics_touch_feedback_summary">Vibrate when tapping buttons, switches and menus</string>
   <string name="haptics_message_generation">Message generation haptic</string>
   <string name="haptics_message_generation_summary">Light vibration while the model is writing or a tool step appears</string>
+  <string name="haptics_background">Background haptics</string>
+  <string name="haptics_background_summary_off">No vibration after the app goes to the background</string>
+  <string name="haptics_background_summary_reasoning">In the background, output, reasoning and tool steps vibrate</string>
+  <string name="haptics_background_summary_tools">In the background, output and tool steps vibrate; reasoning ticks once when done</string>
+  <string name="haptics_background_expand">Show background haptic options</string>
+  <string name="haptics_background_collapse">Hide background haptic options</string>
+  <string name="haptics_background_reasoning">Reasoning haptics</string>
+  <string name="haptics_background_reasoning_summary">Vibrate during reasoning in the background. When off, only tool labels and finished reasoning tick once</string>
   <string name="haptics_intensity_title">Haptic intensity</string>
   <string name="haptics_intensity_default">Default</string>
   <string name="haptics_intensity_low">Low</string>

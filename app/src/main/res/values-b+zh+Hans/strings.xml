@@ -89,6 +89,14 @@
   <string name="haptics_touch_feedback_summary">点击按钮、开关和菜单时震动</string>
   <string name="haptics_message_generation">消息生成触控反馈</string>
   <string name="haptics_message_generation_summary">模型输出内容或出现工具步骤时提供轻触反馈</string>
+  <string name="haptics_background">后台震动</string>
+  <string name="haptics_background_summary_off">应用回到后台后不震动</string>
+  <string name="haptics_background_summary_reasoning">回到后台后，输出、推理和工具步骤都会震动</string>
+  <string name="haptics_background_summary_tools">回到后台后，输出和工具步骤会震动，推理完成时震一下</string>
+  <string name="haptics_background_expand">展开后台震动选项</string>
+  <string name="haptics_background_collapse">收起后台震动选项</string>
+  <string name="haptics_background_reasoning">推理过程震动</string>
+  <string name="haptics_background_reasoning_summary">在后台时推理输出也震动；关闭后只在工具标签出现和推理完成时震一下</string>
   <string name="haptics_intensity_title">震动幅度</string>
   <string name="haptics_intensity_default">默认</string>
   <string name="haptics_intensity_low">低</string>

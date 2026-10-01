@@ -62,6 +62,8 @@ internal object Prefs {
         const val AGENT_VOICE_DOUBAO_INSTRUCTIONS = "agent_voice_doubao_instructions"
         const val HAPTIC_TOUCH_FEEDBACK = "haptic_touch_feedback"
         const val HAPTIC_MESSAGE_GENERATION = "haptic_message_generation"
+        const val HAPTIC_BACKGROUND = "haptic_background"
+        const val HAPTIC_BACKGROUND_REASONING = "haptic_background_reasoning"
         const val HAPTIC_INTENSITY = "haptic_intensity"
 
         /** 全部布尔开关及其默认值。 */
@@ -85,6 +87,8 @@ internal object Prefs {
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
             HAPTIC_TOUCH_FEEDBACK to true,
             HAPTIC_MESSAGE_GENERATION to true,
+            HAPTIC_BACKGROUND to true,
+            HAPTIC_BACKGROUND_REASONING to true,
         )
 
         /** 由 Eta Runtime 最终裁决、不要求 Xposed 框架在线的开关。 */
@@ -99,6 +103,8 @@ internal object Prefs {
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED,
             HAPTIC_TOUCH_FEEDBACK,
             HAPTIC_MESSAGE_GENERATION,
+            HAPTIC_BACKGROUND,
+            HAPTIC_BACKGROUND_REASONING,
         )
     }
 

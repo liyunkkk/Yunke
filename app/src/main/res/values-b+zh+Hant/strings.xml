@@ -89,6 +89,14 @@
   <string name="haptics_touch_feedback_summary">點擊按鈕、開關和選單時震動</string>
   <string name="haptics_message_generation">訊息生成觸控回饋</string>
   <string name="haptics_message_generation_summary">模型輸出內容或出現工具步驟時提供輕觸回饋</string>
+  <string name="haptics_background">背景震動</string>
+  <string name="haptics_background_summary_off">應用回到背景後不震動</string>
+  <string name="haptics_background_summary_reasoning">回到背景後，輸出、推理和工具步驟都會震動</string>
+  <string name="haptics_background_summary_tools">回到背景後，輸出和工具步驟會震動，推理完成時震一下</string>
+  <string name="haptics_background_expand">展開背景震動選項</string>
+  <string name="haptics_background_collapse">收起背景震動選項</string>
+  <string name="haptics_background_reasoning">推理過程震動</string>
+  <string name="haptics_background_reasoning_summary">在背景時推理輸出也震動；關閉後只在工具標籤出現和推理完成時震一下</string>
   <string name="haptics_intensity_title">震動幅度</string>
   <string name="haptics_intensity_default">預設</string>
   <string name="haptics_intensity_low">低</string>

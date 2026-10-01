@@ -28,6 +28,7 @@ internal object StreamingHaptics {
     private var pendingBackgroundTicks = 0
     private var backgroundTickScheduled = false
     private var backgroundView: View? = null
+    private var queuedReasoning = false
     private var foregroundConversationId: String? = null
     private var foregroundView: View? = null
 
@@ -39,9 +40,12 @@ internal object StreamingHaptics {
         override fun run() {
             backgroundTickScheduled = false
             val view = backgroundView
-            if (view == null || pendingBackgroundTicks <= 0 || !backgroundGate(view)) {
+            if (view == null || pendingBackgroundTicks <= 0 || !backgroundGate(view) ||
+                !backgroundAllowed(queuedReasoning)
+            ) {
                 pendingBackgroundTicks = 0
                 backgroundView = null
+                queuedReasoning = false
                 return
             }
             pendingBackgroundTicks--
@@ -63,7 +67,7 @@ internal object StreamingHaptics {
      */
     /** 前台也走这条：工具标签只出现一次，不能等界面刚好在 32ms 的打字间隔里把这次丢掉。 */
     fun noteToolAppeared(toolId: String, conversationId: String? = null) {
-        if (toolId.isBlank()) return
+        if (toolId.isBlank() || !backgroundAllowed()) return
         val view = currentConversationView(conversationId) ?: return
         TouchHaptics.onLiveToolActivity(view, toolId)
     }
@@ -74,8 +78,8 @@ internal object StreamingHaptics {
         noteToolAppeared("$thinkingId-completed", conversationId)
     }
 
-    fun noteBackgroundOutput(graphemes: Int, conversationId: String? = null) {
-        if (graphemes <= 0) return
+    fun noteBackgroundOutput(graphemes: Int, conversationId: String? = null, reasoning: Boolean = false) {
+        if (graphemes <= 0 || !backgroundAllowed(reasoning)) return
         // 当前页还在打字时由可见打字机震动。离开页面、展开侧栏或退到后台仍补震，直到换成另一条会话。
         val view = currentConversationView(conversationId) ?: return
         if (foregroundGate(view)) return
@@ -83,7 +87,15 @@ internal object StreamingHaptics {
         pendingBackgroundTicks = (pendingBackgroundTicks + backgroundPulseCount(graphemes))
             .coerceAtMost(MAX_BACKGROUND_TICKS)
         backgroundView = view
+        queuedReasoning = queuedReasoning || reasoning
         scheduleBackgroundTick()
+    }
+
+    /** 应用在前台一律放行；退到后台后按「后台震动」和「推理过程震动」决定。 */
+    private fun backgroundAllowed(reasoning: Boolean = false): Boolean = when {
+        AppForeground.isForeground -> true
+        reasoning -> TouchHaptics.isBackgroundReasoningEnabled()
+        else -> TouchHaptics.isBackgroundEnabled()
     }
 
     private fun claimForeground(conversationId: String?, view: View?) {
@@ -140,6 +152,7 @@ internal object StreamingHaptics {
     private fun cancelBackgroundTicks() {
         pendingBackgroundTicks = 0
         backgroundView = null
+        queuedReasoning = false
         backgroundTickScheduled = false
         mainHandler.removeCallbacks(backgroundTick)
     }
