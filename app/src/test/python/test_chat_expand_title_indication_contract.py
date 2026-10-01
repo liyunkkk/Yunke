@@ -65,6 +65,20 @@ class ChatExpandTitleIndicationContractTest(unittest.TestCase):
         self.assertIn("expanded = !expanded", callback)
         self.assertIn("StreamPerformanceDiagnostics.markToggle", callback)
 
+    def test_thinking_body_tap_collapses_like_tool(self):
+        # The whole thinking block (header and expanded body) is the click target, as for tools.
+        body, call_start, _, _ = self.header("ThinkingRow")
+        column = re.search(r"\bColumn\s*\(\s*modifier\s*=\s*containerModifier\s*\.clickable\s*\(", body)
+        self.assertIsNotNone(column, "The thinking container itself must own the clickable")
+        self.assertLess(column.start(), call_start)
+        visible = body.index("AnimatedVisibility(")
+        args_open = body.index("(", column.start())
+        args_end = balanced_end(body, args_open, "(", ")")
+        content_open = body.index("{", args_end)
+        self.assertEqual(body[args_end + 1:content_open].strip(), "")
+        container_end = balanced_end(body, content_open, "{", "}")
+        self.assertLess(visible, container_end, "The expanded body must sit inside the clickable container")
+
     def test_tool_header_keeps_expansion_callback_without_indication(self):
         body, _, end, _ = self.header("ToolActivityInline")
         callback = self.callback(body, end)

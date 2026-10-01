@@ -2456,24 +2456,27 @@ private fun ThinkingRow(
             )
     }
 
-    Column(modifier = containerModifier) {
+    // 跟工具行一样，整块都能点：点标题展开，展开后点正文也能收起。
+    // 正文里的链接和长按选择先拿到手势，不会被这里吃掉。
+    Column(
+        modifier = containerModifier
+            .clickable(interactionSource = null, indication = null) {
+                anchorBottom = expansionHoldsBottom()
+                manuallyExpanded = true
+                expandedByTap = !expanded
+                expanded = !expanded
+                toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("thinking", expanded)
+                StreamPerformanceDiagnostics.probeEvent(
+                    toggleProbeRef.token,
+                    "item",
+                    "chars=${message.content.length} streaming=${message.isStreaming} " +
+                        "anchor=${if (anchorBottom) "bottom" else "top"}",
+                )
+            },
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .clickable(interactionSource = null, indication = null) {
-                    anchorBottom = expansionHoldsBottom()
-                    manuallyExpanded = true
-                    expandedByTap = !expanded
-                    expanded = !expanded
-                    toggleProbeRef.token = StreamPerformanceDiagnostics.markToggle("thinking", expanded)
-                    StreamPerformanceDiagnostics.probeEvent(
-                        toggleProbeRef.token,
-                        "item",
-                        "chars=${message.content.length} streaming=${message.isStreaming} " +
-                            "anchor=${if (anchorBottom) "bottom" else "top"}",
-                    )
-                }
                 .padding(horizontal = if (compact) 4.dp else 13.dp, vertical = if (compact) 6.dp else 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
