@@ -5612,11 +5612,14 @@ internal class AgentAppState(
     }
 
     private fun shouldKeepCompressingIndicator(conversationId: String?): Boolean {
-        if (compressionJob?.isActive == true) return true
-        val pending = pendingManualCompress ?: return false
-        return conversationId == null ||
-            pending.conversationId == null ||
-            pending.conversationId == conversationId
+        val pending = pendingManualCompress
+        return keepsCompressingIndicator(
+            conversationId = conversationId,
+            jobActive = compressionJob?.isActive == true,
+            jobConversationId = compressionJobConversationId,
+            hasPending = pending != null,
+            pendingConversationId = pending?.conversationId,
+        )
     }
 
     private fun startPendingManualCompress() {
@@ -5845,6 +5848,23 @@ internal data class MessageRevisionImpact(
 )
 
 private const val EXTERNAL_ARCHIVE_CONVERSATION_PREFIX = "archive-"
+
+/**
+ * 运行结束时是否保留「正在压缩」提示。只认属于这个会话的压缩任务或待办：
+ * 别的会话在压缩时，这里结束的回复不能被标成压缩中，否则那边压完不会回来清它。
+ * 会话未知（null）时保持旧行为，按匹配处理。
+ */
+internal fun keepsCompressingIndicator(
+    conversationId: String?,
+    jobActive: Boolean,
+    jobConversationId: String?,
+    hasPending: Boolean,
+    pendingConversationId: String?,
+): Boolean {
+    fun matches(owner: String?) = conversationId == null || owner == null || owner == conversationId
+    if (jobActive && matches(jobConversationId)) return true
+    return hasPending && matches(pendingConversationId)
+}
 
 private fun String.isReadOnlyExternalArchiveConversation(): Boolean =
     startsWith(EXTERNAL_ARCHIVE_CONVERSATION_PREFIX)
