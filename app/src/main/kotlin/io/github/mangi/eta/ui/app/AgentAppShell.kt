@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -291,10 +292,14 @@ private fun AgentTopBar(
     val actions: @Composable RowScope.() -> Unit = {
         if (isHome) {
             if (hasBalanceIndicatorContent(selectedBalanceState)) {
-                ProviderBalanceIndicator(
-                    state = selectedBalanceState,
-                    modifier = Modifier.padding(end = 6.dp),
-                )
+                // 按 provider 重建，切换供应商时不会把另一个账号的变化当成新扣费播放。
+                key(selectedProviderId) {
+                    ProviderBalanceIndicator(
+                        state = selectedBalanceState,
+                        modifier = Modifier.padding(end = 6.dp),
+                        animateChanges = true,
+                    )
+                }
             }
             TopBarOverflowMenu(
                 onNewConversation = onNewConversation,

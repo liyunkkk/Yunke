@@ -4,6 +4,7 @@ import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderSetting
 import java.io.IOException
+import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.ContinuationInterceptor
 import kotlinx.coroutines.cancel
@@ -254,4 +255,121 @@ class ProviderBalanceCoordinatorTest {
         assertFalse(result.getValue("p").error!!.contains("secret-value"))
     }
 
+    /** 按顺序返回结果的 fetch；时钟每次读取递增，便于等待每一轮成功写入。 */
+    private class ScriptedBalance(results: List<Result<String>>) {
+        private val queue = ArrayDeque(results)
+        private var tick = 0L
+        val fetch: suspend (ProviderSetting) -> Result<String> = { queue.removeFirst() }
+        val clock: () -> Long = { ++tick }
+    }
+
+    private suspend fun ProviderBalanceCoordinator.refreshAndAwait(
+        scope: CoroutineScope,
+        target: ProviderSetting,
+    ): ProviderBalanceState {
+        refresh(scope, listOf(target))
+        return withTimeout(2_000) {
+            states.first { it[target.id]?.refreshing == false }
+        }.getValue(target.id)
+    }
+
+    @Test
+    fun firstSuccessHasValueButNoChange() = runBlocking<Unit> {
+        val script = ScriptedBalance(listOf(Result.success("13.52")))
+        val coordinator = ProviderBalanceCoordinator(script.fetch, script.clock, format = { it })
+        val state = coordinator.refreshAndAwait(this, provider("p"))
+        assertEquals("13.52", state.amount)
+        assertEquals(0, BigDecimal("13.52").compareTo(state.amountValue))
+        assertNull(state.lastChange)
+    }
+
+    @Test
+    fun decreaseProducesNegativeDeltaAndIncreasingSeq() = runBlocking<Unit> {
+        val script = ScriptedBalance(listOf(
+            Result.success("13.52"),
+            Result.success("13"),
+            Result.success("11.48"),
+        ))
+        val coordinator = ProviderBalanceCoordinator(script.fetch, script.clock, format = { it })
+        val p = provider("p")
+        coordinator.refreshAndAwait(this, p)
+
+        val first = coordinator.refreshAndAwait(this, p).lastChange!!
+        assertEquals(0, BigDecimal("-0.52").compareTo(first.delta))
+
+        val second = coordinator.refreshAndAwait(this, p).lastChange!!
+        assertEquals(0, BigDecimal("-1.52").compareTo(second.delta))
+        assertTrue(second.seq > first.seq)
+        assertTrue(second.atMillis > first.atMillis)
+    }
+
+    @Test
+    fun unchangedValueKeepsPreviousChange() = runBlocking<Unit> {
+        val script = ScriptedBalance(listOf(
+            Result.success("10"),
+            Result.success("9.5"),
+            Result.success("9.50"),
+        ))
+        val coordinator = ProviderBalanceCoordinator(script.fetch, script.clock, format = { it })
+        val p = provider("p")
+        coordinator.refreshAndAwait(this, p)
+        val changed = coordinator.refreshAndAwait(this, p).lastChange
+        val unchanged = coordinator.refreshAndAwait(this, p).lastChange
+        assertEquals(changed, unchanged)
+    }
+
+    @Test
+    fun nonNumericBalanceHasNoValueAndNoChange() = runBlocking<Unit> {
+        val script = ScriptedBalance(listOf(Result.success("10"), Result.success("N/A"), Result.success("8")))
+        val coordinator = ProviderBalanceCoordinator(script.fetch, script.clock, format = { it })
+        val p = provider("p")
+        coordinator.refreshAndAwait(this, p)
+        val text = coordinator.refreshAndAwait(this, p)
+        assertEquals("N/A", text.amount)
+        assertNull(text.amountValue)
+        assertNull(text.lastChange)
+        // 文本结果之后没有可比较的旧值，也不产生变化。
+        assertNull(coordinator.refreshAndAwait(this, p).lastChange)
+    }
+
+    @Test
+    fun configurationChangeDoesNotCompareAcrossAccounts() = runBlocking<Unit> {
+        val script = ScriptedBalance(listOf(Result.success("100"), Result.success("3")))
+        val coordinator = ProviderBalanceCoordinator(script.fetch, script.clock, format = { it })
+        coordinator.refreshAndAwait(this, provider("p", "https://old.example.com"))
+        val switched = coordinator.refreshAndAwait(this, provider("p", "https://new.example.com"))
+        assertEquals("3", switched.amount)
+        assertNull(switched.lastChange)
+    }
+
+    @Test
+    fun failureInBetweenKeepsBaselineForNextDelta() = runBlocking<Unit> {
+        val script = ScriptedBalance(listOf(
+            Result.success("5"),
+            Result.failure(IOException("boom")),
+            Result.success("4.25"),
+        ))
+        val coordinator = ProviderBalanceCoordinator(script.fetch, script.clock, format = { it })
+        val p = provider("p")
+        coordinator.refreshAndAwait(this, p)
+        val failed = coordinator.refreshAndAwait(this, p)
+        assertEquals(0, BigDecimal("5").compareTo(failed.amountValue))
+        assertNull(failed.lastChange)
+        val change = coordinator.refreshAndAwait(this, p).lastChange!!
+        assertEquals(0, BigDecimal("-0.75").compareTo(change.delta))
+    }
+
+    @Test
+    fun formatFailureIsReportedAsQueryFailure() = runBlocking<Unit> {
+        val script = ScriptedBalance(listOf(Result.success("1")))
+        val coordinator = ProviderBalanceCoordinator(
+            script.fetch,
+            script.clock,
+            format = { error("bad format") },
+        )
+        val state = coordinator.refreshAndAwait(this, provider("p"))
+        assertNull(state.amount)
+        assertNull(state.amountValue)
+        assertTrue(state.error != null)
+    }
 }

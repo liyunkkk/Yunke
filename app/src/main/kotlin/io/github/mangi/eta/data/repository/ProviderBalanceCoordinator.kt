@@ -24,6 +24,8 @@ internal class ProviderBalanceCoordinator(
     private val format: (String) -> String = ::formatBalanceDisplay,
 ) {
     private val gate = Any()
+    // Guarded by gate; monotonically increasing so UI can detect fresh balance changes.
+    private var changeSeq = 0L
     private val jobs = mutableMapOf<String, Job>()
     // Compare query inputs only; timestamps, models and presentation edits do not invalidate balances.
     private val configurations = mutableMapOf<String, List<Any?>>()
@@ -52,14 +54,31 @@ internal class ProviderBalanceCoordinator(
                 publishStates(stateFlow.value + (id to previous.copy(refreshing = true)))
                 val job = scope.launch(start = CoroutineStart.LAZY) {
                     val self = coroutineContext[Job]!!
-                    val result = try { fetch(provider).mapCatching(format) }
+                    val result = try { fetch(provider).mapCatching { raw -> raw to format(raw) } }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (error: Exception) { Result.failure(error) }
                     synchronized(gate) {
                         if (jobs[id] !== self || !self.isActive) return@synchronized
                         val current = stateFlow.value[id] ?: ProviderBalanceState()
                         val next = result.fold(
-                            onSuccess = { current.copy(amount = it, updatedAtMillis = clock(), refreshing = false, error = null) },
+                            onSuccess = { (raw, display) ->
+                                val now = clock()
+                                val value = raw.trim().toBigDecimalOrNull()
+                                val old = current.amountValue
+                                val change = if (old != null && value != null && old.compareTo(value) != 0) {
+                                    BalanceChange(seq = ++changeSeq, delta = value - old, atMillis = now)
+                                } else {
+                                    current.lastChange
+                                }
+                                current.copy(
+                                    amount = display,
+                                    amountValue = value,
+                                    lastChange = change,
+                                    updatedAtMillis = now,
+                                    refreshing = false,
+                                    error = null,
+                                )
+                            },
                             onFailure = { current.copy(refreshing = false, error = "Balance query failed; retry shortly") },
                         )
                         jobs.remove(id)
