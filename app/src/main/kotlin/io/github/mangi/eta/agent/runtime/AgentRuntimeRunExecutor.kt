@@ -118,7 +118,10 @@ internal class AgentRuntimeRunExecutor(
                 }
             }
             val runSurface = session.taskSurfaceMode
-            val runVirtualDisplay = runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
+            // ASK 选定前也要让界面工具可见；选了前台后按真实无障碍状态收起。
+            val runVirtualDisplay = {
+                session.taskSurfaceMode != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND
+            }
             val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
             val executor = AgentLocalTools(
                 context = appContext, logger = AndroidAgentLogger, browserRunId = request.runId,
@@ -126,6 +129,16 @@ internal class AgentRuntimeRunExecutor(
                     it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE
                 }?.let { AgentUiHandoffPayload.from(it.payload).conversationId }.orEmpty(),
                 frozenSurface = runSurface,
+                chooseSurface = { toolsClosed ->
+                    io.github.mangi.eta.agent.device.AgentTaskPrompt.await(
+                        runId = request.runId,
+                        cancelled = { toolsClosed() || runController.isCancelled },
+                        show = { prompt -> io.github.mangi.eta.ui.AgentTaskSurfaceDialogActivity.launch(appContext, prompt.id) },
+                    )?.also { mode ->
+                        session.resolveTaskSurface(mode)
+                        io.github.mangi.eta.agent.device.AgentTaskPrompt.awaitHostHidden()
+                    }
+                },
                 browserToolsEnabled = { allowBrowser && currentPermissions().browserTools },
                 terminalToolsEnabled = { allowTerminal && currentPermissions().terminalTools },
                 deviceDirectToolsEnabled = { allowDirect && currentPermissions().deviceDirectTools },
@@ -219,7 +232,7 @@ internal class AgentRuntimeRunExecutor(
                                     deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
                                     deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
                                     memoryTools = memoryEnabled,
-                                    capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay)))
+                                    capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
                                 SubAgentRunner.run(config, prompt, readTools, executor, controller,
                                     sessionId = childSessionId, onProgress = progress)
                             }
@@ -237,7 +250,7 @@ internal class AgentRuntimeRunExecutor(
                             deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
                             deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
                             memoryTools = memoryEnabled,
-                            capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay)))
+                            capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
                         SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = childSessionId)
                     }
                     val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
@@ -296,7 +309,7 @@ internal class AgentRuntimeRunExecutor(
             runController.throwIfCancelled()
             val completedResponse = AgentModelClient.complete(
                 config = request.config, sessionId = request.effectiveModelSessionId,
-                capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay) },
+                capabilitiesProvider = { AgentToolCapabilities.captureForRound(appContext).copy(virtualDisplay = runVirtualDisplay()) },
                 prompt = promptWithChildHandoff, toolExecutor = delegatedExecutor, images = request.images,
                 history = request.history, skipHistoryTrimming = true,
                 compactionArchive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, request.effectiveModelSessionId),

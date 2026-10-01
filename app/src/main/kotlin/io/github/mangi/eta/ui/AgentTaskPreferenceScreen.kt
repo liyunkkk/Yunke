@@ -182,13 +182,10 @@ internal fun AgentTaskPreferenceScreen(
     }
 }
 
-/**
- * 每项的执行说明。ASK 在本阶段不可保存（[AgentTaskSurface.allowsPersist] 为 false），
- * 沿用既有"尚未就绪"资源，避免把不可选模式描述成可用能力。
- */
+/** 每项的执行说明。ASK 在第一次操作手机前弹窗，由用户为本次回复选前台或后台。 */
 private val AgentTaskSurfaceMode.hintRes: Int
     get() = when (this) {
-        AgentTaskSurfaceMode.ASK -> R.string.agent_task_surface_ask_not_ready
+        AgentTaskSurfaceMode.ASK -> R.string.agent_task_preference_mode_hint_ask
         AgentTaskSurfaceMode.FOREGROUND -> R.string.agent_task_preference_mode_hint_foreground
         AgentTaskSurfaceMode.BACKGROUND -> R.string.agent_task_preference_mode_hint_background
     }

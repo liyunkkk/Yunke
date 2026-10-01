@@ -7,4 +7,8 @@
     <string name="agent_task_preference_recovery_phase_waiting">等待恢复</string>
     <string name="agent_task_preference_recovery_phase_unknown">状态未知</string>
     <string name="agent_task_preference_recovery_raw_phase">原始状态码：%1$s</string>
+    <string name="agent_task_surface_prompt_continue">继续</string>
+    <string name="agent_task_surface_prompt_cancel">取消</string>
+    <string name="agent_task_surface_prompt_message">代鱼要开始操作手机了，请选这次在哪里执行。本次回复结束前不会再问。</string>
+    <string name="agent_task_preference_mode_hint_ask">第一次操作手机前弹窗选择前台或后台</string>
 </resources>

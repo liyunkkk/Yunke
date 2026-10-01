@@ -102,12 +102,23 @@ internal class AgentLocalTools(
     private val runSkillsRoot: File? = null,
     pendingSkillConflict: PendingSkillConflictCapability? = null,
     private val rootAvailable: () -> Boolean = { RootAccess.isGranted },
-    private val frozenSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = runCatching {
+    frozenSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = runCatching {
         io.github.mangi.eta.agent.device.AgentTaskSurface.stored()
     }.getOrDefault(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK),
+    /**
+     * “每次询问”时由运行时弹窗问用户，阻塞到选完；返回 null 表示取消。
+     * 参数是本工具执行器自己的关闭状态，等待期间要一起检查。
+     */
+    private val chooseSurface: ((cancelled: () -> Boolean) -> io.github.mangi.eta.agent.device.AgentTaskSurfaceMode?)? = null,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
-    private val backgroundSurface = frozenSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
+    /** ASK 只在第一次界面操作前问一次，之后整轮 run 都用选定的位置。 */
+    @Volatile
+    var runSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = frozenSurface
+        private set
+    private val surfaceChoiceLock = Any()
+    private val backgroundSurface: Boolean
+        get() = runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
     private val virtualLifecycle = setOf("start_virtual_session", "keep_virtual_result", "finish_virtual_session")
     private fun virtualRouted(name: String) = backgroundSurface &&
         (io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(name) || name in virtualLifecycle)
@@ -204,8 +215,48 @@ internal class AgentLocalTools(
         terminalController.sessionIdentity(sessionId)
 
     override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
+        var chosenNow: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode? = null
+        if (runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK &&
+            io.github.mangi.eta.agent.device.AgentTaskSurface.needsSurfaceChoice(toolCall.name)
+        ) {
+            val outcome = resolveAskedSurface()
+            if (outcome == null) {
+                return textResult(
+                    if (closed.get()) errorResult("RUN_CLOSED", "任务已关闭")
+                    else errorResult("TASK_SURFACE_CANCELLED", "用户取消了这次执行位置选择，本次未执行；不要再调用界面工具"),
+                )
+            }
+            if (outcome.second) chosenNow = outcome.first
+        }
+        val result = executeOnSurface(toolCall)
+        return chosenNow?.let { withSurfaceNote(result, it) } ?: result
+    }
+
+    /** 返回选定的位置，以及是否是这次调用刚选的（需要告诉模型）。 */
+    private fun resolveAskedSurface(): Pair<io.github.mangi.eta.agent.device.AgentTaskSurfaceMode, Boolean>? =
+        synchronized(surfaceChoiceLock) {
+            val current = runSurface
+            if (current != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK) return@synchronized current to false
+            val chosen = runCatching { chooseSurface?.invoke { closed.get() } }.getOrNull()
+                ?.takeIf { it != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK }
+                ?: return@synchronized null
+            runSurface = chosen
+            chosen to true
+        }
+
+    private fun withSurfaceNote(
+        result: AgentModelClient.ToolResult,
+        mode: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode,
+    ): AgentModelClient.ToolResult {
+        val surface = mode.wire
+        val note = runCatching { JSONObject(result.content).put("task_surface", surface).toString() }
+            .getOrElse { "{\"task_surface\":\"$surface\"}\n" + result.content }
+        return result.copy(content = note)
+    }
+
+    private fun executeOnSurface(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
         val handoffBlocksGui = runCatching {
-            io.github.mangi.eta.agent.device.AgentTaskSurface.blocksGuiTool(toolCall.name, frozenSurface) && !backgroundSurface
+            io.github.mangi.eta.agent.device.AgentTaskSurface.blocksGuiTool(toolCall.name, runSurface) && !backgroundSurface
         }.getOrDefault(true)
         if (handoffBlocksGui) {
             return textResult(errorResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.NOT_READY, "副屏交接未就绪，本次未执行；请在设置改为前台"))

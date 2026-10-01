@@ -48,14 +48,58 @@ class AgentTaskSurfaceModeTest {
     }
 
     @Test
-    fun askChoiceDoesNotBlockOrFallBackToForeground() {
-        val error = assertThrows(VirtualDisplayHandoffNotReadyException::class.java) {
-            AgentTaskPrompt.choice()
+    fun askWaitsForAnswerAndClearsPendingRequest() {
+        val shown = mutableListOf<String>()
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val result = worker.submit<AgentTaskSurfaceMode?> {
+                AgentTaskPrompt.await("run-ask", cancelled = { false }, show = { shown += it.id }, pollMillis = 10)
+            }
+            val deadline = System.currentTimeMillis() + 2_000
+            while (AgentTaskPrompt.pending.value == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+            val request = requireNotNull(AgentTaskPrompt.pending.value)
+            assertEquals("run-ask", request.runId)
+            assertEquals(listOf(request.id), shown)
+            AgentTaskPrompt.answer(request.id, AgentTaskSurfaceMode.BACKGROUND)
+            assertEquals(AgentTaskSurfaceMode.BACKGROUND, result.get(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(null, AgentTaskPrompt.pending.value)
+        } finally {
+            worker.shutdownNow()
         }
-        assertEquals(VirtualDisplaySession.NOT_READY, error.message)
-        assertFalse(AgentTaskPrompt.pending.value)
-        AgentTaskPrompt.answer(AgentTaskSurfaceMode.BACKGROUND)
-        assertFalse(AgentTaskPrompt.pending.value)
+    }
+
+    @Test
+    fun askCancelReturnsNullAndNeverPicksAskItself() {
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val cancelled = worker.submit<AgentTaskSurfaceMode?> {
+                AgentTaskPrompt.await("run-stop", cancelled = { stop.get() }, pollMillis = 10)
+            }
+            val deadline = System.currentTimeMillis() + 2_000
+            while (AgentTaskPrompt.pending.value == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+            stop.set(true)
+            assertEquals(null, cancelled.get(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(null, AgentTaskPrompt.pending.value)
+
+            val asked = worker.submit<AgentTaskSurfaceMode?> {
+                AgentTaskPrompt.await("run-ask-ask", cancelled = { false }, pollMillis = 10)
+            }
+            val again = System.currentTimeMillis() + 2_000
+            while (AgentTaskPrompt.pending.value == null && System.currentTimeMillis() < again) Thread.sleep(5)
+            AgentTaskPrompt.answer(requireNotNull(AgentTaskPrompt.pending.value).id, AgentTaskSurfaceMode.ASK)
+            assertEquals(null, asked.get(2, java.util.concurrent.TimeUnit.SECONDS))
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun onlyScreenAndVirtualLifecycleToolsNeedASurfaceChoice() {
+        listOf("launch_app", "observe_screen", "tap", "start_virtual_session", "finish_virtual_session", "keep_virtual_result")
+            .forEach { assertTrue(it, AgentTaskSurface.needsSurfaceChoice(it)) }
+        listOf("read_file", "terminal", "browser_use", "search_apps", "inspect_virtual_backend")
+            .forEach { assertFalse(it, AgentTaskSurface.needsSurfaceChoice(it)) }
     }
 
     @Test
@@ -67,10 +111,10 @@ class AgentTaskSurfaceModeTest {
     }
 
     @Test
-    fun onlyForegroundCanBeSavedAndNonForegroundSummariesAreNotReady() {
+    fun everyModeCanBeSavedWithItsOwnSummary() {
         assertTrue(AgentTaskSurface.allowsPersist(AgentTaskSurfaceMode.FOREGROUND))
         assertTrue(AgentTaskSurface.allowsPersist(AgentTaskSurfaceMode.BACKGROUND))
-        assertFalse(AgentTaskSurface.allowsPersist(AgentTaskSurfaceMode.ASK))
+        assertTrue(AgentTaskSurface.allowsPersist(AgentTaskSurfaceMode.ASK))
         assertEquals(
             AgentTaskSurfaceMode.FOREGROUND.labelRes,
             AgentTaskSurface.settingsSummaryRes(AgentTaskSurfaceMode.FOREGROUND),
@@ -80,7 +124,7 @@ class AgentTaskSurfaceModeTest {
             AgentTaskSurface.settingsSummaryRes(AgentTaskSurfaceMode.BACKGROUND),
         )
         assertEquals(
-            io.github.mangi.eta.R.string.agent_task_surface_ask_not_ready,
+            io.github.mangi.eta.R.string.agent_task_surface_ask_summary,
             AgentTaskSurface.settingsSummaryRes(AgentTaskSurfaceMode.ASK),
         )
     }
@@ -94,6 +138,12 @@ class AgentTaskSurfaceModeTest {
         assertTrue(text.contains("失败保留副屏"))
         assertTrue(text.contains("不得回退主屏"))
         assertFalse(text.contains("进程退出后自动关闭"))
+        val ask = AgentTaskSurface.handoffPromptClause(true, AgentTaskSurfaceMode.ASK)
+        assertTrue(ask.contains("task_surface=foreground"))
+        assertTrue(ask.contains("task_surface=background"))
+        assertTrue(ask.contains("TASK_SURFACE_CANCELLED"))
+        assertTrue(ask.contains("finish_virtual_session"))
+        assertFalse(ask.contains("尚未支持"))
     }
 
     @Test

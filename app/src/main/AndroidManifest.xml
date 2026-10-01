@@ -129,6 +129,14 @@
         </activity>
 
         <activity
+            android:name=".ui.AgentTaskSurfaceDialogActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity="${applicationId}.task_surface"
+            android:theme="@style/Theme.EtaTaskSurfaceDialog" />
+
+        <activity
             android:name=".ui.OAuthLoginActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
             android:exported="false"
