@@ -109,6 +109,49 @@ class ProviderBalanceFetcherTest {
     }
 
     @Test
+    fun sub2ApiAndDeepSeekPresetsFillEditablePaths() {
+        val sub2 = BalanceOption.applyPreset(BalanceOption.PRESET_SUB2API, BalanceOption(enabled = true))
+        assertEquals(BalanceOption.PRESET_SUB2API, sub2.preset)
+        assertEquals("/usage", sub2.apiPath)
+        assertEquals("remaining", sub2.resultPath)
+        val deepSeek = BalanceOption.applyPreset(BalanceOption.PRESET_DEEPSEEK, sub2)
+        assertEquals(BalanceOption.PRESET_DEEPSEEK, deepSeek.preset)
+        assertEquals("/user/balance", deepSeek.apiPath)
+        assertEquals("balance_infos[0].total_balance", deepSeek.resultPath)
+        // 手改过的值保留；留空时回到模板。
+        assertEquals("/v2/usage", sub2.copy(apiPath = "/v2/usage").resolved().apiPath)
+        assertEquals("remaining", sub2.copy(resultPath = "").resolved().resultPath)
+    }
+
+    @Test
+    fun sub2ApiUsesBaseUrlAndDeepSeekUsesOrigin() {
+        assertEquals(
+            "https://sub2.example.com/v1/usage",
+            ProviderBalanceFetcher.resolveBalanceUrl(
+                "https://sub2.example.com/v1",
+                BalanceOption.SUB2API_PATH,
+                BalanceOption.PRESET_SUB2API,
+            ),
+        )
+        assertEquals(
+            "https://api.deepseek.com/user/balance",
+            ProviderBalanceFetcher.resolveBalanceUrl(
+                "https://api.deepseek.com/v1",
+                BalanceOption.DEEPSEEK_PATH,
+                BalanceOption.PRESET_DEEPSEEK,
+            ),
+        )
+        assertEquals(
+            "https://api.deepseek.com/user/balance",
+            ProviderBalanceFetcher.resolveBalanceUrl(
+                "https://api.deepseek.com",
+                BalanceOption.DEEPSEEK_PATH,
+                BalanceOption.PRESET_DEEPSEEK,
+            ),
+        )
+    }
+
+    @Test
     fun extractValueConvertsNewApiQuotaUnits() {
         val body = """{"success":true,"data":{"quota":50000000,"used_quota":250000}}"""
         val value = ProviderBalanceFetcher.extractValue(

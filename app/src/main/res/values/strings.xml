@@ -1349,6 +1349,10 @@
   <string name="ui_balance_preset_new_api">NewAPI</string>
   <string name="ui_balance_preset_custom_summary">Enter the API path and JSON result key</string>
   <string name="ui_balance_preset_new_api_summary">Query /api/user/self and convert quota with data.quota / 500000</string>
+  <string name="ui_balance_preset_sub2api">Sub2API</string>
+  <string name="ui_balance_preset_deepseek">DeepSeek</string>
+  <string name="ui_balance_preset_sub2api_summary">Fills /usage and remaining; you can still edit them</string>
+  <string name="ui_balance_preset_deepseek_summary">Fills /user/balance and balance_infos[0].total_balance; you can still edit them</string>
   <string name="ui_balance_access_token">Access token</string>
   <string name="ui_balance_access_token_summary">From NewAPI personal security settings. Leave blank to use the provider API key</string>
 

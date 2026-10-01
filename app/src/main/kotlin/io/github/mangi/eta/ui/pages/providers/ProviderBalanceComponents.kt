@@ -59,6 +59,14 @@ internal fun Context.activityLifecycleOwnerOrNull(): LifecycleOwner? {
     return current as? LifecycleOwner
 }
 
+/** 下拉框顺序与预设一一对应。 */
+private val BalancePresets = listOf(
+    BalanceOption.PRESET_CUSTOM,
+    BalanceOption.PRESET_NEW_API,
+    BalanceOption.PRESET_SUB2API,
+    BalanceOption.PRESET_DEEPSEEK,
+)
+
 @Composable
 internal fun ProviderBalanceOptionFields(
     balanceOption: BalanceOption,
@@ -95,26 +103,28 @@ internal fun ProviderBalanceOptionFields(
 
         AnimatedVisibility(visible = expanded) {
             Column {
+                val presetIndex = BalancePresets.indexOf(resolved.preset).coerceAtLeast(0)
                 WindowSpinnerPreference(
                     items = listOf(
                         DropdownItem(text = stringResource(R.string.ui_balance_preset_custom)),
                         DropdownItem(text = stringResource(R.string.ui_balance_preset_new_api)),
+                        DropdownItem(text = stringResource(R.string.ui_balance_preset_sub2api)),
+                        DropdownItem(text = stringResource(R.string.ui_balance_preset_deepseek)),
                     ),
-                    selectedIndex = if (isNewApi) 1 else 0,
+                    selectedIndex = presetIndex,
                     title = stringResource(R.string.ui_balance_preset),
-                    summary = if (isNewApi) {
-                        stringResource(R.string.ui_balance_preset_new_api_summary)
-                    } else {
-                        stringResource(R.string.ui_balance_preset_custom_summary)
-                    },
+                    summary = stringResource(
+                        when (BalancePresets[presetIndex]) {
+                            BalanceOption.PRESET_NEW_API -> R.string.ui_balance_preset_new_api_summary
+                            BalanceOption.PRESET_SUB2API -> R.string.ui_balance_preset_sub2api_summary
+                            BalanceOption.PRESET_DEEPSEEK -> R.string.ui_balance_preset_deepseek_summary
+                            else -> R.string.ui_balance_preset_custom_summary
+                        },
+                    ),
                     onSelectedIndexChange = { selectedIndex ->
                         onBalanceOptionChange(
                             BalanceOption.applyPreset(
-                                if (selectedIndex == 1) {
-                                    BalanceOption.PRESET_NEW_API
-                                } else {
-                                    BalanceOption.PRESET_CUSTOM
-                                },
+                                BalancePresets.getOrElse(selectedIndex) { BalanceOption.PRESET_CUSTOM },
                                 balanceOption.copy(enabled = switchOn),
                             ),
                         )

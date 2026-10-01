@@ -163,7 +163,9 @@ internal object ProviderBalanceFetcher {
         }
         val normalizedPath = path.removePrefix("/")
         val normalizedBase = if (
-            preset == BalanceOption.PRESET_NEW_API || isOriginRelativeUserApi(normalizedPath)
+            preset == BalanceOption.PRESET_NEW_API ||
+                preset == BalanceOption.PRESET_DEEPSEEK ||
+                isOriginRelativeUserApi(normalizedPath)
         ) {
             originFromOpenAiBaseUrl(baseUrl)
         } else {

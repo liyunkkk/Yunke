@@ -1360,6 +1360,10 @@
   <string name="ui_balance_preset_new_api">NewAPI</string>
   <string name="ui_balance_preset_custom_summary">自行填写接口路径和 JSON 结果键</string>
   <string name="ui_balance_preset_new_api_summary">请求 /api/user/self，并用 data.quota / 500000 换算额度</string>
+  <string name="ui_balance_preset_sub2api">Sub2API</string>
+  <string name="ui_balance_preset_deepseek">DeepSeek</string>
+  <string name="ui_balance_preset_sub2api_summary">填入 /usage 和 remaining，可以再改</string>
+  <string name="ui_balance_preset_deepseek_summary">填入 /user/balance 和 balance_infos[0].total_balance，可以再改</string>
   <string name="ui_balance_access_token">访问令牌</string>
   <string name="ui_balance_access_token_summary">来自 NewAPI 个人安全设置。留空则使用提供商 API Key</string>
 
