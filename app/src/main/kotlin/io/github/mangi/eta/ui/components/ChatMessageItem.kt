@@ -473,7 +473,7 @@ internal fun AgentWorkProcessHeader(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onToggle)
+                    .clickable(interactionSource = null, indication = null, onClick = onToggle)
                     .padding(horizontal = 13.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -2461,7 +2461,7 @@ private fun ThinkingRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                .clickable {
+                .clickable(interactionSource = null, indication = null) {
                     anchorBottom = expansionHoldsBottom()
                     manuallyExpanded = true
                     expandedByTap = !expanded
@@ -2691,7 +2691,7 @@ private fun ToolActivityInline(
             .clip(RoundedCornerShape(10.dp))
             .then(
                 if (hasDetails) {
-                    Modifier.clickable {
+                    Modifier.clickable(interactionSource = null, indication = null) {
                         anchorBottom = expansionHoldsBottom()
                         expandedByTap = !isExpanded
                         isExpanded = !isExpanded
