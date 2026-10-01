@@ -461,8 +461,8 @@ internal object AgentChildTaskGroups {
         if (role == "implementation" || (snapshot.optString("workspace_path")).isNotBlank() || workspaceId != null)
             return error("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW")
         if (args.has("role") && args.optString("role") != role) return error("REPLACEMENT_ROLE_MISMATCH")
+        // 失败的任务已经停了，没法再要检查点；没报过检查点就让接替的任务从头做。
         val checkpoint = snapshot.optJSONObject("supervision")?.optString("checkpoint").orEmpty()
-        if (checkpoint.isBlank()) return error("REPLACEMENT_CHECKPOINT_REQUIRED")
         val handoffVersion = snapshot.optLong("handoff_version", -1)
         if (!old.handoffs.matchesRead(predecessorId, handoffVersion)) return error("HANDOFF_NOT_READ")
         val selection = ChildTaskReplacementSelection.choose(current.ownerId, old.generation, old.workers,
@@ -472,9 +472,14 @@ internal object AgentChildTaskGroups {
         val chosen = current.workers[selection.index ?: return error("AGENT_NOT_CONFIGURED")]
         val provider = snapshot.optString("provider_id")
         val originalContext = args.optString("context")
-        val evidence = "\n\nPrevious failed task $predecessorId (provider $provider, model ${snapshot.optString("model")}) " +
-            "reported this unverified checkpoint: $checkpoint. Continue only unfinished work; " +
-            "verify the checkpoint independently. Never replay uncertain external side effects."
+        val previous = "\n\nPrevious failed task $predecessorId (provider $provider, model ${snapshot.optString("model")}) "
+        val evidence = if (checkpoint.isBlank()) {
+            previous + "reported no checkpoint; its progress is unknown. Do the whole task from the start. " +
+                "Never replay uncertain external side effects."
+        } else {
+            previous + "reported this unverified checkpoint: $checkpoint. Continue only unfinished work; " +
+                "verify the checkpoint independently. Never replay uncertain external side effects."
+        }
         if (originalContext.length + evidence.length > 20000) return error("INVALID_TASK_ARGUMENTS")
         val next = JSONObject(args.toString()).apply {
             if (old !== current) remove("replace_task_id")
@@ -547,5 +552,13 @@ internal object AgentChildTaskGroups {
             .put("total", ids.size).put("next_offset", if (offset + page.length() < ids.size) offset + page.length() else JSONObject.NULL)
             .toString(), sensitive = true)
     }
-    private fun error(code: String) = AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", code).toString(), sensitive = true)
+    private fun error(code: String) = AgentModelClient.ToolResult(
+        io.github.mangi.eta.agent.delegation.SubAgentErrorHints.annotate(JSONObject().put("ok", false).put("code", code)).also { json ->
+            // 替换策略的拒绝码自带英文原因，没有中文说明时用它。
+            if (json.optString("message").isBlank()) {
+                ChildTaskConfigPolicy.Code.entries.firstOrNull { it.name == code }?.let { json.put("message", it.reason) }
+            }
+        }.toString(),
+        sensitive = true,
+    )
 }

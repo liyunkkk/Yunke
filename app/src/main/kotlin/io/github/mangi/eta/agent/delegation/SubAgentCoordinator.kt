@@ -206,8 +206,10 @@ internal class SubAgentCoordinator(
             }
         } catch (error: ImageGenerationParameterException) {
             JSONObject().put("ok", false).put("code", "IMAGE_GENERATION_INVALID_OPTIONS").put("message", error.message)
-        } catch (_: IllegalArgumentException) { errorResult("INVALID_TASK_ARGUMENTS") }
-        catch (_: org.json.JSONException) { errorResult("INVALID_TASK_ARGUMENTS") }
+        } catch (_: UnknownTaskException) { errorResult("TASK_NOT_FOUND") }
+        catch (error: IllegalArgumentException) { invalidArguments(error.message) }
+        catch (error: org.json.JSONException) { invalidArguments(error.message) }
+        SubAgentErrorHints.annotate(json)
         if (!json.optBoolean("ok", true)) callbacks.post("dispatch_rejected") { diagnostics?.mark("dispatch_rejected", errorCode = json.optString("code")) }
         return AgentModelClient.ToolResult(json.toString(), sensitive = true)
     }
@@ -219,9 +221,11 @@ internal class SubAgentCoordinator(
             if (activeGroupPauseEpoch != 0L || pendingGroupPauses.get() > 0) return errorResult("TASK_GROUP_PAUSED")
             val instruction = args.getString("task")
             val context = args.optString("context")
-            require(instruction.isNotBlank() && instruction.length <= 12000 && context.length <= 20000)
+            require(instruction.isNotBlank() && instruction.length <= 12000 && context.length <= 20000) {
+                "task 必须非空且不超过 12000 字；context 不超过 20000 字"
+            }
             val suppliedRole = if (args.has("role")) args.getString("role") else null
-            require(suppliedRole == null || suppliedRole in ROLES)
+            require(suppliedRole == null || suppliedRole in ROLES) { "role 只能是 ${ROLES.joinToString("/")}" }
             val predecessor = args.optString("replace_task_id").takeIf { it.isNotBlank() }?.let { tasks[it] ?: return errorResult("UNKNOWN_REPLACED_TASK") }
             predecessor?.successorId?.let { successor -> return errorResult("REPLACEMENT_ALREADY_DISPATCHED").put("task_id", successor) }
             val workerById = args.optString("agent_id").takeIf { it.isNotBlank() }?.let { workerIds.indexOf(it) }
@@ -233,7 +237,7 @@ internal class SubAgentCoordinator(
                 val candidates = if (role == "research") roles.indices.filter { roles[it] !in MEDIA } else roles.indices.filter { roles[it] == desired }
                 candidates.minByOrNull { i -> tasks.values.count { it.worker == i && active(it) } } ?: return errorResult("ROLE_NOT_CONFIGURED")
             }
-            require(worker in workers.indices)
+            require(worker in workers.indices) { "worker 必须在 1..${workers.size} 之间" }
             if (predecessor != null) {
                 if (worker == predecessor.worker) return errorResult("REPLACEMENT_REQUIRES_NEW_WORKER")
                 if (predecessor.errorCode == "SUB_AGENT_PROVIDER_UNAVAILABLE" && workers[worker].providerId == workers[predecessor.worker].providerId) return errorResult("REPLACEMENT_PROVIDER_UNAVAILABLE")
@@ -248,13 +252,16 @@ internal class SubAgentCoordinator(
             val project = args.optString("project")
             val workspaceId = (args.opt("workspace_id") as? String)?.takeIf { it.isNotBlank() }
             if (role in MEDIA) {
-                require(project.isBlank() && workspaceId == null)
+                require(project.isBlank() && workspaceId == null) { "生图和生视频任务不能带 project 或 workspace_id" }
                 if (role == "image_generation" && executeImageChild == null) return errorResult("IMAGE_GENERATION_UNAVAILABLE")
                 if (role == "video_generation" && executeVideoChild == null) return errorResult("VIDEO_GENERATION_UNAVAILABLE")
             }
-            if (role == "implementation" || workspaceId != null) require(workspace != null && executeWorkspaceChild != null && Regex("/workspace/[^/]+").matches(project))
+            if (role == "implementation" || workspaceId != null) {
+                if (workspace == null || executeWorkspaceChild == null) return errorResult("WORKSPACE_UNAVAILABLE")
+                require(Regex("/workspace/[^/]+").matches(project)) { "implementation 和带 workspace_id 的任务需要 project=/workspace/<仓库名>" }
+            }
             if (workspaceId != null && tasks.values.any { it.project == project && it.workspaceId == workspaceId && active(it) }) return errorResult("WORKSPACE_IN_USE")
-            require(role != "implementation" || workspaceId == null)
+            require(role != "implementation" || workspaceId == null) { "implementation 会自己创建工作树，不能带 workspace_id；审查已有工作区用 role=review" }
             if (predecessor != null) {
                 if (predecessor.role in MEDIA || role != predecessor.role) return errorResult("REPLACEMENT_ROLE_MISMATCH")
                 if (predecessor.workspaceId != null) return errorResult("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW")
@@ -510,7 +517,7 @@ internal class SubAgentCoordinator(
         // Registry subscriptions survive parent sink detachment and failed sink callbacks.
         changed()
     }
-    @Synchronized private fun find(id: String): Task = requireNotNull(tasks[id]) { "Task does not belong to this session" }
+    @Synchronized private fun find(id: String): Task = tasks[id] ?: throw UnknownTaskException()
     private fun get(args: JSONObject): JSONObject {
         if (!args.has("task_id")) {
             val all = synchronized(this) { tasks.values.toList().asReversed() }
@@ -534,7 +541,7 @@ internal class SubAgentCoordinator(
             if (stopping) return errorResult("RUN_CLOSED")
             if (task.state != "running" || task.role in MEDIA) return errorResult("TASK_NOT_RUNNING_TEXT")
             when (action) {
-                "guide" -> { val guidance = args.getString("guidance"); require(guidance.isNotBlank() && guidance.length <= 2000); if (!task.controller.queueBoundaryGuidance(guidance)) return errorResult("TASK_NOT_ACCEPTING_GUIDANCE"); task.journal.mark("guidance_accepted") }
+                "guide" -> { val guidance = args.optString("guidance"); require(guidance.isNotBlank() && guidance.length <= 2000) { "action=guide 需要非空 guidance（不超过 2000 字）" }; if (!task.controller.queueBoundaryGuidance(guidance)) return errorResult("TASK_NOT_ACCEPTING_GUIDANCE"); task.journal.mark("guidance_accepted") }
                 "checkpoint" -> { if (!task.controller.queueBoundaryGuidance("请在下一轮调用 report_task_progress，报告已核实工作、下一步及阻碍的高层摘要；不包含私有思维、密钥或敏感参数，然后继续原任务。")) return errorResult("TASK_NOT_ACCEPTING_GUIDANCE"); task.journal.mark("checkpoint_requested") }
                 "pause" -> pause(task, "SUB_AGENT_MANUAL_PAUSE")
                 else -> return errorResult("INVALID_TASK_ARGUMENTS")
@@ -593,12 +600,16 @@ internal class SubAgentCoordinator(
     @Synchronized private fun manage(args: JSONObject): JSONObject {
         if (closed || stopping) return errorResult("RUN_CLOSED")
         val backend = workspace ?: return errorResult("WORKSPACE_UNAVAILABLE")
-        val action = args.getString("action"); require(action in setOf("list", "inspect", "merge", "discard"))
+        val action = args.getString("action"); require(action in setOf("list", "inspect", "merge", "discard")) { "action 只能是 list/inspect/merge/discard" }
         val project = args.getString("project"); val id = (args.opt("workspace_id") as? String)?.takeIf { it.isNotBlank() }
         if (tasks.values.any { it.project == project && (id == null || it.workspaceId == id) && active(it) }) return errorResult("WORKSPACE_IN_USE")
         return backend.operation(project, action, id)
     }
     private fun errorResult(code: String) = JSONObject().put("ok", false).put("code", code)
+    private fun invalidArguments(detail: String?) = errorResult("INVALID_TASK_ARGUMENTS").also { json ->
+        detail?.takeIf { it.isNotBlank() }?.let { json.put("detail", it.take(300)) }
+    }
+    private class UnknownTaskException : IllegalArgumentException("Task does not belong to this session")
     private companion object {
         val MEDIA = setOf("image_generation", "video_generation")
         val ACTIVE = setOf("queued", "running", "awaiting_decision")
