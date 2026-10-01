@@ -176,4 +176,37 @@ class AgentSilentContextBudgetTest {
         budget.measured(26424, 500000)
         assertEquals(26424, budget.tokens(7927))
     }
+
+    @Test fun theFirstReceiptOfARunIsNotCheckedAgainstASeededEstimate() {
+        // Observed on a 272k window: seed ~153k from the previous run, then the new run's
+        // first receipt jumped to 209964 (cache miss) with no local growth.
+        val budget = AgentSilentContextBudget()
+        budget.seed(150_000, 152_753, contextWindow = 272_000)
+        budget.requestStarted(150_000)
+        budget.measured(209_964, 272_000)
+        assertEquals(209_964, budget.cloudTokens())
+        assertTrue(budget.isCalibrated())
+        assertEquals(209_964, budget.tokens(150_000))
+        // Later receipts grow from the real anchor, so the ring's 88% reaches the decision.
+        budget.requestStarted(160_000)
+        budget.measured(240_017, 272_000)
+        assertEquals(240_017, budget.cloudTokens())
+    }
+
+    @Test fun afterTheFirstRealReceiptTheGrowthCheckStillApplies() {
+        val budget = AgentSilentContextBudget()
+        budget.seed(20_000, 38_000, contextWindow = 200_000)
+        budget.requestStarted(21_079)
+        budget.measured(38_880, 200_000)
+        budget.requestStarted(22_194)
+        budget.measured(267_917, 200_000)
+        assertEquals(38_880, budget.cloudTokens())
+        // A bill above 130% of the window is still refused even as the first receipt.
+        val fresh = AgentSilentContextBudget()
+        fresh.seed(30_000, 34_000, contextWindow = 500_000)
+        fresh.requestStarted(34_185)
+        fresh.measured(784_267, 500_000)
+        assertEquals(null, fresh.cloudTokens())
+        assertEquals(34_000 + 4_185, fresh.tokens(34_185))
+    }
 }

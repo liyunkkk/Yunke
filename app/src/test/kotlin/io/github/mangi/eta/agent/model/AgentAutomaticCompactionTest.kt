@@ -93,6 +93,20 @@ class AgentAutomaticCompactionTest {
         assertEquals(1, provider.requests.size)
     }
 
+    @Test fun firstReceiptJumpingFarAboveTheSeedStillSchedulesCompaction() {
+        // Seed below 80%, then a cache-miss receipt 40k higher with no local growth. The
+        // step exceeds the growth slack, but a seed is not a receipt and must not veto it.
+        val seed = AUTO_PRESSURE - 40_000
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant(promptTokens = AUTO_PRESSURE) }))
+        assertEquals("done", runLoop(smallHistory(), provider, events, calibratedInputTokens = seed,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(1, provider.requests.size)
+        assertEquals(1, summaries)
+        assertTrue(events.any { it is AgentEvent.AutoCompactWaiting })
+    }
+
     @Test fun calibratedUsageAndSmallIncrementBelowThresholdDoNotCompact() {
         val messages = smallHistory()
         assertTrue(requestTokens(messages) < AUTO_PRESSURE)
