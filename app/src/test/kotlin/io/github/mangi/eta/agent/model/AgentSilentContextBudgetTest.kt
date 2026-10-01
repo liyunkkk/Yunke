@@ -209,4 +209,30 @@ class AgentSilentContextBudgetTest {
         assertEquals(null, fresh.cloudTokens())
         assertEquals(34_000 + 4_185, fresh.tokens(34_185))
     }
+
+    @Test fun anInflatedRelayCacheReadIsDroppedAndThePreviousAnchorKept() {
+        // Observed ST API sequence on a 500k window; local request stayed ~156k.
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(155_636)
+        budget.measured(199_206, 500_000, cachedTokens = 0)
+        assertEquals(199_206, budget.cloudTokens())
+        budget.requestStarted(156_434)
+        budget.measured(546_739, 500_000, cachedTokens = 520_658)
+        budget.measured(469_990, 500_000, cachedTokens = 469_662)
+        // Dropped outright: no anchor move, no scaling, ring/compaction still see 199206.
+        assertEquals(199_206, budget.cloudTokens())
+        assertEquals(199_206 + 798, budget.tokens(156_434))
+        budget.contextReplaced()
+        assertEquals(100_000, budget.sendLimitTokens(100_000))
+    }
+
+    @Test fun aGenuineCacheHitAtEightyPercentStillAnchors() {
+        // GPT pro 272k: 258397 billed with 257024 cached, local request ~200k.
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(195_000)
+        budget.measured(249_837, 272_000, cachedTokens = 240_640)
+        budget.requestStarted(200_000)
+        budget.measured(258_397, 272_000, cachedTokens = 257_024)
+        assertEquals(258_397, budget.cloudTokens())
+    }
 }

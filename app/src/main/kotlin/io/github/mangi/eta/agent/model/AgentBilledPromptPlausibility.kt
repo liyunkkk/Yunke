@@ -32,4 +32,29 @@ internal object AgentBilledPromptPlausibility {
         val window = contextWindow?.takeIf { it > 0 } ?: return true
         return value.toLong() * 100 <= window.toLong() * MAX_WINDOW_PERCENT
     }
+
+    /**
+     * True when the cache read alone is far larger than the whole request we sent.
+     *
+     * A cache read is a prefix of the prompt, so it cannot exceed the prompt. One relay
+     * (ST API, group `claude-超高缓`) billed `cache_read_input_tokens = 520658` for a
+     * request whose local estimate was ~156k, and the same request without cache was
+     * 129987. Such a bill is real money but not window occupancy, so callers drop it
+     * and keep the previous trusted receipt; no scaling is applied.
+     *
+     * Only the cache read is compared. A total far above the local estimate can be
+     * legitimate (relays that bill inline images as text), so the total is not checked.
+     */
+    fun isInflatedCacheRead(inputTokens: Int?, cachedTokens: Int?, localTokens: Int?): Boolean {
+        val cached = cachedTokens?.takeIf { it > 0 } ?: return false
+        val local = localTokens?.takeIf { it >= MIN_LOCAL_BASIS } ?: return false
+        if (inputTokens != null && cached > inputTokens) return true
+        return cached.toLong() * 100 > local.toLong() * MAX_CACHE_READ_PERCENT_OF_LOCAL
+    }
+
+    /** cache_read above 150% of the local request estimate is not a real prefix. */
+    const val MAX_CACHE_READ_PERCENT_OF_LOCAL = 150
+
+    /** Below this the local estimate is dominated by fixed request overhead. */
+    private const val MIN_LOCAL_BASIS = 2_000
 }

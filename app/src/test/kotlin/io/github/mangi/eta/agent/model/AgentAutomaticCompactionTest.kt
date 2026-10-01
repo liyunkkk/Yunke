@@ -107,6 +107,36 @@ class AgentAutomaticCompactionTest {
         assertTrue(events.any { it is AgentEvent.AutoCompactWaiting })
     }
 
+    @Test fun relayCacheReadLargerThanTheRequestNeverSchedulesCompaction() {
+        // The receipt claims 80% but its cache read alone dwarfs the request we sent.
+        val messages = smallHistory()
+        assertTrue(requestTokens(messages) >= 2_000)
+        assertTrue(AUTO_PRESSURE * 2 > requestTokens(messages) * 3)
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }),
+            listOf(AgentTokenUsage(inputTokens = AUTO_PRESSURE, cachedTokens = AUTO_PRESSURE - 100)))
+        assertEquals("done", runLoop(messages, provider, events,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(0, summaries)
+        assertTrue(events.none { it is AgentEvent.AutoCompactWaiting })
+        assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+    }
+
+    @Test fun cacheHitWithinTheRequestStillCompactsAtEightyPercent() {
+        val messages = smallHistory()
+        // A cache read no larger than the request we sent is an ordinary hit.
+        val cached = requestTokens(messages)
+        var summaries = 0
+        val events = mutableListOf<AgentEvent>()
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }),
+            listOf(AgentTokenUsage(inputTokens = AUTO_PRESSURE, cachedTokens = cached)))
+        assertEquals("done", runLoop(messages, provider, events,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(1, summaries)
+        assertTrue(events.any { it is AgentEvent.AutoCompactWaiting })
+    }
+
     @Test fun calibratedUsageAndSmallIncrementBelowThresholdDoNotCompact() {
         val messages = smallHistory()
         assertTrue(requestTokens(messages) < AUTO_PRESSURE)

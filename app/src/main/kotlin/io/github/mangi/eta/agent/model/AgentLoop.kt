@@ -248,7 +248,8 @@ internal class AgentLoop(
                             // Partial fields merge only within this request. The separate
                             // silent anchor survives a later usage-less request.
                             silentBudget.measured(lastUsage?.inputTokens,
-                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
+                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
+                                cachedTokens = lastUsage?.cachedTokens)
                             noteRingPressure(round)
                         }
                         continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->

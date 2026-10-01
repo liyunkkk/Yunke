@@ -57,8 +57,11 @@ internal class AgentSilentContextBudget {
      * decision believe the context is nearly full, which is how auto-compaction fired
      * far below its threshold and then immediately compacted a second time.
      *
-     * Only two things are checked, both one-directional refusals:
+     * Three one-directional refusals:
      *  - the value cannot exceed the window by an unbounded factor;
+     *  - its cache read cannot exceed the whole local request (see
+     *    [AgentBilledPromptPlausibility.isInflatedCacheRead]); such a bill is dropped
+     *    outright, nothing is updated and no scaling is applied;
      *  - its step above the previous anchor cannot far exceed the local growth since
      *    that anchor.
      * The absolute ratio between a bill and the local estimate is deliberately *not*
@@ -69,9 +72,9 @@ internal class AgentSilentContextBudget {
      * conservative in the safe direction: a genuine overflow still surfaces as a
      * provider CONTEXT_WINDOW_EXCEEDED failure rather than as a silently wrong anchor.
      */
-    fun measured(inputTokens: Int?, contextWindow: Int? = null) {
+    fun measured(inputTokens: Int?, contextWindow: Int? = null, cachedTokens: Int? = null) {
         if (inputTokens == null || inputTokens <= 0) return
-        if (!isPlausible(inputTokens, contextWindow)) return
+        if (!isPlausible(inputTokens, cachedTokens, contextWindow)) return
         measuredInput = inputTokens
         measuredLocal = requestLocal
         anchorIsSeed = false
@@ -105,9 +108,18 @@ internal class AgentSilentContextBudget {
         underCountScale = maxOf(underCountScale, observed.coerceAtMost(MAX_SCALE))
     }
 
-    private fun isPlausible(inputTokens: Int, contextWindow: Int?): Boolean {
+    private fun isPlausible(
+        inputTokens: Int,
+        cachedTokens: Int?,
+        contextWindow: Int?
+    ): Boolean {
         val window = contextWindow?.takeIf { it > 0 }
         if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) return false
+        // A cache read larger than the whole request is a relay billing artefact.
+        if (AgentBilledPromptPlausibility.isInflatedCacheRead(
+                inputTokens, cachedTokens, requestLocal)) {
+            return false
+        }
         // A seeded estimate is not a receipt: the first bill of a run has no baseline.
         if (anchorIsSeed) return true
         val previous = measuredInput?.takeIf { it > 0 } ?: return true
