@@ -226,7 +226,8 @@ class AgentSilentContextBudgetTest {
         assertEquals(199_206, budget.cloudTokens())
         assertEquals(199_206 + 798, budget.tokens(156_434))
         budget.contextReplaced()
-        assertEquals(100_000, budget.sendLimitTokens(100_000))
+        // Only the first genuine bill taught a scale (199206 / 155636); the dropped ones did not.
+        assertEquals((100_000 * (199_206.0 / 155_636)).toInt(), budget.sendLimitTokens(100_000))
     }
 
     @Test fun aGenuineCacheHitAtEightyPercentStillAnchors() {
