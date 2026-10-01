@@ -225,7 +225,7 @@ class AgentConversationRevisionReducerTest {
 
     @Test
     fun deleteLaterReplySegmentInsideOneTurnKeepsEarlierReplyAndItsTools() {
-        val state = AgentChatUiState(
+        val state = conversationState().copy(
             messages = listOf(
                 UserMessageUi(id = "user-run-a", content = "任务"),
                 AgentMessageUi(id = "assistant-a-1", content = "先查一下"),
