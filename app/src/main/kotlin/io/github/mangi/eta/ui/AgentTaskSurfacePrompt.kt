@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -45,7 +46,7 @@ import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 
 /**
- * 应用内兜底：独立弹窗 Activity 没能拉起来（例如后台启动受限）时，
+ * 应用内兜底：独立弹窗 Activity 没能拉起来（例如后台启动受限）或已退到后台时，
  * 回到代鱼界面也能看到同一个待决选择。
  */
 @Composable
@@ -60,10 +61,13 @@ internal fun AgentTaskSurfacePrompt() {
         fallbackReady = true
     }
     if (hostVisible || !fallbackReady) return
-    AgentTaskSurfaceChoiceDialog(
-        onChoose = { mode -> AgentTaskPrompt.answer(request.id, mode) },
-        onCancel = { AgentTaskPrompt.answer(request.id, null) },
-    )
+    // 换成下一个请求时重置单选状态。
+    key(request.id) {
+        AgentTaskSurfaceChoiceDialog(
+            onChoose = { mode -> AgentTaskPrompt.answer(request.id, mode) },
+            onCancel = { AgentTaskPrompt.answer(request.id, null) },
+        )
+    }
 }
 
 private const val FALLBACK_DELAY_MS = 800L

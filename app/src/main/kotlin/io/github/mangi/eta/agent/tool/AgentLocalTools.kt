@@ -106,17 +106,18 @@ internal class AgentLocalTools(
         io.github.mangi.eta.agent.device.AgentTaskSurface.stored()
     }.getOrDefault(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK),
     /**
-     * “每次询问”时由运行时弹窗问用户，阻塞到选完；返回 null 表示取消。
-     * 参数是本工具执行器自己的关闭状态，等待期间要一起检查。
+     * “每次询问”时由运行时弹窗问用户，阻塞到选完；返回 null 表示取消或超时。
+     * toolName 是触发选择的工具；cancelled 是本工具执行器自己的关闭状态，等待期间要一起检查。
      */
-    private val chooseSurface: ((cancelled: () -> Boolean) -> io.github.mangi.eta.agent.device.AgentTaskSurfaceMode?)? = null,
+    private val chooseSurface: ((toolName: String, cancelled: () -> Boolean) -> io.github.mangi.eta.agent.device.AgentTaskSurfaceMode?)? = null,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
     /** ASK 只在第一次界面操作前问一次，之后整轮 run 都用选定的位置。 */
     @Volatile
     var runSurface: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode = frozenSurface
         private set
-    private val surfaceChoiceLock = Any()
+    /** 本次回复只问一次：选定后复用，取消或超时后记住，不再弹窗。 */
+    private val surfaceChoice = io.github.mangi.eta.agent.device.AgentTaskSurfaceChoiceGate()
     private val backgroundSurface: Boolean
         get() = runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
     private val virtualLifecycle = setOf("start_virtual_session", "keep_virtual_result", "finish_virtual_session")
@@ -219,11 +220,14 @@ internal class AgentLocalTools(
         if (runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK &&
             io.github.mangi.eta.agent.device.AgentTaskSurface.needsSurfaceChoice(toolCall.name)
         ) {
-            val outcome = resolveAskedSurface()
+            val outcome = resolveAskedSurface(toolCall.name)
             if (outcome == null) {
                 return textResult(
                     if (closed.get()) errorResult("RUN_CLOSED", "任务已关闭")
-                    else errorResult("TASK_SURFACE_CANCELLED", "用户取消了这次执行位置选择，本次未执行；不要再调用界面工具"),
+                    else errorResult(
+                        "TASK_SURFACE_CANCELLED",
+                        "用户没有选择或已取消执行位置，本次未执行，本次回复内不会再询问；不要再调用界面工具，改用其他方式或说明情况",
+                    ),
                 )
             }
             if (outcome.second) chosenNow = outcome.first
@@ -233,16 +237,24 @@ internal class AgentLocalTools(
     }
 
     /** 返回选定的位置，以及是否是这次调用刚选的（需要告诉模型）。 */
-    private fun resolveAskedSurface(): Pair<io.github.mangi.eta.agent.device.AgentTaskSurfaceMode, Boolean>? =
-        synchronized(surfaceChoiceLock) {
-            val current = runSurface
-            if (current != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK) return@synchronized current to false
-            val chosen = runCatching { chooseSurface?.invoke { closed.get() } }.getOrNull()
-                ?.takeIf { it != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK }
-                ?: return@synchronized null
-            runSurface = chosen
-            chosen to true
-        }
+    private fun resolveAskedSurface(toolName: String): Pair<io.github.mangi.eta.agent.device.AgentTaskSurfaceMode, Boolean>? {
+        if (closed.get()) return null
+        var askedNow = false
+        val chosen = surfaceChoice.resolve {
+            askedNow = true
+            try {
+                chooseSurface?.invoke(toolName) { closed.get() }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                null
+            } catch (_: RuntimeException) {
+                null
+            }
+        } ?: return null
+        // 并行调用在门里排队：只有真正弹窗选出结果的那一次才告诉模型。
+        runSurface = chosen
+        return chosen to askedNow
+    }
 
     private fun withSurfaceNote(
         result: AgentModelClient.ToolResult,

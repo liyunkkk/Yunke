@@ -155,8 +155,8 @@ internal object AgentTaskSurface {
 /**
  * “每次询问”的待决选择。
  *
- * 工具线程在 [await] 里等用户选完；界面（弹窗 Activity 或应用内弹窗）读 [pending] 显示，
- * 再用 [answer] 回答。每个请求只对应一次 run，取消 run 时等待会立刻结束并返回 null。
+ * 工具线程在 [await] 里等用户选完；界面（弹窗 Activity 或应用内弹窗）读 [pending] 显示队首请求，
+ * 再用 [answer] 回答。每个请求只对应一次 run，取消 run、超时或线程被中断时等待会结束并返回 null。
  */
 internal object AgentTaskPrompt {
     data class Request(val id: String, val runId: String)
@@ -164,22 +164,25 @@ internal object AgentTaskPrompt {
     private val lock = Any()
     private val queue = LinkedHashMap<String, Pair<Request, CompletableFuture<AgentTaskSurfaceMode?>>>()
     private val pendingState = MutableStateFlow<Request?>(null)
+    /** 当前队首请求；弹窗只显示并回答它，回答后自动换成下一个。 */
     val pending: StateFlow<Request?> = pendingState.asStateFlow()
 
     private val hosts = AtomicInteger(0)
     private val hostVisibleState = MutableStateFlow(false)
-    /** 独立弹窗 Activity 正在显示；此时应用内弹窗不再重复显示。 */
+    /** 独立弹窗 Activity 正在前台可见；此时应用内弹窗不再重复显示。 */
     val hostVisible: StateFlow<Boolean> = hostVisibleState.asStateFlow()
 
     /**
-     * 阻塞当前工具线程直到用户选择。返回 null 表示取消（用户取消、run 已停止）。
+     * 阻塞当前工具线程直到用户选择。返回 null 表示取消（用户取消、run 已停止、超时或线程被中断）。
      * [show] 在请求入队后调用，用来拉起弹窗；失败不影响应用内弹窗。
+     * 无论怎样结束，请求都会出队，弹窗观察到 [pending] 变化后自行关闭。
      */
     fun await(
         runId: String,
         cancelled: () -> Boolean,
         show: (Request) -> Unit = {},
         pollMillis: Long = POLL_MILLIS,
+        timeoutMillis: Long = PROMPT_TIMEOUT_MILLIS,
     ): AgentTaskSurfaceMode? {
         val request = Request(UUID.randomUUID().toString(), runId)
         val answer = CompletableFuture<AgentTaskSurfaceMode?>()
@@ -187,39 +190,59 @@ internal object AgentTaskPrompt {
             queue[request.id] = request to answer
             publish()
         }
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
         try {
             runCatching { show(request) }
             while (true) {
                 if (cancelled()) return null
+                val remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
+                // 超时按取消处理：用户没有选择。
+                if (remaining <= 0) return null
                 val chosen = try {
-                    answer.get(pollMillis, TimeUnit.MILLISECONDS)
+                    answer.get(minOf(pollMillis.coerceAtLeast(1), remaining), TimeUnit.MILLISECONDS)
                 } catch (_: TimeoutException) {
                     continue
+                } catch (_: InterruptedException) {
+                    // 还没做出选择就被中断：按取消处理，并保留中断标志。
+                    Thread.currentThread().interrupt()
+                    return null
                 }
                 return chosen?.takeIf { it != AgentTaskSurfaceMode.ASK }
             }
         } finally {
             synchronized(lock) {
-                queue.remove(request.id)
-                publish()
+                if (queue.remove(request.id) != null) publish()
             }
         }
     }
 
+    /** 回答后立刻出队，弹窗马上换成下一个请求或关闭；重复回答同一请求无效。 */
     fun answer(requestId: String, mode: AgentTaskSurfaceMode?) {
-        synchronized(lock) { queue[requestId]?.second }?.complete(mode)
+        val future = synchronized(lock) {
+            queue.remove(requestId)?.second?.also { publish() }
+        }
+        future?.complete(mode)
     }
 
-    /** 选完后等弹窗窗口退场，避免前台截图或点击落在弹窗上。 */
+    /**
+     * 选完后等弹窗窗口退场，避免前台截图或点击落在弹窗上。
+     * 被中断时只恢复中断标志并返回：已做出的选择不能因此变成取消。
+     */
     fun awaitHostHidden(timeoutMillis: Long = HOST_HIDE_TIMEOUT_MILLIS) {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
-        while (hosts.get() > 0 && System.nanoTime() < deadline) Thread.sleep(25)
+        try {
+            while (hosts.get() > 0 && System.nanoTime() < deadline) Thread.sleep(25)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
+    /** 弹窗变为可见（onStart/onResume）；调用方保证同一实例只计一次。 */
     fun hostStarted() {
         hostVisibleState.value = hosts.incrementAndGet() > 0
     }
 
+    /** 弹窗不再可见（onStop/onDestroy）；与 [hostStarted] 成对调用。 */
     fun hostStopped() {
         hostVisibleState.value = hosts.updateAndGet { (it - 1).coerceAtLeast(0) } > 0
     }
@@ -229,5 +252,6 @@ internal object AgentTaskPrompt {
     }
 
     private const val POLL_MILLIS = 250L
+    private const val PROMPT_TIMEOUT_MILLIS = 90_000L
     private const val HOST_HIDE_TIMEOUT_MILLIS = 1_500L
 }

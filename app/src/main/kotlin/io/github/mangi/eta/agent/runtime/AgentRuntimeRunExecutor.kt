@@ -66,6 +66,8 @@ internal class AgentRuntimeRunExecutor(
         var toolsOwner: AgentChildToolOwnership? = null
         var groupGeneration: String? = null
         val childContextSink = AtomicReference<((SubAgentContextStats) -> Unit)?>(null)
+        // “每次询问”选前台后补给服务的 ToolStarted 来源。
+        val foregroundReplay = AgentForegroundReplay()
         val childSessionId = request.effectiveModelSessionId
         val allowBrowser = request.config.browserTools
         val allowTerminal = request.config.terminalTools
@@ -129,15 +131,23 @@ internal class AgentRuntimeRunExecutor(
                     it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE
                 }?.let { AgentUiHandoffPayload.from(it.payload).conversationId }.orEmpty(),
                 frozenSurface = runSurface,
-                chooseSurface = { toolsClosed ->
-                    io.github.mangi.eta.agent.device.AgentTaskPrompt.await(
-                        runId = request.runId,
-                        cancelled = { toolsClosed() || runController.isCancelled },
-                        show = { prompt -> io.github.mangi.eta.ui.AgentTaskSurfaceDialogActivity.launch(appContext, prompt.id) },
-                    )?.also { mode ->
-                        session.resolveTaskSurface(mode)
-                        io.github.mangi.eta.agent.device.AgentTaskPrompt.awaitHostHidden()
-                    }
+                chooseSurface = { toolName, toolsClosed ->
+                    // 先写会话再等弹窗退场；返回值取自会话，工具侧与会话保持一致。
+                    AgentTaskSurfaceChoice.choose(
+                        session = session,
+                        await = {
+                            io.github.mangi.eta.agent.device.AgentTaskPrompt.await(
+                                runId = request.runId,
+                                cancelled = { toolsClosed() || runController.isCancelled },
+                                show = { prompt -> io.github.mangi.eta.ui.AgentTaskSurfaceDialogActivity.launch(appContext, prompt.id) },
+                            )
+                        },
+                        awaitHostHidden = { io.github.mangi.eta.agent.device.AgentTaskPrompt.awaitHostHidden() },
+                        // 选前台前 ToolStarted 已发出但服务没处理：只补给服务做悬浮窗与前台记录，不进对话记录和回放。
+                        onForegroundResolved = {
+                            onAcceptedEvent(foregroundReplay.startedEvent(toolName), entrySurfaceGuard)
+                        },
+                    )
                 },
                 browserToolsEnabled = { allowBrowser && currentPermissions().browserTools },
                 terminalToolsEnabled = { allowTerminal && currentPermissions().terminalTools },
@@ -336,6 +346,7 @@ internal class AgentRuntimeRunExecutor(
                 compactPolicy = compactPolicy,
                 onEvent = { event ->
                     timing.accept(event)
+                    foregroundReplay.accept(event)
                     acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
                 },
             )

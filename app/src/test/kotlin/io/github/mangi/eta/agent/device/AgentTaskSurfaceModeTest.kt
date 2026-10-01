@@ -95,6 +95,126 @@ class AgentTaskSurfaceModeTest {
     }
 
     @Test
+    fun askTimeoutReturnsNullAndDequeuesRequest() {
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val seen = java.util.concurrent.atomic.AtomicReference<AgentTaskPrompt.Request?>(null)
+            val result = worker.submit<AgentTaskSurfaceMode?> {
+                AgentTaskPrompt.await(
+                    "run-timeout",
+                    cancelled = { false },
+                    show = { seen.set(it) },
+                    pollMillis = 10,
+                    timeoutMillis = 150,
+                )
+            }
+            assertEquals(null, result.get(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("run-timeout", seen.get()?.runId)
+            // 超时后请求出队，弹窗据此自行关闭；迟到的回答无效。
+            assertEquals(null, AgentTaskPrompt.pending.value)
+            AgentTaskPrompt.answer(requireNotNull(seen.get()).id, AgentTaskSurfaceMode.FOREGROUND)
+            assertEquals(null, AgentTaskPrompt.pending.value)
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun concurrentRequestsQueueAndPendingAdvancesToNextAfterAnswer() {
+        val worker = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val first = worker.submit<AgentTaskSurfaceMode?> {
+                AgentTaskPrompt.await("run-first", cancelled = { false }, pollMillis = 10)
+            }
+            val deadline = System.currentTimeMillis() + 2_000
+            while (AgentTaskPrompt.pending.value == null && System.currentTimeMillis() < deadline) Thread.sleep(5)
+            val firstRequest = requireNotNull(AgentTaskPrompt.pending.value)
+            assertEquals("run-first", firstRequest.runId)
+
+            val second = worker.submit<AgentTaskSurfaceMode?> {
+                AgentTaskPrompt.await("run-second", cancelled = { false }, pollMillis = 10)
+            }
+            // 第二个请求入队后队首仍是第一个。
+            Thread.sleep(50)
+            assertEquals(firstRequest, AgentTaskPrompt.pending.value)
+
+            AgentTaskPrompt.answer(firstRequest.id, AgentTaskSurfaceMode.FOREGROUND)
+            assertEquals(AgentTaskSurfaceMode.FOREGROUND, first.get(2, java.util.concurrent.TimeUnit.SECONDS))
+            val secondRequest = requireNotNull(AgentTaskPrompt.pending.value)
+            assertEquals("run-second", secondRequest.runId)
+
+            AgentTaskPrompt.answer(secondRequest.id, AgentTaskSurfaceMode.BACKGROUND)
+            assertEquals(AgentTaskSurfaceMode.BACKGROUND, second.get(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(null, AgentTaskPrompt.pending.value)
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun awaitHostHiddenSwallowsInterruptButKeepsFlag() {
+        AgentTaskPrompt.hostStarted()
+        try {
+            Thread.currentThread().interrupt()
+            AgentTaskPrompt.awaitHostHidden(timeoutMillis = 2_000)
+            assertTrue(Thread.interrupted())
+        } finally {
+            AgentTaskPrompt.hostStopped()
+        }
+        assertFalse(AgentTaskPrompt.hostVisible.value)
+    }
+
+    @Test
+    fun cancelledChoiceIsRememberedAndNeverAsksAgain() {
+        val gate = AgentTaskSurfaceChoiceGate()
+        val asks = java.util.concurrent.atomic.AtomicInteger(0)
+        assertEquals(null, gate.resolve { asks.incrementAndGet(); null })
+        assertTrue(gate.cancelled)
+        assertEquals(null, gate.resolve { asks.incrementAndGet(); AgentTaskSurfaceMode.FOREGROUND })
+        assertEquals(1, asks.get())
+    }
+
+    @Test
+    fun parallelCallsQueueBehindFirstCancel() {
+        val gate = AgentTaskSurfaceChoiceGate()
+        val asks = java.util.concurrent.atomic.AtomicInteger(0)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val first = worker.submit<AgentTaskSurfaceMode?> {
+                gate.resolve {
+                    asks.incrementAndGet()
+                    entered.countDown()
+                    release.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                    null
+                }
+            }
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            val second = worker.submit<AgentTaskSurfaceMode?> {
+                gate.resolve { asks.incrementAndGet(); AgentTaskSurfaceMode.BACKGROUND }
+            }
+            Thread.sleep(50)
+            release.countDown()
+            assertEquals(null, first.get(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(null, second.get(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(1, asks.get())
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test
+    fun chosenSurfaceIsReusedWithoutAskingAgain() {
+        val gate = AgentTaskSurfaceChoiceGate()
+        val asks = java.util.concurrent.atomic.AtomicInteger(0)
+        assertEquals(AgentTaskSurfaceMode.BACKGROUND, gate.resolve { asks.incrementAndGet(); AgentTaskSurfaceMode.BACKGROUND })
+        assertEquals(AgentTaskSurfaceMode.BACKGROUND, gate.resolve { asks.incrementAndGet(); null })
+        assertFalse(gate.cancelled)
+        assertEquals(1, asks.get())
+    }
+
+    @Test
     fun onlyScreenAndVirtualLifecycleToolsNeedASurfaceChoice() {
         listOf("launch_app", "observe_screen", "tap", "start_virtual_session", "finish_virtual_session", "keep_virtual_result")
             .forEach { assertTrue(it, AgentTaskSurface.needsSurfaceChoice(it)) }
