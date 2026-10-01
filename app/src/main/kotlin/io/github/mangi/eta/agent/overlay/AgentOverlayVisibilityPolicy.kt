@@ -16,6 +16,10 @@ internal object AgentOverlayVisibilityPolicy {
     fun allowsOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
         taskSurfaceMode == AgentTaskSurfaceMode.FOREGROUND
 
+    /** 运行开始时：前台，或还没选的“每次询问”（可能选前台），都先准备好悬浮窗状态。 */
+    fun mayUseOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
+        taskSurfaceMode != AgentTaskSurfaceMode.BACKGROUND
+
     fun shouldRevealFor(event: AgentEvent, taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
         allowsOverlay(taskSurfaceMode) && shouldRevealFor(event)
 
