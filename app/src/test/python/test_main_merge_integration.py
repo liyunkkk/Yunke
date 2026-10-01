@@ -8,11 +8,15 @@ class MainMergeIntegrationTest(unittest.TestCase):
     def test_inline_controls_retain_authorized_preview_and_safe_close(self):
         page = (ROOT / 'ui/VirtualDisplayRecoveryScreen.kt').read_text()
         for text in ('VirtualDisplayRecoveryControls(', 'VirtualDisplayWebPreview.openWithManualClose(context)',
-                     'onDispose {', 'VirtualDisplayWebPreview.stop()', 'snapshot.optBoolean("recoverable")'):
+                     'onDispose {', 'VirtualDisplayWebPreview.revoke(context)', 'snapshot.optBoolean("recoverable")'):
             self.assertIn(text, page)
-        self.assertEqual(1, page.count('check(stillInstalled)'))
-        # 三个操作各只有一个入口，且仍在同一页内联展示（不是独立页面）。
-        self.assertEqual(3, page.count('TouchHaptics.click(view)'))
+        self.assertEqual(1, page.count('if (!stillInstalled)'))
+        installation_gate = page.split('if (!stillInstalled)', 1)[1].split('webPaired = true', 1)[0]
+        self.assertIn('VirtualDisplayWebPreview.revoke(context)', installation_gate)
+        self.assertIn('error("Backend module removed")', installation_gate)
+        self.assertNotIn('VirtualDisplayWebPreview.stop()', page)
+        # 四个操作各只有一个入口，且仍在同一页内联展示（不是独立页面）。
+        self.assertEqual(4, page.count('TouchHaptics.click(view)'))
         self.assertNotIn('VirtualDisplayWebPreview.open(context)', page)
         self.assertNotIn('Scaffold(', page)
 
