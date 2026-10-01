@@ -34,27 +34,24 @@ internal object AgentBilledPromptPlausibility {
     }
 
     /**
-     * True when the cache read alone is far larger than the whole request we sent.
+     * True when the cache read cannot be a prefix of a prompt that fit this window.
      *
-     * A cache read is a prefix of the prompt, so it cannot exceed the prompt. One relay
-     * (ST API, group `claude-超高缓`) billed `cache_read_input_tokens = 520658` for a
-     * request whose local estimate was ~156k, and the same request without cache was
-     * 129987. Such a bill is real money but not window occupancy, so callers drop it
-     * and keep the previous trusted receipt; no scaling is applied.
+     * A cache read is a prefix of the prompt, so it can exceed neither the prompt it was
+     * billed with nor the window that prompt was accepted in. One relay (ST API, group
+     * `claude-超高缓`) billed `cache_read_input_tokens = 520658` on a 500000 window for a
+     * request that billed 129987 uncached. Such a bill is real money but not window
+     * occupancy, so callers drop it and keep the previous trusted receipt; nothing is scaled.
      *
-     * Only the cache read is compared. A total far above the local estimate can be
-     * legitimate (relays that bill inline images as text), so the total is not checked.
+     * Both bounds come from the provider and the configured window only. Comparing with
+     * the local estimate is deliberately avoided: the local heuristic under-counts images
+     * and screenshots, so a genuine cache hit can be several times larger than it, and
+     * dropping that receipt would freeze the ring and silence the 80% compaction.
+     * Smaller relay inflations are left to the decision budget's growth check.
      */
-    fun isInflatedCacheRead(inputTokens: Int?, cachedTokens: Int?, localTokens: Int?): Boolean {
+    fun isInflatedCacheRead(inputTokens: Int?, cachedTokens: Int?, contextWindow: Int?): Boolean {
         val cached = cachedTokens?.takeIf { it > 0 } ?: return false
-        val local = localTokens?.takeIf { it >= MIN_LOCAL_BASIS } ?: return false
         if (inputTokens != null && cached > inputTokens) return true
-        return cached.toLong() * 100 > local.toLong() * MAX_CACHE_READ_PERCENT_OF_LOCAL
+        val window = contextWindow?.takeIf { it > 0 } ?: return false
+        return cached > window
     }
-
-    /** cache_read above 150% of the local request estimate is not a real prefix. */
-    const val MAX_CACHE_READ_PERCENT_OF_LOCAL = 150
-
-    /** Below this the local estimate is dominated by fixed request overhead. */
-    private const val MIN_LOCAL_BASIS = 2_000
 }

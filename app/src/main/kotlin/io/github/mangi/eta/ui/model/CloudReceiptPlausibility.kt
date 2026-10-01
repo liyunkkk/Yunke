@@ -9,7 +9,7 @@ package io.github.mangi.eta.ui.model
  * Keep only the existing shared absolute-window policy here. Run ownership and
  * context-replacement validity are checked by the caller; local calibration belongs
  * to the decision budget, never to accepting a new measured prompt. The one exception,
- * a cache_read larger than the whole request, is
+ * a cache_read larger than its own prompt or the window, is
  * [io.github.mangi.eta.agent.model.AgentBilledPromptPlausibility.isInflatedCacheRead].
  */
 internal object CloudReceiptPlausibility {

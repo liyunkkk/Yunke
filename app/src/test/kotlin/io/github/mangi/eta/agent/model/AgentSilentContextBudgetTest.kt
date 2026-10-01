@@ -217,9 +217,12 @@ class AgentSilentContextBudgetTest {
         budget.measured(199_206, 500_000, cachedTokens = 0)
         assertEquals(199_206, budget.cloudTokens())
         budget.requestStarted(156_434)
+        // Cache read above the window: dropped by the cache-read rule.
         budget.measured(546_739, 500_000, cachedTokens = 520_658)
+        assertEquals(199_206, budget.cloudTokens())
+        // Cache read inside the window: kept by that rule, refused by the growth check.
         budget.measured(469_990, 500_000, cachedTokens = 469_662)
-        // Dropped outright: no anchor move, no scaling, ring/compaction still see 199206.
+        // No anchor move, no scaling: compaction still sees 199206.
         assertEquals(199_206, budget.cloudTokens())
         assertEquals(199_206 + 798, budget.tokens(156_434))
         budget.contextReplaced()
@@ -234,5 +237,13 @@ class AgentSilentContextBudgetTest {
         budget.requestStarted(200_000)
         budget.measured(258_397, 272_000, cachedTokens = 257_024)
         assertEquals(258_397, budget.cloudTokens())
+    }
+
+    @Test fun aGenuineCacheHitFarAboveTheLocalEstimateStillAnchors() {
+        // Screenshots: local heuristic ~40k, provider bills and caches ~200k.
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(40_000)
+        budget.measured(200_000, 260_000, cachedTokens = 199_000)
+        assertEquals(200_000, budget.cloudTokens())
     }
 }

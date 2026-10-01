@@ -4423,10 +4423,11 @@ internal class AgentAppState(
                     // Judge the receipt against the window this run was launched with,
                     // not against a limit the user may have changed mid-run.
                     val window = runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)
-                    // A gateway cache_read far above the whole local request is a billing
+                    // A gateway cache_read above its own prompt or the window is a billing
                     // artefact, not occupancy: drop it and keep the previous cloud receipt.
+                    // Same inputs as AgentSilentContextBudget, so ring and compaction agree.
                     val inflatedCache = io.github.mangi.eta.agent.model.AgentBilledPromptPlausibility
-                        .isInflatedCacheRead(occupancy, event.usage.cachedTokens, localBasis)
+                        .isInflatedCacheRead(occupancy, event.usage.cachedTokens, window)
                     val measured = occupancy.takeIf {
                         io.github.mangi.eta.ui.model.CloudReceiptPlausibility.isOccupancy(
                             tokens = it, contextWindow = window)

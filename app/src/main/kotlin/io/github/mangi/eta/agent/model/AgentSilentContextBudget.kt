@@ -59,7 +59,7 @@ internal class AgentSilentContextBudget {
      *
      * Three one-directional refusals:
      *  - the value cannot exceed the window by an unbounded factor;
-     *  - its cache read cannot exceed the whole local request (see
+     *  - its cache read cannot exceed its own total or the window (see
      *    [AgentBilledPromptPlausibility.isInflatedCacheRead]); such a bill is dropped
      *    outright, nothing is updated and no scaling is applied;
      *  - its step above the previous anchor cannot far exceed the local growth since
@@ -115,9 +115,8 @@ internal class AgentSilentContextBudget {
     ): Boolean {
         val window = contextWindow?.takeIf { it > 0 }
         if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) return false
-        // A cache read larger than the whole request is a relay billing artefact.
-        if (AgentBilledPromptPlausibility.isInflatedCacheRead(
-                inputTokens, cachedTokens, requestLocal)) {
+        // A cache read larger than its own prompt or the window is a relay billing artefact.
+        if (AgentBilledPromptPlausibility.isInflatedCacheRead(inputTokens, cachedTokens, window)) {
             return false
         }
         // A seeded estimate is not a receipt: the first bill of a run has no baseline.
