@@ -28,6 +28,8 @@ class PrefsDefaultsTest {
                 Prefs.Keys.AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
                 Prefs.Keys.HAPTIC_TOUCH_FEEDBACK to true,
                 Prefs.Keys.HAPTIC_MESSAGE_GENERATION to true,
+                Prefs.Keys.HAPTIC_BACKGROUND to true,
+                Prefs.Keys.HAPTIC_BACKGROUND_REASONING to true,
             ),
             Prefs.Keys.BOOLEAN_DEFAULTS,
         )
@@ -50,6 +52,8 @@ class PrefsDefaultsTest {
                 Prefs.Keys.AGENT_COMPRESS_CUSTOM_MODEL_ENABLED,
                 Prefs.Keys.HAPTIC_TOUCH_FEEDBACK,
                 Prefs.Keys.HAPTIC_MESSAGE_GENERATION,
+                Prefs.Keys.HAPTIC_BACKGROUND,
+                Prefs.Keys.HAPTIC_BACKGROUND_REASONING,
             ),
             Prefs.Keys.LOCAL_AGENT_KEYS,
         )
