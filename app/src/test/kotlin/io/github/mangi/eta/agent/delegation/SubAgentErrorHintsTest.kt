@@ -56,16 +56,19 @@ class SubAgentErrorHintsTest {
     @Test fun guideWithoutGuidanceExplainsTheMissingField() {
         val release = java.util.concurrent.CountDownLatch(1)
         SubAgentCoordinator(listOf(model)) { _, _, _ -> release.await(); "done" }.use { c ->
-            val id = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "inspect"))).content).getString("task_id")
-            val deadline = System.currentTimeMillis() + 2_000
-            while (JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", id))).content).getString("status") != "running") {
-                assertTrue(System.currentTimeMillis() < deadline)
-                Thread.sleep(10)
+            try {
+                val id = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "inspect"))).content).getString("task_id")
+                val deadline = System.currentTimeMillis() + 2_000
+                while (JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", id))).content).getString("status") != "running") {
+                    assertTrue(System.currentTimeMillis() < deadline)
+                    Thread.sleep(10)
+                }
+                val result = JSONObject(c.execute(call("supervise_task", JSONObject().put("task_id", id).put("action", "guide"))).content)
+                assertEquals("INVALID_TASK_ARGUMENTS", result.getString("code"))
+                assertTrue(result.getString("detail").contains("guidance"))
+            } finally {
+                release.countDown()
             }
-            val result = JSONObject(c.execute(call("supervise_task", JSONObject().put("task_id", id).put("action", "guide"))).content)
-            assertEquals("INVALID_TASK_ARGUMENTS", result.getString("code"))
-            assertTrue(result.getString("detail").contains("guidance"))
-            release.countDown()
         }
     }
 
