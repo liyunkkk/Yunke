@@ -261,8 +261,14 @@ internal object BrowserDomScripts {
           function emitMarkdown(node, depth, state) {
             if (!node || state.truncated || depth > 60 || !consumeNode(state)) return;
             if (node.nodeType === Node.TEXT_NODE) {
-              var text = cleanInline(node.nodeValue, 2000);
-              if (text) emit(state, markdownEscape(text) + ' ');
+              var rawText = String(node.nodeValue || ' ').replace(/[\t\r\n ]+/g, ' ');
+              var text = rawText.trim();
+              if (!text) return;
+              if (/^\s/.test(rawText) && state.parts.length && !/\s$/.test(state.parts[state.parts.length - 1])) {
+                emit(state, ' ');
+              }
+              emit(state, markdownEscape(text));
+              if (/\s$/.test(rawText)) emit(state, ' ');
               return;
             }
             if (node.nodeType !== Node.ELEMENT_NODE || !visible(node)) return;

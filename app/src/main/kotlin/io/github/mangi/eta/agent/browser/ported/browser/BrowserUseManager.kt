@@ -1096,7 +1096,12 @@ class BrowserUseManager(
 
     private suspend fun getPageInfo(): BrowserActionResult {
         val result = evaluateAndReturn(BrowserUseJS.getPageInfo())
-        val history = withContext(Dispatchers.Main) { historyMetadata() }
+        val history = try {
+            withContext(Dispatchers.Main) { historyMetadata() }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            "history_unavailable=true"
+        }
         return result.copy(text = result.text + "\n" + history)
     }
 
@@ -1107,35 +1112,31 @@ class BrowserUseManager(
         // Wrap in an async IIFE so `await` works in user scripts.
         // Android WebView doesn't resolve Promises from evaluateJavascript,
         // so we use a JS bridge callback (__minis__.resolve / __minis__.reject).
+        val deferred = CompletableDeferred<String>()
+        val requestId = installAsyncJsRequest(deferred)
         return try {
-            val deferred = CompletableDeferred<String>()
-            asyncJsDeferred = deferred
             val wrapped = """
                 (async function(){
                     try {
                         var __r__ = (async function(){ $script })();
                         var __v__ = await __r__;
                         if (__v__ === undefined || __v__ === null) {
-                            __minis__.resolve(String(__v__));
+                            __minis__.resolve($requestId, String(__v__));
                         } else if (typeof __v__ === 'object') {
-                            __minis__.resolve(JSON.stringify(__v__));
+                            __minis__.resolve($requestId, JSON.stringify(__v__));
                         } else {
-                            __minis__.resolve(String(__v__));
+                            __minis__.resolve($requestId, String(__v__));
                         }
                     } catch(e) {
-                        __minis__.reject(e.message || String(e));
+                        __minis__.reject($requestId, e.message || String(e));
                     }
                 })();
             """.trimIndent()
             withContext(Dispatchers.Main) {
                 webView.evaluateJavascript(wrapped, null)
             }
-            val raw = withTimeoutOrNull(30_000L) { deferred.await() }
-                ?: run {
-                    asyncJsDeferred = null
-                    return BrowserActionResult.error("JavaScript execution timed out (30s)")
-                }
-            asyncJsDeferred = null
+            val raw = withTimeoutOrNull(JS_EVALUATION_TIMEOUT_MS) { deferred.await() }
+                ?: return BrowserActionResult.error("JavaScript execution timed out (8s)")
             val json = try { JSONObject(raw) } catch (ignored: Exception) {
             if (ignored is kotlinx.coroutines.CancellationException) throw ignored
                 null
@@ -1151,8 +1152,9 @@ class BrowserUseManager(
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
-            asyncJsDeferred = null
             BrowserActionResult.error("JavaScript error: ${e.message}")
+        } finally {
+            clearAsyncJsRequest(requestId)
         }
     }
 
@@ -1254,29 +1256,31 @@ class BrowserUseManager(
      */
     private suspend fun awaitPromiseJs(js: String): String? {
         val deferred = CompletableDeferred<String>()
-        asyncJsDeferred = deferred
+        val requestId = installAsyncJsRequest(deferred)
         val wrapped = """
             (async function(){
                 try {
                     var __v__ = await ($js);
                     if (__v__ === undefined || __v__ === null) {
-                        __minis__.resolve('null');
+                        __minis__.resolve($requestId, 'null');
                     } else if (typeof __v__ === 'object') {
-                        __minis__.resolve(JSON.stringify(__v__));
+                        __minis__.resolve($requestId, JSON.stringify(__v__));
                     } else {
-                        __minis__.resolve(String(__v__));
+                        __minis__.resolve($requestId, String(__v__));
                     }
                 } catch(e) {
-                    __minis__.reject(e && e.message ? e.message : String(e));
+                    __minis__.reject($requestId, e && e.message ? e.message : String(e));
                 }
             })();
         """.trimIndent()
-        withContext(Dispatchers.Main) {
-            webView.evaluateJavascript(wrapped, null)
+        return try {
+            withContext(Dispatchers.Main) {
+                webView.evaluateJavascript(wrapped, null)
+            }
+            withTimeoutOrNull(JS_EVALUATION_TIMEOUT_MS) { deferred.await() }
+        } finally {
+            clearAsyncJsRequest(requestId)
         }
-        val raw = withTimeoutOrNull(60_000L) { deferred.await() }
-        asyncJsDeferred = null
-        return raw
     }
 
     // -- Set User Agent --
@@ -1426,8 +1430,7 @@ class BrowserUseManager(
         _isLoading.value = false
         navigationDeferred?.cancel()
         navigationDeferred = null
-        asyncJsDeferred?.cancel()
-        asyncJsDeferred = null
+        clearAsyncJsRequest()
     }
 
     /**
@@ -1510,8 +1513,7 @@ class BrowserUseManager(
         stopLoading()
         navigationDeferred?.cancel()
         navigationDeferred = null
-        asyncJsDeferred?.cancel()
-        asyncJsDeferred = null
+        clearAsyncJsRequest()
         (webView.parent as? android.view.ViewGroup)?.removeView(webView)
         webView.removeJavascriptInterface("__minis__")
         webView.destroy()
@@ -1530,21 +1532,43 @@ class BrowserUseManager(
 
     private suspend fun evaluateJavascript(js: String): String = withContext(Dispatchers.Main) {
         val deferred = CompletableDeferred<String>()
-        webView.evaluateJavascript(js) { result ->
-            // Android WebView returns JSON-encoded strings, so unquote
-            val unquoted = if (result != null && result.startsWith("\"") && result.endsWith("\"")) {
-                try {
-                    JSONObject("{\"v\":$result}").getString("v")
-                } catch (ignored: Exception) {
-            if (ignored is kotlinx.coroutines.CancellationException) throw ignored
-                    result
+        try {
+            webView.evaluateJavascript(js) { result ->
+                if (!deferred.isActive) return@evaluateJavascript
+                val unquoted = if (result != null && result.startsWith("\"") && result.endsWith("\"")) {
+                    try {
+                        JSONObject("{\"v\":$result}").getString("v")
+                    } catch (_: Exception) {
+                        result
+                    }
+                } else {
+                    result ?: "null"
                 }
-            } else {
-                result ?: "null"
+                deferred.complete(unquoted)
             }
-            deferred.complete(unquoted)
+            withTimeoutOrNull(JS_EVALUATION_TIMEOUT_MS) { deferred.await() }
+                ?: throw IllegalStateException("JavaScript evaluation timed out (8s)")
+        } finally {
+            deferred.cancel()
         }
-        kotlinx.coroutines.withTimeout(10000L) { deferred.await() }
+    }
+
+    private fun installAsyncJsRequest(deferred: CompletableDeferred<String>): Long =
+        synchronized(asyncJsGate) {
+            asyncJsRequestId += 1
+            asyncJsDeferred?.cancel()
+            asyncJsDeferred = deferred
+            asyncJsRequestId
+        }
+
+    private fun clearAsyncJsRequest(requestId: Long? = null) {
+        synchronized(asyncJsGate) {
+            if (requestId == null || requestId == asyncJsRequestId) {
+                asyncJsRequestId += 1
+                asyncJsDeferred?.cancel()
+                asyncJsDeferred = null
+            }
+        }
     }
 
     private suspend fun evaluateAndReturn(js: String): BrowserActionResult {
