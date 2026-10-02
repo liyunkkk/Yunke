@@ -247,4 +247,79 @@ class AgentSilentContextBudgetTest {
         budget.measured(200_000, 260_000, cachedTokens = 199_000)
         assertEquals(200_000, budget.cloudTokens())
     }
+
+    @Test fun consistentReceiptsOnLaterRequestsReanchorAfterOneIsolatedRefusal() {
+        val window = 272_000
+        val budget = AgentSilentContextBudget()
+        val inputs = intArrayOf(210_333, 177_354, 217_510, 238_366, 251_000, 264_000, 66_335)
+        inputs.forEachIndexed { index, input ->
+            budget.requestStarted(150_000)
+            budget.measured(input, window)
+            if (index == 2) {
+                assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
+                assertEquals(177_354, budget.cloudTokens())
+            }
+        }
+        assertEquals(SilentReceiptDecision.ACCEPTED, budget.lastReceiptDecision)
+        assertEquals(66_335, budget.cloudTokens())
+        assertTrue(238_366 >= AgentContextCompactor.autoPressureTokens(window))
+    }
+
+    @Test fun sameRequestUsageCannotConfirmItsOwnOutlier() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(10_000)
+        budget.measured(20_000, 200_000)
+        budget.requestStarted(11_000)
+        budget.measured(180_000, 200_000)
+        budget.measured(181_000, 200_000)
+        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
+        assertEquals(20_000, budget.cloudTokens())
+        budget.requestStarted(12_000)
+        budget.measured(182_000, 200_000)
+        assertEquals(SilentReceiptDecision.REANCHORED, budget.lastReceiptDecision)
+        assertEquals(182_000, budget.cloudTokens())
+    }
+
+    @Test fun twoInconsistentRefusalsDoNotBecomeTheAnchor() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(10_000)
+        budget.measured(20_000, 200_000)
+        budget.requestStarted(10_100)
+        budget.measured(100_000, 200_000)
+        budget.requestStarted(10_200)
+        budget.measured(250_000, 200_000)
+        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
+        assertEquals(20_000, budget.cloudTokens())
+    }
+
+    @Test fun overWindowAndPruneClearTheReanchorCandidate() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(10_000)
+        budget.measured(20_000, 200_000)
+        budget.requestStarted(10_100)
+        budget.measured(784_267, 500_000)
+        assertEquals(SilentReceiptDecision.REJECTED_OVER_WINDOW, budget.lastReceiptDecision)
+        assertEquals(20_000, budget.cloudTokens())
+        budget.requestStarted(10_200)
+        budget.measured(180_000, 200_000)
+        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
+        budget.cloudStale()
+        budget.requestStarted(10_300)
+        budget.measured(181_000, 200_000)
+        assertNull(budget.cloudTokens())
+        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
+        budget.contextReplaced()
+        assertFalse(budget.hasTargetReceipt())
+        budget.requestStarted(10_000)
+        budget.measured(30_000, 200_000)
+        assertTrue(budget.hasTargetReceipt())
+        assertEquals(30_000, budget.cloudTokens())
+    }
+
+    @Test fun seedIsNotATargetReceipt() {
+        val budget = AgentSilentContextBudget()
+        budget.seed(50_000, 160_000, 170_000)
+        assertFalse(budget.hasTargetReceipt())
+        assertNull(budget.cloudTokens())
+    }
 }

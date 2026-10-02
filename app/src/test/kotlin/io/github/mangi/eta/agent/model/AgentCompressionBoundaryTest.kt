@@ -78,7 +78,11 @@ class AgentCompressionBoundaryTest {
 
     @Test fun billedToLocalRatioScalesTheVerbatimBudgetDown() {
         assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, null, 40_000))
-        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, 30_000, 40_000))
+        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, 0, 40_000))
+        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, 30_000, -1))
+        // Same-request local over-count enlarges, but not past 1.5x.
+        assertEquals(106_666, AgentCompressionBoundary.localRetentionBudget(80_000, 30_000, 40_000))
+        assertEquals(120_000, AgentCompressionBoundary.localRetentionBudget(80_000, 10_000, 40_000))
         assertEquals(10_000, AgentCompressionBoundary.localRetentionBudget(80_000, 400_000, 50_000))
         val history = mutableListOf(message("user", "task"))
         repeat(40) { i ->

@@ -122,6 +122,10 @@ internal class AgentLoop(
     private var overflowRecoveryAttempts = 0
     private var lastFailedCompaction: Pair<String, Int>? = null
     private var skipIneffectiveAutoCompact = false
+    private var skippedAutoChars: Long = -1L
+    private var skippedAutoCloud: Int = Int.MIN_VALUE
+    private var lastAutoLogReason: String = ""
+    private var lastAutoLogNanos: Long = 0L
     /** 圆环上的云端实测曾到过 80%。后面的回执即使变小，也在下次请求前压缩。 */
     private var autoCompactLatched = false
     private var latchedCloudTokens = 0
@@ -239,7 +243,9 @@ internal class AgentLoop(
                             // receipts from previous runs. Never feed this into silentBudget.
                             if (publishLocalEstimate && !hasDisplayCloudReceipt && providerEvent.tokens > 0) {
                                 onEvent(AgentEvent.UsageReceived(attemptRound,
-                                    AgentTokenUsage(inputTokens = providerEvent.tokens), projected = true))
+                                    AgentTokenUsage(inputTokens = providerEvent.tokens), projected = true,
+                                    requestHistoryTokens = requestHistoryTokens,
+                                    requestOverheadTokens = requestFixedTokens))
                             }
                         }
                         if (providerEvent is ProviderEvent.Usage) {
@@ -259,7 +265,7 @@ internal class AgentLoop(
                             silentBudget.measured(lastUsage?.inputTokens,
                                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
                                 cachedTokens = lastUsage?.cachedTokens)
-                            noteRingPressure(round)
+                            noteRingPressure(attemptRound)
                         }
                         continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->
                             if (visibleEvent is ProviderEvent.BlockDelta &&
@@ -590,16 +596,57 @@ internal class AgentLoop(
             }
             return true
         }
-        val window = config.contextWindow?.takeIf { it > 0 } ?: return false
-        // Hard send limit only: correct a measured local under-count so an uncalibrated
-        // request cannot leave above the configured window. Automatic scheduling reads
-        // cloud receipts only; this guard is the one place a local estimate may compact.
-        val tokens = silentBudget.sendLimitTokens(localRequestTokens())
-        return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
+        // Hard send limit only. No target receipt keeps the extra 12% reserve; that reserve
+        // is not an exact guarantee, and a provider CONTEXT_WINDOW_EXCEEDED still retries once.
+        // Automatic 80% scheduling reads same-model cloud input only. Do not open the window to 100%.
+        return overHardInputLimit()
+    }
+
+    /** Frozen target window, output reserve, and whether this run has a target receipt. */
+    private fun hardInputLimit(): Int {
+        val window = config.contextWindow?.takeIf { it > 0 } ?: return 0
+        return AgentCompressionBoundary.inputLimit(
+            window,
+            AgentCompressionBoundary.outputReserve(config),
+            calibrated = silentBudget.hasTargetReceipt(),
+        )
+    }
+
+    private fun overHardInputLimit(): Boolean {
+        if ((config.contextWindow ?: 0) <= 0) return false
+        return silentBudget.sendLimitTokens(localRequestTokens()) > hardInputLimit()
+    }
+
+    /** Same unchanged history and same cloud receipt. Growth or a new receipt clears it. */
+    private fun ineffectiveAutoSameContext(): Boolean {
+        if (!skipIneffectiveAutoCompact) return false
+        val cloud = silentBudget.cloudTokens() ?: Int.MIN_VALUE
+        if (storedHistoryChars() == skippedAutoChars && cloud == skippedAutoCloud) return true
+        skipIneffectiveAutoCompact = false
+        return false
+    }
+
+    private fun markIneffectiveAutoCompact() {
+        skipIneffectiveAutoCompact = true
+        skippedAutoChars = storedHistoryChars()
+        skippedAutoCloud = silentBudget.cloudTokens() ?: Int.MIN_VALUE
+    }
+
+    private fun logAutoDecision(round: Int, reason: String, cloud: Int, cut: Int) {
+        val now = System.nanoTime()
+        if (reason == lastAutoLogReason && now - lastAutoLogNanos < 2_000_000_000L) return
+        lastAutoLogReason = reason
+        lastAutoLogNanos = now
+        val window = config.contextWindow ?: compactPolicy.contextWindow
+        runCatching {
+            io.github.mangi.eta.core.AndroidAgentLogger.info(
+                "auto_compact round=$round reason=$reason cloud=$cloud cut=$cut window=$window",
+            )
+        }
     }
 
     private fun noteRingPressure(round: Int) {
-        if (skipIneffectiveAutoCompact || !compactPolicy.enabled || overflowPending) return
+        if (ineffectiveAutoSameContext() || !compactPolicy.enabled || overflowPending) return
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
         val cloud = silentBudget.cloudTokens() ?: return
         val hot = cloud >= AgentContextCompactor.autoPressureTokens(window)
@@ -628,24 +675,30 @@ internal class AgentLoop(
         val forced = override != null
         if (forced) { manualBudgetAttempt = true; lastFailedCompaction = null }
         if (!forced && (!compactPolicy.enabled || overflowPending)) {
+            logAutoDecision(round, if (!compactPolicy.enabled) "disabled" else "overflow_pending", silentBudget.cloudTokens() ?: -1, -1)
             releaseAutoCompactWait(round)
             return
         }
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        if (!forced && skipIneffectiveAutoCompact && !requestOverBudget()) {
+        if (!forced && ineffectiveAutoSameContext() && !requestOverBudget()) {
+            logAutoDecision(round, "skip_unchanged", silentBudget.cloudTokens() ?: -1, -1)
             releaseAutoCompactWait(round)
             return
         }
         // 80% 只看圆环上的云端实测。一旦到过线，就等这次输出结束、下次请求之前再压，
         // 不因为后面一张更小的回执取消。估算不排队。硬限制仍走 tryBudgetCompaction。
         if (!forced && storedHistoryChars() > persistenceCharLimit()) {
+            logAutoDecision(round, "storage", silentBudget.cloudTokens() ?: -1, -1)
             releaseAutoCompactWait(round)
             return
         }
         val cloudTokens = silentBudget.cloudTokens()
         val dueToRing = autoCompactLatched &&
             latchedCloudTokens >= AgentContextCompactor.autoPressureTokens(window)
-        if (!forced && !dueToRing && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) return
+        if (!forced && !dueToRing && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) {
+            logAutoDecision(round, if (cloudTokens == null) "no_cloud" else "below", cloudTokens ?: -1, -1)
+            return
+        }
         if (dueToRing) autoCompactLatched = false
         var decisionTokens = when {
             forced -> requestBudgetTokens()
@@ -667,6 +720,7 @@ internal class AgentLoop(
         }
         var cut = plan.cut
         if (cut <= 0) {
+            if (!forced) logAutoDecision(round, "no_cut", cloudTokens ?: latchedCloudTokens, cut)
             if (forced) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
                 reason = "当前保留范围内没有可压缩的完整历史单元。"))
             else if (dueToRing) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length()))
@@ -698,6 +752,7 @@ internal class AgentLoop(
             onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
                 reason = "当前保留范围内没有可压缩的完整历史单元。"))
         }
+        if (!forced) logAutoDecision(round, "accepted", decisionTokens, cut)
         val reduced = cut > 0 && applyCompaction(round, history, cut, decisionTokens)
         if (reduced || pruned) {
             overflowPending = false
@@ -705,7 +760,7 @@ internal class AgentLoop(
             // A committed summary clears the receipt; the next one decides whether another
             // pass is needed. The hard send limit still guards the request in between.
         } else if (!forced) {
-            skipIneffectiveAutoCompact = true
+            markIneffectiveAutoCompact()
         }
     }
 
@@ -716,9 +771,9 @@ internal class AgentLoop(
             AgentCompressionBoundary.planRetention(history,
                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
                 overflowPending,
-                // Same request in both units: calibrated bill vs cheap local boundary.
-                billedTokens = requestBudgetTokens(),
-                localTokens = localRequestTokens(),
+                // Only a target-model receipt converts units. A seed from another model does not.
+                billedTokens = if (silentBudget.hasTargetReceipt()) requestBudgetTokens() else null,
+                localTokens = if (silentBudget.hasTargetReceipt()) localRequestTokens() else null,
                 opaqueItems = ::scopedOpaqueItems)
         }.getOrDefault(AgentCompressionBoundary.RetentionPlan(0))
     }
@@ -730,9 +785,7 @@ internal class AgentLoop(
     private fun tryBudgetCompaction(round: Int): Boolean {
         if (!compactPolicy.enabled && !manualBudgetAttempt) return false
         // Storage pressure alone is not a server context measurement.
-        val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        if (!manualBudgetAttempt && !overflowPending &&
-            requestBudgetTokens() <= AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))) return false
+        if (!manualBudgetAttempt && !overflowPending && !overHardInputLimit()) return false
         val history = historyForCompaction()
         val plan = compactionPlan(history)
         if (plan.stopReason != null) {

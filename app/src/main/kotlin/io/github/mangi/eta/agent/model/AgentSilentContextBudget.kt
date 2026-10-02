@@ -1,5 +1,15 @@
 package io.github.mangi.eta.agent.model
 
+/** Fixed receipt outcomes. Names and numbers only; not a display string. */
+internal enum class SilentReceiptDecision {
+    ACCEPTED,
+    REANCHORED,
+    CANDIDATE,
+    REJECTED_NON_POSITIVE,
+    REJECTED_OVER_WINDOW,
+    REJECTED_INFLATED_CACHE,
+}
+
 /** Decision-only calibration. Never emitted as a cloud bill or ordinary ring usage. */
 internal class AgentSilentContextBudget {
     private var requestLocal: Int = 0
@@ -11,7 +21,7 @@ internal class AgentSilentContextBudget {
      * projected onto this request, rather than from a receipt of this run.
      *
      * A seed is an estimate, so it must not serve as the baseline of the growth check
-     * in [isPlausible]. Observed on a 272k window: the seed was ~153k, the first real
+     * in [withinGrowth]. Observed on a 272k window: the seed was ~153k, the first real
      * receipt of the new run was 209964 (cache miss, local growth ~0). The +57k step
      * exceeded the ~21.8k slack and was refused; every later receipt (88%, 92%, 95%)
      * was then compared with the same stale seed and refused too, so [cloudInput]
@@ -43,8 +53,23 @@ internal class AgentSilentContextBudget {
      * 等下一张回执再决定。上一轮带来的种子只校准发送上限，不算回执。
      */
     private var cloudInput: Int? = null
+    private var requestGeneration: Int = 0
+    private var candidateInput: Int? = null
+    private var candidateLocal: Int = 0
+    private var candidateGeneration: Int = -1
+    var lastReceiptDecision: SilentReceiptDecision? = null
+        private set
+    private var lastLoggedDecision: SilentReceiptDecision? = null
+    private var lastLoggedAtNanos: Long = 0L
 
-    fun requestStarted(localTokens: Int) { requestLocal = localTokens.coerceAtLeast(0) }
+    fun requestStarted(localTokens: Int) {
+        requestLocal = localTokens.coerceAtLeast(0)
+        if (requestGeneration == Int.MAX_VALUE) requestGeneration = 0
+        requestGeneration++
+    }
+
+    /** True only after this run accepted a receipt. A previous-run seed is not a target receipt. */
+    fun hasTargetReceipt(): Boolean = measuredInput != null && !anchorIsSeed
 
     /**
      * Anchors on a cloud measurement, but only when it can actually describe the
@@ -73,12 +98,46 @@ internal class AgentSilentContextBudget {
      * provider CONTEXT_WINDOW_EXCEEDED failure rather than as a silently wrong anchor.
      */
     fun measured(inputTokens: Int?, contextWindow: Int? = null, cachedTokens: Int? = null) {
-        if (inputTokens == null || inputTokens <= 0) return
-        if (!isPlausible(inputTokens, cachedTokens, contextWindow)) return
+        if (inputTokens == null || inputTokens <= 0) {
+            record(SilentReceiptDecision.REJECTED_NON_POSITIVE, 0)
+            return
+        }
+        val window = contextWindow?.takeIf { it > 0 }
+        if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) {
+            record(SilentReceiptDecision.REJECTED_OVER_WINDOW, inputTokens)
+            return
+        }
+        if (AgentBilledPromptPlausibility.isInflatedCacheRead(inputTokens, cachedTokens, window)) {
+            record(SilentReceiptDecision.REJECTED_INFLATED_CACHE, inputTokens)
+            return
+        }
+        if (withinGrowth(inputTokens, measuredInput, measuredLocal, anchorIsSeed, window)) {
+            accept(inputTokens)
+            record(SilentReceiptDecision.ACCEPTED, inputTokens)
+            return
+        }
+        val pending = candidateInput
+        // A candidate confirms only on a later requestStarted. Same-stream usage updates cannot self-confirm.
+        if (pending != null && candidateGeneration != requestGeneration &&
+            withinGrowth(inputTokens, pending, candidateLocal, ignoreBaseline = false, window)
+        ) {
+            accept(inputTokens)
+            record(SilentReceiptDecision.REANCHORED, inputTokens)
+            return
+        }
+        candidateInput = inputTokens
+        candidateLocal = requestLocal
+        candidateGeneration = requestGeneration
+        record(SilentReceiptDecision.CANDIDATE, inputTokens)
+    }
+
+    private fun accept(inputTokens: Int) {
         measuredInput = inputTokens
         measuredLocal = requestLocal
         anchorIsSeed = false
         cloudInput = inputTokens
+        candidateInput = null
+        candidateGeneration = -1
         learnScale(inputTokens)
     }
 
@@ -98,8 +157,12 @@ internal class AgentSilentContextBudget {
     /** 自动压缩用的云端实测；见 [cloudInput]。 */
     fun cloudTokens(): Int? = cloudInput
 
-    /** 上下文被工具修剪改过：旧回执不再代表下一次请求，等新回执。发送上限的锚点保留。 */
-    fun cloudStale() { cloudInput = null }
+    /** 上下文被工具修剪改过：旧回执不再代表下一次请求，等新回执。发送上限的锚点保留。候选一并作废。 */
+    fun cloudStale() {
+        cloudInput = null
+        candidateInput = null
+        candidateGeneration = -1
+    }
 
     private fun learnScale(inputTokens: Int) {
         if (requestLocal < MIN_SCALE_BASIS) return
@@ -108,26 +171,36 @@ internal class AgentSilentContextBudget {
         underCountScale = maxOf(underCountScale, observed.coerceAtMost(MAX_SCALE))
     }
 
-    private fun isPlausible(
+    private fun withinGrowth(
         inputTokens: Int,
-        cachedTokens: Int?,
-        contextWindow: Int?
+        baseline: Int?,
+        baselineLocal: Int,
+        ignoreBaseline: Boolean,
+        window: Int?,
     ): Boolean {
-        val window = contextWindow?.takeIf { it > 0 }
-        if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) return false
-        // A cache read larger than its own prompt or the window is a relay billing artefact.
-        if (AgentBilledPromptPlausibility.isInflatedCacheRead(inputTokens, cachedTokens, window)) {
-            return false
-        }
-        // A seeded estimate is not a receipt: the first bill of a run has no baseline.
-        if (anchorIsSeed) return true
-        val previous = measuredInput?.takeIf { it > 0 } ?: return true
+        if (ignoreBaseline) return true
+        val previous = baseline?.takeIf { it > 0 } ?: return true
         val billedGrowth = inputTokens.toLong() - previous
         if (billedGrowth <= 0) return true
-        val localGrowth = (requestLocal.toLong() - measuredLocal).coerceAtLeast(0L)
+        val localGrowth = (requestLocal.toLong() - baselineLocal).coerceAtLeast(0L)
         val slack = GROWTH_SLACK_TOKENS.toLong() +
             (window?.toLong() ?: 0L) * GROWTH_SLACK_WINDOW_PERCENT / 100
         return billedGrowth <= localGrowth + slack
+    }
+
+    private fun record(decision: SilentReceiptDecision, inputTokens: Int) {
+        lastReceiptDecision = decision
+        val now = System.nanoTime()
+        if (decision == lastLoggedDecision && now - lastLoggedAtNanos < 2_000_000_000L) return
+        lastLoggedDecision = decision
+        lastLoggedAtNanos = now
+        val anchor = measuredInput ?: -1
+        val candidate = candidateInput ?: -1
+        runCatching {
+            io.github.mangi.eta.core.AndroidAgentLogger.info(
+                "silent_budget decision=${decision.name} input=$inputTokens anchor=$anchor candidate=$candidate gen=$requestGeneration",
+            )
+        }
     }
 
     fun tokens(currentLocal: Int): Int {
@@ -164,6 +237,8 @@ internal class AgentSilentContextBudget {
         requestLocal = 0
         anchorIsSeed = false
         cloudInput = null
+        candidateInput = null
+        candidateGeneration = -1
         // underCountScale is a property of the model's tokenizer, not of this context.
     }
 

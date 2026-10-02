@@ -287,12 +287,19 @@ internal object AgentCompressionBoundary {
         return found
     }
 
-    /** Scale a billed-unit budget into local-estimate units; never enlarges it. */
+    /**
+     * Convert a window-unit tail budget into local-estimate units from one same-request receipt.
+     * Shrinks when the bill is above the local count and enlarges when the local count is above
+     * the bill, but never past 1.5x. Null or non-positive units are unknown and are not converted.
+     * This is only the verbatim-tail target, not a guarantee for the whole request.
+     */
     internal fun localRetentionBudget(budget: Int, billedTokens: Int?, localTokens: Int?): Int {
+        if (budget <= 0) return budget
         val billed = billedTokens?.takeIf { it > 0 } ?: return budget
         val local = localTokens?.takeIf { it > 0 } ?: return budget
-        if (billed <= local) return budget
-        return (budget.toLong() * local / billed).coerceIn(1L, budget.toLong()).toInt()
+        val scaled = budget.toLong() * local / billed
+        val cap = budget.toLong() * 3 / 2
+        return scaled.coerceIn(1L, cap).toInt()
     }
 
     /** Local-estimate tokens of history[start..]; used for diagnostics only. */
