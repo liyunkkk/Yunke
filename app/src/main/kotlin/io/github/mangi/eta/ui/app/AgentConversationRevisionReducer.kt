@@ -85,8 +85,18 @@ internal object AgentConversationRevisionReducer {
             messages = messages,
             history = history,
             messageEdit = null,
-            livePromptTokens = latestBilledContextTokens(messages),
+            // A message bill belongs to an old request, not the newly truncated history.
+            livePromptTokens = null,
             livePromptIsProjected = false,
+            contextHasStarted = true,
+            receiptPredictionTokens = if (!state.contextAwaitingReceipt && state.cloudRouteSignature != null &&
+                state.livePromptTokens != null && !state.livePromptIsProjected &&
+                state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null)
+                io.github.mangi.eta.ui.model.RequestOverheadCalibration.receiptEstimate(
+                    state.livePromptTokens, state.cloudHistoryTokens, state.cloudRequestOverheadTokens,
+                    history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) },
+                    state.cloudRequestOverheadTokens) else null,
+            cloudReceiptRequestId = null, contextReceiptEvidence = null,
             cloudHistoryTokens = null,
             cloudRequestOverheadTokens = null,
         )

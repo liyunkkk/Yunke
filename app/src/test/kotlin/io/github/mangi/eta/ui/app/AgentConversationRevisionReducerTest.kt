@@ -316,7 +316,8 @@ class AgentConversationRevisionReducerTest {
             cloudRequestOverheadTokens = 4_000,
         )
         val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-2")!!
-        assertEquals(120_000, revised.livePromptTokens)
+        assertNull(revised.livePromptTokens) // The old message bill is not an actual for truncated history.
+        assertTrue(revised.contextHasStarted)
         assertFalse(revised.livePromptIsProjected)
         assertNull(revised.cloudHistoryTokens)
         assertNull(revised.cloudRequestOverheadTokens)

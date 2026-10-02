@@ -27,7 +27,7 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         self.assertIn('projected = true', estimate)
         self.assertNotIn('silentBudget.measured(', estimate)
         app = self.text('ui/app/AgentAppState.kt')
-        self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', app)
+        self.assertIn('if (projected) return', app)
         bar = self.text('ui/components/AgentChatInputBar.kt')
         self.assertIn('requestOverheadTokens = if (overheadCalibrationTokens != null) requestOverheadTokens', bar)
         self.assertIn('else previewRequestOverheadTokens ?: requestOverheadTokens', bar)
@@ -35,7 +35,10 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         self.assertNotIn('previewRequestOverheadTokens', send)
         self.assertIn('localHistoryTokenCount = localHistoryTokenCount', send)
         preview = self.text('ui/model/AgentModelPickerUiState.kt').split('internal fun compressionContextUsage(', 1)[1]
-        self.assertIn('projectedContextTokens = null', preview)
+        silent = preview.split('private fun draftContextTokens(', 1)[0]
+        self.assertNotIn('liveContextUsage(', silent)
+        self.assertNotIn('projectedContextTokens?.', silent)
+        self.assertIn('requestOverheadTokens.coerceAtLeast(0) + draft', silent)
         # Display-only calibration must never reach the silent send/compaction budget.
         self.assertNotIn('overheadCalibrationTokens', preview.split('\n}\n', 1)[0])
 

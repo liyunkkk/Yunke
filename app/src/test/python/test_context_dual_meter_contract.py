@@ -41,7 +41,11 @@ class ContextDualMeterContractTest(unittest.TestCase):
         self.assertIn('estimatedTokens = if (history == state.history) billedPromptTokens(state) else null', app)
         self.assertIn('if (!shouldAutoCompress(state.history, contextWindow, billedPromptTokens(state))) return', app)
         self.assertRegex(app, r'shouldAutoCompress\(\s*history,\s*config\.contextWindow,\s*(//[^\n]*\n\s*)?billedForCompression,')
-        self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', app)
+        self.assertIn('if (projected) return', app)  # Raw projections cannot masquerade as learned UI estimates.
+        silent = model.split('internal fun compressionContextUsage(', 1)[1].split('private fun draftContextTokens(', 1)[0]
+        self.assertNotIn('liveContextUsage(', silent)
+        self.assertNotIn('overheadCalibrationTokens', silent)
+        self.assertIn('requestOverheadTokens.coerceAtLeast(0) + draft', silent)
         # Only a plausible receipt may become occupancy, judged against the run's own window.
         self.assertIn('CloudReceiptPlausibility.isOccupancy(', app)
         self.assertIn('runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)', app)

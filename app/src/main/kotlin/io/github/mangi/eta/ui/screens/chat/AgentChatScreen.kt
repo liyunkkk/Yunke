@@ -24,7 +24,7 @@ internal fun AgentChatScreen(
     autoCompressEnabled: Boolean,
     requestOverheadTokens: Int = 0,
     previewRequestOverheadTokens: Int? = null,
-    overheadCalibrationTokens: Int? = null,
+    overheadCalibrationTokens: io.github.mangi.eta.ui.model.RequestOverheadCalibration.Sample? = null,
     billedOverheadTokens: Int? = null,
     conversationKey: String?,
     draftField: androidx.compose.foundation.text.input.TextFieldState? = null,
@@ -47,6 +47,9 @@ internal fun AgentChatScreen(
             requestOverheadTokens = requestOverheadTokens,
             previewRequestOverheadTokens = previewRequestOverheadTokens,
             overheadCalibrationTokens = overheadCalibrationTokens,
+            contextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(
+                firstTurn = !state.contextHasStarted && state.history.isEmpty() && state.messages.isEmpty(),
+                awaitingReceipt = state.contextAwaitingReceipt, receiptEstimateTokens = state.receiptPredictionTokens),
             billedOverheadTokens = state.cloudRequestOverheadTokens,
             livePromptTokens = state.livePromptTokens,
             livePromptIsProjected = state.livePromptIsProjected,

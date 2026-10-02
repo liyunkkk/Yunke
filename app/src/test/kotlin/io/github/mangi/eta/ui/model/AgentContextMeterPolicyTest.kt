@@ -9,12 +9,13 @@ class AgentContextMeterPolicyTest {
     @Test fun protocolPreviewDropsUnsentReasoningWithoutChangingSilentBudget() {
         val history = listOf(AgentModelClient.ConversationMessage("assistant", "answer", reasoningContent = "private".repeat(1000)))
         val base = AgentModelOptionUi("m", "p", "P", "custom", "m", "M", 100000)
-        val chat = liveContextUsage(history, "", emptyList(), base)
+        val chat = compressionContextUsage(history, "", emptyList(), base)
         for (endpoint in listOf(io.github.mangi.eta.agent.model.EndpointKind.RESPONSES,
             io.github.mangi.eta.agent.model.EndpointKind.ANTHROPIC_MESSAGES)) {
             val model = base.copy(requestEndpoint = endpoint)
             val preview = liveContextUsage(history, "", emptyList(), model)
-            assertTrue(requireNotNull(preview.contextTokens) < requireNotNull(chat.contextTokens))
+            assertNull(preview.contextTokens) // Protocol preview is not a learned or measured display value.
+            assertTrue(io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, false, false, endpoint) < requireNotNull(chat.contextTokens))
             val silent = compressionContextUsage(history, "", emptyList(), model, projectedContextTokens = 999999)
             assertEquals(chat.contextTokens, silent.contextTokens)
         }
@@ -22,23 +23,23 @@ class AgentContextMeterPolicyTest {
 
     @Test fun finalBodyProjectionIsEstimatedOnlyUntilACloudReceiptExists() {
         val first = liveContextUsage(emptyList(), "", emptyList(), null, projectedContextTokens = 1234)
-        assertEquals(1234, first.contextTokens)
-        assertTrue(first.estimated)
+        assertNull(first.contextTokens)
+        assertEquals("无", formatContextUsage(first))
         val cloud = liveContextUsage(emptyList(), "", emptyList(), null,
             projectedContextTokens = 1234, billedContextTokens = 4321)
         assertEquals(4321, cloud.contextTokens)
         assertFalse(cloud.estimated)
-        // Compaction clears the receipt; the next actual request body becomes the local basis.
-        val compacted = liveContextUsage(emptyList(), "", emptyList(), null, projectedContextTokens = 567)
-        assertEquals(567, compacted.contextTokens)
-        assertTrue(compacted.estimated)
+        val compacted = liveContextUsage(emptyList(), "", emptyList(), null, projectedContextTokens = 567,
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true))
+        assertNull(compacted.contextTokens)
+        assertEquals("未知", formatContextUsage(compacted))
     }
 
     @Test fun emptyFirstDraftIncludesSystemAndToolOverhead() {
         val usage = liveContextUsage(emptyList(), "", emptyList(), null, requestOverheadTokens = 12000)
-        assertEquals(12000, usage.contextTokens)
-        assertTrue(usage.estimated)
-        assertTrue(formatContextUsage(usage).startsWith("≈12K"))
+        assertNull(usage.contextTokens)
+        assertEquals("无", formatContextUsage(usage))
+        assertEquals(12000, compressionContextUsage(emptyList(), "", emptyList(), null, requestOverheadTokens = 12000).contextTokens)
     }
 
     @Test fun cloudRingStaysFixedWhileSilentBudgetAddsHistoryAndToolDeltas() {
@@ -77,8 +78,10 @@ class AgentContextMeterPolicyTest {
     @Test fun summaryWithoutNewCloudUsageUsesNewHistoryNotOldBill() {
         val history = listOf(AgentModelClient.ConversationMessage("system", "short summary"))
         val usage = liveContextUsage(history, "", emptyList(), null, requestOverheadTokens = 500)
-        assertEquals(500 + AgentContextBudget.countMessage(history.single()), usage.contextTokens)
-        assertTrue(usage.estimated)
+        assertNull(usage.contextTokens)
+        assertEquals("未知", formatContextUsage(usage))
+        assertEquals(500 + AgentContextBudget.countMessage(history.single()),
+            compressionContextUsage(history, "", emptyList(), null, requestOverheadTokens = 500).contextTokens)
     }
 
     @Test fun validReceiptPersistsCalibrationAndInvalidHistoryCannotRestoreIt() {
@@ -89,7 +92,11 @@ class AgentContextMeterPolicyTest {
         assertEquals(700, receipt.overheadTokens)
         assertNull(CloudUsageReceiptCodec.decodeReceipt(raw, "c", "p", "other", "history"))
         assertNull(CloudUsageReceiptCodec.decodeReceipt(raw, "c", "p", "m", "edited"))
-        assertEquals("", CloudUsageReceiptCodec.encode("c", "p", "m", "history", null, 6000, 700))
+        val compacted = CloudUsageReceiptCodec.encode("c", "p", "m", "history", null,
+            hasStarted = true, awaitingReceipt = true)
+        assertNull(CloudUsageReceiptCodec.decodeReceipt(compacted, "c", "p", "m", "history"))
+        assertEquals(CloudUsageReceiptCodec.DisplayState(true, true),
+            CloudUsageReceiptCodec.decodeDisplayState(compacted, "c", "history"))
     }
 
     @Test fun unsentHistoryMediaDoesNotDriftRawCloudCalibration() {
@@ -98,7 +105,8 @@ class AgentContextMeterPolicyTest {
         val history = listOf(AgentModelClient.ConversationMessage("user", "", contentJson = org.json.JSONArray().put(part).toString()))
         val raw = history.sumOf { AgentContextBudget.countMessage(it) }
         val preview = liveContextUsage(history, "", emptyList(), null, requestOverheadTokens = 100)
-        assertTrue(requireNotNull(preview.contextTokens) < raw + 100)
+        assertNull(preview.contextTokens)
+        assertTrue(requireNotNull(compressionContextUsage(history, "", emptyList(), null, requestOverheadTokens = 100).contextTokens) < raw + 100)
         val budget = compressionContextUsage(history, "", emptyList(), null,
             billedContextTokens = 9000, billedHistoryTokens = raw,
             billedOverheadTokens = 100, requestOverheadTokens = 100)
@@ -111,7 +119,8 @@ class AgentContextMeterPolicyTest {
             supportsVision = false, supportsVideo = true)
         val attachment = PendingImageUi("v", "content://video", "data:image/jpeg;base64,AAAA", "video/mp4",
             isVideo = true, byteSize = 2 * 1024 * 1024)
-        val usage = liveContextUsage(emptyList(), "watch", listOf(attachment), model)
+        val usage = compressionContextUsage(emptyList(), "watch", listOf(attachment), model)
+        assertNull(liveContextUsage(emptyList(), "watch", listOf(attachment), model).contextTokens)
         assertEquals(AgentContextBudget.countCurrentTurn("watch", listOf(attachment.toOutboundModelImage(true))), usage.contextTokens)
     }
 

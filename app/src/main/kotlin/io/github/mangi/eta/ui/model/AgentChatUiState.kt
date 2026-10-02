@@ -30,6 +30,12 @@ internal data class AgentChatUiState(
     val livePromptTokens: Int? = null,
     val livePromptIsProjected: Boolean = false,
     // Local snapshots paired with the valid cloud receipt. Never shown as cloud usage.
+    val receiptPredictionTokens: Int? = null,
+    val contextHasStarted: Boolean = false,
+    val contextAwaitingReceipt: Boolean = false,
+    val contextReceiptEvidence: ContextReceiptEvidence? = null,
+    val cloudReceiptRequestId: String? = null,
+    val cloudRouteSignature: String? = null,
     val cloudHistoryTokens: Int? = null,
     val cloudRequestOverheadTokens: Int? = null,
     /**

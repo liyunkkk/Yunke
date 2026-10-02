@@ -81,6 +81,28 @@ class AgentCloudReceiptRegressionTest {
         }
     }
 
+    @Test fun partialUsageKeepsOnlySameRequestBaselineAndNewRequestCannotBorrowIt() {
+        withApp { app ->
+            send(app, AgentEvent.ProviderRequestStarted(1))
+            send(app, AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 37214),
+                requestHistoryTokens = 481, requestOverheadTokens = 25270))
+            send(app, AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 37214, outputTokens = 10)))
+            assertEquals(481, state(app).cloudHistoryTokens)
+            assertEquals(25270, state(app).cloudRequestOverheadTokens)
+            send(app, AgentEvent.ProviderRequestStarted(2))
+            send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000)))
+            assertEquals(40000, state(app).livePromptTokens)
+            assertNull(state(app).cloudHistoryTokens)
+            assertNull(state(app).cloudRequestOverheadTokens)
+            // A same-round retry is also a new actual request boundary, even when input agrees.
+            send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000),
+                requestHistoryTokens = 1000, requestOverheadTokens = 25270))
+            send(app, AgentEvent.ProviderRequestStarted(2))
+            send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000)))
+            assertNull(state(app).cloudHistoryTokens)
+        }
+    }
+
     private fun withApp(block: (AgentAppState) -> Unit) {
         val context = RuntimeEnvironment.getApplication() as Context
         EtaDatabase.closeForTests()

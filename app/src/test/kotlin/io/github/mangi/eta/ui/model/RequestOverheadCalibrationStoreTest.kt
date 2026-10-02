@@ -14,8 +14,13 @@ import java.util.UUID
 class RequestOverheadCalibrationStoreTest {
     @Test fun persistedSamplesAreProviderModelScopedAndSurviveReceiptInvalidation() {
         val provider = "calibration-test-${UUID.randomUUID()}"
-        val first = requireNotNull(RequestOverheadCalibration.learn(null, 37214, 481, 25273))
-        val other = RequestOverheadCalibration.Sample(3400, 2, 25273)
+        val first = requireNotNull(RequestOverheadCalibration.learn(null, 37214, 481, 25273,
+            requestId = "run-1:1", routeSignature = "config"))
+        val other = requireNotNull(RequestOverheadCalibration.learn(null, 19000, 481, 25273,
+            requestId = "run-2:1", routeSignature = "other-config"))
+        io.github.mangi.eta.config.Prefs.putString("agent_request_overhead_calibration_v1:${provider.length}:$provider:6:legacy",
+            "{\"offsetTokens\":11460,\"samples\":300,\"measuredOverheadTokens\":25273}")
+        assertNull(RequestOverheadCalibrationStore.read(provider, "legacy"))
         assertNull(RequestOverheadCalibrationStore.read(provider, "model"))
         RequestOverheadCalibrationStore.save(provider, "model", first)
         RequestOverheadCalibrationStore.save("$provider:other", "model", other)

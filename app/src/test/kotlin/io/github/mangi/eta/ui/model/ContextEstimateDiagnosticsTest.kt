@@ -16,18 +16,35 @@ class ContextEstimateDiagnosticsTest {
         val logs = mutableListOf<String>()
         val diagnostics = ContextEstimateDiagnostics(enabled = { true }, sink = { logs += it })
         diagnostics.capture("PRIVATE_RUN_ID", snapshot)
-        diagnostics.receipt("PRIVATE_RUN_ID", 37214, 1234, true, 11460)
+        diagnostics.receipt("PRIVATE_RUN_ID", 37214, 1234, true, null,
+            round = 1, historyTokens = 481, overheadTokens = 25273, sampleCount = 3, ratio = 1.445)
         diagnostics.receipt("PRIVATE_RUN_ID", 40000, 1234, false, 11460)
         assertEquals(1, logs.size)
         val fields = Json.parseToJsonElement(logs.single().removePrefix(ContextEstimateDiagnostics.PREFIX)).jsonObject
         assertEquals("local_fallback", fields.getValue("basis").jsonPrimitive.content)
         assertEquals(25754, fields.getValue("local_estimate_tokens").jsonPrimitive.int)
         assertEquals(11460, fields.getValue("estimate_error").jsonPrimitive.int)
-        assertEquals(11460, fields.getValue("new_offset").jsonPrimitive.int)
+        assertFalse(fields.containsKey("new_offset"))
+        assertEquals(3, fields.getValue("calibration_samples").jsonPrimitive.int)
+        assertEquals("matched_request", fields.getValue("pairing").jsonPrimitive.content)
         assertEquals(1234, fields.getValue("cloud_cached").jsonPrimitive.int)
         assertTrue(fields.getValue("calibration_learned").jsonPrimitive.boolean)
         assertFalse(logs.single().contains("PRIVATE_RUN_ID"))
-        assertEquals(11, fields.size)
+        assertFalse(logs.single().contains("request body"))
+    }
+
+    @Test fun compressionAndRetryMismatchNeverEmitFalseError() {
+        val logs = mutableListOf<String>()
+        val diagnostics = ContextEstimateDiagnostics(enabled = { true }, sink = { logs += it })
+        diagnostics.capture("run", snapshot.copy(localEstimateTokens = 70076))
+        diagnostics.receipt("run", 27723, null, false, null, round = 2, historyTokens = 300, overheadTokens = 25273)
+        assertEquals(1, logs.size)
+        assertFalse(logs.single().contains("estimate_error"))
+        assertTrue(logs.single().contains("request_basis_mismatch"))
+        diagnostics.capture("run", snapshot)
+        diagnostics.clear("run")
+        diagnostics.receipt("run", 27723, null, false, null, round = 1, historyTokens = 481, overheadTokens = 25273)
+        assertEquals(1, logs.size)
     }
 
     @Test fun disabledLoggerDoesNotCaptureOrWriteAndClearedRunsDoNotWrite() {

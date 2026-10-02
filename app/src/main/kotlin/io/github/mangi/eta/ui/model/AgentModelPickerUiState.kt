@@ -51,6 +51,7 @@ internal data class AgentContextUsageUi(
     val contextTokens: Int?,
     val contextWindow: Int?,
     val estimated: Boolean = false,
+    val firstTurn: Boolean = false,
 ) {
     val progress: Float?
         get() = contextUsageProgress(contextTokens, contextWindow)
@@ -287,7 +288,9 @@ internal fun liveContextUsage(
     uncommittedLiveTokens: Int = 0,
     projectedContextTokens: Int? = null,
     activeRunContextWindow: Int? = null,
-    overheadCalibrationTokens: Int? = null,
+    overheadCalibrationTokens: RequestOverheadCalibration.Sample? = null,
+    contextDisplayPolicy: ContextDisplayPolicy = ContextDisplayPolicy(firstTurn = history.isEmpty()),
+    receiptEstimateTokens: Int? = null,
 ): AgentContextUsageUi {
     // An in-flight run keeps the window it was launched with, so a mid-run settings
     // change must not restate the percentage of a request that never saw the new limit.
@@ -295,22 +298,14 @@ internal fun liveContextUsage(
     if (billedContextTokens != null && billedContextTokens > 0) {
         return AgentContextUsageUi(billedContextTokens, window)
     }
+    if (contextDisplayPolicy.awaitingReceipt) return AgentContextUsageUi(null, window)
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    // The learned offset was measured against the runtime's raw history (countMessage) and legacy
-    // overhead units. A calibrated fallback therefore uses that same basis; callers pass raw history
-    // and legacy overhead. A larger final-body projection (e.g. growth during a run) still wins.
-    val calibration = overheadCalibrationTokens?.takeIf { requestOverheadTokens > 0 }
-    val local = if (calibration != null) {
-        val legacy = (historyTokenCount?.toLong() ?: history.sumOf { AgentContextBudget.countMessage(it).toLong() }) +
-            RequestOverheadCalibration.applyOffset(requestOverheadTokens, calibration) +
-            uncommittedLiveTokens.coerceAtLeast(0)
-        maxOf(legacy, projectedContextTokens?.takeIf { it > 0 }?.toLong() ?: 0L)
-    } else projectedContextTokens?.takeIf { it > 0 }?.toLong()
-        ?: ((historyTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
-            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true,
-            selectedModel?.requestEndpoint ?: io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS)).toLong() +
-            requestOverheadTokens.coerceAtLeast(0) + uncommittedLiveTokens.coerceAtLeast(0))
-    return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
+    val rawHistory = ((historyTokenCount?.toLong() ?: history.sumOf { AgentContextBudget.countMessage(it).toLong() }) +
+        draft + uncommittedLiveTokens.coerceAtLeast(0)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val estimate = receiptEstimateTokens?.takeIf { it > 0 }
+        ?: overheadCalibrationTokens?.estimate(rawHistory, requestOverheadTokens)
+    return if (estimate != null) AgentContextUsageUi(estimate, window, estimated = true)
+    else AgentContextUsageUi(null, window, firstTurn = contextDisplayPolicy.firstTurn)
 }
 
 /** Predict the next cloud input: a validated receipt is the full prompt baseline, including cache.
@@ -335,18 +330,14 @@ internal fun compressionContextUsage(
         billedHistoryTokens == null || billedOverheadTokens == null) {
         // Legacy cloud receipts keep the ring accurate, but lack the calibration
         // needed for a safe delta. Only the silent budget falls back to a full estimate.
-        val local = liveContextUsage(history, currentInput, pendingImages, selectedModel,
-            pendingFileReferences, pendingConversationMentions,
-            localHistoryTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
-                history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true),
-            requestOverheadTokens = requestOverheadTokens,
-            // Display-only final-body estimates must not change the silent send budget.
-            projectedContextTokens = null,
-            activeRunContextWindow = activeRunContextWindow)
-        val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
-            draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-        return local.copy(contextTokens = maxOf(local.contextTokens?.toLong() ?: 0L, floor)
-            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+        // Unknown UI must not remove the conservative internal budget or change send blocking.
+        val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
+        val local = (localHistoryTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
+            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
+            requestOverheadTokens.coerceAtLeast(0) + draft
+        val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) + draft
+        return AgentContextUsageUi(maxOf(local, floor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow, estimated = true)
     }
     // Both calibration snapshots belong to the validated cloud receipt.
     val delta = billedHistoryTokens?.let { baseline ->
@@ -454,9 +445,7 @@ internal fun formatContextUsage(
     // empty because progress is null — one state shown two ways.
     val measured = usage.contextTokens
     if (measured == null) {
-        val window = usage.contextWindow
-        return if (window == null || window <= 0) noUsageText
-        else "$noUsageText · ${formatCompactTokenCount(window, locale)} tokens"
+        return if (usage.firstTurn) "无" else "未知"
     }
     val tokens = measured.coerceAtLeast(0)
     val tokenText = (if (usage.estimated) "≈" else "") +
