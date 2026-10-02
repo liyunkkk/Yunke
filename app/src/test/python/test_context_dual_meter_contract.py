@@ -11,9 +11,7 @@ class ContextDualMeterContractTest(unittest.TestCase):
     def test_runtime_decision_budget_is_not_an_ordinary_ring_event(self):
         budget = self.text('agent/model/AgentSilentContextBudget.kt')
         self.assertNotIn('onEvent', budget)
-        self.assertIn('AgentPromptForecast.project(input, currentLocal.toLong(), measuredLocal.toLong())', budget)
-        forecast = self.text('agent/model/AgentPromptForecast.kt')
-        self.assertIn('inputTokens.toLong() + localTokens - anchorLocalTokens', forecast)
+        self.assertIn('input.toLong() + currentLocal - measuredLocal', budget)
         loop = self.text('agent/model/AgentLoop.kt')
         self.assertIn('silentBudget.tokens(localRequestTokens())', loop)
         # Only a true summary replacement resets calibration; tool pruning preserves its anchor.

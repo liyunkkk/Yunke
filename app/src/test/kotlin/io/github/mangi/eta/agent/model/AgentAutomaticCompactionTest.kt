@@ -51,7 +51,7 @@ class AgentAutomaticCompactionTest {
             })
             assertEquals(1, summaries)
             assertEquals(1, provider.requests.size)
-            assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected && !it.usage.isEmpty })
+            assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
         }
     }
 
@@ -69,7 +69,7 @@ class AgentAutomaticCompactionTest {
         assertEquals(0, summaries)
         assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
         // The ring keeps its single local estimate for the first request.
-        assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected && !it.usage.isEmpty })
+        assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
     }
 
     @Test fun carriedOverReceiptOnlyCalibratesTheHardSendLimit() {
@@ -317,7 +317,7 @@ class AgentAutomaticCompactionTest {
         assertEquals(listOf("first", "second"), executions)
         assertEquals(3, provider.requests.size)
         assertEquals(1, summaries)
-        assertEquals(2, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected && !it.usage.isEmpty })
+        assertEquals(2, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
         assertEquals(2, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
         // The batch that reported 80% is summarized once, after it finished. The usage-less round
         // after the summary stays below the threshold using its new local budget.
@@ -701,53 +701,6 @@ class AgentAutomaticCompactionTest {
         // Only the natural response is appended after the verbatim protected tail.
         assertEquals(keptJson, (messages.length() - 1 - keptJson.size until messages.length() - 1)
             .map { messages.getJSONObject(it).toString() })
-    }
-
-    @Test fun forecastTracksCloudPlusNewMessagesWithoutRelabelingTheRing() {
-        val messages = smallHistory()
-        val events = mutableListOf<AgentEvent>()
-        val preflight = mutableListOf<Int>()
-        val provider = ScriptedProvider(listOf(
-            { _, _ ->
-                preflight += requireNotNull(events.filterIsInstance<AgentEvent.UsageReceived>().last().forecastPromptTokens)
-                toolReply("forecast-tool").put("usage", JSONObject().put("prompt_tokens", 29405))
-            },
-            { _, _ ->
-                preflight += requireNotNull(events.filterIsInstance<AgentEvent.UsageReceived>().last().forecastPromptTokens)
-                assistant(content = "a completed answer", promptTokens = 29478)
-            },
-        ), listOf(AgentTokenUsage(cachedTokens = 2797, cacheCreationTokens = 1000)))
-        runLoop(messages, provider, events,
-            toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("tool evidence ".repeat(100)) })
-        val locals = provider.requests.map { AgentRequestTokenEstimate.boundary(it, tools(), false, false) }
-        assertEquals(29405 + locals[1] - locals[0], preflight[1])
-        val usage = events.filterIsInstance<AgentEvent.UsageReceived>()
-        val bills = usage.filterNot { it.projected }
-        assertEquals(listOf(29405, 29478), bills.map { it.usage.inputTokens }.distinct())
-        assertEquals(29478, bills.last().forecastPromptTokens)
-        assertEquals(listOf(1), usage.filter { it.projected && !it.usage.isEmpty }.map { it.round })
-        val finalForecast = usage.last()
-        assertTrue(finalForecast.projected && finalForecast.usage.isEmpty)
-        val finalLocal = AgentRequestTokenEstimate.boundary(messages, tools(), false, false)
-        assertEquals(29478 + finalLocal - locals.last(), finalForecast.forecastPromptTokens)
-    }
-
-    @Test fun forecastAboveEightyPercentDoesNotBecomeAutomaticPressure() {
-        val messages = smallHistory()
-        val events = mutableListOf<AgentEvent>()
-        val provider = ScriptedProvider(listOf(
-            { _, _ -> toolReply("grow").put("usage", JSONObject().put("prompt_tokens", AUTO_PRESSURE - 1000)) },
-            { _, _ -> assistant() },
-        ))
-        var summaries = 0
-        runLoop(messages, provider, events,
-            toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("x".repeat(8000)) },
-            compactHistory = { source, policy -> summaries++; summarize(source, policy) })
-        assertTrue(events.filterIsInstance<AgentEvent.UsageReceived>().any {
-            it.projected && it.usage.isEmpty && (it.forecastPromptTokens ?: 0) >= AUTO_PRESSURE
-        })
-        assertEquals(0, summaries)
-        assertFalse(events.any { it is AgentEvent.AutoCompactWaiting })
     }
 
     private fun runLoop(

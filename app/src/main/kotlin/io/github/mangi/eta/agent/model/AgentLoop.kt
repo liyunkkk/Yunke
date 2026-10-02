@@ -106,9 +106,6 @@ internal class AgentLoop(
     private var lastUsage: AgentTokenUsage? = null
     private val requestBudget = AgentRequestBudgetPolicy()
     private val silentBudget = AgentSilentContextBudget()
-    private val promptForecast = AgentPromptForecast(AgentPromptForecast.Binding(
-        sessionId, "${config.providerId}/${config.baseUrl}/${config.model}",
-    ))
     private var suppressThinkingForNextRequest = false
     private val continuationBlocks = AgentContinuationBlocks()
     private val continuationReasoning = AgentContinuationReasoning()
@@ -140,10 +137,8 @@ internal class AgentLoop(
         messages.optJSONObject(messages.length() - 1)?.put(AgentTurnIdentity.JSON_KEY, turnId)
         // UI 手里有上一张可信回执时，用它折算到本次请求的值校准发送上限。
         // 自动压缩不看它：80% 只看本次 run 收到的真实回执（圆环上的数）。
-        val initialLocal = localRequestTokens()
-        val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        silentBudget.seed(initialLocal, calibratedInputTokens, window)
-        promptForecast.seed(initialLocal, calibratedInputTokens, window)
+        silentBudget.seed(localRequestTokens(), calibratedInputTokens,
+            config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
         var round = 1
 
         roundLoop@ while (true) {
@@ -225,16 +220,12 @@ internal class AgentLoop(
                 AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
             } else null
             silentBudget.requestStarted(requestLocal)
-            promptForecast.requestStarted(requestLocal)
-            // Keep one cheap counting basis for calibrated deltas. The hydrated rough count
-            // is only the uncalibrated boundary fallback, never a new cloud anchor.
-            val forecast = promptForecast.tokens(requestLocal, preparedRequestTokens ?: requestLocal)
-            val forecastBasis = if (promptForecast.snapshot() != null) "cloud_anchor_plus_delta" else "local_unanchored"
+            val localEstimate = preparedRequestTokens?.takeIf { it > 0 }
             requestBudget.requestStarted()
             lastUsage = null // A new request must not inherit missing fields from the preceding bill.
-            onEvent(AgentEvent.UsageReceived(round,
-                if (publishLocalEstimate) AgentTokenUsage(inputTokens = forecast) else AgentTokenUsage(),
-                projected = true, forecastPromptTokens = forecast))
+            localEstimate?.let { estimate ->
+                onEvent(AgentEvent.UsageReceived(round, AgentTokenUsage(inputTokens = estimate), projected = true))
+            }
             val completedRound = try {
                 modelRetry.complete(
                     initialRound = round,
@@ -261,10 +252,6 @@ internal class AgentLoop(
                             silentBudget.measured(lastUsage?.inputTokens,
                                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
                                 cachedTokens = lastUsage?.cachedTokens)
-                            // Only this request's complete input can advance the forecast anchor.
-                            // output-only frames do not create a receipt in a usage-less request.
-                            promptForecast.measured(lastUsage?.inputTokens, lastUsage?.cachedTokens,
-                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
                             noteRingPressure(round)
                         }
                         continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->
@@ -277,8 +264,7 @@ internal class AgentLoop(
                                 rememberIncompleteText(textEvent)
                                 continuationBlocks.map(attemptRound, textEvent).toAgentEvent(attemptRound)?.let { event ->
                                     onEvent(if (event is AgentEvent.UsageReceived && !event.projected) {
-                                        event.copy(requestHistoryTokens = requestHistoryTokens, requestOverheadTokens = requestFixedTokens,
-                                            forecastPromptTokens = promptForecast.tokens(requestLocal))
+                                        event.copy(requestHistoryTokens = requestHistoryTokens, requestOverheadTokens = requestFixedTokens)
                                     } else event)
                                 }
                             }
@@ -312,8 +298,6 @@ internal class AgentLoop(
                 requestFixedTokens = requestFixedTokens,
                 publishLocalEstimate = publishLocalEstimate,
                 preparedRequestTokens = preparedRequestTokens,
-                forecastTokens = forecast,
-                forecastBasis = forecastBasis,
                 filteredMessages = filteredMessages,
                 roundTools = roundTools,
                 usage = lastUsage,
@@ -446,7 +430,6 @@ internal class AgentLoop(
                     }
                 } finally {
                     appendToolOutcomes(round, outcomes)
-                    emitPromptForecast(round)
                 }
                 // Stop only after every tool result in this batch has been paired.
                 // This is a bounded repair budget, not a limit on legitimate long tasks.
@@ -513,8 +496,6 @@ internal class AgentLoop(
                 error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
             }
 
-            // Includes the completed assistant text; this is not another cloud bill.
-            emitPromptForecast(round)
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length, generatedAtMillis = System.currentTimeMillis()))
             return Result(
                 content = (interruptedTextPrefix.toString() + assistantMessage.optString("content")).trim(),
@@ -535,11 +516,6 @@ internal class AgentLoop(
     private fun localRequestTokens(): Int =
         AgentRequestTokenEstimate.boundary(messages, currentRoundTools, config.supportsVision, config.supportsVideo)
 
-    private fun emitPromptForecast(round: Int) {
-        onEvent(AgentEvent.UsageReceived(round, AgentTokenUsage(), projected = true,
-            forecastPromptTokens = promptForecast.tokens(localRequestTokens())))
-    }
-
     // Compression and send limits use this silent budget, not the ring display.
     private fun requestBudgetTokens(): Int = silentBudget.tokens(localRequestTokens())
 
@@ -557,8 +533,6 @@ internal class AgentLoop(
         requestFixedTokens: Int,
         publishLocalEstimate: Boolean,
         preparedRequestTokens: Int?,
-        forecastTokens: Int,
-        forecastBasis: String,
         filteredMessages: JSONArray,
         roundTools: JSONArray,
         usage: AgentTokenUsage?,
@@ -586,8 +560,7 @@ internal class AgentLoop(
                         opaqueReplayItems = opaque.first,
                         opaqueEncryptedChars = opaque.second,
                     ),
-                ).put("forecast_input_tokens_est", forecastTokens)
-                    .put("forecast_basis", forecastBasis),
+                ),
             )
         }
     }
@@ -915,7 +888,6 @@ internal class AgentLoop(
         lastUsage = null
         requestBudget.contextReplaced()
         silentBudget.contextReplaced()
-        promptForecast.contextReplaced()
         autoCompactLatched = false
         compactionFailure = ""
         onHistoryCompacted()

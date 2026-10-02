@@ -326,8 +326,8 @@ internal fun compressionContextUsage(
     } ?: 0L
     val fixedDelta = billedOverheadTokens?.let { requestOverheadTokens.toLong() - it } ?: 0L
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    val projected = io.github.mangi.eta.agent.model.AgentPromptForecast.project(
-        billedContextTokens, delta + fixedDelta + draft, 0L)
+    val projected = (billedContextTokens.toLong() + delta + fixedDelta + draft)
+        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
     return AgentContextUsageUi(
         projected,
         activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow,
