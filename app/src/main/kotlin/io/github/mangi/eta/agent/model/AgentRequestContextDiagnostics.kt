@@ -6,7 +6,7 @@ import org.json.JSONObject
 /**
  * Pure, bounded request-shape diagnostics.
  *
- * Every returned value is a count, a fixed enum or an explicit estimate. Nothing here reads,
+ * Every returned value is a count, a fixed enum or an explicit estimate. Nothing here
  * retains or logs message text, tool arguments/results, ciphertext, endpoints or credentials, and
  * nothing mutates the arrays it is given. Opaque reasoning (`encrypted_content`) is reported only as
  * a character volume and is deliberately never converted to tokens.
@@ -118,10 +118,10 @@ internal object AgentRequestContextDiagnostics {
         val fixedTokens: Int,
         val filteredTokens: Int?,
         val filteredBasis: String,
-        val cloudInput: Int?,
-        val cloudCached: Int?,
-        val cloudCacheCreation: Int?,
-        val cloudOutput: Int?,
+        val cloudInput: Int? = null,
+        val cloudCached: Int? = null,
+        val cloudCacheCreation: Int? = null,
+        val cloudOutput: Int? = null,
     )
 
     fun localRequestFields(local: LocalRequest): JSONObject = JSONObject()
