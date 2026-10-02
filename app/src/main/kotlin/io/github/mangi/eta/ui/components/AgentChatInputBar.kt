@@ -210,17 +210,10 @@ internal fun AgentChatInputBar(
         io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
     }
     val liveUsage = remember(
-        localHistoryTokenCount, projectedContextTokens,
-        billedContextTokens,
-        requestOverheadTokens,
-        billedOverheadTokens,
-        uncommittedLiveTokens,
-        draftText,
-        pendingImages,
-        pendingFileReferences,
-        conversationMentions.pending,
-        modelPickerState.selectedModel,
-        activeRunContextWindow,
+        localHistoryTokenCount, projectedContextTokens, billedContextTokens,
+        requestOverheadTokens, billedOverheadTokens, uncommittedLiveTokens, draftText,
+        pendingImages, pendingFileReferences, conversationMentions.pending,
+        modelPickerState.selectedModel, activeRunContextWindow,
     ) {
         liveContextUsage(
             history = emptyList(),
@@ -240,7 +233,7 @@ internal fun AgentChatInputBar(
     }
     val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
         conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
-        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, activeRunContextWindow) {
+        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, projectedContextTokens, activeRunContextWindow) {
         io.github.mangi.eta.ui.model.compressionContextUsage(
             history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
             selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
@@ -248,6 +241,7 @@ internal fun AgentChatInputBar(
             pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
             billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
+            projectedContextTokens = projectedContextTokens,
             activeRunContextWindow = activeRunContextWindow,
         )
     }
@@ -489,7 +483,7 @@ internal fun AgentChatInputBar(
 
                         // Keep context details accessible even for an empty draft or an unknown limit.
                         AgentContextUsageButton(
-                            usage = liveUsage,
+                            usage = sendBudget,
                             popupMaxHeight = thinkingPopupMaxHeight,
                             sendBlocked = contextSendBlocked,
                         )

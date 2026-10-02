@@ -55,6 +55,7 @@ class BrowserUseManager(
     companion object {
         private const val TAG = "BrowserUseManager"
         private const val NAVIGATION_TIMEOUT_MS = 30_000L
+        private const val JS_EVALUATION_TIMEOUT_MS = 8_000L
         private const val SCREENSHOT_QUALITY = 80        // Explicit screenshot action (iOS: 0.8)
         private const val SNAPSHOT_QUALITY = 70          // Auto-snapshot after visual-change actions (iOS: 0.7)
         private const val DEFAULT_DOM_STABLE_TIMEOUT_MS = 5_000
@@ -186,17 +187,25 @@ class BrowserUseManager(
 
     /** Deferred used by executeJS to receive results from async scripts via JS bridge. */
     private var asyncJsDeferred: CompletableDeferred<String>? = null
+    private val asyncJsGate = Any()
+    private var asyncJsRequestId = 0L
 
     /** JavaScript interface for async script result callbacks. */
     private val jsBridge = object {
         @JavascriptInterface
-        fun resolve(result: String) {
-            asyncJsDeferred?.complete(result)
+        fun resolve(requestId: Long, result: String) {
+            synchronized(asyncJsGate) {
+                if (requestId == asyncJsRequestId) asyncJsDeferred?.complete(result)
+            }
         }
 
         @JavascriptInterface
-        fun reject(error: String) {
-            asyncJsDeferred?.complete("{\"error\":${JSONObject.quote(error)}}")
+        fun reject(requestId: Long, error: String) {
+            synchronized(asyncJsGate) {
+                if (requestId == asyncJsRequestId) {
+                    asyncJsDeferred?.complete("{\"error\":${JSONObject.quote(error)}}")
+                }
+            }
         }
 
         /**

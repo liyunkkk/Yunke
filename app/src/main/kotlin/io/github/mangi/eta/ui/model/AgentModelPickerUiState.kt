@@ -288,7 +288,7 @@ internal fun liveContextUsage(
     return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
 }
 
-/** Decision-only: actual input + locally counted changes since that exact request. */
+/** Predict the next cloud input: a validated receipt is the full prompt baseline, including cache. */
 internal fun compressionContextUsage(
     history: List<AgentModelClient.ConversationMessage>,
     currentInput: String,
@@ -303,6 +303,7 @@ internal fun compressionContextUsage(
     billedHistoryTokens: Int? = null,
     localHistoryTokenCount: Int? = null,
     activeRunContextWindow: Int? = null,
+    projectedContextTokens: Int? = null,
 ): AgentContextUsageUi {
     if (billedContextTokens == null || billedContextTokens <= 0 ||
         billedHistoryTokens == null || billedOverheadTokens == null) {
@@ -311,6 +312,7 @@ internal fun compressionContextUsage(
         val local = liveContextUsage(history, currentInput, pendingImages, selectedModel,
             pendingFileReferences, pendingConversationMentions, localHistoryTokenCount,
             requestOverheadTokens = requestOverheadTokens,
+            projectedContextTokens = projectedContextTokens,
             activeRunContextWindow = activeRunContextWindow)
         val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
             draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
