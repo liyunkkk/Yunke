@@ -1191,7 +1191,7 @@ class AgentModelClientLoopTest {
     }
 
     @Test
-    fun usageLessToolRoundsKeepPublishingRequestBoundEstimatesNotCloudUsage() {
+    fun usageLessToolRoundsDoNotReopenInitialProjectionBoundary() {
         val events = mutableListOf<AgentEvent>()
         val provider = ScriptedProvider(listOf(
             { _, _ -> assistant(finishReason = "tool_calls",
@@ -1206,7 +1206,8 @@ class AgentModelClientLoopTest {
             runController = AgentRunController(), traceFormatter = AgentTraceFormatter(),
             onEvent = events::add, compactPolicy = AgentLoop.CompactPolicy.Disabled).run()
         val usage = events.filterIsInstance<AgentEvent.UsageReceived>()
-        assertEquals(listOf(1, 2), usage.map { it.round })
+        assertEquals(2, provider.requests.size)
+        assertEquals(listOf(1), usage.map { it.round })
         assertTrue(usage.all { it.projected })
     }
 

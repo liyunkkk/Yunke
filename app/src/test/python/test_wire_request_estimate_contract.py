@@ -20,6 +20,8 @@ class WireRequestEstimateContractTest(unittest.TestCase):
     def test_display_and_silent_inputs_remain_separate(self):
         loop = self.text('agent/model/AgentLoop.kt')
         self.assertIn('silentBudget.requestStarted(requestLocal)', loop)
+        self.assertIn('val publishLocalEstimate = requestBudget.consumeLocalBoundary()\n', loop)
+        self.assertNotIn('consumeLocalBoundary() ||', loop)
         self.assertIn('silentBudget.tokens(localRequestTokens())', loop)
         estimate = loop.split('if (providerEvent is ProviderEvent.RequestEstimate)', 1)[1].split('if (providerEvent is ProviderEvent.Usage)', 1)[0]
         self.assertIn('projected = true', estimate)

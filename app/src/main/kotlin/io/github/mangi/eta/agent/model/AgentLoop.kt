@@ -216,7 +216,7 @@ internal class AgentLoop(
             // Finish the raw metadata pass before retaining the hydrated copy (lower peak memory).
             // Reuse exactly one hydrated/filtered snapshot for projection and transport.
             val filteredMessages = AgentRequestMediaPolicy.filter(messages, config.supportsVision, config.supportsVideo)
-            val publishLocalEstimate = requestBudget.consumeLocalBoundary() || !hasDisplayCloudReceipt
+            val publishLocalEstimate = requestBudget.consumeLocalBoundary()
             // Display estimates arrive from the SAME final body serialized by the provider.
             // Keep the silent/local boundary and cloud calibration on their original basis.
             var preparedRequestTokens: Int? = null

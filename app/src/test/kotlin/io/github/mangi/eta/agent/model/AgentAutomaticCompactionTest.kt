@@ -788,6 +788,10 @@ class AgentAutomaticCompactionTest {
             onEvent: (ProviderEvent) -> Unit): ProviderResponse {
             val step = responses.getOrNull(requests.size) ?: error("Unexpected provider request ${requests.size + 1}")
             requests += JSONArray(request.messages.toString())
+            onEvent(ProviderEvent.RequestStarted)
+            AgentWireRequestEstimate.publish(
+                AgentWireRequestEstimate.previewBody(request.config, request.messages, request.tools),
+                AgentWireRequestEstimate.endpoint(request.config), request, onEvent)
             val reply = step(request, runController)
             reply.optJSONObject("usage")?.let {
                 onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = it.getInt("prompt_tokens"))))
