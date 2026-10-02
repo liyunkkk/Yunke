@@ -18,7 +18,7 @@ import org.robolectric.shadows.ShadowLog
 @Config(application = Application::class, sdk = [35])
 class VivoCompletionFailurePhaseTest {
     private lateinit var diagnosticScope: VivoDiagnosticTestScope
-    private val config = AgentModelClient.ModelConfig(baseUrl = "https://private.invalid", apiKey = "private-key", model = "private-model")
+    private val config = AgentModelClient.ModelConfig(baseUrl = "https://private.invalid", apiKey = "private-key", model = "private-model", systemPrompt = "")
 
     @Before fun isolate() { diagnosticScope = VivoDiagnosticTestScope(); ShadowLog.clear() }
     @After fun restore() { if (::diagnosticScope.isInitialized) diagnosticScope.restore(); ShadowLog.clear() }

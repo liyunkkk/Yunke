@@ -33,7 +33,7 @@ class VivoTextBridgeServiceTest {
     private lateinit var diagnosticScope: VivoDiagnosticTestScope
     private val secret = "private-prompt Authorization: Bearer private-key https://private.invalid model=private"
     private val modelConfig = AgentModelClient.ModelConfig(providerId = "private-provider",
-        baseUrl = "https://private.invalid", apiKey = "private-key", model = "private-model")
+        baseUrl = "https://private.invalid", apiKey = "private-key", model = "private-model", systemPrompt = "")
 
     @Before fun isolateDiagnostics() {
         diagnosticScope = VivoDiagnosticTestScope()
