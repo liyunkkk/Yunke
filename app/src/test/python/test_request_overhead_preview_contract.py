@@ -28,7 +28,7 @@ class RequestOverheadPreviewContractTest(unittest.TestCase):
         self.assertIn('SubAgentRequestPreview.appendTo(', estimation)
         self.assertIn('AgentContextBudget.countTokens(childPrompt)', estimation)
         self.assertNotIn('runtimeConfigForBoundModel(', estimation)
-        refresh = app.split('fun refreshRequestOverhead()', 1)[1].split(
+        refresh = app.split('fun refreshRequestOverhead(configurationChanged: Boolean = true)', 1)[1].split(
             'private suspend fun estimateRequestOverhead(', 1)[0]
         self.assertNotIn('runtimeConfigForBoundModel(', refresh)
         self.assertNotIn('getOrDefault(0)', refresh)
@@ -49,6 +49,22 @@ class RequestOverheadPreviewContractTest(unittest.TestCase):
         self.assertIn('val estimatedTokens = runOverhead?.let { overhead ->', run)
         self.assertIn('runOverhead != null && state.cloudHistoryTokens != null', run)
         self.assertNotIn('runOverheadTokens[runId] ?: requestOverheadTokens', app)
+
+    def test_configuration_changes_invalidate_before_async_estimation(self):
+        app = self.text('ui/app/AgentAppState.kt')
+        refresh = app.split('fun refreshRequestOverhead(configurationChanged: Boolean = true)', 1)[1].split(
+            'private suspend fun estimateRequestOverhead(', 1)[0]
+        self.assertLess(refresh.index('overheadConfigurationGeneration++'), refresh.index('overheadSelection.begin(binding)'))
+        self.assertIn('configurationGeneration = overheadConfigurationGeneration', app)
+        self.assertIn('val assistant = requestOverheadAssistant()', refresh)
+        self.assertIn('requestOverheadAssistant() != assistant', refresh)
+
+    def test_selected_assistant_scope_does_not_wait_for_remote_sync(self):
+        app = self.text('ui/app/AgentAppState.kt')
+        apply = app.split('private fun applyConversationAssistant(', 1)[1].split('private fun newDraftChatState()', 1)[0]
+        self.assertLess(apply.index('refreshRequestOverhead()'), apply.index('scope.launch(Dispatchers.IO)'))
+        self.assertIn('AssistantRepository.profile(resolvedAssistantId(state))', app)
+        self.assertIn('val runAssistant = requestOverheadAssistant(state)', app)
 
 
 if __name__ == '__main__':

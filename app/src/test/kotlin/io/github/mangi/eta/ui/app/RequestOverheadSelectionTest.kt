@@ -56,6 +56,33 @@ class RequestOverheadSelectionTest {
         assertEquals(0, selection.tokensFor(draft))
     }
 
+    @Test fun changedConfigurationCannotBorrowCachedTokensAfterAFailedRefresh() {
+        val selection = RequestOverheadSelection()
+        val oldRequest = selection.begin(draft)
+        assertTrue(selection.complete(oldRequest, draft, 12_000))
+        // The same mechanism covers tools, child selection, skills, memory, MCP and capabilities.
+        val changed = draft.copy(configurationGeneration = 1)
+        val newRequest = selection.begin(changed)
+        assertNull(selection.tokensFor(changed))
+        assertFalse(selection.complete(newRequest, changed, null))
+        assertFalse(selection.complete(oldRequest, changed, 99_000))
+        assertNull(selection.tokensFor(changed))
+        assertTrue(selection.complete(newRequest, changed, 25_000))
+        assertFalse(selection.complete(selection.begin(changed), changed, null))
+        assertEquals(25_000, selection.tokensFor(changed))
+    }
+
+    @Test fun selectingANewAssistantRejectsThePreviousCallbackBeforeRemoteSync() {
+        val selection = RequestOverheadSelection()
+        val old = selection.begin(draft)
+        assertTrue(selection.complete(old, draft, 12_000))
+        val selected = draft.copy(assistantId = "new-assistant", configurationGeneration = 1)
+        selection.begin(selected)
+        assertNull(selection.tokensFor(selected))
+        assertFalse(selection.complete(old, selected, 99_000))
+        assertNull(selection.tokensFor(selected))
+    }
+
     @Test fun returningToAnOwnerDoesNotReviveAnOldInFlightCallback() {
         val selection = RequestOverheadSelection()
         val first = selection.begin(draft)

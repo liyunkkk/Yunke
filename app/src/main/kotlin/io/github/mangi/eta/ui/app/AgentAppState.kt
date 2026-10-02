@@ -279,6 +279,7 @@ internal class AgentAppState(
     private var modelBindingGeneration = 0L
     private var memoryEditGeneration = 0L
     private val overheadSelection = RequestOverheadSelection()
+    private var overheadConfigurationGeneration = 0L
 
     private var currentReasoningCapabilities: ModelReasoningCapabilities? = null
     private var fileAttachmentOwnerVersion = 0L
@@ -673,6 +674,9 @@ internal class AgentAppState(
         }
     }
 
+    private fun requestOverheadAssistant(state: AgentChatHomeUiState = homeState) =
+        AssistantRepository.profile(resolvedAssistantId(state)) ?: AssistantRepository.active()
+
     private fun currentOverheadBinding() = RequestOverheadSelection.Binding(
         owner = when (val owner = subAgentConfigOwner) {
             is SubAgentConfigKey.Conversation -> "conversation:${owner.value}"
@@ -680,18 +684,23 @@ internal class AgentAppState(
         },
         providerId = homeState.providerId,
         modelId = homeState.modelId,
-        assistantId = AssistantRepository.active().id,
+        assistantId = requestOverheadAssistant().id,
         modelGeneration = modelBindingGeneration,
+        configurationGeneration = overheadConfigurationGeneration,
     )
 
-    fun refreshRequestOverhead() {
+    fun refreshRequestOverhead(configurationChanged: Boolean = true) {
+        // Skills, MCP schemas and capability snapshots lack one common revision. Existing
+        // refresh callers signal a possible change, so invalidate conservatively before IO.
+        // Only an explicitly known-same-configuration retry may retain a successful estimate.
+        if (configurationChanged) overheadConfigurationGeneration++
         val binding = currentOverheadBinding()
         val overheadRequest = overheadSelection.begin(binding)
         // A previous binding's positive value is not a fallback for an unknown new binding.
         requestOverheadTokens = overheadSelection.tokensFor(binding) ?: 0
         val state = homeState
         val owner = subAgentConfigOwner
-        val assistant = AssistantRepository.active()
+        val assistant = requestOverheadAssistant()
         val providers = selectionProviders.toList()
         scope.launch(Dispatchers.IO) {
             val tokens = try {
@@ -714,7 +723,7 @@ internal class AgentAppState(
                 null // Unknown, not a successfully measured zero. Keep this binding's valid value.
             }
             withContext(Dispatchers.Main) {
-                if (AssistantRepository.active() != assistant ||
+                if (requestOverheadAssistant() != assistant ||
                     !overheadSelection.complete(overheadRequest, currentOverheadBinding(), tokens)) return@withContext
                 requestOverheadTokens = requireNotNull(tokens)
                 syncBilledOverhead(selectedConversationId, homeState.messages)
@@ -2548,7 +2557,7 @@ internal class AgentAppState(
             return
         }
         if (consumeDraft) conversationDrafts.replace(conversationId, "")
-        val runAssistant = AssistantRepository.active()
+        val runAssistant = requestOverheadAssistant(state)
         val runConfig = RuntimeConfigRepository.buildRuntimeConfig(runProvider, runModel, runAssistant)
         val runModelOption = AgentModelPickerProjector.project(listOf(runProvider), runProvider.id, runModel.id).selectedModel
         val runProviders = selectionProviders.toList()
@@ -5441,9 +5450,11 @@ internal class AgentAppState(
             updateCurrentConversation(homeState.copy(assistantId = assistantId))
             if (persist) persistConversations()
         }
+        // Bind the local preview immediately to the selected conversation assistant. Remote
+        // preference sync may suspend/fail; it must not keep the previous assistant's count.
+        refreshRequestOverhead()
         if (AssistantRepository.activeId.value == assistantId) {
             refreshMemory()
-            refreshRequestOverhead()
             return
         }
         scope.launch(Dispatchers.IO) {

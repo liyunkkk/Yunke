@@ -8,6 +8,7 @@ internal class RequestOverheadSelection {
         val modelId: String,
         val assistantId: String,
         val modelGeneration: Long,
+        val configurationGeneration: Long = 0,
     )
     data class Request(val sequence: Long, val binding: Binding)
     private data class Estimate(val binding: Binding, val tokens: Int)
