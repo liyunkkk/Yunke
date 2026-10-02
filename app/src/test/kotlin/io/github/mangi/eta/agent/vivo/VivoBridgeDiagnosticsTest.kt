@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.vivo
 
 import android.app.Application
 import android.util.Log
+import io.github.mangi.eta.hook.vivo.VivoNativePolicy
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -64,6 +65,68 @@ class VivoBridgeDiagnosticsTest {
             assertNull(log.throwable)
             assertFalse(log.msg.contains(secret))
         }
+    }
+
+    @Test fun policyRejectionLogsContainNeitherNativeValuesNorErrorDetails() {
+        val secret = "prompt=private request_id=private endpoint=https://private.invalid token=private"
+        val plain = VivoNativePolicy.Shape("little_v", 0, "BottomInput", true, false, false, false, false, false)
+        val cases = listOf(plain.copy(agentId = secret) to "AGENT_ID", plain.copy(bizSource = secret) to "BIZ_SOURCE")
+        cases.forEach { (shape, _) ->
+            val reason = requireNotNull(VivoNativePolicy.rejection(shape))
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED, reason = reason)
+        }
+        val logs = ShadowLog.getLogsForTag("EtaVivoText")
+        assertEquals(cases.size, logs.size)
+        logs.forEachIndexed { index, log ->
+            assertEquals("v=1 stage=MAPPER_SHAPE_REJECTED n=${index + 1} reason=${cases[index].second}", log.msg)
+            assertFalse(log.msg.contains(secret))
+            assertNull(log.throwable)
+        }
+    }
+
+    @Test fun rejectionReasonVocabularyAndLogShapeAreStable() {
+        val expected = """
+            MAPPED_NULL MAPPED_TYPE REQUEST_NULL REQUEST_TYPE MODEL_NULL MODEL_TYPE
+            DIALOG_ID_TYPE CONVERSATION_ID_TYPE DIALOG_ID CONVERSATION_ID
+            AGENT_ID_TYPE INPUT_TYPE_TYPE BIZ_SOURCE_TYPE RENDER_TEXT_TYPE SHORTCUT_TYPE
+            REGENERATE_TYPE SKIP_REMOTE_TYPE RECOMMENDED_TYPE
+            AGENT_ID INPUT_TYPE BIZ_SOURCE RENDER_TEXT SHORTCUT REGENERATE SKIP_REMOTE
+            RECOMMENDED SPECIALIZED
+            ATTACHMENT CAMERA_CONTEXT PS_AGENT_CONTEXT TWS_NOTIFICATION_CONTEXT EXTRA_PARAMS
+            SCHEDULE_CONTEXT_TYPE SCHEDULE_CONTEXT BOT_TYPE_TYPE BOT_TYPE
+            INTENTIONS_TYPE INTENTION_TEXT_TYPE INTENTIONS
+            NEW_QUERY_PARAMS_TYPE NEW_QUERY_PARAMS DISPLAY_QUERY_TYPE SERVER_QUERY_TYPE PROMPT
+        """.trimIndent().split(Regex("\\s+"))
+        assertEquals(expected, VivoBridgeDiagnostics.Reason.entries.map { it.name })
+        VivoBridgeDiagnostics.Reason.entries.forEach { reason ->
+            // Only test isolation refills the budget so every enum's exact wire name is checked.
+            diagnosticScope.reset()
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED, reason = reason)
+        }
+        val logs = ShadowLog.getLogsForTag("EtaVivoText")
+        assertEquals(expected.size, logs.size)
+        logs.forEachIndexed { index, log ->
+            assertEquals("v=1 stage=MAPPER_SHAPE_REJECTED n=1 reason=${expected[index]}", log.msg)
+            assertEquals(Log.INFO, log.type)
+            assertNull(log.throwable)
+        }
+    }
+
+    @Test fun changingReasonsDoesNotCreateNewStageOrTotalBudgets() {
+        VivoBridgeDiagnostics.Reason.entries.forEach { reason ->
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED, reason = reason)
+        }
+        assertEquals(4, ShadowLog.getLogsForTag("EtaVivoText").size)
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FINISHED)
+        assertEquals("v=1 stage=MODEL_FINISHED n=5", ShadowLog.getLogsForTag("EtaVivoText").last().msg)
+        repeat(200) { index ->
+            val stages = VivoBridgeDiagnostics.Stage.entries
+            VivoBridgeDiagnostics.record(stages[index % stages.size])
+        }
+        val logs = ShadowLog.getLogsForTag("EtaVivoText")
+        assertEquals(80, logs.size)
+        assertEquals(4, logs.count { it.msg.contains("stage=MAPPER_SHAPE_REJECTED ") })
+        assertTrue(logs.last().msg.contains(" n=80"))
     }
 
     @Test fun oneSharedEightyLineBudgetCoversBootstrapAndBusinessStages() {

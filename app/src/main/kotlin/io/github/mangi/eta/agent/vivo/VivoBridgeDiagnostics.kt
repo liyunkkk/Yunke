@@ -20,6 +20,20 @@ internal object VivoBridgeDiagnostics {
     }
     enum class Failure { CLASS, METHOD, FIELD, LINKAGE, REGISTRATION, OTHER }
 
+    // Closed vocabulary only: never include a native field value, class name or exception detail.
+    enum class Reason {
+        MAPPED_NULL, MAPPED_TYPE, REQUEST_NULL, REQUEST_TYPE, MODEL_NULL, MODEL_TYPE,
+        DIALOG_ID_TYPE, CONVERSATION_ID_TYPE, DIALOG_ID, CONVERSATION_ID,
+        AGENT_ID_TYPE, INPUT_TYPE_TYPE, BIZ_SOURCE_TYPE, RENDER_TEXT_TYPE, SHORTCUT_TYPE,
+        REGENERATE_TYPE, SKIP_REMOTE_TYPE, RECOMMENDED_TYPE,
+        AGENT_ID, INPUT_TYPE, BIZ_SOURCE, RENDER_TEXT, SHORTCUT, REGENERATE, SKIP_REMOTE,
+        RECOMMENDED, SPECIALIZED,
+        ATTACHMENT, CAMERA_CONTEXT, PS_AGENT_CONTEXT, TWS_NOTIFICATION_CONTEXT, EXTRA_PARAMS,
+        SCHEDULE_CONTEXT_TYPE, SCHEDULE_CONTEXT, BOT_TYPE_TYPE, BOT_TYPE,
+        INTENTIONS_TYPE, INTENTION_TEXT_TYPE, INTENTIONS,
+        NEW_QUERY_PARAMS_TYPE, NEW_QUERY_PARAMS, DISPLAY_QUERY_TYPE, SERVER_QUERY_TYPE, PROMPT,
+    }
+
     fun failureCategory(error: Throwable): Failure = when (error) {
         is ClassNotFoundException -> Failure.CLASS
         is NoSuchMethodException -> Failure.METHOD
@@ -29,13 +43,14 @@ internal object VivoBridgeDiagnostics {
     }
 
     private val budget = VivoDiagnosticBudget(Stage.entries.size, totalLimit = 80, perStageLimit = 4)
-    fun record(stage: Stage, failure: Failure? = null) {
+    fun record(stage: Stage, failure: Failure? = null, reason: Reason? = null) {
         // Bound noisy stages before spending the shared process budget. All diagnostics
         // are best effort: they must not mask vendor exceptions or affect owned suppression.
         runCatching {
             val count = budget.claim(stage.ordinal) ?: return@runCatching
             val category = failure?.let { " failure=${it.name}" }.orEmpty()
-            Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category")
+            val rejection = reason?.let { " reason=${it.name}" }.orEmpty()
+            Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category$rejection")
         }
     }
 }

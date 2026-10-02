@@ -1,5 +1,7 @@
 package io.github.mangi.eta.hook.vivo
 
+import io.github.mangi.eta.agent.vivo.VivoBridgeDiagnostics.Reason
+
 /** Conservative manual-text eligibility; other native capabilities are never consumed. */
 internal object VivoNativePolicy {
     data class Shape(
@@ -7,9 +9,20 @@ internal object VivoNativePolicy {
         val renderText: Boolean, val shortcut: Boolean, val regenerate: Boolean,
         val skipRemote: Boolean, val recommended: Boolean, val specialized: Boolean,
     )
-    fun eligible(s: Shape) = s.agentId == "little_v" && s.inputType == 0 &&
-        s.bizSource.isNullOrEmpty() && s.renderText && !s.shortcut && !s.regenerate &&
-        !s.skipRemote && !s.recommended && !s.specialized
+    fun eligible(s: Shape) = rejection(s) == null
+    fun rejection(s: Shape): Reason? = when {
+        s.agentId != "little_v" -> Reason.AGENT_ID
+        s.inputType != 0 -> Reason.INPUT_TYPE
+        // Plain BottomInput is observed manual text, not a vendor BizSource constant.
+        !s.bizSource.isNullOrEmpty() && s.bizSource != "BottomInput" -> Reason.BIZ_SOURCE
+        !s.renderText -> Reason.RENDER_TEXT
+        s.shortcut -> Reason.SHORTCUT
+        s.regenerate -> Reason.REGENERATE
+        s.skipRemote -> Reason.SKIP_REMOTE
+        s.recommended -> Reason.RECOMMENDED
+        s.specialized -> Reason.SPECIALIZED
+        else -> null
+    }
     fun prompt(text: String?, requirePrefix: Boolean): String? {
         var value = text?.trim() ?: return null
         if (requirePrefix) {

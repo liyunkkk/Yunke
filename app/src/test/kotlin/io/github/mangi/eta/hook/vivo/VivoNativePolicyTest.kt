@@ -1,17 +1,42 @@
 package io.github.mangi.eta.hook.vivo
 
+import io.github.mangi.eta.agent.vivo.VivoBridgeDiagnostics.Reason
 import org.junit.Assert.*
 import org.junit.Test
 
 class VivoNativePolicyTest {
     private val plain = VivoNativePolicy.Shape("little_v", 0, "", true, false, false, false, false, false)
-    @Test fun scopeIsDefaultAgentManualTextOnly() {
-        assertTrue(VivoNativePolicy.eligible(plain))
-        listOf(plain.copy(agentId = "skill"), plain.copy(inputType = 1), plain.copy(bizSource = "BottomInput.VoiceClick"),
-            plain.copy(renderText = false), plain.copy(shortcut = true), plain.copy(regenerate = true),
-            plain.copy(skipRemote = true), plain.copy(recommended = true), plain.copy(specialized = true)).forEach {
-            assertFalse(VivoNativePolicy.eligible(it))
+    @Test fun everyAllowedSourceStillRequiresEveryOtherGate() {
+        listOf(null, "", "BottomInput").forEach { source ->
+            val manual = plain.copy(bizSource = source)
+            assertTrue(VivoNativePolicy.eligible(manual))
+            assertNull(VivoNativePolicy.rejection(manual))
+            listOf(manual.copy(agentId = "skill") to Reason.AGENT_ID,
+                manual.copy(agentId = null) to Reason.AGENT_ID,
+                manual.copy(inputType = 1) to Reason.INPUT_TYPE,
+                manual.copy(renderText = false) to Reason.RENDER_TEXT,
+                manual.copy(shortcut = true) to Reason.SHORTCUT,
+                manual.copy(regenerate = true) to Reason.REGENERATE,
+                manual.copy(skipRemote = true) to Reason.SKIP_REMOTE,
+                manual.copy(recommended = true) to Reason.RECOMMENDED,
+                manual.copy(specialized = true) to Reason.SPECIALIZED).forEach { (shape, reason) ->
+                assertFalse(VivoNativePolicy.eligible(shape))
+                assertEquals(reason, VivoNativePolicy.rejection(shape))
+            }
         }
+    }
+    @Test fun sourceComparisonIsExactAndDoesNotNormalizeOrAcceptVoice() {
+        listOf("voice_click", "BottomInput.VoiceClick", "BottomInput.LongPress", "BottomInput.VoiceLongPress",
+            "bottominput", "BOTTOMINPUT", "bottomInput", " BottomInput", "BottomInput ", "BottomInput\n",
+            "BottomInput\u0000", "BottomInput.text", "BottomInputSuffix", " ", "\t").forEach {
+            assertEquals(Reason.BIZ_SOURCE, VivoNativePolicy.rejection(plain.copy(bizSource = it)))
+            assertFalse(VivoNativePolicy.eligible(plain.copy(bizSource = it)))
+        }
+    }
+    @Test fun firstPolicyRejectionHasStableOrder() {
+        assertEquals(Reason.AGENT_ID, VivoNativePolicy.rejection(plain.copy(agentId = "other", inputType = 1)))
+        assertEquals(Reason.INPUT_TYPE, VivoNativePolicy.rejection(plain.copy(inputType = 1, bizSource = "voice_click")))
+        assertEquals(Reason.BIZ_SOURCE, VivoNativePolicy.rejection(plain.copy(bizSource = "voice_click", specialized = true)))
     }
     @Test fun prefixIsHonoredWithoutChangingExistingPreference() {
         assertEquals("hello", VivoNativePolicy.prompt(" Agent: hello ", true))

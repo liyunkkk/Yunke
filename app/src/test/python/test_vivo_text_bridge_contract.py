@@ -96,12 +96,14 @@ class VivoTextBridgeContractTest(unittest.TestCase):
 
     def test_diagnostics_accept_only_enums_and_do_not_log_dynamic_values(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoBridgeDiagnostics.kt').read_text()
-        self.assertIn('fun record(stage: Stage, failure: Failure? = null)', source)
+        self.assertIn('fun record(stage: Stage, failure: Failure? = null, reason: Reason? = null)', source)
+        self.assertIn('enum class Reason {', source)
         self.assertIn('totalLimit = 80, perStageLimit = 4', source)
         self.assertIn('budget.claim(stage.ordinal) ?: return@runCatching', source)
         self.assertEqual(['i'], re.findall(r'Log\.([a-z]+)\(', source))
-        self.assertIn('Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category")', source)
+        self.assertIn('Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category$rejection")', source)
         self.assertIn('" failure=${it.name}"', source)
+        self.assertIn('" reason=${it.name}"', source)
         for forbidden in ('.message', '.localizedMessage', '.stackTrace', '.cause',
                           '.javaClass', '.toString(', 'printStackTrace', 'Log.e(', 'Log.w('):
             self.assertNotIn(forbidden, source)
@@ -119,7 +121,81 @@ class VivoTextBridgeContractTest(unittest.TestCase):
         source = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt").read_text()
         typed = source.split("intercept(\"vivo.typed-query\"", 1)[1].split("intercept(\"vivo.outbound\"", 1)[0]
         self.assertNotIn("chain.args.getOrNull(0) == \"remote query\"", typed)
-        self.assertIn("api.candidate(chain.args.getOrNull(1))?.let { state.capture(mapped, it) }", typed)
+        self.assertIn("api.candidate(mapped, chain.args.getOrNull(1))?.let { state.capture(mapped!!, it) }", typed)
+        self.assertEqual(1, typed.count('chain.proceed()'))
+        self.assertIn('val mapped = chain.proceed()', typed)
+
+    def test_candidate_reader_is_the_production_path_with_runtime_object_gates(self):
+        hooks = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt').read_text()
+        reader = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoCandidateReader.kt').read_text()
+        self.assertIn('private val candidateReader = VivoCandidateReader(request, model, payload,', hooks)
+        candidate = hooks.split('fun candidate(mapped:', 1)[1].split('private fun hide(', 1)[0]
+        self.assertIn('candidateReader.read(', candidate)
+        self.assertIn('mapped, value, Prefs.isEnabled(Prefs.Keys.AGENT_REQUIRE_PREFIX)', candidate)
+        self.assertIn('is VivoCandidateReader.Accepted -> Candidate(result.dialog, result.conversation, result.prompt)', candidate)
+        self.assertIn('is VivoCandidateReader.Rejected -> {', candidate)
+        self.assertEqual(1, candidate.count('VivoBridgeDiagnostics.record('))
+        self.assertIn('VivoBridgeDiagnostics.record(stage, reason = result.reason)', candidate)
+        for stage in ('MAPPER_SHAPE_REJECTED', 'MAPPER_IDS_REJECTED', 'MAPPER_PROMPT_REJECTED'):
+            self.assertIn('VivoBridgeDiagnostics.Stage.' + stage, candidate)
+        for value, kind in (('mapped', 'MAPPED'), ('value', 'REQUEST'), ('modelValue', 'MODEL')):
+            if value != 'modelValue':
+                self.assertIn(f'if ({value} == null) return Rejected(Reason.{kind}_NULL)', reader)
+            else:
+                self.assertIn('?: return Rejected(Reason.MODEL_NULL)', reader)
+        for owner, value, reason in (('payload', 'mapped', 'MAPPED_TYPE'),
+                                     ('request', 'value', 'REQUEST_TYPE'),
+                                     ('model', 'modelValue', 'MODEL_TYPE')):
+            self.assertIn(f'if (!{owner}.isInstance({value})) return Rejected(Reason.{reason})', reader)
+        self.assertLess(reader.index('!model.isInstance(modelValue)'), reader.index('modelGetters.getValue(name).invoke(modelValue)'))
+        self.assertNotIn('returnType ==', reader)
+        self.assertIn('data class Rejected(val reason: Reason) : Result', reader)
+        self.assertNotIn('Log.', reader)
+        self.assertNotIn('VivoBridgeDiagnostics.record(', reader)
+        for forbidden in ('.message', '.localizedMessage', '.stackTrace', '.javaClass', '.toString(', 'printStackTrace'):
+            self.assertNotIn(forbidden, candidate + reader)
+
+    def test_candidate_strings_are_strict_and_specialized_contents_are_not_relaxed(self):
+        reader = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoCandidateReader.kt').read_text()
+        self.assertNotIn('as? String', reader)
+        self.assertIn('if (value != null && value !is String) throw InvalidType(reason)', reader)
+        self.assertIn('return value as String?', reader)
+        for getter, reason in (('getAgentId', 'AGENT_ID_TYPE'), ('getBizSource', 'BIZ_SOURCE_TYPE'),
+                              ('getScheduleContext', 'SCHEDULE_CONTEXT_TYPE'), ('getBotType', 'BOT_TYPE_TYPE'),
+                              ('getDisplayQuery', 'DISPLAY_QUERY_TYPE'), ('getServerQuery', 'SERVER_QUERY_TYPE')):
+            self.assertIn(f'nullableString(get("{getter}"), Reason.{reason})', reader)
+        for getter, reason in (('getDialogId', 'DIALOG_ID_TYPE'), ('getConversationId', 'CONVERSATION_ID_TYPE')):
+            self.assertIn(f'nullableString(requestGetters.getValue("{getter}").invoke(value), Reason.{reason})', reader)
+        self.assertIn('required<Int>(get("getInputType"), Reason.INPUT_TYPE_TYPE)', reader)
+        for getter in ('getRenderText', 'getShortcut', 'getRegenerate', 'getSkipRemote', 'getFromRecommend'):
+            self.assertIn(f'required<Boolean>(get("{getter}")', reader)
+        self.assertIn('if (value !is T) throw InvalidType(reason)', reader)
+        for getter, reason in (('getAttachmentQueryModel', 'ATTACHMENT'), ('getCameraContext', 'CAMERA_CONTEXT'),
+                              ('getPsAgentContext', 'PS_AGENT_CONTEXT'), ('getTwsNotificationContext', 'TWS_NOTIFICATION_CONTEXT'),
+                              ('getExtraParams', 'EXTRA_PARAMS')):
+            self.assertIn(f'"{getter}" to Reason.{reason}', reader)
+        self.assertIn('if (get(name) != null) return Rejected(reason)', reader)
+        self.assertIn('if (!nullableString(get("getScheduleContext"), Reason.SCHEDULE_CONTEXT_TYPE).isNullOrBlank())', reader)
+        self.assertIn('if (!nullableString(get("getBotType"), Reason.BOT_TYPE_TYPE).isNullOrBlank())', reader)
+        self.assertIn('listOf("first", "second", "third")', reader)
+        self.assertIn('if (!intentions.isInstance(obj)) return Rejected(Reason.INTENTIONS_TYPE)', reader)
+        self.assertIn('if (!nullableString(field.get(obj), Reason.INTENTION_TEXT_TYPE).isNullOrBlank())', reader)
+        self.assertIn('if (!newQueryParams.isInstance(obj)) return Rejected(Reason.NEW_QUERY_PARAMS_TYPE)', reader)
+        self.assertIn('if (extraQuery.get(obj) != null) return Rejected(Reason.NEW_QUERY_PARAMS)', reader)
+        self.assertIn('VivoNativePolicy.rejection(shape)?.let { return Rejected(it) }', reader)
+        self.assertIn('VivoNativePolicy.prompt(visible, requirePrefix) ?: return Rejected(Reason.PROMPT)', reader)
+        self.assertLess(reader.index('if (extraQuery.get(obj) != null)'), reader.index('return Accepted('))
+
+    def test_only_exact_bottom_input_extends_source_policy_and_other_gates_remain(self):
+        policy = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoNativePolicy.kt').read_text()
+        self.assertIn('fun eligible(s: Shape) = rejection(s) == null', policy)
+        self.assertIn('!s.bizSource.isNullOrEmpty() && s.bizSource != "BottomInput" -> Reason.BIZ_SOURCE', policy)
+        for gate in ('s.agentId != "little_v"', 's.inputType != 0', '!s.renderText', 's.shortcut',
+                     's.regenerate', 's.skipRemote', 's.recommended', 's.specialized'):
+            self.assertIn(gate + ' -> Reason.', policy)
+        source_gate = policy.split('fun rejection(', 1)[1].split('fun prompt(', 1)[0]
+        for forbidden in ('startsWith(', 'contains(', 'lowercase(', 'uppercase(', 'trim(', 'ignoreCase'):
+            self.assertNotIn(forbidden, source_gate)
 
     def test_outbound_requires_mapper_identity_and_has_no_link_only_fallback(self):
         source = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt").read_text()

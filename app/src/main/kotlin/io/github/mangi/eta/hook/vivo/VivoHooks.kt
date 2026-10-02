@@ -225,10 +225,8 @@ internal object VivoHooks {
                 val mapped = chain.proceed()
                 if (!state.ready || !enabled()) {
                     VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_GATE_CLOSED)
-                } else if (mapped == null) {
-                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
                 } else runCatching {
-                    api.candidate(chain.args.getOrNull(1))?.let { state.capture(mapped, it) }
+                    api.candidate(mapped, chain.args.getOrNull(1))?.let { state.capture(mapped!!, it) }
                 }.onFailure {
                     VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_REFLECTION_FAILED,
                         VivoBridgeDiagnostics.failureCategory(it))
@@ -441,57 +439,23 @@ internal object VivoHooks {
         private val emitSignal = method(emitter, "g", string, signal).also { check(it.returnType == Void.TYPE) }
         private val executorField = gateway.getDeclaredField("j").apply { isAccessible = true; check(type == executor) }
         private val emitterField = executor.getDeclaredField("a").apply { isAccessible = true; check(type == emitter) }
-        private val requestGetters = listOf("getModel", "getDialogId", "getConversationId").associateWith { method(request, it) }
-        private val modelGetters = listOf("getServerQuery", "getDisplayQuery", "getAgentId", "getInputType", "getBizSource",
-            "getRenderText", "getShortcut", "getRegenerate", "getSkipRemote", "getFromRecommend", "getAttachmentQueryModel",
-            "getCameraContext", "getPsAgentContext", "getTwsNotificationContext", "getExtraParams", "getScheduleContext",
-            "getBotType", "getIntentions", "getNewQueryParams").associateWith { method(model, it) }
-        private val intentions = clazz("framework.llm.cloud.logic.chat.common.Intentions")
-        private val intentFields = listOf("first", "second", "third").map { intentions.getDeclaredField(it).apply { isAccessible = true } }
-        private val extraQuery = clazz("framework.llm.cloud.logic.chat.common.NewQueryParams")
-            .getDeclaredField("params").apply { isAccessible = true }
+        private val candidateReader = VivoCandidateReader(request, model, payload,
+            clazz("framework.llm.cloud.logic.chat.common.Intentions"),
+            clazz("framework.llm.cloud.logic.chat.common.NewQueryParams"))
 
-        fun candidate(value: Any?): Candidate? {
-            if (value == null || !request.isInstance(value)) {
-                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
-                return null
+        fun candidate(mapped: Any?, value: Any?): Candidate? = when (val result = candidateReader.read(
+            mapped, value, Prefs.isEnabled(Prefs.Keys.AGENT_REQUIRE_PREFIX))) {
+            is VivoCandidateReader.Accepted -> Candidate(result.dialog, result.conversation, result.prompt)
+            is VivoCandidateReader.Rejected -> {
+                val stage = when (result.reason) {
+                    VivoBridgeDiagnostics.Reason.DIALOG_ID, VivoBridgeDiagnostics.Reason.CONVERSATION_ID ->
+                        VivoBridgeDiagnostics.Stage.MAPPER_IDS_REJECTED
+                    VivoBridgeDiagnostics.Reason.PROMPT -> VivoBridgeDiagnostics.Stage.MAPPER_PROMPT_REJECTED
+                    else -> VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED
+                }
+                VivoBridgeDiagnostics.record(stage, reason = result.reason)
+                null
             }
-            val modelValue = requestGetters.getValue("getModel").invoke(value)
-            if (modelValue == null) {
-                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
-                return null
-            }
-            val dialog = requestGetters.getValue("getDialogId").invoke(value) as? String
-            val conversation = requestGetters.getValue("getConversationId").invoke(value) as? String
-            if (dialog == null || conversation == null ||
-                !VivoNativePolicy.validId(dialog) || !VivoNativePolicy.validId(conversation)) {
-                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_IDS_REJECTED)
-                return null
-            }
-            return candidateFrom(modelValue, dialog, conversation)
-        }
-        private fun candidateFrom(modelValue: Any, dialog: String, conversation: String): Candidate? {
-            val m = modelValue
-            fun get(name: String) = modelGetters.getValue(name).invoke(m)
-            val special = listOf("getAttachmentQueryModel", "getCameraContext", "getPsAgentContext", "getTwsNotificationContext", "getExtraParams")
-                .any { get(it) != null } || !((get("getScheduleContext") as? String).isNullOrBlank()) ||
-                !((get("getBotType") as? String).isNullOrBlank()) ||
-                get("getIntentions")?.let { obj -> intentFields.any { !(it.get(obj) as? String).isNullOrBlank() } } == true ||
-                get("getNewQueryParams")?.let { extraQuery.get(it) != null } == true
-            val shape = VivoNativePolicy.Shape(get("getAgentId") as? String, get("getInputType") as Int,
-                get("getBizSource") as? String, get("getRenderText") as Boolean, get("getShortcut") as Boolean,
-                get("getRegenerate") as Boolean, get("getSkipRemote") as Boolean, get("getFromRecommend") as Boolean, special)
-            if (!VivoNativePolicy.eligible(shape)) {
-                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
-                return null
-            }
-            val visible = (get("getDisplayQuery") as? String)?.takeIf { it.isNotBlank() } ?: get("getServerQuery") as? String
-            val prompt = VivoNativePolicy.prompt(visible, Prefs.isEnabled(Prefs.Keys.AGENT_REQUIRE_PREFIX))
-            if (prompt == null) {
-                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_PROMPT_REJECTED)
-                return null
-            }
-            return Candidate(dialog, conversation, prompt)
         }
         private fun hide(link: String, candidate: Candidate) {
             val target = emitterField.get(executorField.get(null))
