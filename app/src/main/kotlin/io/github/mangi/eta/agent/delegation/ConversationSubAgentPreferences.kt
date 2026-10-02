@@ -141,7 +141,7 @@ internal class ConversationSubAgentPreferences(
         }
         state.changes.value = state.changes.value + 1
     }
-    private fun seed(): ConversationSubAgentConfig {
+    private fun seed(persist: Boolean = true): ConversationSubAgentConfig {
         stored(SEED_KEY)?.let { return decode(it) }
         // Legacy profile records are migrated using their historical tolerant reader, NOT archive validation.
         val profiles = if (preferences.contains(SubAgentPreferences.PROFILES_KEY)) {
@@ -166,11 +166,11 @@ internal class ConversationSubAgentPreferences(
             }.also { require(it >= 0) } }
         val result = ConversationSubAgentConfig(profiles, legacyParallelLimits = legacy)
         result.validate()
-        transaction(mapOf(SEED_KEY to encode(result)))
+        if (persist) transaction(mapOf(SEED_KEY to encode(result)))
         return result.detached()
     }
-    private fun initial(owner: SubAgentConfigKey): ConversationSubAgentConfig {
-        val base = seed().detached()
+    private fun initial(owner: SubAgentConfigKey, persistSeed: Boolean = true): ConversationSubAgentConfig {
+        val base = seed(persist = persistSeed).detached()
         if (owner is SubAgentConfigKey.Conversation) {
             val old = stored("agent_collaboration_${owner.value}")
             if (old != null) {
@@ -182,6 +182,10 @@ internal class ConversationSubAgentPreferences(
     }
     private fun read(owner: SubAgentConfigKey): ConversationSubAgentConfig = stored(key(owner))?.let(::decode) ?: initial(owner)
     fun snapshot(owner: SubAgentConfigKey): ConversationSubAgentConfig = synchronized(lock) { read(owner).detached() }
+    /** Same owner/legacy selection as runtime, without initializing or persisting the seed. */
+    fun previewSnapshot(owner: SubAgentConfigKey): ConversationSubAgentConfig = synchronized(lock) {
+        (stored(key(owner))?.let(::decode) ?: initial(owner, persistSeed = false)).detached()
+    }
     /** No seed fallback: pointer recovery must distinguish absence from unreadable storage. */
     fun existingDraftOrNull(owner: SubAgentConfigKey.Draft): ConversationSubAgentConfig? = synchronized(lock) {
         stored(key(owner))?.let { decode(it).detached() }

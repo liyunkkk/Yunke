@@ -278,7 +278,7 @@ internal class AgentAppState(
     private var defaultModelId: String? = null
     private var modelBindingGeneration = 0L
     private var memoryEditGeneration = 0L
-    private var overheadGeneration = 0L
+    private val overheadSelection = RequestOverheadSelection()
 
     private var currentReasoningCapabilities: ModelReasoningCapabilities? = null
     private var fileAttachmentOwnerVersion = 0L
@@ -547,6 +547,9 @@ internal class AgentAppState(
         refreshConversationSummaries()
         observeRuntimeSelection()
         observeAutoCompressEnabled()
+        scope.launch(Dispatchers.Main.immediate) {
+            conversationSubAgentPreferences.revision.collectLatest { refreshRequestOverhead() }
+        }
         observeOwnerContexts()
         refreshRequestOverhead()
         ProviderBalanceStore.start(scope)
@@ -670,63 +673,92 @@ internal class AgentAppState(
         }
     }
 
+    private fun currentOverheadBinding() = RequestOverheadSelection.Binding(
+        owner = when (val owner = subAgentConfigOwner) {
+            is SubAgentConfigKey.Conversation -> "conversation:${owner.value}"
+            is SubAgentConfigKey.Draft -> "draft:${owner.value}"
+        },
+        providerId = homeState.providerId,
+        modelId = homeState.modelId,
+        assistantId = AssistantRepository.active().id,
+        modelGeneration = modelBindingGeneration,
+    )
+
     fun refreshRequestOverhead() {
-        val overheadRequest = ++overheadGeneration
+        val binding = currentOverheadBinding()
+        val overheadRequest = overheadSelection.begin(binding)
+        // A previous binding's positive value is not a fallback for an unknown new binding.
+        requestOverheadTokens = overheadSelection.tokensFor(binding) ?: 0
         val state = homeState
-        val owner = selectedConversationId
-        val generation = modelBindingGeneration
+        val owner = subAgentConfigOwner
         val assistant = AssistantRepository.active()
+        val providers = selectionProviders.toList()
         scope.launch(Dispatchers.IO) {
-            val tokens = runCatching { estimateRequestOverhead(state, assistant) }.getOrDefault(0)
+            val tokens = try {
+                val provider = providers.firstOrNull { it.id == state.providerId && it.isEnabled }
+                val model = provider?.models?.firstOrNull { it.id == state.modelId && it.isEnabled }
+                if (provider == null || model == null) null else {
+                    // Preview must not call configForProviderAndModel: that can refresh OAuth.
+                    val config = RuntimeConfigRepository.buildRuntimeConfig(provider, model, assistant).copy(
+                        terminalTools = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
+                        browserTools = agentBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
+                        deviceDirectTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
+                        deviceSensitiveReadTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
+                        deviceSensitiveActionTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
+                    )
+                    estimateRequestOverhead(config, assistant, owner, providers)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null // Unknown, not a successfully measured zero. Keep this binding's valid value.
+            }
             withContext(Dispatchers.Main) {
-                if (overheadRequest != overheadGeneration || owner != selectedConversationId || generation != modelBindingGeneration || AssistantRepository.active().id != assistant.id) return@withContext
-                requestOverheadTokens = tokens
+                if (AssistantRepository.active() != assistant ||
+                    !overheadSelection.complete(overheadRequest, currentOverheadBinding(), tokens)) return@withContext
+                requestOverheadTokens = requireNotNull(tokens)
                 syncBilledOverhead(selectedConversationId, homeState.messages)
             }
         }
     }
 
-    private suspend fun estimateRequestOverhead(state: AgentChatHomeUiState, assistant: io.github.mangi.eta.data.model.AssistantProfile): Int {
-        val config = runtimeConfigForBoundModel(state, assistant)?.copy(
-            terminalTools = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
-            browserTools = agentBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
-            deviceDirectTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
-            deviceSensitiveReadTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
-            deviceSensitiveActionTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
-        ) ?: return 0
+    private suspend fun estimateRequestOverhead(
+        config: AgentModelClient.ModelConfig,
+        assistant: io.github.mangi.eta.data.model.AssistantProfile,
+        owner: SubAgentConfigKey,
+        providers: List<io.github.mangi.eta.data.model.ProviderSetting>,
+    ): Int {
         val enabledSkillIds = assistant.enabledSkillIds.toSet()
         val skillContext = SkillContext(
-            installedSkills = runCatching {
-                SkillRuntime.createIndexService(appContext)
-                    .listSkillsForManagement()
-                    .filter { it.installed && it.id in enabledSkillIds }
-                    .filter { SkillCompatibilityChecker.evaluate(it).available }
-            }.getOrDefault(emptyList()),
+            installedSkills = SkillRuntime.createIndexService(appContext)
+                .listSkillsForManagement()
+                .filter { it.installed && it.id in enabledSkillIds }
+                .filter { SkillCompatibilityChecker.evaluate(it).available },
         )
         val memoryContext = if (assistant.memoryEnabled) {
-            runCatching {
-                AgentMemoryContextBuilder.build(
-                    snapshot = AgentMemoryRepository.snapshot(assistant.id),
-                    contextWindow = config.contextWindow,
-                )
-            }.getOrDefault(AgentMemoryContextBuilder.empty(config.contextWindow))
+            AgentMemoryContextBuilder.build(
+                snapshot = AgentMemoryRepository.snapshot(assistant.id),
+                contextWindow = config.contextWindow,
+            )
         } else {
             AgentMemoryContext.DISABLED
         }
         val additionalTools = JSONArray()
-        runCatching {
-            McpRunSnapshot.appendCachedModelTools(
-                additionalTools,
-                McpServerRepository.enabledServers(),
-            )
-        }
+        McpRunSnapshot.appendCachedModelTools(additionalTools, McpServerRepository.enabledServers())
+        val childPrompt = io.github.mangi.eta.agent.delegation.SubAgentRequestPreview.appendTo(
+            tools = additionalTools,
+            owner = owner,
+            config = conversationSubAgentPreferences.previewSnapshot(owner),
+            providers = providers,
+            workspaceEnabled = config.terminalTools,
+        )
         return AgentRequestOverhead.estimate(
             config = config,
             skillContext = skillContext,
             memoryContext = memoryContext,
             capabilities = AgentToolCapabilities.capture(appContext),
             additionalTools = additionalTools,
-        )
+        ) + AgentContextBudget.countTokens(childPrompt)
     }
 
     private fun syncBilledOverhead(
@@ -742,7 +774,7 @@ internal class AgentAppState(
         }
         if (billedOverheadConversationId != conversationId || billedOverheadTokens == null) {
             billedOverheadConversationId = conversationId
-            billedOverheadTokens = requestOverheadTokens
+            billedOverheadTokens = overheadSelection.tokensFor(currentOverheadBinding())
         }
     }
 
@@ -1842,6 +1874,8 @@ internal class AgentAppState(
             conversationDrafts.promote(id)
             selectedConversationId = id
             conversationPaneState = conversationPaneState.copy(selectedConversationId = id)
+            // The pending draft callback is intentionally stale; replace it for the bound owner.
+            refreshRequestOverhead()
             assignPendingFolder(id)
         }
         if (conversationId !in conversationsById) {
@@ -2517,11 +2551,9 @@ internal class AgentAppState(
         val runAssistant = AssistantRepository.active()
         val runConfig = RuntimeConfigRepository.buildRuntimeConfig(runProvider, runModel, runAssistant)
         val runModelOption = AgentModelPickerProjector.project(listOf(runProvider), runProvider.id, runModel.id).selectedModel
-        val runOverhead = requestOverheadTokens
-        val runBilledOverhead = billedOverheadTokens
+        val runProviders = selectionProviders.toList()
         val taggedUserHistoryMessage = userHistoryMessage.copy(turnId = logicalTurnId)
         bindUsageRun(runId, conversationId)
-        runOverheadTokens[runId] = requestOverheadTokens
         runConfig.contextWindow?.takeIf { it > 0 }?.let { runContextWindows[runId] = it }
         val generateVideo = runModel.supportsVideoGeneration
         val generateImage = !generateVideo && runModel.supportsImageGeneration
@@ -2613,6 +2645,19 @@ internal class AgentAppState(
                 }
                 return@launch
             }
+            // Recompute from THIS run's frozen model/assistant, never a positive global UI value.
+            val runOverhead = try {
+                estimateRequestOverhead(config, runAssistant, SubAgentConfigKey.Conversation(conversationId), runProviders)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (runOverhead != null && runId in runJobs && !stoppingRuns.containsKey(runId)) {
+                    runOverheadTokens[runId] = runOverhead
+                }
+            }
             val supportsVideo = config.supportsVideo
             val modelImages = images.map { p ->
                 p.toOutboundModelImage(supportsVideo).copy(source = "user_attach")
@@ -2621,21 +2666,24 @@ internal class AgentAppState(
             val billedForCompression = if (history == state.history) billedPromptTokens(state) else null
             // compressionContextUsage 只有三项校准都齐时才按「实测 + 增量」算，否则退回本地估算。
             val calibratedForCompression = billedForCompression != null && billedForCompression > 0 &&
-                state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null
-            val estimatedTokens = compressionContextUsage(
-                history = history,
-                currentInput = prompt,
-                pendingImages = images,
-                selectedModel = runModelOption,
-                billedContextTokens = billedForCompression,
-                requestOverheadTokens = runOverhead,
-                billedOverheadTokens = state.cloudRequestOverheadTokens,
-                billedHistoryTokens = state.cloudHistoryTokens,
-            ).contextTokens
+                runOverhead != null && state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null
+            val estimatedTokens = runOverhead?.let { overhead ->
+                compressionContextUsage(
+                    history = history,
+                    currentInput = prompt,
+                    pendingImages = images,
+                    selectedModel = runModelOption,
+                    billedContextTokens = billedForCompression,
+                    requestOverheadTokens = overhead,
+                    billedOverheadTokens = state.cloudRequestOverheadTokens,
+                    billedHistoryTokens = state.cloudHistoryTokens,
+                ).contextTokens
+            }
             // Same request in local units, so the retained tail can be scaled to the bill.
-            val localForCompression = billedForCompression?.let {
+            // An unknown overhead cannot establish a calibration or overwrite a valid receipt.
+            val localForCompression = runOverhead?.takeIf { billedForCompression != null }?.let { overhead ->
                 compressionContextUsage(history = history, currentInput = prompt, pendingImages = images,
-                    selectedModel = runModelOption, requestOverheadTokens = runOverhead).contextTokens
+                    selectedModel = runModelOption, requestOverheadTokens = overhead).contextTokens
             }
             val pendingInRunCompact = withContext(Dispatchers.Main) {
                 pendingInRunCompactConversationIds.remove(conversationId)
@@ -4826,7 +4874,8 @@ internal class AgentAppState(
         if (isStaleUsageAfterCompact(runId, round)) return
         // 只补充 token 用量。不能触碰 isStreaming：Usage 事件紧跟在文本块结束之后，
         // 若把 isStreaming 改回 true，流式渲染会在流式/静态两种视图间反复切换，整段重渲染。
-        val overhead = runOverheadTokens[runId] ?: requestOverheadTokens
+        // A recovered/unknown run must not borrow the currently selected model's estimate.
+        val overhead = runOverheadTokens[runId]
         val conversationId = conversationIdForRun(runId)
         updateMessages(runId) { messages ->
             val textIndex = messages.indexOfLast { message ->

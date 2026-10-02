@@ -24,6 +24,41 @@ class ConversationSubAgentPreferencesTest {
     private fun profile() = SubAgentProfile("worker", "name", reasoning = ReasoningEffort.HIGH,
         providerId = "p", modelId = "selection", reasoningByModel = mutableMapOf("p\u0000selection" to ReasoningEffort.HIGH))
 
+    @Test fun previewUsesTheSameLegacySelectionWithoutPersistingSeedOrRevision() {
+        val prefs = prefs()
+        prefs.edit().putString(SubAgentPreferences.PROFILES_KEY,
+            JSONObject().put("version", 1).put("agents", JSONArray().put(profile().toJson())).toString())
+            .putString(pool.legacyKey(), "3").putString("agent_collaboration_old", "false").commit()
+        val repo = ConversationSubAgentPreferences(prefs)
+        val before = prefs.all.toMap()
+        val revision = repo.revision.value
+        val preview = repo.previewSnapshot(c("old"))
+        assertEquals(before, prefs.all)
+        assertEquals(revision, repo.revision.value)
+        assertFalse(prefs.contains(ConversationSubAgentPreferences.SEED_KEY))
+        assertFalse(preview.enabled)
+        assertEquals(3, preview.parallelLimit(pool))
+        assertEquals(repo.snapshot(c("old")), preview)
+    }
+
+    @Test fun previewFollowsDraftAndPromotedOwnerInsteadOfGlobalProfiles() {
+        val prefs = prefs()
+        val repo = ConversationSubAgentPreferences(prefs)
+        val source = c("source")
+        repo.update(source) { it.copy(profiles = listOf(profile()), parallelLimits = mapOf(pool to 7)) }
+        val draft = repo.createDraft(source)
+        repo.update(draft) { it.copy(profiles = listOf(profile().copy(id = "draft-worker"))) }
+        val promoted = c("promoted")
+        repo.bindDraft(draft, promoted)
+        repo.confirmBoundDraft(draft, promoted)
+        prefs.edit().putString(SubAgentPreferences.PROFILES_KEY, "broken global profiles").commit()
+        val before = prefs.all.toMap()
+        assertEquals("draft-worker", repo.previewSnapshot(promoted).profiles.single().id)
+        assertEquals(7, repo.previewSnapshot(promoted).parallelLimit(pool))
+        assertEquals("worker", repo.previewSnapshot(source).profiles.single().id)
+        assertEquals(before, prefs.all)
+    }
+
     @Test fun seedFreezesOldValuesAndExistingOwnerIsNeverOverwritten() {
         val prefs = prefs()
         prefs.edit().putString(SubAgentPreferences.PROFILES_KEY,

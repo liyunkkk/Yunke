@@ -33,7 +33,9 @@ class ContextDualMeterContractTest(unittest.TestCase):
         app = self.text('ui/app/AgentAppState.kt')
         # Send guard, pre-send tail scaling and post-run tail scaling. Automatic compaction
         # itself reads the ring's cloud receipt, not this silent budget.
-        self.assertEqual(3, app.count('= compressionContextUsage('))
+        # Includes the two local-tail counterparts; nullable run overhead gates pre-send sizing.
+        self.assertEqual(5, app.count('compressionContextUsage('))
+        self.assertIn('val estimatedTokens = runOverhead?.let { overhead ->', app)
         # Every automatic-compaction call passes the ring's cloud receipt, never a local estimate.
         self.assertEqual(4, app.count('shouldAutoCompress('))  # one declaration + three call sites
         self.assertIn('estimatedTokens = if (history == state.history) billedPromptTokens(state) else null', app)
