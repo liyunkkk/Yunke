@@ -10,7 +10,10 @@ previous disabled-service foundation as delivered adaptation.
 
 Supported: V2419A / Android SDK35 / copilot versionCode6090021 with its pinned
 current signer. The independent `vivo_text_bridge` consent defaults false. The
-component resource denotes build capability, not consent. UI writes framework
+component resource denotes build capability, not consent. For this experimental
+adapter, each new Eta process requires explicit reconfirmation of the switch;
+old disk values alone can never grant access. The UI states this requirement.
+UI writes framework
 and Eta-local consent explicitly; any failed enable attempts revoke both. Turning
 off locally revokes model access first, cancels active work and requests target
 hook revocation. The feature does not change the default assistant, existing
@@ -25,6 +28,7 @@ and other vivo packages are not added.
 The installed 6.9.0.21 APK was inspected as source AND raw DEX. A prior source-only
 report incorrectly described a String parameter: the real seam is typed:
 
+- `GatewayManager.g(Query, ContinuationImpl) -> Object` (instance; lifecycle-only observer before original call)
 - `LinkParamsMapper.a(String, RemoteQueryRequest) -> ChatPayload`
 - `LinkServer.m(ChatPayload, String linkId, kotlin.jvm.functions.Function2) -> void`
 - `GatewayManager.a(String linkId, LocalIntent) -> void`
@@ -33,6 +37,7 @@ report incorrectly described a String parameter: the real seam is typed:
 
 RemoteQueryHandler creates StartConversation, StartDialog, the user bubble,
 WaitDialog and show-stop-button BEFORE these mapper/dispatch calls. The adapter
+records typed Query.Remote lifecycle before the native wait UI, then
 correlates the exact ChatPayload OBJECT IDENTITY, not serialized JSON, packet
 payload bytes, callback guesses or fake coroutine continuations. After claiming
 a matching dispatch it never calls the original sender, retries, or falls back
@@ -54,8 +59,15 @@ block, toolbar and EndDialog. An explicit hide-stop UiSignal clears the loading
 control. Do NOT use EndDialogAndConversation: it also closes the conversation/link.
 
 Native stop/stop-dialog and link teardown revoke matching ownership and cancel the
-Eta request. Ownership is reserved synchronously before main-thread submission,
-so cancellation before binding cannot later send the prompt. Stale completions
+Eta request, including stops before the mapper/outbound dispatch. A process-lifetime
+turn ledger retains cancellation; weak identity receipts remain fences for live
+native objects and cannot expire into a vendor retransmission. Repeated active
+calls coalesce, while finished duplicates return a bounded local error instead of
+starting another model request. Runtime lifecycle mutations share one lock.
+The client verifies stillOwner when its queued submit runs and again immediately
+before committing Binder send; this fixes cancel-before-client-begin without
+claiming that Binder send can be made atomic with any concurrent UI cancellation. Ownership is reserved synchronously before main-thread submission,
+so observed cancellation is rechecked at the asynchronous binding boundary. Stale completions
 cannot write into another dialog. Model errors become bounded native error text;
 no raw exception, prompt, endpoint or API key is logged by the adapter.
 
@@ -103,3 +115,29 @@ checks are implemented. Terminal callback delivery is best effort, not guarantee
   one benign text request; confirm zero selected vendor dispatches, one Eta model
   request and visible native answer; next turn; cancellation; provider error;
   toggle-off; verify default assistant and other module scopes are unchanged.
+
+
+## Full build and installation-gate review
+
+- GitHub Actions36907842711 for248c286235789f1ce3486b7aac1cbf531a723d69
+  actually succeeded. CLI status and downloaded XML show30 vivo Kotlin/Android
+  tests,0 failures,0 errors. Initial direct TLS lookups timed out; the existing
+  local mihomo listener127.0.0.1:2080 works with command-local HTTP(S)_PROXY.
+  No global proxy, DNS or network setting was changed.
+- Installation-gate reviews66cd004c andb55dfc0d identified lifecycle and failed
+  consent-write risks. Follow-ups7e8f58e4 and75eda295 reviewed the hardening.
+  Parent verified ABI/claims and fixed the confirmed queue-boundary and ledger
+  issues; speculative callback-thread warnings were rejected using the client's
+  actual main-Handler contract.
+- Hardening adds a fresh-process consent latch, synchronous controller revoke
+  with old-call-specific cleanup, pre-mapper native turn tracking, weak identity
+  receipts, separate hide/answer exception paths, a common Runtime lifecycle lock,
+  and two-boundary client ownership guards. In-flight network cancellation remains
+  best effort, not proof that a server has undone an already received request.
+-43 vivo Kotlin/Android tests now exist, including failed writes + new-process
+  stale grants, pre-mapper stop, closed-window then global revoke, stale bind,
+  duplicate sends and quota guards. These source additions require a new full CI
+  run before APK installation. Python suite remains166 passing tests.
+- Native GUI acceptance and default keyboard eligibility remain NOT VERIFIED.
+  Do not label compilation, metadata-only probe calls or queued native emission as
+  successful model replacement or visible answer delivery.

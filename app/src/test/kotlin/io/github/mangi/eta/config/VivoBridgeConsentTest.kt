@@ -4,6 +4,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VivoBridgeConsentTest {
+    @Test fun stalePersistedGrantsNeverAuthorizeANewProcess() {
+        val original = VivoConsentSession()
+        original.confirm(true, true)
+        assertTrue(original.allows(true, true))
+        original.revoke() // Both backing writes may now throw or fail.
+        assertFalse(original.allows(true, true))
+        val restarted = VivoConsentSession()
+        assertFalse(restarted.allows(true, true))
+        restarted.confirm(true, false)
+        assertFalse(restarted.allows(true, true))
+        restarted.confirm(true, true)
+        assertTrue(restarted.allows(true, true))
+        assertFalse(restarted.allows(true, false))
+    }
+    @Test fun revokeListenerRunsEvenWhenBothWritesThrow() {
+        var calls = 0
+        val listener: () -> Unit = { calls++ }
+        VivoBridgeConsent.addRevocationListener(listener)
+        try {
+            assertFalse(VivoBridgeConsent.commit(false, { error("remote failure") }, { error("local failure") }))
+            assertEquals(1, calls)
+        } finally { VivoBridgeConsent.removeRevocationListener(listener) }
+    }
     @Test fun separateConsentDefaultsOffAndIsNeverGenericReconciled() {
         assertEquals(false, Prefs.Keys.BOOLEAN_DEFAULTS[Prefs.Keys.VIVO_TEXT_BRIDGE])
         assertFalse(Prefs.Keys.VIVO_TEXT_BRIDGE in Prefs.Keys.LOCAL_AGENT_KEYS)

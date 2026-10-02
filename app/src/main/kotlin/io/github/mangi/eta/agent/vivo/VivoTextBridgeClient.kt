@@ -31,8 +31,10 @@ internal class VivoTextBridgeClient(context: Context) {
         lateinit var timeout: Runnable
     }
 
-    fun submit(id: String, prompt: String, callback: (String, String?) -> Unit) {
+    fun submit(id: String, prompt: String, stillOwner: () -> Boolean, callback: (String, String?) -> Unit) {
+        fun owns() = runCatching(stillOwner).getOrDefault(false)
         main.post {
+            if (!owns()) { deliver(callback, "CANCELLED", null); return@post }
             if (closed) { deliver(callback, "CLOSED", null); return@post }
             if (VivoTextBridgePolicy.command(VivoTextBridgePolicy.REQUEST,
                     mapOf("request_id" to id, "prompt" to prompt)) == null) {
@@ -60,8 +62,9 @@ internal class VivoTextBridgeClient(context: Context) {
                         val reply = Messenger(object : Handler(Looper.getMainLooper()) {
                             override fun handleMessage(msg: Message) { receive(work, msg) }
                         })
-                        // Commit SENT before Binder send: an exception never authorizes replay.
-                        if (!state.markSent(ticket)) return
+                        // Re-check ownership after asynchronous binding, not merely before queuing.
+                        if (!state.markSent(ticket, owns())) { cancelAndFinish(work, "CANCELLED"); return }
+                        // SENT is now committed; a send exception never authorizes replay.
                         work.service!!.send(Message.obtain(null, VivoTextBridgePolicy.REQUEST).apply {
                             replyTo = reply
                             data = Bundle().apply { putString("request_id", id); putString("prompt", prompt) }

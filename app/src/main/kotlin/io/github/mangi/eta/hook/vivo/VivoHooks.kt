@@ -18,7 +18,6 @@ import io.github.mangi.eta.core.ModuleLogger
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.security.MessageDigest
-import java.util.IdentityHashMap
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -83,6 +82,12 @@ internal object VivoHooks {
 
     private fun registerBusiness(module: XposedModule, logger: ModuleLogger, api: NativeApi, state: Runtime) =
         HookRegistrar(module, logger, "VivoText").install {
+            intercept("vivo.query-start", api.queryStart, "GatewayManager.g typed query lifecycle") { chain ->
+                if (state.ready && enabled()) runCatching {
+                    api.queryIds(chain.args.getOrNull(0))?.let { (link, dialog) -> state.begin(link, dialog) }
+                }
+                chain.proceed()
+            }
             intercept("vivo.typed-query", api.mapper, "LinkParamsMapper.a(RemoteQueryRequest)") { chain ->
                 val mapped = chain.proceed()
                 if (mapped != null && state.ready && enabled() && chain.args.getOrNull(0) == "remote query") {
@@ -92,14 +97,13 @@ internal object VivoHooks {
             }
             intercept("vivo.outbound", api.send, "LinkServer.m(ChatPayload,linkId,callback)") { chain ->
                 val payload = chain.args.getOrNull(0)
-                val candidate = payload?.let(state::take)
-                if (candidate == null) chain.proceed() else {
+                val link = chain.args.getOrNull(1) as? String
+                // Validate the unclaimed native dispatch before taking ownership.
+                val candidate = if (link != null && VivoNativePolicy.validId(link)) payload?.let(state::receipt) else null
+                if (candidate == null || candidate.turn?.link != link) chain.proceed() else {
                     VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.DISPATCH_CLAIMED)
-                    // Ownership begins here. Never proceed/fall back to vendor after claiming.
-                    runCatching {
-                        val link = chain.args.getOrNull(1) as? String
-                        if (link != null && VivoNativePolicy.validId(link)) state.claim(link, candidate)
-                    }
+                    // Never proceed/fall back to vendor after this point, even for duplicates.
+                    runCatching { state.claim(link!!, candidate) }.onFailure { state.failClaim(link!!, candidate) }
                     null
                 }
             }
@@ -120,7 +124,7 @@ internal object VivoHooks {
                 if (intent != null && (api.interruptClass.isInstance(intent) || api.endClass.isInstance(intent))) {
                     val link = chain.args.getOrNull(0) as? String
                     if (link != null) runCatching {
-                        val dialog = intent.javaClass.getDeclaredMethod("getDialogId").invoke(intent) as String
+                        val dialog = intent.javaClass.getMethod("getDialogId").invoke(intent) as String
                         state.cancel(link, dialog, render = false)
                     }
                 }
@@ -128,69 +132,91 @@ internal object VivoHooks {
             }
         }
 
-    private data class Candidate(val dialog: String, val conversation: String, val prompt: String)
+    private data class Candidate(val dialog: String, val conversation: String, val prompt: String, val turn: VivoTurnLedger.Turn? = null)
     private data class Owned(val link: String, val candidate: Candidate, val id: String, val blockId: String)
 
     private class Runtime(val api: NativeApi, val client: VivoTextBridgeClient) {
         @Volatile var ready = false
-        private val pending = IdentityHashMap<Any, Candidate>()
+        private val receipts = WeakIdentityReceipts<Candidate>()
         private val active = ConcurrentHashMap<String, Owned>()
-        private val ownershipLock = Any()
-        private val seen = HashSet<Pair<String, String>>() // protected by ownershipLock
-        fun capture(payload: Any, candidate: Candidate) {
-            synchronized(pending) {
-                if (pending.size >= 32) return
-                pending[payload] = candidate
-            }
-            main.postDelayed({ synchronized(pending) { pending.remove(payload) } }, 10_000)
+        private val turns = VivoTurnLedger()
+        @Synchronized fun begin(link: String, dialog: String) { turns.begin(link, dialog) }
+        @Synchronized fun capture(payload: Any, candidate: Candidate) {
+            val turn = turns.find(candidate.dialog) ?: return
+            receipts.put(payload, candidate.copy(turn = turn))
         }
-        fun take(payload: Any): Candidate? = synchronized(pending) { pending.remove(payload) }
-        fun claim(link: String, candidate: Candidate) {
+        fun receipt(payload: Any): Candidate? = receipts.get(payload)
+        @Synchronized private fun stillOwns(owned: Owned) =
+            active[owned.link] === owned && owned.candidate.turn?.let(turns::active) == true
+        @Synchronized private fun finishOwned(owned: Owned): Boolean =
+            active.remove(owned.link, owned) && owned.candidate.turn?.let(turns::finish) == true
+        @Synchronized fun failClaim(link: String, candidate: Candidate) {
+            val turn = candidate.turn ?: return
+            turns.finish(turn)
+            main.post { api.safeAnswer(link, candidate, "代鱼未能接管本轮请求，未发送给厂商模型。", UUID.randomUUID().toString()) }
+        }
+        @Synchronized fun claim(link: String, candidate: Candidate) {
+            val turn = candidate.turn ?: return
             val owned = Owned(link, candidate, "vivo_" + UUID.randomUUID().toString().replace("-", ""), UUID.randomUUID().toString())
-            val previous = synchronized(ownershipLock) {
-                val key = link to candidate.dialog
-                if (key in seen) return
-                if (seen.size >= 256) {
+            when (turns.claim(turn)) {
+                VivoTurnLedger.Claim.ACTIVE_DUPLICATE -> return // coalesce with the one owned request
+                VivoTurnLedger.Claim.FINISHED_DUPLICATE -> {
+                    main.post { api.safeAnswer(link, candidate, "本轮请求已经处理，为避免重复调用模型，请发送新一轮提问。", owned.blockId) }
+                    return
+                }
+                VivoTurnLedger.Claim.FULL -> {
                     main.post { api.safeAnswer(link, candidate, "本次进程的文本接管额度已用完，请重新打开小 V。", owned.blockId) }
                     return
                 }
-                seen.add(key)
-                // Reserve before posting. A stop click can now cancel even before model submission.
-                active.put(link, owned)
+                VivoTurnLedger.Claim.CANCELLED -> {
+                    if (turns.consumeCancelRender(turn)) main.post { api.safeInterrupt(owned) }
+                    return
+                }
+                VivoTurnLedger.Claim.START -> Unit
             }
-            previous?.let { client.cancel(it.id) }
+            // Publish ownership before posting; turn cancellation also covers the tiny gap above.
+            active.put(link, owned)?.let { previous ->
+                previous.candidate.turn?.let { turns.cancel(link, it.dialog, render = false) }
+                client.cancel(previous.id)
+            }
             main.post {
-                if (active[link] !== owned) return@post
-                if (!enabled()) {
+                if (!stillOwns(owned)) {
                     active.remove(link, owned)
-                    api.safeAnswer(link, candidate, "代鱼文本接管已关闭。", owned.blockId)
+                    if (turns.consumeCancelRender(turn)) api.safeInterrupt(owned)
                     return@post
                 }
-                client.submit(owned.id, candidate.prompt) { code, text ->
-                    if (!active.remove(link, owned)) return@submit
+                if (!enabled()) {
+                    if (finishOwned(owned)) api.safeAnswer(link, candidate, "代鱼文本接管已关闭。", owned.blockId)
+                    return@post
+                }
+                client.submit(owned.id, candidate.prompt, stillOwner = { stillOwns(owned) && enabled() }) { code, text ->
+                    // VivoTextBridgeClient invokes callbacks only from its main Handler.
+                    if (!finishOwned(owned)) return@submit
                     if (code == "CANCELLED" || code == "CLOSED") api.safeInterrupt(owned)
                     else api.safeAnswer(link, candidate, if (code == "OK" && text != null) text else errorText(code), owned.blockId)
                 }
             }
         }
-        fun cancel(link: String, dialog: String?, render: Boolean): Boolean {
+        @Synchronized fun cancel(link: String, dialog: String?, render: Boolean): Boolean {
+            turns.cancel(link, dialog, render) // also fences a query which has not reached the mapper
             val owned = active[link] ?: return false
             if (dialog != null && dialog != owned.candidate.dialog) return false
             if (!active.remove(link, owned)) return false
             VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.OWNER_CANCELLED)
             client.cancel(owned.id)
-            if (render) main.post { api.safeInterrupt(owned) }
+            if (render && owned.candidate.turn?.let(turns::consumeCancelRender) == true) main.post { api.safeInterrupt(owned) }
             return true
         }
-        fun cancelAll() {
-            // Pending mapped payloads remain fenced: outbound consumes them without vendor fallback.
+        @Synchronized fun cancelAll() {
+            turns.cancelAll()
             active.keys.toList().forEach { cancel(it, null, render = true) }
         }
         private fun errorText(code: String) = when (code) {
             "NO_MODEL" -> "代鱼未配置可用的纯文本模型，或该模型带有不支持的自定义请求体。"
             "TIMEOUT" -> "代鱼模型响应超时，本次请求已停止；没有切回厂商模型。"
             "BUSY", "BUSY_OR_REPLAY" -> "代鱼仍在处理或取消上一条请求，请稍后重新提问。"
-            "UNTRUSTED_PEER", "UNAVAILABLE", "DISABLED", "DISCONNECTED" -> "无法连接代鱼文本服务，请检查代鱼版本及独立开关。"
+            "DISABLED" -> "代鱼文本服务尚未获得本次进程的确认，请在代鱼设置中重新开启小 V 实验开关。"
+            "UNTRUSTED_PEER", "UNAVAILABLE", "DISCONNECTED" -> "无法连接代鱼文本服务，请检查代鱼版本及独立开关。"
             else -> "代鱼模型请求未成功，本次没有重试或切回厂商模型。"
         }
     }
@@ -213,6 +239,19 @@ internal object VivoHooks {
         private val executor = clazz("gateway.component.LocalIntentExecutor")
         private val report = clazz("base.tool.vcode.ReportBusinessData")
         private val function2 = Class.forName("kotlin.jvm.functions.Function2", false, loader)
+        private val remoteQuery = clazz("gateway.model.Query\$Remote")
+        private val remoteLink = method(remoteQuery, "getLinkId")
+        private val remoteDialog = method(remoteQuery, "getDialogId")
+        val queryStart = method(gateway, "g", clazz("gateway.model.Query"),
+            Class.forName("kotlin.coroutines.jvm.internal.ContinuationImpl", false, loader)).also {
+            check(!Modifier.isStatic(it.modifiers) && it.returnType == Any::class.java && !it.isBridge)
+        }
+        fun queryIds(query: Any?): Pair<String, String>? {
+            if (query == null || !remoteQuery.isInstance(query)) return null
+            val link = remoteLink.invoke(query) as String
+            val dialog = remoteDialog.invoke(query) as String
+            return if (VivoNativePolicy.validId(link) && VivoNativePolicy.validId(dialog)) link to dialog else null
+        }
         val mapper = static(clazz("gateway.util.LinkParamsMapper"), "a", payload, string, request)
         val send = static(server, "m", Void.TYPE, payload, string, function2)
         val emitIntent = static(gateway, "a", Void.TYPE, string, local)
@@ -265,15 +304,17 @@ internal object VivoHooks {
             emitSignal.invoke(target, link, hideStop.invoke(null, "hide_stop_button", candidate.conversation))
         }
         fun safeAnswer(link: String, candidate: Candidate, text: String, block: String) {
+            runCatching { hide(link, candidate) }
+                .onFailure { VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.NATIVE_SINK_FAILED) }
             runCatching {
-                hide(link, candidate)
                 emitIntent.invoke(null, link, answer.newInstance(candidate.dialog, text, block, "", true, false))
                 VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.NATIVE_REPLY_ENQUEUED)
             }.onFailure { VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.NATIVE_SINK_FAILED) }
         }
         fun safeInterrupt(owned: Owned) {
+            runCatching { hide(owned.link, owned.candidate) }
+                .onFailure { VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.NATIVE_SINK_FAILED) }
             runCatching {
-                hide(owned.link, owned.candidate)
                 emitIntent.invoke(null, owned.link, interrupt.newInstance(owned.candidate.dialog, "", null, null))
             }
         }

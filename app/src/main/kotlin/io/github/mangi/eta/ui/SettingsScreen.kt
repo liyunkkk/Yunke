@@ -1393,12 +1393,12 @@ private fun VivoTextBridgeSwitch(context: Context, remote: SharedPreferences?) {
         }.getOrDefault(false)
     }
     var checked by remember(remote, local) {
-        mutableStateOf(VivoBridgeConsent.read(remote) && VivoBridgeConsent.read(local))
+        mutableStateOf(VivoBridgeConsent.effective(remote, local))
     }
     DisposableEffect(remote, local) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == Prefs.Keys.VIVO_TEXT_BRIDGE) {
-                checked = VivoBridgeConsent.read(remote) && VivoBridgeConsent.read(local)
+                checked = VivoBridgeConsent.effective(remote, local)
             }
         }
         remote?.registerOnSharedPreferenceChangeListener(listener)
@@ -1411,13 +1411,13 @@ private fun VivoTextBridgeSwitch(context: Context, remote: SharedPreferences?) {
     SwitchPreference(
         title = "小 V 文本模型接管（V2419A 实验）",
         summary = "独立开关；仅支持小 V 6.9.0.21 的普通手动文本，遵循上方 Agent 前缀选项。" +
-            "使用代鱼当前选定模型，不执行工具；附件、语音及专用技能不接管。请在 Vector 勾选小 V 后重新打开小 V。",
+            "使用代鱼当前选定模型，不执行工具；附件、语音及专用技能不接管。代鱼进程重启后需重新确认此实验开关。请在 Vector 勾选小 V 后重新打开小 V。",
         checked = checked,
         enabled = remote != null && local != null && compatible,
         onCheckedChange = { value ->
             if (remote != null && local != null) {
                 val committed = VivoBridgeConsent.commit(remote, local, value)
-                checked = VivoBridgeConsent.read(remote) && VivoBridgeConsent.read(local)
+                checked = VivoBridgeConsent.effective(remote, local)
                 if (!committed) Toast.makeText(context, R.string.settings_write_failed, Toast.LENGTH_SHORT).show()
             }
         },
