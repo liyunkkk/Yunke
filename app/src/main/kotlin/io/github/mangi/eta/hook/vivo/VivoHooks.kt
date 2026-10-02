@@ -207,7 +207,10 @@ internal object VivoHooks {
         HookRegistrar(module, logger, "VivoText").install {
             intercept("vivo.query-start", api.queryStart, "GatewayManager.g typed query lifecycle") { chain ->
                 if (state.ready && enabled()) runCatching {
-                    api.queryIds(chain.args.getOrNull(0))?.let { (link, dialog) -> state.begin(link, dialog) }
+                    api.queryIds(chain.args.getOrNull(0))?.let { (link, dialog) ->
+                        state.begin(link, dialog)
+                        api.queryCandidate(chain.args.getOrNull(0))?.let { state.captureForLink(link, it) }
+                    }
                 }
                 chain.proceed()
             }
@@ -222,7 +225,7 @@ internal object VivoHooks {
                 val payload = chain.args.getOrNull(0)
                 val link = chain.args.getOrNull(1) as? String
                 // Validate the unclaimed native dispatch before taking ownership.
-                val candidate = if (link != null && VivoNativePolicy.validId(link)) payload?.let(state::receipt) else null
+                val candidate = if (link != null && VivoNativePolicy.validId(link)) state.take(link, payload) else null
                 if (candidate == null || candidate.turn?.link != link) chain.proceed() else {
                     VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.DISPATCH_CLAIMED)
                     // Never proceed/fall back to vendor after this point, even for duplicates.
@@ -261,18 +264,29 @@ internal object VivoHooks {
     private class Runtime(val api: NativeApi, val client: VivoTextBridgeClient) {
         @Volatile var ready = false
         private val receipts = WeakIdentityReceipts<Candidate>()
+        private val pending = ConcurrentHashMap<String, Candidate>()
         private val active = ConcurrentHashMap<String, Owned>()
         private val turns = VivoTurnLedger()
         @Synchronized fun begin(link: String, dialog: String) { turns.begin(link, dialog) }
+        @Synchronized fun captureForLink(link: String, candidate: Candidate) {
+            val turn = turns.find(candidate.dialog) ?: return
+            pending[link] = candidate.copy(turn = turn)
+        }
         @Synchronized fun capture(payload: Any, candidate: Candidate) {
             val turn = turns.find(candidate.dialog) ?: return
-            receipts.put(payload, candidate.copy(turn = turn))
+            val owned = candidate.copy(turn = turn)
+            receipts.put(payload, owned)
+            pending.remove(turn.link)
         }
-        fun receipt(payload: Any): Candidate? = receipts.get(payload)
+        @Synchronized fun take(link: String, payload: Any?): Candidate? {
+            if (payload != null) receipts.get(payload)?.let { return it }
+            return pending.remove(link)
+        }
         @Synchronized private fun stillOwns(owned: Owned) =
             active[owned.link] === owned && owned.candidate.turn?.let(turns::active) == true
         @Synchronized private fun finishOwned(owned: Owned): Boolean =
-            active.remove(owned.link, owned) && owned.candidate.turn?.let(turns::finish) == true
+            active.remove(owned.link, owned).also { if (it) pending.remove(owned.link) } &&
+                owned.candidate.turn?.let(turns::finish) == true
         @Synchronized fun failClaim(link: String, candidate: Candidate) {
             val turn = candidate.turn ?: return
             turns.finish(turn)
@@ -321,6 +335,7 @@ internal object VivoHooks {
             }
         }
         @Synchronized fun cancel(link: String, dialog: String?, render: Boolean): Boolean {
+            pending.remove(link)
             turns.cancel(link, dialog, render) // also fences a query which has not reached the mapper
             val owned = active[link] ?: return false
             if (dialog != null && dialog != owned.candidate.dialog) return false
@@ -366,6 +381,8 @@ internal object VivoHooks {
         private val remoteQuery = clazz("gateway.model.Query\$Remote")
         private val remoteLink = method(remoteQuery, "getLinkId")
         private val remoteDialog = method(remoteQuery, "getDialogId")
+        private val remoteConversation = method(remoteQuery, "getConversationId")
+        private val remoteModel = method(remoteQuery, "getTextQueryModel")
         // ContinuationImpl has the same external ABI constraint; do not substitute Eta's class literal.
         val queryStart = method(gateway, "g", clazz("gateway.model.Query"),
             Class.forName("kotlin.coroutines.jvm.internal.ContinuationImpl", false, loader)).also {
@@ -376,6 +393,13 @@ internal object VivoHooks {
             val link = remoteLink.invoke(query) as String
             val dialog = remoteDialog.invoke(query) as String
             return if (VivoNativePolicy.validId(link) && VivoNativePolicy.validId(dialog)) link to dialog else null
+        }
+        fun queryCandidate(query: Any?): Candidate? {
+            if (query == null || !remoteQuery.isInstance(query)) return null
+            val dialog = remoteDialog.invoke(query) as String
+            val conversation = remoteConversation.invoke(query) as String
+            val modelValue = remoteModel.invoke(query) ?: return null
+            return candidateFrom(modelValue, dialog, conversation)
         }
         val mapper = static(clazz("gateway.util.LinkParamsMapper"), "a", payload, string, request)
         val send = static(server, "m", Void.TYPE, payload, string, function2)
@@ -406,7 +430,13 @@ internal object VivoHooks {
 
         fun candidate(value: Any): Candidate? {
             if (!request.isInstance(value)) return null
-            val m = requestGetters.getValue("getModel").invoke(value) ?: return null
+            val modelValue = requestGetters.getValue("getModel").invoke(value) ?: return null
+            val dialog = requestGetters.getValue("getDialogId").invoke(value) as String
+            val conversation = requestGetters.getValue("getConversationId").invoke(value) as String
+            return candidateFrom(modelValue, dialog, conversation)
+        }
+        private fun candidateFrom(modelValue: Any, dialog: String, conversation: String): Candidate? {
+            val m = modelValue
             fun get(name: String) = modelGetters.getValue(name).invoke(m)
             val special = listOf("getAttachmentQueryModel", "getCameraContext", "getPsAgentContext", "getTwsNotificationContext", "getExtraParams")
                 .any { get(it) != null } || !((get("getScheduleContext") as? String).isNullOrBlank()) ||
@@ -419,8 +449,6 @@ internal object VivoHooks {
             if (!VivoNativePolicy.eligible(shape)) return null
             val visible = (get("getDisplayQuery") as? String)?.takeIf { it.isNotBlank() } ?: get("getServerQuery") as? String
             val prompt = VivoNativePolicy.prompt(visible, Prefs.isEnabled(Prefs.Keys.AGENT_REQUIRE_PREFIX)) ?: return null
-            val dialog = requestGetters.getValue("getDialogId").invoke(value) as String
-            val conversation = requestGetters.getValue("getConversationId").invoke(value) as String
             if (!VivoNativePolicy.validId(dialog) || !VivoNativePolicy.validId(conversation)) return null
             return Candidate(dialog, conversation, prompt)
         }

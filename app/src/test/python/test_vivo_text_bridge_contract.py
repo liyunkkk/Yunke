@@ -120,6 +120,15 @@ class VivoTextBridgeContractTest(unittest.TestCase):
         self.assertNotIn("chain.args.getOrNull(0) == \"remote query\"", typed)
         self.assertIn("api.candidate(chain.args[1]!!)?.let { state.capture(mapped, it) }", typed)
 
+    def test_query_remote_candidate_is_bound_before_outbound_send(self):
+        source = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt").read_text()
+        query_start = source.split("intercept(\"vivo.query-start\"", 1)[1].split("intercept(\"vivo.typed-query\"", 1)[0]
+        self.assertIn("api.queryCandidate(chain.args.getOrNull(0))?.let { state.captureForLink(link, it) }", query_start)
+        self.assertIn("getTextQueryModel", source)
+        self.assertIn("fun take(link: String, payload: Any?): Candidate?", source)
+        outbound = source.split("intercept(\"vivo.outbound\"", 1)[1].split("for ((name, linkIndex", 1)[0]
+        self.assertIn("state.take(link, payload)", outbound)
+
     def test_selection_is_read_only_and_body_overrides_fail_closed(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoTextModelGateway.kt').read_text()
         for forbidden in ('currentRuntimeConfig()', 'repairSelection(', 'selectedOrFirstModel(',
