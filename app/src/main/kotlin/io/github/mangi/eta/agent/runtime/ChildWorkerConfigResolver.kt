@@ -20,13 +20,17 @@ internal object ChildWorkerConfigResolver {
     // Do not make this a data class: model contains credentials and must not appear in toString.
     class Configuration(val profile: SubAgentProfile, val model: AgentModelClient.ModelConfig)
 
+    /**
+     * Lookups are nullable callbacks, not default suspend lambdas: a suspend lambda used as a
+     * default argument value currently crashes the Kotlin IR backend ("has no continuation").
+     * null means "not injected" and runs the persisted default in [resolveWorker]; an injected
+     * callback that itself returns null must fail closed instead of reaching ProviderRepository.
+     */
     suspend fun resolve(
         ownerId: String,
         config: ConversationSubAgentConfig,
-        providerLookup: suspend (String) -> ProviderSetting? = { ProviderRepository.providerById(it) },
-        modelResolver: suspend (SubAgentProfile) -> AgentModelClient.ModelConfig? = { profile ->
-            profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })
-        },
+        providerLookup: (suspend (String) -> ProviderSetting?)? = null,
+        modelResolver: (suspend (SubAgentProfile) -> AgentModelClient.ModelConfig?)? = null,
     ): List<ChildTaskConfigPolicy.Candidate<Configuration>> = config.profiles.map { profile ->
         resolveWorker(ownerId, config, profile.id, profile.role, providerLookup, modelResolver)
     }
@@ -37,10 +41,8 @@ internal object ChildWorkerConfigResolver {
         config: ConversationSubAgentConfig,
         workerId: String,
         expectedRole: String,
-        providerLookup: suspend (String) -> ProviderSetting? = { ProviderRepository.providerById(it) },
-        modelResolver: suspend (SubAgentProfile) -> AgentModelClient.ModelConfig? = { profile ->
-            profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })
-        },
+        providerLookup: (suspend (String) -> ProviderSetting?)? = null,
+        modelResolver: (suspend (SubAgentProfile) -> AgentModelClient.ModelConfig?)? = null,
     ): ChildTaskConfigPolicy.Candidate<Configuration> {
         val expected = ChildTaskConfigPolicy.WorkerKey(ownerId, workerId, expectedRole)
         fun unavailable(reason: ChildTaskConfigPolicy.Availability) =
@@ -55,7 +57,8 @@ internal object ChildWorkerConfigResolver {
         if (profile.providerId.isBlank() || profile.modelId.isBlank())
             return unavailable(ChildTaskConfigPolicy.Availability.SELECTION_MISSING)
         try {
-            val provider = providerLookup(profile.providerId)?.takeIf { it.isEnabled }
+            val provider = (if (providerLookup != null) providerLookup(profile.providerId)
+                else ProviderRepository.providerById(profile.providerId))?.takeIf { it.isEnabled }
                 ?: return unavailable(ChildTaskConfigPolicy.Availability.PROVIDER_UNAVAILABLE)
             val model = provider.models.firstOrNull { it.id == profile.modelId && it.isEnabled }
                 ?: return unavailable(ChildTaskConfigPolicy.Availability.MODEL_UNAVAILABLE)
@@ -64,11 +67,13 @@ internal object ChildWorkerConfigResolver {
             // The revision is based on persisted user settings BEFORE OAuth token refresh. A parent
             // network failure, token renewal, profile rename or another worker's edit is not a change.
             val revision = userConfigurationRevision(profile, RuntimeConfigRepository.buildRuntimeConfig(provider, model))
-            val resolved = modelResolver(profile)
-                ?: return unavailable(ChildTaskConfigPolicy.Availability.MODEL_UNAVAILABLE)
+            val resolved = if (modelResolver != null) modelResolver(profile)
+                else profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })
+            if (resolved == null) return unavailable(ChildTaskConfigPolicy.Availability.MODEL_UNAVAILABLE)
             if (resolved.providerId != profile.providerId || resolved.model != model.modelId.trim())
                 return unavailable(ChildTaskConfigPolicy.Availability.SELECTION_CHANGED_DURING_RESOLUTION)
-            val currentProvider = providerLookup(profile.providerId)?.takeIf { it.isEnabled }
+            val currentProvider = (if (providerLookup != null) providerLookup(profile.providerId)
+                else ProviderRepository.providerById(profile.providerId))?.takeIf { it.isEnabled }
                 ?: return unavailable(ChildTaskConfigPolicy.Availability.PROVIDER_UNAVAILABLE)
             val currentModel = currentProvider.models.firstOrNull { it.id == profile.modelId && it.isEnabled }
                 ?: return unavailable(ChildTaskConfigPolicy.Availability.MODEL_UNAVAILABLE)

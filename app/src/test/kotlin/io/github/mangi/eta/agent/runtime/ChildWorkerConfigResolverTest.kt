@@ -95,6 +95,23 @@ class ChildWorkerConfigResolverTest {
             resolve { model(it).copy(model = "other-model") }.availability)
     }
 
+    @Test fun injectedNullLookupsFailClosedInsteadOfRunningPersistedDefaults() = runBlocking {
+        // providerLookup is injected and returns null although the id matches; the persisted
+        // ProviderRepository default must not be consulted as a fallback.
+        val providerMiss = ChildWorkerConfigResolver.resolveWorker(
+            owner, ConversationSubAgentConfig(listOf(profile)), profile.id, profile.role,
+            providerLookup = { null }, modelResolver = { model(it) })
+        assertEquals(Policy.Availability.PROVIDER_UNAVAILABLE, providerMiss.availability)
+        assertNull(providerMiss.configuration)
+        // modelResolver is injected and returns null while the provider and model selection are
+        // valid; the persisted ModelFeatureSelection default must not be consulted as a fallback.
+        val modelMiss = ChildWorkerConfigResolver.resolveWorker(
+            owner, ConversationSubAgentConfig(listOf(profile)), profile.id, profile.role,
+            providerLookup = { id -> provider.takeIf { it.id == id } }, modelResolver = { null })
+        assertEquals(Policy.Availability.MODEL_UNAVAILABLE, modelMiss.availability)
+        assertNull(modelMiss.configuration)
+    }
+
     @Test fun concurrentUserConfigurationChangeFailsClosedRatherThanMixingSnapshots() = runBlocking {
         var reads = 0
         val result = ChildWorkerConfigResolver.resolveWorker(owner, ConversationSubAgentConfig(listOf(profile)),
