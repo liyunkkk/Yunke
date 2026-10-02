@@ -41,56 +41,149 @@ internal object VivoHooks {
             if (onCreate == null) {
                 missing("vivo.bootstrap", "CopilotApp.onCreate", "入口 ABI 不匹配"); return@bootstrap
             }
-            intercept("vivo.bootstrap", onCreate, "CopilotApp.onCreate") callback@ { chain ->
-                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ENTERED)
-                // Keep the original call outside bootstrap failure handling: exactly once, unchanged exceptions.
-                val result = chain.proceed()
-                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ORIGINAL_RETURNED)
-                val context = (chain.thisObject as? Context)?.applicationContext
-                if (context == null) {
-                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_CONTEXT_UNAVAILABLE)
-                    return@callback result
-                }
-                when (supported(context)) {
-                    null -> return@callback result // Query failure has its own fixed diagnostic below.
-                    false -> {
-                        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_IDENTITY_REJECTED)
-                        return@callback result
-                    }
-                    true -> Unit
-                }
-                if (!installed.compareAndSet(false, true)) {
-                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ALREADY_CLAIMED)
-                    return@callback result
-                }
-                // Do not reset CAS: failed registration can leave some hooks installed.
-                // Routing remains disabled until the complete business registration succeeds.
-                runCatching {
-                    val api = NativeApi(classLoader)
-                    val state = Runtime(api, VivoTextBridgeClient(context))
-                    runtime = state
-                    val hooks = registerBusiness(module, rootLogger, api, state)
-                    business = hooks
-                    val ready = hooks.report.installedCount == 7 && hooks.report.failedCount == 0 &&
-                        hooks.report.missingCount == 0 && hooks.report.skippedCount == 0
-                    val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-                        if (key == Prefs.Keys.VIVO_TEXT_BRIDGE && !enabled()) state.cancelAll()
-                    }
-                    preferenceListener = listener
-                    Prefs.registerRemoteListener(listener)
-                    rootLogger.scoped("VivoText").info(hooks.report.summary())
-                    state.ready = ready
-                    if (ready) VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.HOOK_READY)
-                    else VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED,
-                        VivoBridgeDiagnostics.Failure.REGISTRATION)
-                }.onFailure {
-                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED,
-                        VivoBridgeDiagnostics.failureCategory(it))
-                    rootLogger.scoped("VivoText").warn("本机文本接管初始化失败，未启用接管")
-                }
-                result
+            intercept("vivo.bootstrap", onCreate, "CopilotApp.onCreate") { chain ->
+                // Vendor onCreate can block the main thread, so takeover cannot wait for it.
+                // Pre-init is intentionally not in finally: finally would not run while proceed blocks.
+                bootstrapCopilotOnCreate(
+                    thisObject = chain.thisObject,
+                    resolveContext = { value -> (value as? Context)?.applicationContext },
+                    identity = ::supported,
+                    tryClaim = { installed.compareAndSet(false, true) },
+                    installHooks = { context ->
+                        val api = NativeApi(classLoader)
+                        val state = Runtime(api, VivoTextBridgeClient(context))
+                        runtime = state
+                        val hooks = registerBusiness(module, rootLogger, api, state)
+                        business = hooks
+                        val ready = hooks.report.installedCount == 7 && hooks.report.failedCount == 0 &&
+                            hooks.report.missingCount == 0 && hooks.report.skippedCount == 0
+                        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                            if (key == Prefs.Keys.VIVO_TEXT_BRIDGE && !enabled()) state.cancelAll()
+                        }
+                        preferenceListener = listener
+                        Prefs.registerRemoteListener(listener)
+                        rootLogger.scoped("VivoText").info(hooks.report.summary())
+                        state.ready = ready
+                        ready
+                    },
+                    onRegistrationFailure = {
+                        rootLogger.scoped("VivoText").warn("本机文本接管初始化失败，未启用接管")
+                    },
+                    proceed = { chain.proceed() },
+                )
             }
         }
+
+    /**
+     * Arm text takeover before the vendor onCreate. That call stays exactly once, after pre-init,
+     * with its return value and exception unchanged. Do not move this work into finally.
+     */
+    internal fun <T> bootstrapCopilotOnCreate(
+        thisObject: Any?,
+        resolveContext: (Any?) -> Context?,
+        identity: (Context) -> Boolean?,
+        tryClaim: () -> Boolean,
+        installHooks: (Context) -> Boolean,
+        onRegistrationFailure: () -> Unit,
+        proceed: () -> T,
+    ): T {
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ENTERED)
+        runCatching {
+            armBeforeOriginal(thisObject, resolveContext, identity, tryClaim, installHooks, onRegistrationFailure)
+        }.onFailure {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED,
+                VivoBridgeDiagnostics.failureCategory(it))
+        }
+        return callOriginalOnCreate(proceed)
+    }
+
+    private fun armBeforeOriginal(
+        thisObject: Any?,
+        resolveContext: (Any?) -> Context?,
+        identity: (Context) -> Boolean?,
+        tryClaim: () -> Boolean,
+        installHooks: (Context) -> Boolean,
+        onRegistrationFailure: () -> Unit,
+    ) {
+        val context = try {
+            resolveContext(thisObject)
+        } catch (error: Throwable) {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_CONTEXT_UNAVAILABLE)
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED,
+                VivoBridgeDiagnostics.failureCategory(error))
+            return
+        }
+        if (context == null) {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_CONTEXT_UNAVAILABLE)
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED)
+            return
+        }
+        val allowed = try {
+            identity(context)
+        } catch (error: Throwable) {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED,
+                VivoBridgeDiagnostics.failureCategory(error))
+            return
+        }
+        when (allowed) {
+            null -> {
+                // supported() already recorded BOOTSTRAP_IDENTITY_QUERY_FAILED.
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED)
+                return
+            }
+            false -> {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_IDENTITY_REJECTED)
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED)
+                return
+            }
+            true -> Unit
+        }
+        val claimed = try {
+            tryClaim()
+        } catch (error: Throwable) {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED,
+                VivoBridgeDiagnostics.failureCategory(error))
+            return
+        }
+        if (!claimed) {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ALREADY_CLAIMED)
+            return
+        }
+        // Do not reset CAS: failed registration can leave some hooks installed.
+        // Routing remains disabled until installHooks returns true and the caller sets ready.
+        val ready = try {
+            installHooks(context)
+        } catch (error: Throwable) {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED,
+                VivoBridgeDiagnostics.failureCategory(error))
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED,
+                VivoBridgeDiagnostics.failureCategory(error))
+            runCatching { onRegistrationFailure() }
+            return
+        }
+        if (ready) {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_SUCCEEDED)
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.HOOK_READY)
+        } else {
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED,
+                VivoBridgeDiagnostics.Failure.REGISTRATION)
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_PREINIT_FAILED,
+                VivoBridgeDiagnostics.Failure.REGISTRATION)
+        }
+    }
+
+    private fun <T> callOriginalOnCreate(proceed: () -> T): T {
+        try {
+            val result = proceed()
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ORIGINAL_RETURNED)
+            return result
+        } catch (error: Throwable) {
+            // Fixed stage only; the vendor exception continues unchanged and must not be wrapped.
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ORIGINAL_THREW,
+                VivoBridgeDiagnostics.failureCategory(error))
+            throw error
+        }
+    }
 
     private fun enabled() = runCatching { Prefs.isEnabled(Prefs.Keys.VIVO_TEXT_BRIDGE) }.getOrDefault(false)
 

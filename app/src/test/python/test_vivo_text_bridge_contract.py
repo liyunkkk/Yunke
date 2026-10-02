@@ -56,21 +56,20 @@ class VivoTextBridgeContractTest(unittest.TestCase):
             self.assertNotIn('hasSigningCertificate(', source)
 
     def test_bootstrap_original_call_is_once_outside_failure_capture(self):
-        # Source guard, not a device execution test: an original exception must leave
-        # the callback before identity lookup / initialization or ORIGINAL_RETURNED.
+        # Source guard: identity and business registration happen before the single
+        # vendor onCreate. A thrown original call is diagnosed and rethrown unchanged.
         source = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt').read_text()
-        callback = source.split('"CopilotApp.onCreate") callback@ { chain ->', 1)[1].split(
-            '\n            }\n        }\n\n    private fun enabled', 1)[0]
+        callback = source.split('intercept("vivo.bootstrap"', 1)[1].split(
+            'internal fun <T> bootstrapCopilotOnCreate', 1)[0]
+        proceed = callback.index('chain.proceed()')
         self.assertEqual(1, callback.count('chain.proceed()'))
-        prefix = callback.split('                runCatching {', 1)[0]
-        self.assertNotIn('runCatching', prefix)
-        self.assertNotIn('try {', prefix)
-        self.assertNotIn('catch (', prefix)
-        self.assertLess(prefix.index('Stage.BOOTSTRAP_ENTERED'), prefix.index('val result = chain.proceed()'))
-        self.assertLess(prefix.index('val result = chain.proceed()'), prefix.index('Stage.BOOTSTRAP_ORIGINAL_RETURNED'))
-        self.assertLess(prefix.index('Stage.BOOTSTRAP_ORIGINAL_RETURNED'), prefix.index('val context ='))
-        self.assertEqual(4, callback.count('return@callback result'))
-        self.assertTrue(callback.rstrip().endswith('result'))
+        self.assertLess(callback.index('applicationContext'), proceed)
+        self.assertLess(callback.index('::supported'), proceed)
+        self.assertLess(callback.index('bootstrapCopilotOnCreate('), proceed)
+        helper = source.split('internal fun <T> bootstrapCopilotOnCreate', 1)[1].split(
+            'private fun enabled', 1)[0]
+        self.assertIn('BOOTSTRAP_ORIGINAL_THREW', helper)
+        self.assertIn('throw error', helper)
 
     def test_bootstrap_short_circuits_and_complete_registration_are_diagnosable(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt').read_text()
@@ -88,7 +87,8 @@ class VivoTextBridgeContractTest(unittest.TestCase):
         for gate in ('hooks.report.installedCount == 7', 'hooks.report.failedCount == 0',
                      'hooks.report.missingCount == 0', 'hooks.report.skippedCount == 0'):
             self.assertIn(gate, source)
-        self.assertIn('if (ready) VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.HOOK_READY)', source)
+        self.assertIn('if (ready) {', source)
+        self.assertIn('VivoBridgeDiagnostics.Stage.HOOK_READY', source)
         self.assertLess(source.index('registerBusiness(module, rootLogger, api, state)'), source.index('Stage.HOOK_READY'))
         self.assertLess(source.index('Prefs.registerRemoteListener(listener)'), source.index('state.ready = ready'))
         self.assertLess(source.index('state.ready = ready'), source.index('Stage.HOOK_READY'))
@@ -107,7 +107,8 @@ class VivoTextBridgeContractTest(unittest.TestCase):
         for category in ('CLASS', 'METHOD', 'FIELD', 'LINKAGE', 'REGISTRATION', 'OTHER'):
             self.assertIn(category, source)
         hooks = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt').read_text()
-        callback = hooks.split('"CopilotApp.onCreate") callback@ { chain ->', 1)[1].split('private fun enabled', 1)[0]
+        callback = hooks.split('intercept("vivo.bootstrap"', 1)[1].split(
+            'internal fun <T> bootstrapCopilotOnCreate', 1)[0]
         self.assertEqual(['"本机文本接管初始化失败，未启用接管"'], re.findall(r'\.warn\((.*?)\)', callback))
         self.assertNotIn('Log.', callback)
         self.assertNotIn('it.message', callback)
