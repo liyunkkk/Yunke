@@ -1510,8 +1510,8 @@ class BrowserUseManager(
 
     fun loadURL(urlString: String) {
         val normalized = normalizeURL(urlString)
-        if (researchMode && !io.github.mangi.eta.agent.browser.ChildBrowserPolicy.isWebUrl(normalized)) {
-            return BrowserActionResult.error("Child browser only permits HTTP/HTTPS pages")
+        require(!researchMode || io.github.mangi.eta.agent.browser.ChildBrowserPolicy.isWebUrl(normalized)) {
+            "Child browser only permits HTTP/HTTPS pages"
         }
         _isLoading.value = true
         webView.loadUrl(normalized)

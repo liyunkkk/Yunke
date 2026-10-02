@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Build capability only. Independent persisted user consent defaults to false. -->
+    <bool name="vivo_text_bridge_enabled">true</bool>
+</resources>

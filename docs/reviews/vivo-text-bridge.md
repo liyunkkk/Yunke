@@ -1,0 +1,105 @@
+# V2419A native text adapter — implementation and acceptance record
+
+## Current scope
+
+The source now joins a typed vivo outbound hook, authenticated Messenger client,
+Eta text-only model service, native answer/cancel sinks and an independent UI
+opt-in. This is a candidate implementation, NOT a claim of device acceptance.
+Compilation/testing must cover the complete change rather than treating the
+previous disabled-service foundation as delivered adaptation.
+
+Supported: V2419A / Android SDK35 / copilot versionCode6090021 with its pinned
+current signer. The independent `vivo_text_bridge` consent defaults false. The
+component resource denotes build capability, not consent. UI writes framework
+and Eta-local consent explicitly; any failed enable attempts revoke both. Turning
+off locally revokes model access first, cancels active work and requests target
+hook revocation. The feature does not change the default assistant, existing
+custom-model settings or AgentRuntimeService's package/tool authorization.
+
+Only com.vivo.ai.copilot is newly added to the Xposed recommended scope. The user
+must enable that scope and restart small-V before first use. Secondary processes
+and other vivo packages are not added.
+
+## Verified native ABI and takeover point
+
+The installed 6.9.0.21 APK was inspected as source AND raw DEX. A prior source-only
+report incorrectly described a String parameter: the real seam is typed:
+
+- `LinkParamsMapper.a(String, RemoteQueryRequest) -> ChatPayload`
+- `LinkServer.m(ChatPayload, String linkId, kotlin.jvm.functions.Function2) -> void`
+- `GatewayManager.a(String linkId, LocalIntent) -> void`
+- `LocalIntent.TextAnswer(String dialogId,String text,String blockId,String voiceText,boolean showToolbar,boolean needRecognize)`
+- `LocalIntent.Interrupt(String dialogId,String insertAfterBlockId,Integer interruptSource,String interruptType)`
+
+RemoteQueryHandler creates StartConversation, StartDialog, the user bubble,
+WaitDialog and show-stop-button BEFORE these mapper/dispatch calls. The adapter
+correlates the exact ChatPayload OBJECT IDENTITY, not serialized JSON, packet
+payload bytes, callback guesses or fake coroutine continuations. After claiming
+a matching dispatch it never calls the original sender, retries, or falls back
+to the vendor model. The existing read-only probe is not modified.
+
+Eligibility conservatively uses native TextQueryModel fields: default little_v
+agent, inputType0/default empty bizSource, manual rendered text, no attachments,
+voice/special contexts, recommendation, shortcut, regeneration or skipRemote.
+Additional intent/query parameters reject the request. Existing Agent-prefix
+preference is honored without rewriting it. Unsupported native requests remain
+native; this is not universal voice, attachment, skill or agent-tool takeover.
+The real keyboard path must still be confirmed against these eligibility gates.
+
+## Response and cancellation
+
+One complete response becomes a single native TextAnswer with an explicit answer
+block ID and empty voiceText (no extra TTS request). Its native executor emits
+block, toolbar and EndDialog. An explicit hide-stop UiSignal clears the loading
+control. Do NOT use EndDialogAndConversation: it also closes the conversation/link.
+
+Native stop/stop-dialog and link teardown revoke matching ownership and cancel the
+Eta request. Ownership is reserved synchronously before main-thread submission,
+so cancellation before binding cannot later send the prompt. Stale completions
+cannot write into another dialog. Model errors become bounded native error text;
+no raw exception, prompt, endpoint or API key is logged by the adapter.
+
+Native emission is an asynchronous vendor operation. Source invocation alone does
+not prove visible output, saved history, finalization or cancellation correctness.
+Those remain device-test acceptance items.
+
+## Trust boundary and limits
+
+The service validates Message.sendingUid, exact singleton caller package, installed
+version and signer. The client verifies Eta's singleton UID, service ownership and
+release signer, then validates reply UID/request ID. Keys and provider endpoints
+stay in Eta. The explicit selected provider/model must exist and be enabled;
+selection repair/fallback is forbidden, changes during lookup are rejected.
+Custom-body or extra-JSON overrides fail closed rather than reintroducing tools.
+Only ModelFeatureCompletion is called, never AgentLoop or a tool executor.
+
+Messenger: request1 = request_id + prompt; cancel2 = request_id; terminal3 =
+request_id + code + optional text; rejection4 = request_id + code. Request IDs
+are bounded ASCII, prompts at most4000 UTF-16 units, result at most16000 units,
+nominal server timeout90s/output budget2048 tokens. One worker is allowed at a
+time. Cancelled workers hold the server slot until they actually exit. An
+uninterruptible worker therefore remains BUSY until process restart.
+
+Process-lifetime replay limits retain256 IDs rather than evicting them; they do
+not survive process death. No automatic retry after any unknown outcome. Client
+unbind, server watchdog, callback death, one-terminal guards and stale reply
+checks are implemented. Terminal callback delivery is best effort, not guaranteed.
+
+## Validation record and remaining acceptance
+
+- The previous metadata-only probe0.3 verified encode/send/decode calls, not model
+  replacement. No repeat of that test or of old blocked-task recovery is needed.
+- Foundation commit95d9a2a0 was pushed to main. Run36904696316 failed in an
+  unrelated inherited BrowserUseManager.loadURL Unit-return mismatch before
+  unit tests; the minimal fail-closed source fix is included in this integration.
+- Full-source Python contracts and Kotlin/Android unit tests must be run on the
+  final integration. All APK compilation goes through the existing original-
+  signing GitHub Actions workflow via gh, and the final source goes to main.
+- The client child was marked completed but its worktree diff was empty; it was
+  discarded without being counted as implementation/review. The dispatcher then
+  prohibited new tasks for this run, so remaining implementation/verification is
+  performed by the parent. Earlier source reviews are not approval of new code.
+- Required device acceptance: enable this single-device opt-in and module scope;
+  one benign text request; confirm zero selected vendor dispatches, one Eta model
+  request and visible native answer; next turn; cancellation; provider error;
+  toggle-off; verify default assistant and other module scopes are unchanged.

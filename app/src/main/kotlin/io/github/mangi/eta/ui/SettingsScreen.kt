@@ -88,6 +88,7 @@ import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.voice.EtaVoiceInteractionService
 import io.github.mangi.eta.config.PowerAssistantTarget
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.config.VivoBridgeConsent
 import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AppUpdateOffer
@@ -591,7 +592,8 @@ internal fun SettingsScreen(
             if (prefs != null || hasConnectedFramework) {
                 // ── 厂商助手兼容入口 ──────────────────────────────────────────
                 item(key = "section_oem_assistant_compatibility") {
-                    SmallTitle(stringResource(R.string.ui_xiaobu_xiaoai_compatible_entrance_ae918a))
+                    SmallTitle(if (android.os.Build.MODEL == "V2419A") "厂商助手兼容入口（小布 / 小爱 / 小 V）"
+                        else stringResource(R.string.ui_xiaobu_xiaoai_compatible_entrance_ae918a))
                     Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                         SwitchPref(
                             context = context,
@@ -608,6 +610,10 @@ internal fun SettingsScreen(
                             key = Prefs.Keys.AGENT_REQUIRE_PREFIX,
                             icon = Icons.Rounded.Code,
                         )
+
+                        if (android.os.Build.MODEL == "V2419A" && android.os.Build.VERSION.SDK_INT == 35) {
+                            VivoTextBridgeSwitch(context, prefs)
+                        }
                     }
                 }
             }
@@ -1376,3 +1382,45 @@ private fun SystemizerInstallResult.toToastMessage(context: Context): String =
             ?.let { "$message：$it" }
             ?: message
     }
+
+
+@Composable
+private fun VivoTextBridgeSwitch(context: Context, remote: SharedPreferences?) {
+    val local = Prefs.localAgentPreferences()
+    val compatible = remember(context) {
+        runCatching {
+            context.packageManager.getPackageInfo("com.vivo.ai.copilot", 0).longVersionCode == 6090021L
+        }.getOrDefault(false)
+    }
+    var checked by remember(remote, local) {
+        mutableStateOf(VivoBridgeConsent.read(remote) && VivoBridgeConsent.read(local))
+    }
+    DisposableEffect(remote, local) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == Prefs.Keys.VIVO_TEXT_BRIDGE) {
+                checked = VivoBridgeConsent.read(remote) && VivoBridgeConsent.read(local)
+            }
+        }
+        remote?.registerOnSharedPreferenceChangeListener(listener)
+        local?.registerOnSharedPreferenceChangeListener(listener)
+        onDispose {
+            remote?.unregisterOnSharedPreferenceChangeListener(listener)
+            local?.unregisterOnSharedPreferenceChangeListener(listener)
+        }
+    }
+    SwitchPreference(
+        title = "小 V 文本模型接管（V2419A 实验）",
+        summary = "独立开关；仅支持小 V 6.9.0.21 的普通手动文本，遵循上方 Agent 前缀选项。" +
+            "使用代鱼当前选定模型，不执行工具；附件、语音及专用技能不接管。请在 Vector 勾选小 V 后重新打开小 V。",
+        checked = checked,
+        enabled = remote != null && local != null && compatible,
+        onCheckedChange = { value ->
+            if (remote != null && local != null) {
+                val committed = VivoBridgeConsent.commit(remote, local, value)
+                checked = VivoBridgeConsent.read(remote) && VivoBridgeConsent.read(local)
+                if (!committed) Toast.makeText(context, R.string.settings_write_failed, Toast.LENGTH_SHORT).show()
+            }
+        },
+        startAction = { PreferenceIcon(icon = Icons.Rounded.Memory, enabled = compatible && remote != null && local != null) },
+    )
+}

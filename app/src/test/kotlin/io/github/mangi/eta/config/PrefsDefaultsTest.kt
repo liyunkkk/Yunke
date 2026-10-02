@@ -17,6 +17,7 @@ class PrefsDefaultsTest {
                 Prefs.Keys.LOCKSCREEN_VOICE_COMMAND to false,
                 Prefs.Keys.SCREEN_ON_VOICE_COMMAND to false,
                 Prefs.Keys.AGENT_CUSTOM_MODEL to true,
+                Prefs.Keys.VIVO_TEXT_BRIDGE to false,
                 Prefs.Keys.AGENT_REQUIRE_PREFIX to false,
                 Prefs.Keys.AGENT_TERMINAL_TOOLS to true,
                 Prefs.Keys.AGENT_BROWSER_TOOLS to true,
