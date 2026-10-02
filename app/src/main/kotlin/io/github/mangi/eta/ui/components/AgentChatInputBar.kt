@@ -159,7 +159,8 @@ internal fun AgentChatInputBar(
     billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
     previewRequestOverheadTokens: Int? = null,
-    overheadCalibrationTokens: Int? = null,
+    overheadCalibrationTokens: io.github.mangi.eta.ui.model.RequestOverheadCalibration.Sample? = null,
+    contextDisplayPolicy: io.github.mangi.eta.ui.model.ContextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(),
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
     activeRunContextWindow: Int? = null,
@@ -217,7 +218,7 @@ internal fun AgentChatInputBar(
         io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo, requestEndpoint)
     }
     val liveUsage = remember(
-        previewHistoryTokens, projectedContextTokens, billedContextTokens,
+        contextDisplayPolicy, previewHistoryTokens, projectedContextTokens, billedContextTokens,
         requestOverheadTokens, previewRequestOverheadTokens, overheadCalibrationTokens, historyTokenCount,
         billedOverheadTokens, uncommittedLiveTokens, draftText,
         pendingImages, pendingFileReferences, conversationMentions.pending,
@@ -228,6 +229,8 @@ internal fun AgentChatInputBar(
             historyTokenCount = if (overheadCalibrationTokens != null) historyTokenCount else previewHistoryTokens,
             projectedContextTokens = projectedContextTokens,
             overheadCalibrationTokens = overheadCalibrationTokens,
+            contextDisplayPolicy = contextDisplayPolicy,
+            receiptEstimateTokens = contextDisplayPolicy.receiptEstimateTokens,
             currentInput = draftText,
             pendingImages = pendingImages,
             selectedModel = modelPickerState.selectedModel,

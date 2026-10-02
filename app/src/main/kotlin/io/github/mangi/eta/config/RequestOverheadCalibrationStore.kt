@@ -11,12 +11,14 @@ internal object RequestOverheadCalibrationStore {
 
     // Length prefixes make the pair unambiguous even when identifiers contain delimiters.
     private fun key(providerId: String, modelId: String): String =
-        "agent_request_overhead_calibration_v1:${providerId.length}:$providerId:${modelId.length}:$modelId"
+        "agent_request_ratio_calibration_v2:${providerId.length}:$providerId:${modelId.length}:$modelId"
 
     fun read(providerId: String, modelId: String): RequestOverheadCalibration.Sample? = runCatching {
         val raw = Prefs.getString(key(providerId, modelId)).ifEmpty { return null }
         json.decodeFromString<RequestOverheadCalibration.Sample>(raw)
-            .takeIf { it.offsetTokens >= 0 && it.samples > 0 && it.measuredOverheadTokens >= 0 }
+            .takeIf { sample -> sample.observations.size in 1..3 && sample.observations.all {
+                it.requestId.isNotBlank() && it.cloudInput > 0 && it.history >= 0 && it.overhead > 0
+            } }
     }.getOrNull()
 
     fun save(providerId: String, modelId: String, sample: RequestOverheadCalibration.Sample) {

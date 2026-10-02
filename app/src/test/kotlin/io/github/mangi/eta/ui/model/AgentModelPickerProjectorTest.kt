@@ -191,7 +191,7 @@ class AgentModelPickerProjectorTest {
         assertEquals("1.05M", formatCompactTokenCount(1_050_000))
         // Unknown occupancy must not be rendered as a measured 0K / 0.0%.
         assertEquals(
-            "No conversation context yet · 100K tokens",
+            "未知",
             formatContextUsage(AgentContextUsageUi(contextTokens = null, contextWindow = 100_000)),
         )
         assertEquals(
@@ -249,7 +249,7 @@ class AgentModelPickerProjectorTest {
                 ),
             ),
         )
-        val usage = liveContextUsage(
+        val usage = compressionContextUsage(
             history = history,
             currentInput = "please read this",
             pendingImages = images,
@@ -289,25 +289,25 @@ class AgentModelPickerProjectorTest {
             dataUrl = "data:image/png;base64," + "A".repeat(50_000),
             mimeType = "image/png",
         )
-        val withImage = liveContextUsage(
+        val withImage = compressionContextUsage(
             history = emptyList(),
             currentInput = "看图",
             pendingImages = listOf(huge),
             selectedModel = selected,
         )
-        val textOnly = liveContextUsage(
+        val textOnly = compressionContextUsage(
             history = emptyList(),
             currentInput = "看图",
             pendingImages = emptyList(),
             selectedModel = selected,
         )
-        val vision = liveContextUsage(
+        val vision = compressionContextUsage(
             history = emptyList(),
             currentInput = "看图",
             pendingImages = listOf(huge),
             selectedModel = selected.copy(supportsVision = true),
         )
-        val tiny = liveContextUsage(emptyList(), "看图", listOf(huge.copy(dataUrl = "data:image/png;base64,AA")), selected)
+        val tiny = compressionContextUsage(emptyList(), "看图", listOf(huge.copy(dataUrl = "data:image/png;base64,AA")), selected)
         assertEquals(tiny.contextTokens, withImage.contextTokens)
         assertTrue(requireNotNull(withImage.contextTokens) >= requireNotNull(textOnly.contextTokens))
         assertTrue(requireNotNull(vision.contextTokens) > requireNotNull(textOnly.contextTokens))
@@ -333,8 +333,10 @@ class AgentModelPickerProjectorTest {
             pendingImages = emptyList(),
             selectedModel = selected,
         )
-        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) }, usage.contextTokens)
-        assertTrue(usage.estimated)
+        assertNull(usage.contextTokens)
+        assertEquals("未知", formatContextUsage(usage))
+        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) },
+            compressionContextUsage(history, "", emptyList(), selected).contextTokens)
     }
 
     @Test
@@ -357,12 +359,12 @@ class AgentModelPickerProjectorTest {
             dataUrl = "data:image/png;base64," + "A".repeat(4_096 * 90),
             mimeType = "image/png",
         )
-        val usage = liveContextUsage(
+        val usage = compressionContextUsage(
             history = history,
             currentInput = "look",
             pendingImages = listOf(image),
             selectedModel = selected,
-            historyTokenCount = 1_000,
+            localHistoryTokenCount = 1_000,
         )
         val expected = 1_000 + AgentContextBudget.countCurrentTurn(
             "look",
@@ -533,8 +535,9 @@ class AgentModelPickerProjectorTest {
             selectedModel = selected,
             requestOverheadTokens = 12_000,
         )
-        assertEquals(local + 12_000, usage.contextTokens)
-        assertTrue(usage.estimated)
+        assertNull(usage.contextTokens)
+        assertEquals(local + 12_000, compressionContextUsage(history, "", emptyList(), selected,
+            requestOverheadTokens = 12_000).contextTokens)
     }
 
     @Test
@@ -794,8 +797,8 @@ class AgentModelPickerProjectorTest {
             selectedModel = selected,
             uncommittedLiveTokens = streaming,
         )
-        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) } + streaming, usage.contextTokens)
-        assertTrue(usage.estimated)
+        assertNull(usage.contextTokens)
+        assertEquals("未知", formatContextUsage(usage))
     }
 
     @Test

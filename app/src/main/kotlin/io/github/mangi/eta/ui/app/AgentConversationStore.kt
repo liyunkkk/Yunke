@@ -148,6 +148,7 @@ internal object AgentConversationStore {
                                 conversationId, state.providerId, state.modelId, encodedHistory,
                                 state.livePromptTokens.takeUnless { state.livePromptIsProjected },
                                 state.cloudHistoryTokens, state.cloudRequestOverheadTokens,
+                                state.contextHasStarted, state.contextAwaitingReceipt, state.cloudRouteSignature,
                             ),
                         )))
                     }
@@ -295,7 +296,14 @@ internal object AgentConversationStore {
             CloudUsageReceiptCodec.decodeReceipt(it.cloudUsageJson, conversation.id,
                 conversation.providerId, conversation.modelId, it.historyJson)
         }
+        val contextDisplay = checkpoint?.let {
+            CloudUsageReceiptCodec.decodeDisplayState(it.cloudUsageJson, conversation.id, it.historyJson)
+        }
         return AgentChatHomeUiState(
+            contextHasStarted = contextDisplay?.hasStarted ?: (history.isNotEmpty() || messages.isNotEmpty()),
+            // Legacy checkpoints without state metadata are conservative, even if markers aren't loaded.
+            contextAwaitingReceipt = contextDisplay?.awaitingReceipt ?: (receipt == null && history.isNotEmpty()),
+            cloudRouteSignature = receipt?.routeSignature,
             conversationContentLoaded = withContent,
             messages = messages,
             history = history,

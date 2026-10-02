@@ -68,6 +68,20 @@ class AgentConversationStoreTest {
         assertEquals(126364, (restored.messages.single() as AgentMessageUi).usage?.inputTokens)
     }
 
+    @Test fun compactedUnknownSurvivesReopenWithoutAnyVisibleMarker() {
+        val compacted = AgentChatHomeUiState(messages = emptyList(),
+            history = listOf(AgentModelClient.ConversationMessage("system", "summary")),
+            input = "", isStreaming = false, thinkingEnabled = false,
+            providerId = "p", modelId = "m", contextHasStarted = true, contextAwaitingReceipt = true)
+        runBlocking { AgentConversationStore.save(context, "c", mapOf("c" to compacted), mapOf("c" to "task"), mapOf("c" to 1L)) }
+        EtaDatabase.closeForTests()
+        val restored = requireNotNull(AgentConversationStore.load(context).conversationsById["c"])
+        assertTrue(restored.contextHasStarted)
+        assertTrue(restored.contextAwaitingReceipt)
+        assertTrue(restored.messages.isEmpty())
+        assertNull(restored.livePromptTokens)
+    }
+
     @Test fun cloudInputSurvivesDatabaseReopenAndInvalidationStaysEmpty() {
         val original = AgentChatHomeUiState(messages = emptyList(),
             history = listOf(AgentModelClient.ConversationMessage("user", "task")),
