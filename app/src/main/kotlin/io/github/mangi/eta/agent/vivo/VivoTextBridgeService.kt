@@ -14,6 +14,7 @@ import android.os.Messenger
 import io.github.mangi.eta.R
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.config.VivoBridgeConsent
+import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.ModelFeatureCompletion
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import kotlinx.coroutines.runBlocking
@@ -114,35 +115,20 @@ class VivoTextBridgeService : Service() {
         call.timeout = Runnable { stop(call, "TIMEOUT") }
         call.death = IBinder.DeathRecipient { main.post { stop(call, "CALLER_GONE", notify = false) } }
         call.thread = Thread({
-            var code = "MODEL_ERROR"
-            var answer: String? = null
-            try {
-                call.controller.throwIfCancelled()
-                val config = runBlocking { VivoTextModelGateway.selectedConfig() }
-                call.controller.throwIfCancelled()
-                if (config == null) code = "NO_MODEL" else {
-                    // No user-supplied system prompt, history, model override, URL or credentials.
-                    val messages = JSONArray().put(JSONObject().put("role", "user")
-                        .put("content", command.prompt!!))
-                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_STARTED)
-                    val text = ModelFeatureCompletion.complete(config, messages, call.controller,
+            executeModelCall(call.controller, command.prompt,
+                selectConfig = { runBlocking { VivoTextModelGateway.selectedConfig() } },
+                complete = { config, messages, onFailurePhase ->
+                    ModelFeatureCompletion.complete(config, messages, call.controller,
                         sessionId = "vivo-text-${call.id}", timeoutMs = VivoTextBridgePolicy.TIMEOUT_MS,
-                        outputLimit = 2048)
-                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FINISHED)
-                    if (text.length > VivoTextBridgePolicy.MAX_RESULT) code = "RESULT_TOO_LARGE"
-                    else { answer = text; code = "OK" }
-                }
-            } catch (_: Exception) {
-                code = if (call.controller.isCancelled) "CANCELLED" else "MODEL_ERROR"
-            } finally {
-                val resultCode = code
-                val resultText = answer
-                main.post {
-                    finish(call, resultCode, resultText)
-                    if (active === call) active = null
-                    ledger.release(call.uid, call.id)
-                }
-            }
+                        outputLimit = 2048, onFailurePhase = onFailurePhase)
+                },
+                deliver = { resultCode, resultText ->
+                    main.post {
+                        finish(call, resultCode, resultText)
+                        if (active === call) active = null
+                        ledger.release(call.uid, call.id)
+                    }
+                })
         }, "eta-vivo-text").apply { isDaemon = true }
         try {
             reply.binder.linkToDeath(call.death, 0)
@@ -166,7 +152,8 @@ class VivoTextBridgeService : Service() {
 
     private fun finish(call: Call, code: String, text: String? = null, notify: Boolean = true) {
         if (!call.terminal.compareAndSet(false, true)) return
-        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_TERMINAL)
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_TERMINAL,
+            terminalCode = VivoBridgeDiagnostics.TerminalCode.fromWire(code))
         main.removeCallbacks(call.timeout)
         try { call.reply.binder.unlinkToDeath(call.death, 0) } catch (_: Exception) { }
         if (notify && !destroyed) send(call.reply, VivoTextBridgePolicy.RESULT, call.id, code, text)
@@ -192,5 +179,72 @@ class VivoTextBridgeService : Service() {
         super.onDestroy()
     }
 
-    companion object { private val ledger = VivoTextBridgeLedger() }
+    companion object {
+        private val ledger = VivoTextBridgeLedger()
+
+        // The same worker boundary is exercised without Binder or a real model in tests.
+        // Diagnostics never select a provider, retry a request, or alter the wire result.
+        internal fun executeModelCall(
+            controller: AgentRunController,
+            prompt: String?,
+            selectConfig: () -> AgentModelClient.ModelConfig?,
+            complete: (AgentModelClient.ModelConfig, JSONArray, (ModelFeatureCompletion.FailurePhase) -> Unit) -> String,
+            deliver: (String, String?) -> Unit,
+        ) {
+            var code = "MODEL_ERROR"
+            var answer: String? = null
+            var phase = VivoBridgeDiagnostics.FailurePhase.SELECT_CONFIG
+            var modelStarted = false
+            try {
+                controller.throwIfCancelled()
+                val config = selectConfig()
+                controller.throwIfCancelled()
+                if (config == null) {
+                    code = "NO_MODEL"
+                    runCatching {
+                        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_PREPARATION_FAILED,
+                            modelFailure = VivoModelFailureClassifier.Classification(VivoModelFailureClassifier.Category.CONFIG),
+                            phase = phase)
+                    }
+                } else {
+                    phase = VivoBridgeDiagnostics.FailurePhase.PREPARE_REQUEST
+                    // No user-supplied system prompt, history, model override, URL or credentials.
+                    val messages = JSONArray().put(JSONObject().put("role", "user").put("content", prompt!!))
+                    phase = VivoBridgeDiagnostics.FailurePhase.MODEL_CALL
+                    modelStarted = true
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_STARTED)
+                    val text = complete(config, messages) { failedPhase ->
+                        phase = when (failedPhase) {
+                            ModelFeatureCompletion.FailurePhase.CONFIG_VALIDATION -> VivoBridgeDiagnostics.FailurePhase.CONFIG_VALIDATION
+                            ModelFeatureCompletion.FailurePhase.CANCELLATION_CHECK -> VivoBridgeDiagnostics.FailurePhase.CANCELLATION_CHECK
+                            ModelFeatureCompletion.FailurePhase.REQUEST_PREPARATION -> VivoBridgeDiagnostics.FailurePhase.REQUEST_PREPARATION
+                            ModelFeatureCompletion.FailurePhase.PROVIDER_CALL -> VivoBridgeDiagnostics.FailurePhase.PROVIDER_CALL
+                            ModelFeatureCompletion.FailurePhase.STOP_REASON_VALIDATION -> VivoBridgeDiagnostics.FailurePhase.STOP_REASON_VALIDATION
+                            ModelFeatureCompletion.FailurePhase.TOOL_CALL_VALIDATION -> VivoBridgeDiagnostics.FailurePhase.TOOL_CALL_VALIDATION
+                            ModelFeatureCompletion.FailurePhase.BODY_VALIDATION -> VivoBridgeDiagnostics.FailurePhase.BODY_VALIDATION
+                        }
+                    }
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FINISHED)
+                    phase = VivoBridgeDiagnostics.FailurePhase.RESULT_CHECK
+                    if (text.length > VivoTextBridgePolicy.MAX_RESULT) code = "RESULT_TOO_LARGE"
+                    else { answer = text; code = "OK" }
+                }
+            } catch (error: Throwable) {
+                code = if (error is Exception && controller.isCancelled) "CANCELLED" else "MODEL_ERROR"
+                answer = null
+                // Even diagnostics failures cannot mask the original result or fatal throwable.
+                runCatching {
+                    VivoBridgeDiagnostics.record(
+                        if (modelStarted) VivoBridgeDiagnostics.Stage.MODEL_FAILED
+                        else VivoBridgeDiagnostics.Stage.SERVICE_PREPARATION_FAILED,
+                        modelFailure = VivoModelFailureClassifier.classify(error, controller.isCancelled),
+                        phase = phase)
+                }
+                // Preserve the former uncaught-Error behavior; never turn Error into success.
+                if (error !is Exception) throw error
+            } finally {
+                deliver(code, answer)
+            }
+        }
+    }
 }

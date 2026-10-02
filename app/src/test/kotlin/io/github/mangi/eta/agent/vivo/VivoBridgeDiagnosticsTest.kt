@@ -129,6 +129,51 @@ class VivoBridgeDiagnosticsTest {
         assertTrue(logs.last().msg.contains(" n=80"))
     }
 
+    @Test fun modelMetadataAndTerminalCodesNeverFormatSensitiveFields() {
+        val secret = "Authorization: Bearer private-key https://private.invalid body=private model=private"
+        val error = io.github.mangi.eta.agent.model.AgentModelFailure(
+            "HTTP_401", false, secret, diagnostic = secret)
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FAILED,
+            modelFailure = VivoModelFailureClassifier.classify(error),
+            phase = VivoBridgeDiagnostics.FailurePhase.MODEL_CALL)
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_TERMINAL,
+            terminalCode = VivoBridgeDiagnostics.TerminalCode.fromWire("MODEL_ERROR"))
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_TERMINAL,
+            terminalCode = VivoBridgeDiagnostics.TerminalCode.fromWire(secret))
+        val logs = ShadowLog.getLogsForTag("EtaVivoText")
+        assertEquals(listOf(
+            "v=1 stage=MODEL_FAILED n=1 error=HTTP_401 http_code=401 phase=MODEL_CALL",
+            "v=1 stage=SERVICE_TERMINAL n=2 code=MODEL_ERROR",
+            "v=1 stage=SERVICE_TERMINAL n=3 code=UNKNOWN",
+        ), logs.map { it.msg })
+        logs.forEach { assertEquals(Log.INFO, it.type); assertNull(it.throwable) }
+        VivoBridgeDiagnostics.TerminalCode.entries.forEach {
+            assertEquals(it, VivoBridgeDiagnostics.TerminalCode.fromWire(it.name))
+        }
+        listOf("OK\n", " OK", "MODEL_ERROR_private", "model_error").forEach {
+            assertEquals(VivoBridgeDiagnostics.TerminalCode.UNKNOWN, VivoBridgeDiagnostics.TerminalCode.fromWire(it))
+        }
+    }
+
+    @Test fun newFailureDimensionsShareTheOriginalStageAndProcessBudgets() {
+        VivoModelFailureClassifier.Category.entries.forEach { category ->
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FAILED,
+                modelFailure = VivoModelFailureClassifier.Classification(category))
+        }
+        VivoBridgeDiagnostics.TerminalCode.entries.forEach { code ->
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.SERVICE_TERMINAL, terminalCode = code)
+        }
+        assertEquals(8, ShadowLog.getLogsForTag("EtaVivoText").size)
+        repeat(200) { index ->
+            val stages = VivoBridgeDiagnostics.Stage.entries
+            VivoBridgeDiagnostics.record(stages[index % stages.size])
+        }
+        val logs = ShadowLog.getLogsForTag("EtaVivoText")
+        assertEquals(80, logs.size)
+        assertEquals(4, logs.count { it.msg.contains("stage=MODEL_FAILED ") })
+        assertEquals(4, logs.count { it.msg.contains("stage=SERVICE_TERMINAL ") })
+    }
+
     @Test fun oneSharedEightyLineBudgetCoversBootstrapAndBusinessStages() {
         repeat(120) {
             val stages = VivoBridgeDiagnostics.Stage.entries

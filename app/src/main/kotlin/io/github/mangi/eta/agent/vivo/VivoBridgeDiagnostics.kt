@@ -17,8 +17,22 @@ internal object VivoBridgeDiagnostics {
         HOOK_READY, DISPATCH_CLAIMED, CLIENT_BOUND, CLIENT_TERMINAL,
         SERVICE_ACCEPTED, MODEL_STARTED, MODEL_FINISHED, SERVICE_TERMINAL,
         OWNER_CANCELLED, SERVICE_CANCELLED, NATIVE_REPLY_ENQUEUED, NATIVE_SINK_FAILED,
+        SERVICE_PREPARATION_FAILED, MODEL_FAILED,
     }
     enum class Failure { CLASS, METHOD, FIELD, LINKAGE, REGISTRATION, OTHER }
+    enum class FailurePhase {
+        SELECT_CONFIG, PREPARE_REQUEST, MODEL_CALL, RESULT_CHECK,
+        CONFIG_VALIDATION, CANCELLATION_CHECK, REQUEST_PREPARATION, PROVIDER_CALL,
+        STOP_REASON_VALIDATION, TOOL_CALL_VALIDATION, BODY_VALIDATION,
+    }
+    enum class TerminalCode {
+        OK, NO_MODEL, RESULT_TOO_LARGE, CANCELLED, MODEL_ERROR, UNAVAILABLE,
+        TIMEOUT, CALLER_GONE, SERVICE_STOPPED, UNKNOWN;
+
+        companion object {
+            fun fromWire(code: String): TerminalCode = entries.firstOrNull { it.name == code } ?: UNKNOWN
+        }
+    }
 
     // Closed vocabulary only: never include a native field value, class name or exception detail.
     enum class Reason {
@@ -43,14 +57,27 @@ internal object VivoBridgeDiagnostics {
     }
 
     private val budget = VivoDiagnosticBudget(Stage.entries.size, totalLimit = 80, perStageLimit = 4)
-    fun record(stage: Stage, failure: Failure? = null, reason: Reason? = null) {
+    fun record(
+        stage: Stage,
+        failure: Failure? = null,
+        reason: Reason? = null,
+        modelFailure: VivoModelFailureClassifier.Classification? = null,
+        phase: FailurePhase? = null,
+        terminalCode: TerminalCode? = null,
+    ) {
         // Bound noisy stages before spending the shared process budget. All diagnostics
         // are best effort: they must not mask vendor exceptions or affect owned suppression.
         runCatching {
             val count = budget.claim(stage.ordinal) ?: return@runCatching
             val category = failure?.let { " failure=${it.name}" }.orEmpty()
             val rejection = reason?.let { " reason=${it.name}" }.orEmpty()
-            Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category$rejection")
+            val modelCategory = modelFailure?.let { " error=${it.category.name}" }.orEmpty()
+            val http = modelFailure?.httpCode?.takeIf { it in 100..599 }
+                ?.let { " http_code=$it" }.orEmpty()
+            val modelCode = modelFailure?.modelCode?.let { " model_code=${it.name}" }.orEmpty()
+            val location = phase?.let { " phase=${it.name}" }.orEmpty()
+            val terminal = terminalCode?.let { " code=${it.name}" }.orEmpty()
+            Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category$rejection$modelCategory$http$modelCode$location$terminal")
         }
     }
 }
