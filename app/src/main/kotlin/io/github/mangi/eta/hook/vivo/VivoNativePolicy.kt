@@ -13,7 +13,7 @@ internal object VivoNativePolicy {
     fun prompt(text: String?, requirePrefix: Boolean): String? {
         var value = text?.trim() ?: return null
         if (requirePrefix) {
-            val prefix = Regex("(?i)^agent(?:\\s+|[:：]\\s*)").find(value) ?: return null
+            val prefix = Regex("(?i)^/?agent(?:\\s+|[:：]\\s*)").find(value) ?: return null
             value = value.substring(prefix.range.last + 1).trim()
         }
         return value.takeIf { it.isNotBlank() && it.length <= 4000 && '\u0000' !in it }
