@@ -15,31 +15,11 @@ class AgentBudgetMetadataWireTest {
         assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
     }
 
-    @Test fun forecastOnlyRoundTripsWithoutInventingBilling() {
-        val event = AgentEvent.UsageReceived(2, AgentTokenUsage(), projected = true,
-            forecastPromptTokens = 29497)
-        val restored = AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)) as AgentEvent.UsageReceived
-        assertEquals(event, restored)
-        assertTrue(restored.usage.isEmpty)
-        assertNull(restored.usage.inputTokens)
-    }
-
-    @Test fun measuredUsageAndIndependentForecastRoundTripSeparately() {
-        val event = AgentEvent.UsageReceived(3, AgentTokenUsage(inputTokens = 29405, cachedTokens = 2797),
-            forecastPromptTokens = 29497)
-        val restored = AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)) as AgentEvent.UsageReceived
-        assertEquals(event, restored)
-        assertFalse(restored.projected)
-        assertEquals(29405, restored.usage.inputTokens)
-        assertEquals(29497, restored.forecastPromptTokens)
-    }
-
     @Test fun legacyUsageLeavesCalibrationUnknownRatherThanZero() {
         val event = AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 20000))
         val restored = AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)) as AgentEvent.UsageReceived
         assertNull(restored.requestHistoryTokens)
         assertNull(restored.requestOverheadTokens)
-        assertNull(restored.forecastPromptTokens)
         assertFalse(restored.projected)
     }
 }

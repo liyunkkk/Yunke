@@ -1217,7 +1217,7 @@ class AgentModelClientLoopTest {
         assertEquals(2, usageEvents.size)
         assertEquals(listOf(1, 2), usageEvents.map { it.round })
         assertEquals(listOf(135_880, 137_865), usageEvents.map { it.usage.inputTokens })
-        assertEquals(listOf(1), events.filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected && !it.usage.isEmpty }.map { it.round })
+        assertEquals(listOf(1), events.filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected }.map { it.round })
         assertEquals(1, events.filterIsInstance<AgentEvent.ToolFinished>().size)
     }
 

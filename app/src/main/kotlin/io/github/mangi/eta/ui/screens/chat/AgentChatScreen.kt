@@ -46,7 +46,6 @@ internal fun AgentChatScreen(
             billedOverheadTokens = state.cloudRequestOverheadTokens,
             livePromptTokens = state.livePromptTokens,
             livePromptIsProjected = state.livePromptIsProjected,
-            forecastPromptTokens = state.forecastPromptTokens,
             billedHistoryTokens = state.cloudHistoryTokens,
             activeRunContextWindow = state.activeRunContextWindow,
             childContexts = state.childContexts,
