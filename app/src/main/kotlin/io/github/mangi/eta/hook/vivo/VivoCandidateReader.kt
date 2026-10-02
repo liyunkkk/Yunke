@@ -82,7 +82,9 @@ internal class VivoCandidateReader(
         if (!nullableString(get("getScheduleContext"), Reason.SCHEDULE_CONTEXT_TYPE).isNullOrBlank()) {
             return Rejected(Reason.SCHEDULE_CONTEXT)
         }
-        if (!nullableString(get("getBotType"), Reason.BOT_TYPE_TYPE).isNullOrBlank()) {
+        val botType = nullableString(get("getBotType"), Reason.BOT_TYPE_TYPE)
+        // Native manual text uses exact "main"; preserve null/blank without normalizing other types.
+        if (!botType.isNullOrBlank() && botType != "main") {
             return Rejected(Reason.BOT_TYPE)
         }
         get("getIntentions")?.let { obj ->

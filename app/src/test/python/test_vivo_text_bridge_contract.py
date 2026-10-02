@@ -176,7 +176,13 @@ class VivoTextBridgeContractTest(unittest.TestCase):
             self.assertIn(f'"{getter}" to Reason.{reason}', reader)
         self.assertIn('if (get(name) != null) return Rejected(reason)', reader)
         self.assertIn('if (!nullableString(get("getScheduleContext"), Reason.SCHEDULE_CONTEXT_TYPE).isNullOrBlank())', reader)
-        self.assertIn('if (!nullableString(get("getBotType"), Reason.BOT_TYPE_TYPE).isNullOrBlank())', reader)
+        self.assertIn('val botType = nullableString(get("getBotType"), Reason.BOT_TYPE_TYPE)', reader)
+        self.assertIn('if (!botType.isNullOrBlank() && botType != "main") {\n'
+                      '            return Rejected(Reason.BOT_TYPE)\n'
+                      '        }', reader)
+        bot_gate = reader.split('val botType = ', 1)[1].split('get("getIntentions")', 1)[0]
+        for forbidden in ('startsWith(', 'contains(', 'lowercase(', 'uppercase(', 'trim(', 'ignoreCase'):
+            self.assertNotIn(forbidden, bot_gate)
         self.assertIn('listOf("first", "second", "third")', reader)
         self.assertIn('if (!intentions.isInstance(obj)) return Rejected(Reason.INTENTIONS_TYPE)', reader)
         self.assertIn('if (!nullableString(field.get(obj), Reason.INTENTION_TEXT_TYPE).isNullOrBlank())', reader)
