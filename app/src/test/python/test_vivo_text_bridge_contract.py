@@ -96,12 +96,19 @@ class VivoTextBridgeContractTest(unittest.TestCase):
 
     def test_diagnostics_accept_only_enums_and_do_not_log_dynamic_values(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoBridgeDiagnostics.kt').read_text()
-        self.assertIn('fun record(stage: Stage, failure: Failure? = null, reason: Reason? = null)', source)
+        for argument in ('stage: Stage', 'failure: Failure? = null', 'reason: Reason? = null',
+                         'modelFailure: VivoModelFailureClassifier.Classification? = null',
+                         'phase: FailurePhase? = null', 'terminalCode: TerminalCode? = null'):
+            self.assertIn(argument, source)
         self.assertIn('enum class Reason {', source)
         self.assertIn('totalLimit = 80, perStageLimit = 4', source)
         self.assertIn('budget.claim(stage.ordinal) ?: return@runCatching', source)
         self.assertEqual(['i'], re.findall(r'Log\.([a-z]+)\(', source))
-        self.assertIn('Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category$rejection")', source)
+        self.assertIn('Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category$rejection$modelCategory$http$modelCode$location$terminal")', source)
+        for field in ('error=${it.category.name}', 'http_code=$it', 'model_code=${it.name}',
+                      'phase=${it.name}', 'code=${it.name}'):
+            self.assertIn(field, source)
+        self.assertIn('takeIf { it in 100..599 }', source)
         self.assertIn('" failure=${it.name}"', source)
         self.assertIn('" reason=${it.name}"', source)
         for forbidden in ('.message', '.localizedMessage', '.stackTrace', '.cause',
