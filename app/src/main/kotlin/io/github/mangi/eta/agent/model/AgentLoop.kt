@@ -205,6 +205,8 @@ internal class AgentLoop(
             // Snapshot BEFORE callbacks can append this response to messages. Retries
             // reuse the same request; partial/output-only usage cannot move this anchor.
             val requestLocal = localRequestTokens()
+            // Raw history size at snapshot time, for the bounded request-context diagnostic only.
+            val requestMessageCount = messages.length()
             val requestHistoryTokens = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)
                 .sumOf { AgentContextBudget.countMessage(it).toLong() }
                 .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
@@ -286,6 +288,20 @@ internal class AgentLoop(
             round = completedRound.round
             val providerResponse = completedRound.response
             toolDiagnosticAttempt = completedRound.toolDiagnosticAttempt
+            // One bounded record per successful request round. Local estimates stay labeled as
+            // estimates and sit next to the same round's cloud receipt so the gap is attributable.
+            emitRequestContext(
+                attempt = toolDiagnosticAttempt,
+                requestMessageCount = requestMessageCount,
+                requestLocal = requestLocal,
+                requestHistoryTokens = requestHistoryTokens,
+                requestFixedTokens = requestFixedTokens,
+                publishLocalEstimate = publishLocalEstimate,
+                preparedRequestTokens = preparedRequestTokens,
+                filteredMessages = filteredMessages,
+                roundTools = roundTools,
+                usage = lastUsage,
+            )
 
             // Keep a fully returned response before observing a concurrent user stop.
             continuationText.finish().forEach { textEvent ->
@@ -502,6 +518,49 @@ internal class AgentLoop(
 
     // Compression and send limits use this silent budget, not the ring display.
     private fun requestBudgetTokens(): Int = silentBudget.tokens(localRequestTokens())
+
+    /**
+     * Bounded request-shape evidence, emitted only when [AgentToolCallDiagnostics] is already
+     * active (otherwise the attempt is null and nothing is computed or logged). The filtered value
+     * is recomputed from this round's own snapshot only when the boundary pass did not already
+     * produce it, so diagnostics never add a second hydration, copy or wire change.
+     */
+    private fun emitRequestContext(
+        attempt: AgentToolCallDiagnostics.Attempt?,
+        requestMessageCount: Int,
+        requestLocal: Int,
+        requestHistoryTokens: Int,
+        requestFixedTokens: Int,
+        publishLocalEstimate: Boolean,
+        preparedRequestTokens: Int?,
+        filteredMessages: JSONArray,
+        roundTools: JSONArray,
+        usage: AgentTokenUsage?,
+    ) {
+        val active = attempt ?: return
+        runCatching {
+            val filteredTokens = preparedRequestTokens
+                ?: AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
+            active.emit(
+                "request_context",
+                AgentRequestContextDiagnostics.localRequestFields(
+                    AgentRequestContextDiagnostics.LocalRequest(
+                        sourceMessages = requestMessageCount,
+                        systemCount = systemCount,
+                        boundaryTokens = requestLocal,
+                        rawHistoryTokens = requestHistoryTokens,
+                        fixedTokens = requestFixedTokens,
+                        filteredTokens = filteredTokens,
+                        filteredBasis = if (publishLocalEstimate) "published_boundary" else "diagnostic_recompute",
+                        cloudInput = usage?.inputTokens,
+                        cloudCached = usage?.cachedTokens,
+                        cloudCacheCreation = usage?.cacheCreationTokens,
+                        cloudOutput = usage?.outputTokens,
+                    ),
+                ),
+            )
+        }
+    }
 
     private fun storedHistoryChars(): Long {
         val safeHistory = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)

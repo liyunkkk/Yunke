@@ -35,8 +35,9 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             "当前 Provider 未配置为 Responses API"
         }
         val prepared = ResponsesToolEnvelopeRecovery.prepare(request)
-        val body = buildRequestJson(config, prepared.messages, prepared.tools, prepared.sessionId, prepared.singleToolCall)
-            .toString()
+        val requestJson = buildRequestJson(config, prepared.messages, prepared.tools, prepared.sessionId, prepared.singleToolCall)
+        emitRequestShapeDiagnostic(request.toolDiagnosticAttempt, requestJson, prepared.messages)
+        val body = requestJson.toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         val headers = okhttp3.Headers.Builder()
             .add("Content-Type", "application/json")
@@ -92,6 +93,28 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         sessionId: String = "",
         singleToolCall: Boolean = false,
     ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools, sessionId, singleToolCall)
+
+    /**
+     * Counts only the final HTTP projection (item types, counts and opaque ciphertext volume) and
+     * routes it through the same bounded diagnostics correlation as the tool-call records. Never
+     * logs content, arguments, ciphertext, endpoints or credentials, and never tokenizes
+     * `encrypted_content`.
+     */
+    private fun emitRequestShapeDiagnostic(
+        attempt: AgentToolCallDiagnostics.Attempt?,
+        requestJson: JSONObject,
+        messages: JSONArray,
+    ) {
+        if (attempt == null) return
+        runCatching {
+            attempt.emit(
+                "request_shape",
+                AgentRequestContextDiagnostics.responseBodyFields(
+                    AgentRequestContextDiagnostics.responseBody(requestJson, messages),
+                ),
+            )
+        }
+    }
 
     private fun readStreamingResponse(
         request: Request,
