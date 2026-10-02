@@ -22,6 +22,7 @@ internal class ShellProcessSupervisor(
         const val DEFAULT_PTY_COLS = 120
         const val DEFAULT_PTY_ROWS = 40
         const val PTY_TERM_TYPE = "xterm-256color"
+        const val ONE_SHOT_OUTPUT_MAX_BYTES = 512 * 1024
 
         fun isAndroidRuntime(): Boolean =
             System.getProperty("java.vm.name").orEmpty().equals("Dalvik", ignoreCase = true) ||
@@ -606,10 +607,10 @@ internal fun runOneShotShell(
         val output = ByteArrayOutputCollector()
         val stderr = ByteArrayOutputCollector()
         val outputThread = thread(name = "agent-terminal-stdout") {
-            process.inputStream.use { input -> output.readFrom(input) }
+            process.inputStream.use { input -> output.readFrom(input, ONE_SHOT_OUTPUT_MAX_BYTES) }
         }
         val stderrThread = thread(name = "agent-terminal-stderr") {
-            process.errorStream.use { input -> stderr.readFrom(input) }
+            process.errorStream.use { input -> stderr.readFrom(input, ONE_SHOT_OUTPUT_MAX_BYTES) }
         }
         val stdinThread = thread(name = "agent-terminal-stdin") {
             process.outputStream.use { out ->

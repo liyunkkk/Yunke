@@ -38,7 +38,7 @@ class AgentAutomaticCompactionTest {
 
     // --- Billing-driven automatic summarization -------------------------------------------------
 
-    @Test fun partialOutputUsagePreservesSameRequestInputAndAllowsRealCorrection() {
+    @Test fun partialOutputUsagePreservesSameRequestInputWithoutClearingPressureLatch() {
         for (corrected in listOf(false, true)) {
             val frames = mutableListOf(AgentTokenUsage(outputTokens = 20))
             if (corrected) frames += AgentTokenUsage(inputTokens = AUTO_PRESSURE - 1000)
@@ -49,7 +49,7 @@ class AgentAutomaticCompactionTest {
                 summaries++
                 summarize(source, policy)
             })
-            assertEquals(if (corrected) 0 else 1, summaries)
+            assertEquals(1, summaries)
             assertEquals(1, provider.requests.size)
             assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
         }

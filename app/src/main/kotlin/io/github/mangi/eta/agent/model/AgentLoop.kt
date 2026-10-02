@@ -538,12 +538,15 @@ internal class AgentLoop(
         val cloud = silentBudget.cloudTokens() ?: return
         val hot = cloud >= AgentContextCompactor.autoPressureTokens(window)
         if (!hot) {
-            // 同一轮后续回执把输入更正到 80% 以下时，圆环已经变小，取消这次排队。
-            releaseAutoCompactWait(round)
+            // Once this run has crossed the boundary, a later partial/corrected receipt
+            // must not lose the queued maintenance before the round reaches its safe edge.
+            return
+        }
+        if (autoCompactLatched) {
+            latchedCloudTokens = maxOf(latchedCloudTokens, cloud)
             return
         }
         latchedCloudTokens = cloud
-        if (autoCompactLatched) return
         autoCompactLatched = true
         onEvent(AgentEvent.AutoCompactWaiting(round))
     }
