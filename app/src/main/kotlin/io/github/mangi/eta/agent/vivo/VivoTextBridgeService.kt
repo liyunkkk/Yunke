@@ -28,7 +28,7 @@ class VivoTextBridgeService : Service() {
     private val messenger = Messenger(object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) = receive(msg)
     })
-    private var active: Call? = null
+    @Volatile private var active: Call? = null
     private var destroyed = false
 
     private class Call(val uid: Int, val id: String, val reply: Messenger) {
@@ -39,15 +39,23 @@ class VivoTextBridgeService : Service() {
         lateinit var timeout: Runnable
     }
 
+    private val revokeImmediately: () -> Unit = {
+        // Capture the revoked call now; a queued cleanup must never cancel a later grant's call.
+        active?.let { revoked ->
+            revoked.controller.cancel()
+            main.post { if (active === revoked) stop(revoked, "CANCELLED") }
+        }
+    }
     private val consentListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == Prefs.Keys.VIVO_TEXT_BRIDGE && !VivoBridgeConsent.localEnabled()) {
-            main.post { active?.let { stop(it, "CANCELLED") } }
+            revokeImmediately()
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         Prefs.initLocal(applicationContext)
+        VivoBridgeConsent.addRevocationListener(revokeImmediately)
         Prefs.localAgentPreferences()?.registerOnSharedPreferenceChangeListener(consentListener)
     }
 
@@ -178,6 +186,7 @@ class VivoTextBridgeService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        VivoBridgeConsent.removeRevocationListener(revokeImmediately)
         Prefs.localAgentPreferences()?.unregisterOnSharedPreferenceChangeListener(consentListener)
         active?.let { stop(it, "SERVICE_STOPPED", notify = false) }
         super.onDestroy()

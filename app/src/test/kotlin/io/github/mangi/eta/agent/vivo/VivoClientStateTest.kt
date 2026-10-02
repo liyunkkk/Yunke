@@ -4,6 +4,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class VivoClientStateTest {
+    @org.junit.Test fun ownershipLostDuringBindCannotCommitSend() {
+        val state = VivoClientState()
+        val ticket = state.begin("request")!!
+        org.junit.Assert.assertFalse(state.markSent(ticket, stillOwner = false))
+        org.junit.Assert.assertTrue(state.finish(ticket))
+        org.junit.Assert.assertFalse(state.markSent(ticket, stillOwner = true))
+        org.junit.Assert.assertNull(state.begin("request"))
+    }
+
     @Test fun bindDeathAndLateResultsCannotCompleteTwice() {
         val state = VivoClientState()
         val first = state.begin("first")!!

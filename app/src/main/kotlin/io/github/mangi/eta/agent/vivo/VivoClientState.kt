@@ -15,8 +15,8 @@ internal class VivoClientState(private val limit: Int = 256) {
         return Ticket(id, ++generation).also { active = it; sent = false }
     }
     fun current(ticket: Ticket) = !closed && active == ticket
-    fun markSent(ticket: Ticket): Boolean {
-        if (!current(ticket) || sent) return false
+    fun markSent(ticket: Ticket, stillOwner: Boolean = true): Boolean {
+        if (!stillOwner || !current(ticket) || sent) return false
         sent = true
         return true
     }
