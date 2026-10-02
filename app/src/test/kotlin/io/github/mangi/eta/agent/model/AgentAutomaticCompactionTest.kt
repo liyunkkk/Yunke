@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 
 /**
  * Automatic compaction is driven purely by the provider's billed input usage (cloud policy):
- *  - no billed usage => no automatic compaction, no matter how large the local history is;
+ *  - no billed usage => no 80% scheduling; the conservative hard send limit still applies;
  *  - the decision is the latest receipt itself (the ring's number), never receipt + local growth;
  *  - a receipt carried over from the previous run only calibrates the hard send limit;
  *  - automatic compaction fires at exactly 80% of the effective window (configured window wins);
@@ -59,6 +59,8 @@ class AgentAutomaticCompactionTest {
         // The local estimate is above 80% but below the hard send limit: only a receipt may decide.
         val messages = largeHistory()
         assertTrue(requestTokens(messages) >= AUTO_PRESSURE)
+        assertTrue(requestTokens(messages) <= AgentCompressionBoundary.inputLimit(
+            WINDOW, AgentCompressionBoundary.outputReserve(modelConfig()), calibrated = false))
         val events = mutableListOf<AgentEvent>()
         var summaries = 0
         val provider = ScriptedProvider(listOf({ _, _ -> assistant() }))
@@ -70,6 +72,30 @@ class AgentAutomaticCompactionTest {
         assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
         // The ring keeps its single local estimate for the first request.
         assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
+    }
+
+    @Test fun unmeasuredFullRequestCannotBeRelaxedByALowSeed() {
+        for (targetWindow in listOf(WINDOW, 170_000)) {
+            for (seed in listOf<Int?>(null, 50_000)) {
+                val config = modelConfig().copy(contextWindow = targetWindow)
+                val messages = history("x".repeat(100_000), count = 9)
+                val hardLimit = AgentCompressionBoundary.inputLimit(targetWindow,
+                    AgentCompressionBoundary.outputReserve(config), calibrated = false)
+                assertTrue(requestTokens(messages) > hardLimit)
+                val events = mutableListOf<AgentEvent>()
+                var summaries = 0
+                val provider = ScriptedProvider(listOf({ request, _ ->
+                    assertTrue("complete request must fit before provider send",
+                        requestTokens(request.messages) <= hardLimit)
+                    assistant()
+                }))
+                assertEquals("done", runLoop(messages, provider, events, config = config,
+                    calibratedInputTokens = seed,
+                    compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+                assertTrue(summaries > 0)
+                assertEquals(1, provider.requests.size)
+            }
+        }
     }
 
     @Test fun carriedOverReceiptOnlyCalibratesTheHardSendLimit() {
@@ -736,7 +762,7 @@ class AgentAutomaticCompactionTest {
         AgentContextBudget.estimate(messages) + AgentContextBudget.countTokens(tools().toString())
 
     // Plain latin history whose local estimate alone is above the 80% boundary.
-    private fun largeHistory() = history("x".repeat(100_000), count = 9)
+    private fun largeHistory() = history("x".repeat(93_000), count = 9)
 
     // Escaping inflates serialized size without inflating the token estimate. Explicit
     // turn IDs also prevent the persistence DTO from clipping these historical bodies.

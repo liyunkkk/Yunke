@@ -259,6 +259,11 @@ class AgentSilentContextBudgetTest {
                 assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
                 assertEquals(177_354, budget.cloudTokens())
             }
+            if (index == 3) {
+                assertEquals(SilentReceiptDecision.REANCHORED, budget.lastReceiptDecision)
+                assertEquals(238_366, budget.cloudTokens())
+                assertTrue(requireNotNull(budget.cloudTokens()) >= AgentContextCompactor.autoPressureTokens(window))
+            }
         }
         assertEquals(SilentReceiptDecision.ACCEPTED, budget.lastReceiptDecision)
         assertEquals(66_335, budget.cloudTokens())

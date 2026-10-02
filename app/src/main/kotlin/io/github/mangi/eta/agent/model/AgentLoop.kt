@@ -614,7 +614,12 @@ internal class AgentLoop(
 
     private fun overHardInputLimit(): Boolean {
         if ((config.contextWindow ?: 0) <= 0) return false
-        return silentBudget.sendLimitTokens(localRequestTokens()) > hardInputLimit()
+        val local = localRequestTokens()
+        val calibrated = silentBudget.sendLimitTokens(local)
+        // A previous-run seed has no independently verified target receipt. It may tighten,
+        // but must never relax, the complete target-model request's conservative local bound.
+        val guarded = if (silentBudget.hasTargetReceipt()) calibrated else maxOf(local, calibrated)
+        return guarded > hardInputLimit()
     }
 
     /** Same unchanged history and same cloud receipt. Growth or a new receipt clears it. */
