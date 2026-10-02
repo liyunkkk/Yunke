@@ -1,5 +1,6 @@
 """Source/manifest safety contracts, not a substitute for device verification."""
 from pathlib import Path
+import re
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -38,6 +39,79 @@ class VivoTextBridgeContractTest(unittest.TestCase):
         self.assertIn('unlinkToDeath', source)
         self.assertIn('compareAndSet(false, true)', source)
 
+
+    def test_current_signer_pin_is_exact_not_any_historical_signer(self):
+        policy = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoTextBridgePolicy.kt').read_text()
+        self.assertIn('const val SIGNER = "915191fccf5058fa4b21c9c8ea8897040d313d18838850e986fc00055117d1db"', policy)
+        self.assertNotIn('bcc35d4d3606f154f0402ab7634e8490c0b244c2675c3c6238986987024f0c02', policy)
+        for gate in ('uid in 10000..19999', 'packages == listOf(PACKAGE)',
+                     'version == 6090021L', 'signers == listOf(SIGNER)',
+                     'enabled && model == "V2419A" && sdk == 35'):
+            self.assertIn(gate, policy)
+        for path in ('hook/vivo/VivoHooks.kt', 'agent/vivo/VivoTextBridgeService.kt'):
+            source = (MAIN / 'kotlin/io/github/mangi/eta' / path).read_text()
+            self.assertIn('apkContentsSigners', source)
+            self.assertIn('VivoTextBridgePolicy.callerAllowed(', source)
+            self.assertNotIn('signingCertificateHistory', source)
+            self.assertNotIn('hasSigningCertificate(', source)
+
+    def test_bootstrap_original_call_is_once_outside_failure_capture(self):
+        # Source guard, not a device execution test: an original exception must leave
+        # the callback before identity lookup / initialization or ORIGINAL_RETURNED.
+        source = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt').read_text()
+        callback = source.split('"CopilotApp.onCreate") callback@ { chain ->', 1)[1].split(
+            '\n            }\n        }\n\n    private fun enabled', 1)[0]
+        self.assertEqual(1, callback.count('chain.proceed()'))
+        prefix = callback.split('                runCatching {', 1)[0]
+        self.assertNotIn('runCatching', prefix)
+        self.assertNotIn('try {', prefix)
+        self.assertNotIn('catch (', prefix)
+        self.assertLess(prefix.index('Stage.BOOTSTRAP_ENTERED'), prefix.index('val result = chain.proceed()'))
+        self.assertLess(prefix.index('val result = chain.proceed()'), prefix.index('Stage.BOOTSTRAP_ORIGINAL_RETURNED'))
+        self.assertLess(prefix.index('Stage.BOOTSTRAP_ORIGINAL_RETURNED'), prefix.index('val context ='))
+        self.assertEqual(4, callback.count('return@callback result'))
+        self.assertTrue(callback.rstrip().endswith('result'))
+
+    def test_bootstrap_short_circuits_and_complete_registration_are_diagnosable(self):
+        source = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt').read_text()
+        for stage in ('BOOTSTRAP_CONTEXT_UNAVAILABLE', 'BOOTSTRAP_IDENTITY_REJECTED',
+                      'BOOTSTRAP_IDENTITY_QUERY_FAILED', 'BOOTSTRAP_ALREADY_CLAIMED',
+                      'BOOTSTRAP_INIT_FAILED'):
+            self.assertIn('VivoBridgeDiagnostics.Stage.' + stage, source)
+        identity = source.split('private fun supported(context:', 1)[1].split('private fun registerBusiness', 1)[0]
+        self.assertIn('Boolean? = runCatching', identity)
+        self.assertIn('}.getOrNull()', identity)
+        self.assertIn('VivoBridgeDiagnostics.failureCategory(it)', identity)
+        self.assertEqual(1, source.count('installed.compareAndSet(false, true)'))
+        self.assertNotIn('installed.set(', source)
+        self.assertNotIn('installed.compareAndSet(true, false)', source)
+        for gate in ('hooks.report.installedCount == 7', 'hooks.report.failedCount == 0',
+                     'hooks.report.missingCount == 0', 'hooks.report.skippedCount == 0'):
+            self.assertIn(gate, source)
+        self.assertIn('if (ready) VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.HOOK_READY)', source)
+        self.assertLess(source.index('registerBusiness(module, rootLogger, api, state)'), source.index('Stage.HOOK_READY'))
+        self.assertLess(source.index('Prefs.registerRemoteListener(listener)'), source.index('state.ready = ready'))
+        self.assertLess(source.index('state.ready = ready'), source.index('Stage.HOOK_READY'))
+        self.assertIn('VivoBridgeDiagnostics.Failure.REGISTRATION', source)
+
+    def test_diagnostics_accept_only_enums_and_do_not_log_dynamic_values(self):
+        source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoBridgeDiagnostics.kt').read_text()
+        self.assertIn('fun record(stage: Stage, failure: Failure? = null)', source)
+        self.assertIn('if (count <= 80) runCatching {', source)
+        self.assertEqual(['i'], re.findall(r'Log\.([a-z]+)\(', source))
+        self.assertIn('Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category")', source)
+        self.assertIn('" failure=${it.name}"', source)
+        for forbidden in ('.message', '.localizedMessage', '.stackTrace', '.cause',
+                          '.javaClass', '.toString(', 'printStackTrace', 'Log.e(', 'Log.w('):
+            self.assertNotIn(forbidden, source)
+        for category in ('CLASS', 'METHOD', 'FIELD', 'LINKAGE', 'REGISTRATION', 'OTHER'):
+            self.assertIn(category, source)
+        hooks = (MAIN / 'kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt').read_text()
+        callback = hooks.split('"CopilotApp.onCreate") callback@ { chain ->', 1)[1].split('private fun enabled', 1)[0]
+        self.assertEqual(['"本机文本接管初始化失败，未启用接管"'], re.findall(r'\.warn\((.*?)\)', callback))
+        self.assertNotIn('Log.', callback)
+        self.assertNotIn('it.message', callback)
+        self.assertNotIn('it.toString()', callback)
 
     def test_selection_is_read_only_and_body_overrides_fail_closed(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoTextModelGateway.kt').read_text()

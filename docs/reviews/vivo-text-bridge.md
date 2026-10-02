@@ -150,3 +150,29 @@ checks are implemented. Terminal callback delivery is best effort, not guarantee
 - 发布上传前检查实际 mapping 和 APK DEX 字符串表；缺条目、改名、缺反射字符串或损坏输入拒绝交付。解析范围是本项目常规 R8 little-endian DEX 035/037–040（data 区到 EOF），不声称支持所有合法链接布局、041 容器或完整指令验证。
 - 本地实际执行新增 22 项与全 193 项 Python 测试均通过。旧包配真实 mapping 被改名检查拒绝；旧包配明确标注 TEST-ONLY 的 identity mapping 也在完整 DEX 解析后因缺原始 ContinuationImpl 字符串被拒绝。测试用映射绝不作为发布产物。
 - 仍须检查新 CI 结果与最终反射调用字面量，并单独完成实机 Hook、模型替换、原生回复及取消验收；本修复不代表实机接管已经成功。
+
+## PackageManager 当前签名 pin 与启动分支诊断修复（基线 49a783a5）
+
+### 已证实的证据边界
+
+- 主代理的只读系统证据记录为 `copilot-current-signer-evidence.json`。目标仍为唯一本例包 `com.vivo.ai.copilot`、versionCode `6090021`，安装 APK 的 SHA-256 未变化，manifest Application 为 `com.vivo.ai.copilot.CopilotApp`；未修改任何包注册数据。
+- `dumpsys` 的当前 `Signature.hashCode` 为 `abd0c91b`，历史项为 `cd97f879`。`/data/system/packages.xml` 是 ABX；只读 `abx2xml` 流式提取目标包引用得到 current cert index 0、past index 1 + 0。两份公共 DER 独立计算出的 SHA-256 与 Java 数组 hash 对应如下：
+  - 当前 index 0：`915191fccf5058fa4b21c9c8ea8897040d313d18838850e986fc00055117d1db` / `abd0c91b`。
+  - 历史 index 1：`bcc35d4d3606f154f0402ab7634e8490c0b244c2675c3c6238986987024f0c02` / `cd97f879`。
+- 主代理另直接只读查询运行中的 `IPackageManager.getPackageInfo(com.vivo.ai.copilot, GET_SIGNING_CERTIFICATES, user0)` Binder 返回（`copilot-pm-api-certificate-evidence.json`）：异常码 0，PackageInfo 存在且包名正确；SigningInfo 头为 presence 1 / unknown 0 / current_count 1 / item_present 1 / DERlen 1055，当前 DER 与 cert 0 完全一致，scheme 3，随后历史数组为 `bcc` + `915`。这直接确认 **运行中的 PM API 当前单证书确为 `915…17d1db`，旧 `bcc` 只在历史中**，并非仅从磁盘注册表推断。
+- 对同一原安装 APK，`apksigner` 仍显示 `bcc…24f0c02`。因此 **APK 工具显示的证书与系统当前签名不同**，该工具输出不能直接作为 `PackageManager.SigningInfo.apkContentsSigners` 的 pin。上述证据足以证实旧 `bcc` pin 必与 PM 当前证书不相等；本次不推断产生差异的 ROM 内部机制，也未观察到旧 APK bootstrap 的具体执行分支，不声称这是唯一问题。
+- 发布模块载入、bootstrap 登记 `installed=1`、legacy attach 的版本通过已被观察到，但没有 `HOOK_READY` 或业务注册汇总。实际发布诊断类中的 `Log.i("EtaVivoText", …)` 确实存在，未被 R8 删除；tag 过滤无记录本身不能证明回调未执行。此前 bootstrap 的 Context、身份与 CAS 短路均静默，身份查询异常也被整体折为 false。
+
+### 本次代码边界
+
+- `SIGNER` 仅换为 PM 当前证书；仍要求 **单个、精确、当前** `apkContentsSigners`。旧历史 `bcc`、未知、空、多签名（即使包含当前证书）均拒绝；不读取历史集合，不使用“任一匹配”，不关闭验证。
+- 唯一包名、应用 UID `10000..19999`、版本 `6090021`、`V2419A` / SDK35、框架与 Eta-local 双同意、纯文本和 AgentRuntime 白名单边界不变。两个精确 Kotlin `-keepnames` 与发布 mapping / DEX guard 保留。
+- 新固定 stage：`BOOTSTRAP_ENTERED`、`BOOTSTRAP_ORIGINAL_RETURNED`、`BOOTSTRAP_CONTEXT_UNAVAILABLE`、`BOOTSTRAP_IDENTITY_REJECTED`、`BOOTSTRAP_IDENTITY_QUERY_FAILED`、`BOOTSTRAP_ALREADY_CLAIMED`、`BOOTSTRAP_INIT_FAILED`。错误只分为固定 `CLASS` / `METHOD` / `FIELD` / `LINKAGE` / `REGISTRATION` / `OTHER`，不输出异常名、异常正文、请求正文、ID、证书、端点或密钥；所有业务与启动 stage 共用每进程最多 80 条 INFO 的原有额度。
+- 原 `onCreate` 的 `proceed()` 仍恰好一次、位于初始化异常捕获之外；正常返回才记录 `BOOTSTRAP_ORIGINAL_RETURNED`，原异常原样传播，返回值不变。诊断日志自身失败不会影响原调用。`HOOK_READY` 仅在全部 7 个业务 Hook 注册成功且监听器初始化完成后记录；部分注册或初始化失败记录固定失败 stage，路由不启用。
+- CAS 不回退、不添加自动重试；已有部分 Hook 的生命周期处理不在本次扩展范围内。身份策略不复制门控：查询仍调用同一个纯 `callerAllowed`，只区分“策略拒绝”和“查询失败”。
+
+### 验证状态
+
+- 新增/扩展直接回归：已知当前证书接受、历史证书及空/未知/多签名拒绝、其他身份/设备/协议门控保留；诊断固定字段、错误消息不泄露、INFO 与共用 80 条额度；源码契约保护原 `onCreate` 单次调用、异常捕获位置、原返回值和 CAS 不复位。
+- 本实现工作树未运行新增测试、未编译 APK、未推送，测试及最终集成由主代理执行。主代理提供的基线结果为 Python 193 通过、Android 3447 通过（含 43 个 vivo）；这些不是本次新改动的运行结果。
+- 本次没有发送任何新实机测试请求。当前仅修复已证实的身份拒绝条件并补齐后续定位信息，**不能写作实机已接管**；真实业务 Hook 执行、模型替换、可见原生回复、取消与下一轮仍须独立验收。

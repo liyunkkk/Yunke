@@ -3,7 +3,8 @@ package io.github.mangi.eta.agent.vivo
 /** Experimental, single-device protocol. Never authorizes AgentRuntimeService. */
 internal object VivoTextBridgePolicy {
     const val PACKAGE = "com.vivo.ai.copilot"
-    const val SIGNER = "bcc35d4d3606f154f0402ab7634e8490c0b244c2675c3c6238986987024f0c02"
+    // PackageManager SigningInfo.apkContentsSigners, not signingCertificateHistory or APK-tool output.
+    const val SIGNER = "915191fccf5058fa4b21c9c8ea8897040d313d18838850e986fc00055117d1db"
     const val REQUEST = 1
     const val CANCEL = 2
     const val RESULT = 3

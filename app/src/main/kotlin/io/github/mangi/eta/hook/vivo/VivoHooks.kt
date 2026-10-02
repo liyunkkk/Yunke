@@ -41,26 +41,52 @@ internal object VivoHooks {
             if (onCreate == null) {
                 missing("vivo.bootstrap", "CopilotApp.onCreate", "入口 ABI 不匹配"); return@bootstrap
             }
-            intercept("vivo.bootstrap", onCreate, "CopilotApp.onCreate") { chain ->
+            intercept("vivo.bootstrap", onCreate, "CopilotApp.onCreate") callback@ { chain ->
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ENTERED)
+                // Keep the original call outside bootstrap failure handling: exactly once, unchanged exceptions.
                 val result = chain.proceed()
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ORIGINAL_RETURNED)
                 val context = (chain.thisObject as? Context)?.applicationContext
-                if (context != null && supported(context) && installed.compareAndSet(false, true)) {
-                    // Bootstrap failures do not alter Application.onCreate or install partial routing.
-                    runCatching {
-                        val api = NativeApi(classLoader)
-                        val state = Runtime(api, VivoTextBridgeClient(context))
-                        runtime = state
-                        business = registerBusiness(module, rootLogger, api, state)
-                        val ready = business!!.report.failedCount == 0 && business!!.report.missingCount == 0
-                        state.ready = ready
-                        if (ready) VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.HOOK_READY)
-                        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-                            if (key == Prefs.Keys.VIVO_TEXT_BRIDGE && !enabled()) state.cancelAll()
-                        }
-                        preferenceListener = listener
-                        Prefs.registerRemoteListener(listener)
-                        rootLogger.scoped("VivoText").info(business!!.report.summary())
-                    }.onFailure { rootLogger.scoped("VivoText").warn("本机文本接管初始化失败，未启用接管") }
+                if (context == null) {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_CONTEXT_UNAVAILABLE)
+                    return@callback result
+                }
+                when (supported(context)) {
+                    null -> return@callback result // Query failure has its own fixed diagnostic below.
+                    false -> {
+                        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_IDENTITY_REJECTED)
+                        return@callback result
+                    }
+                    true -> Unit
+                }
+                if (!installed.compareAndSet(false, true)) {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ALREADY_CLAIMED)
+                    return@callback result
+                }
+                // Do not reset CAS: failed registration can leave some hooks installed.
+                // Routing remains disabled until the complete business registration succeeds.
+                runCatching {
+                    val api = NativeApi(classLoader)
+                    val state = Runtime(api, VivoTextBridgeClient(context))
+                    runtime = state
+                    val hooks = registerBusiness(module, rootLogger, api, state)
+                    business = hooks
+                    val ready = hooks.report.installedCount == 7 && hooks.report.failedCount == 0 &&
+                        hooks.report.missingCount == 0 && hooks.report.skippedCount == 0
+                    val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                        if (key == Prefs.Keys.VIVO_TEXT_BRIDGE && !enabled()) state.cancelAll()
+                    }
+                    preferenceListener = listener
+                    Prefs.registerRemoteListener(listener)
+                    rootLogger.scoped("VivoText").info(hooks.report.summary())
+                    state.ready = ready
+                    if (ready) VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.HOOK_READY)
+                    else VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED,
+                        VivoBridgeDiagnostics.Failure.REGISTRATION)
+                }.onFailure {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED,
+                        VivoBridgeDiagnostics.failureCategory(it))
+                    rootLogger.scoped("VivoText").warn("本机文本接管初始化失败，未启用接管")
                 }
                 result
             }
@@ -68,7 +94,8 @@ internal object VivoHooks {
 
     private fun enabled() = runCatching { Prefs.isEnabled(Prefs.Keys.VIVO_TEXT_BRIDGE) }.getOrDefault(false)
 
-    private fun supported(context: Context): Boolean = runCatching {
+    // null means a query failure, false means the exact policy rejected the queried identity.
+    private fun supported(context: Context): Boolean? = runCatching {
         val pm = context.packageManager
         val info = pm.getPackageInfo(PACKAGE,
             PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong()))
@@ -78,7 +105,10 @@ internal object VivoHooks {
         }.orEmpty()
         VivoTextBridgePolicy.callerAllowed(android.os.Process.myUid(),
             pm.getPackagesForUid(android.os.Process.myUid())?.toList().orEmpty(), info.longVersionCode, signers)
-    }.getOrDefault(false)
+    }.onFailure {
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_IDENTITY_QUERY_FAILED,
+            VivoBridgeDiagnostics.failureCategory(it))
+    }.getOrNull()
 
     private fun registerBusiness(module: XposedModule, logger: ModuleLogger, api: NativeApi, state: Runtime) =
         HookRegistrar(module, logger, "VivoText").install {

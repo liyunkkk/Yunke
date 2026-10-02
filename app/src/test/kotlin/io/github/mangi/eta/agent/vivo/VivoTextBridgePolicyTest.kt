@@ -21,14 +21,33 @@ class VivoTextBridgePolicyTest {
             version: Long = 6090021L, signers: List<String> = listOf(policy.SIGNER)) =
             policy.callerAllowed(uid, packages, version, signers)
         assertTrue(allowed())
+        assertTrue(allowed(uid = 10000))
+        assertTrue(allowed(uid = 19999))
         listOf(-1, 0, 1000, 2000, 9999, 20000, 99000, 110260).forEach { assertFalse(allowed(uid = it)) }
         assertFalse(allowed(packages = emptyList()))
         assertFalse(allowed(packages = listOf("com.vivo.agent")))
         assertFalse(allowed(packages = listOf(policy.PACKAGE, "shared.uid.attacker")))
+        assertFalse(allowed(packages = listOf(policy.PACKAGE, policy.PACKAGE)))
+        assertFalse(allowed(version = 6090020L))
         assertFalse(allowed(version = 6090022L))
         assertFalse(allowed(signers = emptyList()))
+        assertFalse(allowed(signers = listOf("")))
         assertFalse(allowed(signers = listOf("00".repeat(32))))
+        assertFalse(allowed(signers = listOf(policy.SIGNER.uppercase())))
         assertFalse(allowed(signers = listOf(policy.SIGNER, "00".repeat(32))))
+        assertFalse(allowed(signers = listOf(policy.SIGNER, policy.SIGNER)))
+    }
+
+    @Test fun onlyKnownPackageManagerCurrentSignerIsAcceptedNotApkToolOrHistory() {
+        val current = "915191fccf5058fa4b21c9c8ea8897040d313d18838850e986fc00055117d1db"
+        val historical = "bcc35d4d3606f154f0402ab7634e8490c0b244c2675c3c6238986987024f0c02"
+        assertEquals(current, policy.SIGNER)
+        fun allowed(signers: List<String>) =
+            policy.callerAllowed(10260, listOf(policy.PACKAGE), 6090021L, signers)
+        assertTrue(allowed(listOf(current)))
+        assertFalse(allowed(listOf(historical)))
+        assertFalse(allowed(listOf(current, historical)))
+        assertFalse(allowed(listOf(historical, current)))
     }
 
     @Test fun requestHasExactShapeAndBoundedStrings() {
