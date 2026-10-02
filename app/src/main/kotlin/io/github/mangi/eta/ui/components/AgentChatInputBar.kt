@@ -156,6 +156,7 @@ internal fun AgentChatInputBar(
     history: List<AgentModelClient.ConversationMessage>,
     billedContextTokens: Int? = null,
     projectedContextTokens: Int? = null,
+    forecastPromptTokens: Int? = null,
     billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
     billedOverheadTokens: Int? = null,
@@ -245,6 +246,23 @@ internal fun AgentChatInputBar(
             activeRunContextWindow = activeRunContextWindow,
         )
     }
+    // The forecast is a separate tooltip row, never the measured ring or send gate.
+    val draftOnlyTokens = remember(draftText, pendingImages, pendingFileReferences,
+        conversationMentions.pending, modelPickerState.selectedModel) {
+        liveContextUsage(
+            history = emptyList(), historyTokenCount = 0,
+            currentInput = draftText, pendingImages = pendingImages,
+            selectedModel = modelPickerState.selectedModel,
+            pendingFileReferences = pendingFileReferences,
+            pendingConversationMentions = conversationMentions.pending,
+        ).contextTokens ?: 0
+    }
+    val nextRequestTokens = io.github.mangi.eta.ui.model.nextRequestContextTokens(
+        runtimeForecastTokens = forecastPromptTokens,
+        draftTokens = draftOnlyTokens,
+        billedContextTokens = billedContextTokens,
+        fallbackContextTokens = sendBudget.contextTokens,
+    )
     val contextSendBlocked = shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
     val compressionSendBlocked = isCompressingContext
     val canSend = !modelPickerState.isChanging && modelPickerState.selectedModel != null && !contextSendBlocked && !compressionSendBlocked && (
@@ -484,6 +502,7 @@ internal fun AgentChatInputBar(
                         // Keep context details accessible even for an empty draft or an unknown limit.
                         AgentContextUsageButton(
                             usage = if (billedContextTokens != null && billedContextTokens > 0) liveUsage else sendBudget,
+                            forecastTokens = nextRequestTokens,
                             popupMaxHeight = thinkingPopupMaxHeight,
                             sendBlocked = contextSendBlocked,
                         )

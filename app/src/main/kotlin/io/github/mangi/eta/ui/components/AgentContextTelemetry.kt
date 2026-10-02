@@ -55,3 +55,16 @@ internal fun SubAgentContextStats.contextStatusLabel(): String = when {
     status == "running" -> "执行中"
     else -> "状态未知"
 }
+
+/** The prediction is explicitly labelled; it must never replace measured ring usage. */
+internal fun nextRequestForecastLabel(
+    forecastTokens: Int?,
+    contextWindow: Int?,
+    locale: Locale = Locale.getDefault(),
+): String? {
+    val tokens = forecastTokens?.takeIf { it > 0 } ?: return null
+    return "下次请求预测 " + formatContextUsage(
+        AgentContextUsageUi(tokens, contextWindow, estimated = true),
+        noLimitText = "当前模型未提供上下文上限", locale = locale,
+    )
+}

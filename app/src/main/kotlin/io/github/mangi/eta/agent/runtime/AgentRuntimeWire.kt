@@ -741,6 +741,7 @@ internal object AgentRuntimeWire {
                 putBoolean("projected", event.projected)
                 event.requestHistoryTokens?.let { putInt("request_history_tokens", it) }
                 event.requestOverheadTokens?.let { putInt("request_overhead_tokens", it) }
+                event.forecastPromptTokens?.let { putInt("forecast_prompt_tokens", it) }
                 putTokenUsage(event.usage)
             }
 
@@ -913,6 +914,7 @@ internal object AgentRuntimeWire {
             projected = bundle.getBoolean("projected", false),
             requestHistoryTokens = bundle.optionalInt("request_history_tokens"),
             requestOverheadTokens = bundle.optionalInt("request_overhead_tokens"),
+            forecastPromptTokens = bundle.optionalInt("forecast_prompt_tokens"),
         )
 
         "user_supplement_received" -> AgentEvent.UserSupplementReceived(

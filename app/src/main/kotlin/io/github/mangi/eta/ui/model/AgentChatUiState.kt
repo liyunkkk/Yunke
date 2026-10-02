@@ -26,9 +26,11 @@ internal data class AgentChatUiState(
     val pendingConversationMentions: List<PendingConversationMentionUi> = emptyList(),
     val appliedRuntimeRunIds: List<String> = emptyList(),
     val messageEdit: MessageEditUiState? = null,
-    /** 当前请求的 prompt 占用；工具循环里由 Runtime 按账单+增量投影，对齐 ST 输入。 */
+    /** Ring: last trusted full cloud input, or the first unmeasured boundary estimate. */
     val livePromptTokens: Int? = null,
     val livePromptIsProjected: Boolean = false,
+    /** Next-request prediction; independent of the ring label and the hard send budget. */
+    val forecastPromptTokens: Int? = null,
     // Local snapshots paired with the valid cloud receipt. Never shown as cloud usage.
     val cloudHistoryTokens: Int? = null,
     val cloudRequestOverheadTokens: Int? = null,

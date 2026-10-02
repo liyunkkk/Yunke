@@ -389,6 +389,7 @@ private fun ModelPickerRow(
 @Composable
 internal fun AgentContextUsageButton(
     usage: AgentContextUsageUi,
+    forecastTokens: Int? = null,
     sendBlocked: Boolean = false,
     popupMaxHeight: Dp = 360.dp,
     modifier: Modifier = Modifier,
@@ -426,6 +427,8 @@ internal fun AgentContextUsageButton(
         noLimitText = stringResource(R.string.context_no_model_limit),
         locale = locale,
     )
+    val forecastLabel = if (child == null) nextRequestForecastLabel(
+        forecastTokens, displayedUsage.contextWindow, locale) else null
     val detail = when {
         sendBlocked && child == null -> "$summary\n${stringResource(R.string.context_window_send_blocked)}"
         child?.role == "video_generation" -> "${child.contextStatusLabel()}\n视频生成任务不提供对话上下文统计。"
@@ -486,6 +489,14 @@ internal fun AgentContextUsageButton(
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
             )
+            if (forecastLabel != null) {
+                Text(
+                    text = forecastLabel,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                )
+            }
         }
         EtaDropdownMenu(
             expanded = selectorState.expanded,

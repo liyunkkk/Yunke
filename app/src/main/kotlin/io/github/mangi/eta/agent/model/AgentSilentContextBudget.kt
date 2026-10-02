@@ -132,8 +132,7 @@ internal class AgentSilentContextBudget {
 
     fun tokens(currentLocal: Int): Int {
         val input = measuredInput ?: return currentLocal.coerceAtLeast(0)
-        return (input.toLong() + currentLocal - measuredLocal)
-            .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+        return AgentPromptForecast.project(input, currentLocal.toLong(), measuredLocal.toLong())
     }
 
     /**

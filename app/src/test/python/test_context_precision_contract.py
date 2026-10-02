@@ -23,7 +23,8 @@ class ContextPrecisionContractTest(unittest.TestCase):
             r'filteredMessages,\s*roundTools,\s*sessionId'
             r'(?:,\s*toolDiagnostics\s*=\s*toolDiagnostics)?\)')
         self.assertIn('val preparedRequestTokens = if (publishLocalEstimate)', code)
-        self.assertIn('val localEstimate = preparedRequestTokens?.takeIf', code)
+        self.assertIn('promptForecast.tokens(requestLocal, preparedRequestTokens ?: requestLocal)', code)
+        self.assertIn('if (publishLocalEstimate) AgentTokenUsage(inputTokens = forecast) else AgentTokenUsage()', code)
 
     def test_calibration_does_not_mix_prepared_tokens_with_boundary_tokens(self):
         code = self.read('agent/model/AgentLoop.kt')
