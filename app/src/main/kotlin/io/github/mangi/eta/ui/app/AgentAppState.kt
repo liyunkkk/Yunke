@@ -5679,9 +5679,15 @@ internal class AgentAppState(
     }
 
     private fun isCompressionBlockingSend(): Boolean {
-        if (compressionJob?.isActive == true || homeState.isCompressingContext) return true
-        val pending = pendingManualCompress ?: return false
-        return pending.conversationId == null || pending.conversationId == selectedConversationId
+        val pending = pendingManualCompress
+        return conversationCompressionBlocksSend(
+            conversationId = selectedConversationId,
+            isCompressingContext = homeState.isCompressingContext,
+            jobActive = compressionJob?.isActive == true,
+            jobConversationId = compressionJobConversationId,
+            hasPending = pending != null,
+            pendingConversationId = pending?.conversationId,
+        )
     }
 
     private fun rejectSendIfCompressing(): Boolean {
