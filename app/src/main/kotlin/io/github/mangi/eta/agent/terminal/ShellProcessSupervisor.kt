@@ -22,7 +22,6 @@ internal class ShellProcessSupervisor(
         const val DEFAULT_PTY_COLS = 120
         const val DEFAULT_PTY_ROWS = 40
         const val PTY_TERM_TYPE = "xterm-256color"
-        const val ONE_SHOT_OUTPUT_MAX_BYTES = 512 * 1024
 
         fun isAndroidRuntime(): Boolean =
             System.getProperty("java.vm.name").orEmpty().equals("Dalvik", ignoreCase = true) ||
@@ -548,6 +547,8 @@ internal class ShellProcessSupervisor(
 }
 
 /** 写入托管进程环境块的归属标记；巡检与停止前用它防止 PID 复用误杀。 */
+internal const val ONE_SHOT_OUTPUT_MAX_BYTES = 512 * 1024
+
 internal const val ETA_PROCESS_OWNER_ENV = "ETA_PROCESS_OWNER"
 
 internal fun shellQuote(value: String): String =
