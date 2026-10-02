@@ -114,6 +114,12 @@ class VivoTextBridgeContractTest(unittest.TestCase):
         self.assertNotIn('it.message', callback)
         self.assertNotIn('it.toString()', callback)
 
+    def test_mapper_capture_is_not_restricted_to_remote_query_label(self):
+        source = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt").read_text()
+        typed = source.split("intercept(\"vivo.typed-query\"", 1)[1].split("intercept(\"vivo.outbound\"", 1)[0]
+        self.assertNotIn("chain.args.getOrNull(0) == \"remote query\"", typed)
+        self.assertIn("api.candidate(chain.args[1]!!)?.let { state.capture(mapped, it) }", typed)
+
     def test_selection_is_read_only_and_body_overrides_fail_closed(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoTextModelGateway.kt').read_text()
         for forbidden in ('currentRuntimeConfig()', 'repairSelection(', 'selectedOrFirstModel(',

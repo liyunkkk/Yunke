@@ -213,7 +213,7 @@ internal object VivoHooks {
             }
             intercept("vivo.typed-query", api.mapper, "LinkParamsMapper.a(RemoteQueryRequest)") { chain ->
                 val mapped = chain.proceed()
-                if (mapped != null && state.ready && enabled() && chain.args.getOrNull(0) == "remote query") {
+                if (mapped != null && state.ready && enabled()) {
                     runCatching { api.candidate(chain.args[1]!!)?.let { state.capture(mapped, it) } }
                 }
                 mapped
