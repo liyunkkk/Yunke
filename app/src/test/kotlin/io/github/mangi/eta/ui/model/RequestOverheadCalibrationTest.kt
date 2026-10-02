@@ -14,11 +14,11 @@ class RequestOverheadCalibrationTest {
         val live = liveContextUsage(emptyList(), "", emptyList(), null,
             historyTokenCount = 500, requestOverheadTokens = 25273,
             overheadCalibrationTokens = calibration.offsetTokens)
-        val compressed = compressionContextUsage(emptyList(), "", emptyList(), null,
-            localHistoryTokenCount = 500, requestOverheadTokens = 25273,
-            overheadCalibrationTokens = calibration.offsetTokens)
+        // The silent send/compaction budget is deliberately unchanged by display calibration.
+        val budget = compressionContextUsage(emptyList(), "", emptyList(), null,
+            localHistoryTokenCount = 500, requestOverheadTokens = 25273)
         assertEquals(37233, live.contextTokens)
-        assertEquals(live.contextTokens, compressed.contextTokens)
+        assertEquals(25773, budget.contextTokens)
         assertTrue(kotlin.math.abs(requireNotNull(live.contextTokens) - 37214) < 37214 * 0.01)
         assertTrue(live.estimated)
         // Tool/skill changes still move the local overhead; the correction is additive.
@@ -58,24 +58,25 @@ class RequestOverheadCalibrationTest {
             historyTokenCount = 500, billedContextTokens = 37214, requestOverheadTokens = 25273,
             projectedContextTokens = 12345, overheadCalibrationTokens = 11460)
         assertEquals(liveBefore, liveAfter)
-        val budgetBefore = compressionContextUsage(emptyList(), "new draft", emptyList(), null,
-            historyTokenCount = 800, billedContextTokens = 37214, requestOverheadTokens = 26000,
-            billedHistoryTokens = 481, billedOverheadTokens = 25273)
-        val budgetAfter = compressionContextUsage(emptyList(), "new draft", emptyList(), null,
-            historyTokenCount = 800, billedContextTokens = 37214, requestOverheadTokens = 26000,
-            billedHistoryTokens = 481, billedOverheadTokens = 25273, overheadCalibrationTokens = 11460)
-        assertEquals(budgetBefore, budgetAfter)
     }
 
-    @Test fun calibratedFallbackUsesLegacyUnitsInsteadOfFinalBodyProjection() {
+    @Test fun calibratedFallbackUsesLegacyUnitsButKeepsLargerProjectedGrowth() {
+        // A smaller final-body projection must not undo the legacy-unit correction.
         val usage = liveContextUsage(emptyList(), "", emptyList(), null,
             historyTokenCount = 500, requestOverheadTokens = 25273, projectedContextTokens = 20000,
             overheadCalibrationTokens = 11460)
         assertEquals(37233, usage.contextTokens)
-        val compression = compressionContextUsage(emptyList(), "", emptyList(), null,
-            localHistoryTokenCount = 500, requestOverheadTokens = 25273, projectedContextTokens = 20000,
+        // Mid-run projection growth beyond the calibrated baseline still moves the ring.
+        val grown = liveContextUsage(emptyList(), "", emptyList(), null,
+            historyTokenCount = 500, requestOverheadTokens = 25273, projectedContextTokens = 60000,
             overheadCalibrationTokens = 11460)
-        assertEquals(37233, compression.contextTokens)
+        assertEquals(60000, grown.contextTokens)
+    }
+
+    @Test fun offsetIsNotAppliedBeforeOverheadIsKnown() {
+        val usage = liveContextUsage(emptyList(), "", emptyList(), null,
+            historyTokenCount = 500, requestOverheadTokens = 0, overheadCalibrationTokens = 11460)
+        assertEquals(500, usage.contextTokens)
     }
 
     @Test fun defaultParameterPreservesExistingLocalAndProjectedEstimates() {

@@ -14,7 +14,8 @@ internal object RequestOverheadCalibrationStore {
         "agent_request_overhead_calibration_v1:${providerId.length}:$providerId:${modelId.length}:$modelId"
 
     fun read(providerId: String, modelId: String): RequestOverheadCalibration.Sample? = runCatching {
-        json.decodeFromString<RequestOverheadCalibration.Sample>(Prefs.getString(key(providerId, modelId)))
+        val raw = Prefs.getString(key(providerId, modelId)).ifEmpty { return null }
+        json.decodeFromString<RequestOverheadCalibration.Sample>(raw)
             .takeIf { it.offsetTokens >= 0 && it.samples > 0 && it.measuredOverheadTokens >= 0 }
     }.getOrNull()
 

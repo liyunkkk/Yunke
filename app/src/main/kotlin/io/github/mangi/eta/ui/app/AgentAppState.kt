@@ -524,11 +524,18 @@ internal class AgentAppState(
         private set
 
     // Display only: send-block and silent compaction budgets retain their existing units/semantics.
+    private var cachedCalibrationKey: Triple<String, String, Int>? = null
+    private var cachedCalibrationTokens: Int? = null
     val overheadCalibrationTokens: Int?
         get() {
-            overheadCalibrationRevision // Observe successful learning in Compose.
+            val revision = overheadCalibrationRevision // Observe successful learning in Compose.
             val model = modelPickerState.selectedModel ?: return null
-            return RequestOverheadCalibrationStore.read(model.providerId, model.id)?.offsetTokens
+            val key = Triple(model.providerId, model.id, revision)
+            if (key != cachedCalibrationKey) {
+                cachedCalibrationTokens = RequestOverheadCalibrationStore.read(model.providerId, model.id)?.offsetTokens
+                cachedCalibrationKey = key
+            }
+            return cachedCalibrationTokens
         }
 
     var billedOverheadTokens by mutableStateOf<Int?>(null)
@@ -2690,12 +2697,8 @@ internal class AgentAppState(
                 return@launch
             }
             // Recompute from THIS run's frozen model/assistant, never a positive global UI value.
-            var runPreviewOverhead: Int? = null
             val runOverhead = try {
-                estimateRequestOverhead(config, runAssistant, SubAgentConfigKey.Conversation(conversationId), runProviders,
-                    onProtocolPreview = if (AppFileLogger.isEnabled()) {
-                        { tokens: Int -> runPreviewOverhead = tokens }
-                    } else null)
+                estimateRequestOverhead(config, runAssistant, SubAgentConfigKey.Conversation(conversationId), runProviders)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -2788,36 +2791,33 @@ internal class AgentAppState(
                 }
             }
             if (!stillWanted) return@launch
-            withContext(Dispatchers.Main.immediate) {
-                if (AppFileLogger.isEnabled()) {
+            // Diagnostics only: numeric snapshot of the legacy basis the calibration is measured in.
+            // Never on Main, never allowed to interrupt the send path.
+            if (AppFileLogger.isEnabled()) {
+                try {
                     val snapshotOverhead = runOverhead ?: 0
                     val calibration = RequestOverheadCalibrationStore.read(runProvider.id, runModel.id)
                     val hasReceiptDelta = !shouldCompress && calibratedForCompression
-                    val endpoint = if (calibration != null) io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
-                        else io.github.mangi.eta.agent.model.AgentWireRequestEstimate.endpoint(config)
-                    val historyEstimate = io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
-                        historyToSend, config.supportsVision, config.supportsVideo, endpoint)
-                    val displayOverhead = if (calibration != null) snapshotOverhead else runPreviewOverhead ?: snapshotOverhead
-                    // A receipt-backed snapshot uses the unchanged silent receipt-delta budget.
-                    // Otherwise snapshot the calibrated display fallback, not a wire/body modification.
-                    val estimate = if (hasReceiptDelta) estimatedTokens else liveContextUsage(
-                        history = historyToSend, currentInput = prompt, pendingImages = images,
-                        selectedModel = runModelOption, historyTokenCount = historyEstimate,
-                        requestOverheadTokens = displayOverhead,
-                        overheadCalibrationTokens = calibration?.offsetTokens,
-                    ).contextTokens
+                    val rawHistory = (historyToSend.sumOf { AgentContextBudget.countMessage(it).toLong() } +
+                        AgentContextBudget.countCurrentTurn(prompt, modelImages))
+                        .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    val estimate = if (hasReceiptDelta) estimatedTokens ?: 0 else
+                        (rawHistory.toLong() + RequestOverheadCalibration.applyOffset(snapshotOverhead,
+                            calibration?.offsetTokens?.takeIf { snapshotOverhead > 0 } ?: 0))
+                            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                     contextEstimateDiagnostics.capture(runId, ContextEstimateDiagnostics.Snapshot(
                         basis = if (hasReceiptDelta) ContextEstimateDiagnostics.Basis.RECEIPT_DELTA
                             else ContextEstimateDiagnostics.Basis.LOCAL_FALLBACK,
-                        localEstimateTokens = estimate ?: 0,
-                        overheadTokensEst = if (hasReceiptDelta) snapshotOverhead else displayOverhead,
-                        historyTokensEst = ((if (hasReceiptDelta) historyToSend.sumOf {
-                            AgentContextBudget.countMessage(it).toLong()
-                        } else historyEstimate.toLong()) + AgentContextBudget.countCurrentTurn(prompt, modelImages))
-                            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                        localEstimateTokens = estimate,
+                        overheadTokensEst = snapshotOverhead,
+                        historyTokensEst = rawHistory,
                         overheadCalibrationTokens = calibration?.offsetTokens ?: 0,
                         calibrationSamples = calibration?.samples ?: 0,
                     ))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    // A diagnostic failure must never block the run.
                 }
             }
             val result = runInterruptible {

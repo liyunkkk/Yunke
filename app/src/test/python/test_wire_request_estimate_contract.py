@@ -36,6 +36,8 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         self.assertIn('localHistoryTokenCount = localHistoryTokenCount', send)
         preview = self.text('ui/model/AgentModelPickerUiState.kt').split('internal fun compressionContextUsage(', 1)[1]
         self.assertIn('projectedContextTokens = null', preview)
+        # Display-only calibration must never reach the silent send/compaction budget.
+        self.assertNotIn('overheadCalibrationTokens', preview.split('\n}\n', 1)[0])
 
     def test_ring_consumes_display_estimate_and_screen_wrappers_forward_preview(self):
         bar = self.text('ui/components/AgentChatInputBar.kt')

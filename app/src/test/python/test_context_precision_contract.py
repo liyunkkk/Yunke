@@ -45,7 +45,7 @@ class ContextPrecisionContractTest(unittest.TestCase):
     def test_ui_preserves_raw_calibration_and_separate_capability_preview(self):
         bar = self.read('ui/components/AgentChatInputBar.kt')
         self.assertIn('remember(history, supportsVision, supportsVideo)', bar)
-        self.assertIn('historyTokenCount = previewHistoryTokens', bar)
+        self.assertIn('historyTokenCount = if (overheadCalibrationTokens != null) historyTokenCount else previewHistoryTokens', bar)
         self.assertIn('localHistoryTokenCount = localHistoryTokenCount', bar)
         self.assertIn('historyTokenCount = historyTokenCount', bar)
         model = self.read('ui/model/AgentModelPickerUiState.kt')

@@ -218,14 +218,14 @@ internal fun AgentChatInputBar(
     }
     val liveUsage = remember(
         previewHistoryTokens, projectedContextTokens, billedContextTokens,
-        requestOverheadTokens, previewRequestOverheadTokens, overheadCalibrationTokens, localHistoryTokenCount,
+        requestOverheadTokens, previewRequestOverheadTokens, overheadCalibrationTokens, historyTokenCount,
         billedOverheadTokens, uncommittedLiveTokens, draftText,
         pendingImages, pendingFileReferences, conversationMentions.pending,
         modelPickerState.selectedModel, activeRunContextWindow,
     ) {
         liveContextUsage(
             history = emptyList(),
-            historyTokenCount = if (overheadCalibrationTokens != null) localHistoryTokenCount else previewHistoryTokens,
+            historyTokenCount = if (overheadCalibrationTokens != null) historyTokenCount else previewHistoryTokens,
             projectedContextTokens = projectedContextTokens,
             overheadCalibrationTokens = overheadCalibrationTokens,
             currentInput = draftText,
