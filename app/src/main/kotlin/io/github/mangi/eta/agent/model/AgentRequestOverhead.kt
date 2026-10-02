@@ -17,6 +17,8 @@ internal object AgentRequestOverhead {
         memoryContext: AgentMemoryContext = AgentMemoryContext.DISABLED,
         capabilities: AgentToolCapabilities = AgentToolCapabilities(rootAvailable = false),
         additionalTools: JSONArray = JSONArray(),
+        // Display-only projection; the returned legacy budget is intentionally unchanged.
+        onProtocolPreview: ((Int) -> Unit)? = null,
     ): Int {
         val systemMessages = AgentPromptBuilder.buildSystemMessages(
             config = config,
@@ -50,6 +52,14 @@ internal object AgentRequestOverhead {
         }
         if (tools.length() > 0) {
             tokens += AgentContextBudget.countTokens(tools.toString())
+        }
+        onProtocolPreview?.let { publish ->
+            // A preview failure must not change the legacy silent budget or trigger network IO.
+            runCatching {
+                AgentWireRequestEstimate.measure(
+                    AgentWireRequestEstimate.previewBody(config, systemMessages, tools),
+                    AgentWireRequestEstimate.endpoint(config)).tokens
+            }.getOrNull()?.let(publish)
         }
         return tokens
     }

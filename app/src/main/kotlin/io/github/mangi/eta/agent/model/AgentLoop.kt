@@ -104,6 +104,7 @@ internal class AgentLoop(
         }
     }
     private var lastUsage: AgentTokenUsage? = null
+    private var hasDisplayCloudReceipt = false
     private val requestBudget = AgentRequestBudgetPolicy()
     private val silentBudget = AgentSilentContextBudget()
     private var suppressThinkingForNextRequest = false
@@ -215,17 +216,13 @@ internal class AgentLoop(
             // Finish the raw metadata pass before retaining the hydrated copy (lower peak memory).
             // Reuse exactly one hydrated/filtered snapshot for projection and transport.
             val filteredMessages = AgentRequestMediaPolicy.filter(messages, config.supportsVision, config.supportsVideo)
-            val publishLocalEstimate = requestBudget.consumeLocalBoundary()
-            val preparedRequestTokens = if (publishLocalEstimate) {
-                AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
-            } else null
+            val publishLocalEstimate = requestBudget.consumeLocalBoundary() || !hasDisplayCloudReceipt
+            // Display estimates arrive from the SAME final body serialized by the provider.
+            // Keep the silent/local boundary and cloud calibration on their original basis.
+            var preparedRequestTokens: Int? = null
             silentBudget.requestStarted(requestLocal)
-            val localEstimate = preparedRequestTokens?.takeIf { it > 0 }
             requestBudget.requestStarted()
             lastUsage = null // A new request must not inherit missing fields from the preceding bill.
-            localEstimate?.let { estimate ->
-                onEvent(AgentEvent.UsageReceived(round, AgentTokenUsage(inputTokens = estimate), projected = true))
-            }
             val completedRound = try {
                 modelRetry.complete(
                     initialRound = round,
@@ -236,6 +233,15 @@ internal class AgentLoop(
                     onEvent = onEvent,
                     onProviderEvent = { attemptRound, providerEvent ->
                         if (providerEvent is ProviderEvent.RequestStarted) lastUsage = null
+                        if (providerEvent is ProviderEvent.RequestEstimate) {
+                            preparedRequestTokens = providerEvent.tokens
+                            // Existing UI reducer keeps cloud receipts authoritative, including
+                            // receipts from previous runs. Never feed this into silentBudget.
+                            if (publishLocalEstimate && !hasDisplayCloudReceipt && providerEvent.tokens > 0) {
+                                onEvent(AgentEvent.UsageReceived(attemptRound,
+                                    AgentTokenUsage(inputTokens = providerEvent.tokens), projected = true))
+                            }
+                        }
                         if (providerEvent is ProviderEvent.Usage) {
                             val previous = lastUsage
                             val incoming = providerEvent.usage
@@ -247,6 +253,7 @@ internal class AgentLoop(
                                 cachedTokens = incoming.cachedTokens ?: previous?.cachedTokens,
                                 cacheCreationTokens = incoming.cacheCreationTokens ?: previous?.cacheCreationTokens,
                             )
+                            if ((lastUsage?.inputTokens ?: 0) > 0) hasDisplayCloudReceipt = true
                             // Partial fields merge only within this request. The separate
                             // silent anchor survives a later usage-less request.
                             silentBudget.measured(lastUsage?.inputTokens,
@@ -296,7 +303,6 @@ internal class AgentLoop(
                 requestLocal = requestLocal,
                 requestHistoryTokens = requestHistoryTokens,
                 requestFixedTokens = requestFixedTokens,
-                publishLocalEstimate = publishLocalEstimate,
                 preparedRequestTokens = preparedRequestTokens,
                 filteredMessages = filteredMessages,
                 roundTools = roundTools,
@@ -521,9 +527,8 @@ internal class AgentLoop(
 
     /**
      * Bounded request-shape evidence, emitted only when [AgentToolCallDiagnostics] is already
-     * active (otherwise the attempt is null and nothing is computed or logged). The filtered value
-     * is recomputed from this round's own snapshot only when the boundary pass did not already
-     * produce it, so diagnostics never add a second hydration, copy or wire change.
+     * active. The pre-protocol value remains diagnostic-only, alongside the final-body estimate.
+     * Neither calculation adds a second hydration or changes the wire body.
      */
     private fun emitRequestContext(
         attempt: AgentToolCallDiagnostics.Attempt?,
@@ -531,7 +536,6 @@ internal class AgentLoop(
         requestLocal: Int,
         requestHistoryTokens: Int,
         requestFixedTokens: Int,
-        publishLocalEstimate: Boolean,
         preparedRequestTokens: Int?,
         filteredMessages: JSONArray,
         roundTools: JSONArray,
@@ -539,8 +543,7 @@ internal class AgentLoop(
     ) {
         val active = attempt ?: return
         runCatching {
-            val filteredTokens = preparedRequestTokens
-                ?: AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
+            val filteredTokens = AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
             val opaque = AgentRequestContextDiagnostics.replayedOpaque(filteredMessages, config)
             active.emit(
                 "request_context",
@@ -552,7 +555,8 @@ internal class AgentLoop(
                         rawHistoryTokens = requestHistoryTokens,
                         fixedTokens = requestFixedTokens,
                         filteredTokens = filteredTokens,
-                        filteredBasis = if (publishLocalEstimate) "published_boundary" else "diagnostic_recompute",
+                        filteredBasis = "pre_protocol_diagnostic",
+                        requestBodyTokens = preparedRequestTokens,
                         cloudInput = usage?.inputTokens,
                         cloudCached = usage?.cachedTokens,
                         cloudCacheCreation = usage?.cacheCreationTokens,
@@ -887,6 +891,7 @@ internal class AgentLoop(
         keptJson.forEach(messages::put)
         lastUsage = null
         requestBudget.contextReplaced()
+        hasDisplayCloudReceipt = false
         silentBudget.contextReplaced()
         autoCompactLatched = false
         compactionFailure = ""
@@ -1166,6 +1171,7 @@ internal class AgentLoop(
     private fun ProviderEvent.toAgentEvent(round: Int): AgentEvent? =
         when (this) {
             ProviderEvent.RequestStarted -> AgentEvent.ProviderRequestStarted(round)
+            is ProviderEvent.RequestEstimate -> null // Published above, never a cloud receipt.
             is ProviderEvent.ResponseHeaders -> AgentEvent.ProviderResponseStarted(round, httpCode)
             is ProviderEvent.BlockStart -> AgentEvent.AssistantBlockStart(
                 round = round,

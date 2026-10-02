@@ -6,6 +6,34 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentContextMeterPolicyTest {
+    @Test fun protocolPreviewDropsUnsentReasoningWithoutChangingSilentBudget() {
+        val history = listOf(AgentModelClient.ConversationMessage("assistant", "answer", reasoningContent = "private".repeat(1000)))
+        val base = AgentModelOptionUi("m", "p", "P", "custom", "m", "M", 100000)
+        val chat = liveContextUsage(history, "", emptyList(), base)
+        for (endpoint in listOf(io.github.mangi.eta.agent.model.EndpointKind.RESPONSES,
+            io.github.mangi.eta.agent.model.EndpointKind.ANTHROPIC_MESSAGES)) {
+            val model = base.copy(requestEndpoint = endpoint)
+            val preview = liveContextUsage(history, "", emptyList(), model)
+            assertTrue(requireNotNull(preview.contextTokens) < requireNotNull(chat.contextTokens))
+            val silent = compressionContextUsage(history, "", emptyList(), model, projectedContextTokens = 999999)
+            assertEquals(chat.contextTokens, silent.contextTokens)
+        }
+    }
+
+    @Test fun finalBodyProjectionIsEstimatedOnlyUntilACloudReceiptExists() {
+        val first = liveContextUsage(emptyList(), "", emptyList(), null, projectedContextTokens = 1234)
+        assertEquals(1234, first.contextTokens)
+        assertTrue(first.estimated)
+        val cloud = liveContextUsage(emptyList(), "", emptyList(), null,
+            projectedContextTokens = 1234, billedContextTokens = 4321)
+        assertEquals(4321, cloud.contextTokens)
+        assertFalse(cloud.estimated)
+        // Compaction clears the receipt; the next actual request body becomes the local basis.
+        val compacted = liveContextUsage(emptyList(), "", emptyList(), null, projectedContextTokens = 567)
+        assertEquals(567, compacted.contextTokens)
+        assertTrue(compacted.estimated)
+    }
+
     @Test fun emptyFirstDraftIncludesSystemAndToolOverhead() {
         val usage = liveContextUsage(emptyList(), "", emptyList(), null, requestOverheadTokens = 12000)
         assertEquals(12000, usage.contextTokens)

@@ -158,6 +158,7 @@ internal fun AgentChatInputBar(
     projectedContextTokens: Int? = null,
     billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
+    previewRequestOverheadTokens: Int? = null,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
     activeRunContextWindow: Int? = null,
@@ -209,15 +210,20 @@ internal fun AgentChatInputBar(
     val localHistoryTokenCount = remember(history, supportsVision, supportsVideo) {
         io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
     }
+    val requestEndpoint = modelPickerState.selectedModel?.requestEndpoint
+        ?: io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
+    val previewHistoryTokens = remember(history, supportsVision, supportsVideo, requestEndpoint) {
+        io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo, requestEndpoint)
+    }
     val liveUsage = remember(
-        localHistoryTokenCount, projectedContextTokens, billedContextTokens,
-        requestOverheadTokens, billedOverheadTokens, uncommittedLiveTokens, draftText,
+        previewHistoryTokens, projectedContextTokens, billedContextTokens,
+        requestOverheadTokens, previewRequestOverheadTokens, billedOverheadTokens, uncommittedLiveTokens, draftText,
         pendingImages, pendingFileReferences, conversationMentions.pending,
         modelPickerState.selectedModel, activeRunContextWindow,
     ) {
         liveContextUsage(
             history = emptyList(),
-            historyTokenCount = localHistoryTokenCount,
+            historyTokenCount = previewHistoryTokens,
             projectedContextTokens = projectedContextTokens,
             currentInput = draftText,
             pendingImages = pendingImages,
@@ -225,7 +231,7 @@ internal fun AgentChatInputBar(
             pendingFileReferences = pendingFileReferences,
             pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens,
-            requestOverheadTokens = requestOverheadTokens,
+            requestOverheadTokens = previewRequestOverheadTokens ?: requestOverheadTokens,
             billedOverheadTokens = billedOverheadTokens,
             uncommittedLiveTokens = uncommittedLiveTokens,
             activeRunContextWindow = activeRunContextWindow,

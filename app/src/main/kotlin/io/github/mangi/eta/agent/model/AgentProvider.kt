@@ -92,6 +92,9 @@ internal enum class AssistantBlockKind {
 internal sealed interface ProviderEvent {
     data object RequestStarted : ProviderEvent
 
+    // Final HTTP body estimate, deliberately distinct from a cloud Usage receipt.
+    data class RequestEstimate(val tokens: Int) : ProviderEvent
+
     data class ResponseHeaders(
         val httpCode: Int
     ) : ProviderEvent

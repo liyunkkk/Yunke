@@ -42,12 +42,12 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 ProviderRequestHeaders.mergeInto(this, config.baseUrl, config.customHeaders, request.sessionId)
             }
             .build()
+        val requestJson = buildRequestJson(config, request.messages, request.tools)
         val httpRequest = Request.Builder()
             .url(ProviderUrls.anthropicMessagesUrl(config.baseUrl))
             .headers(headers)
             .post(
-                buildRequestJson(config, request.messages, request.tools)
-                    .toString()
+                requestJson.toString()
                     .toRequestBody(JSON_MEDIA_TYPE)
             )
             .build()
@@ -55,6 +55,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent)
             val assistant = readStreamingAssistantMessage(httpRequest, runController, onEvent)
             onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistant)
@@ -65,7 +66,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         }
     }
 
-    private fun buildRequestJson(
+    internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray

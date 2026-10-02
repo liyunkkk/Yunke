@@ -43,6 +43,7 @@ internal data class AgentModelOptionUi(
     val supportsImageGeneration: Boolean = false,
     val supportsVideo: Boolean = false,
     val supportsVideoGeneration: Boolean = false,
+    val requestEndpoint: io.github.mangi.eta.agent.model.EndpointKind = io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS,
 )
 
 @Immutable
@@ -127,6 +128,19 @@ internal object AgentModelPickerProjector {
             supportsImageGeneration = model.supportsImageGeneration,
             supportsVideo = model.supportsVideo,
             supportsVideoGeneration = model.supportsVideoGeneration,
+            requestEndpoint = when (this) {
+                is io.github.mangi.eta.data.model.AnthropicProviderSetting -> io.github.mangi.eta.agent.model.EndpointKind.ANTHROPIC_MESSAGES
+                else -> {
+                    val mode = when (this) {
+                        is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> endpointMode
+                        is io.github.mangi.eta.data.model.CustomProviderSetting -> endpointMode
+                        else -> ""
+                    }
+                    if (mode == io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+                        io.github.mangi.eta.agent.model.EndpointKind.RESPONSES
+                    else io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
+                }
+            },
         )
 }
 
@@ -283,7 +297,8 @@ internal fun liveContextUsage(
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
     val local = projectedContextTokens?.takeIf { it > 0 }?.toLong()
         ?: ((historyTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
-            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
+            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true,
+            selectedModel?.requestEndpoint ?: io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS)).toLong() +
             requestOverheadTokens.coerceAtLeast(0) + uncommittedLiveTokens.coerceAtLeast(0))
     return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
 }
@@ -311,9 +326,12 @@ internal fun compressionContextUsage(
         // Legacy cloud receipts keep the ring accurate, but lack the calibration
         // needed for a safe delta. Only the silent budget falls back to a full estimate.
         val local = liveContextUsage(history, currentInput, pendingImages, selectedModel,
-            pendingFileReferences, pendingConversationMentions, localHistoryTokenCount,
+            pendingFileReferences, pendingConversationMentions,
+            localHistoryTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
+                history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true),
             requestOverheadTokens = requestOverheadTokens,
-            projectedContextTokens = projectedContextTokens,
+            // Display-only final-body estimates must not change the silent send budget.
+            projectedContextTokens = null,
             activeRunContextWindow = activeRunContextWindow)
         val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
             draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)

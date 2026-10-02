@@ -22,8 +22,9 @@ class ContextPrecisionContractTest(unittest.TestCase):
             r'ProviderRequest\(requestConfigForRound\(\),\s*'
             r'filteredMessages,\s*roundTools,\s*sessionId'
             r'(?:,\s*toolDiagnostics\s*=\s*toolDiagnostics)?\)')
-        self.assertIn('val preparedRequestTokens = if (publishLocalEstimate)', code)
-        self.assertIn('val localEstimate = preparedRequestTokens?.takeIf', code)
+        self.assertIn('var preparedRequestTokens: Int? = null', code)
+        self.assertIn('preparedRequestTokens = providerEvent.tokens', code)
+        self.assertIn('if (publishLocalEstimate && !hasDisplayCloudReceipt && providerEvent.tokens > 0)', code)
 
     def test_calibration_does_not_mix_prepared_tokens_with_boundary_tokens(self):
         code = self.read('agent/model/AgentLoop.kt')
@@ -44,10 +45,11 @@ class ContextPrecisionContractTest(unittest.TestCase):
     def test_ui_preserves_raw_calibration_and_separate_capability_preview(self):
         bar = self.read('ui/components/AgentChatInputBar.kt')
         self.assertIn('remember(history, supportsVision, supportsVideo)', bar)
-        self.assertIn('historyTokenCount = localHistoryTokenCount', bar)
+        self.assertIn('historyTokenCount = previewHistoryTokens', bar)
+        self.assertIn('localHistoryTokenCount = localHistoryTokenCount', bar)
         self.assertIn('historyTokenCount = historyTokenCount', bar)
         model = self.read('ui/model/AgentModelPickerUiState.kt')
-        self.assertIn('pendingFileReferences, pendingConversationMentions, localHistoryTokenCount', model)
+        self.assertIn('localHistoryTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(', model)
         self.assertIn('history.sumOf { AgentContextBudget.countMessage(it) }', model)
         self.assertIn('if (image.isVideo) video || vision else vision', model)
 

@@ -49,8 +49,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .also { ProviderRequestHeaders.mergeInto(it, config.baseUrl, config.customHeaders, request.sessionId) }
             .build()
 
-        val requestBody = buildRequestJson(config, request.messages, request.tools)
-            .toString()
+        val requestJson = buildRequestJson(config, request.messages, request.tools)
+        val requestBody = requestJson.toString()
             .toRequestBody(JSON_MEDIA_TYPE)
 
         val httpRequest = Request.Builder()
@@ -62,6 +62,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent)
             val assistantMessage = readStreamingAssistantMessage(httpRequest, runController, onEvent)
             onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistantMessage)
@@ -72,7 +73,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         }
     }
 
-    private fun buildRequestJson(
+    internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray

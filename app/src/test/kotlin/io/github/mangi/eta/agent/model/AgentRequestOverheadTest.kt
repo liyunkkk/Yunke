@@ -10,6 +10,32 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRequestOverheadTest {
+    @Test fun protocolPreviewCountsHostedToolsButLeavesSilentOverheadUnchanged() {
+        val c = modelConfig(false, false).copy(openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+        var withoutHosted = 0
+        var withHosted = 0
+        val silent = AgentRequestOverhead.estimate(c, onProtocolPreview = { withoutHosted = it })
+        val silentWithHosted = AgentRequestOverhead.estimate(c.copy(hostedWebSearchEnabled = true),
+            onProtocolPreview = { withHosted = it })
+        org.junit.Assert.assertEquals(silent, silentWithHosted)
+        assertTrue(withoutHosted > 0)
+        assertTrue(withHosted > withoutHosted)
+    }
+
+    @Test fun anthropicPreviewUsesFinalCustomSystemAndToolsNotUnsentDefaults() {
+        val c = modelConfig(false, false).copy(
+            providerType = io.github.mangi.eta.data.model.ProviderTypes.ANTHROPIC,
+            customBody = listOf(
+                io.github.mangi.eta.data.model.CustomBody("system", kotlinx.serialization.json.JsonPrimitive("replacement")),
+                io.github.mangi.eta.data.model.CustomBody("tools", kotlinx.serialization.json.JsonArray(emptyList())),
+            ))
+        var preview = 0
+        val silent = AgentRequestOverhead.estimate(c, onProtocolPreview = { preview = it })
+        org.junit.Assert.assertEquals(AgentContextBudget.countTokens("replacement"), preview)
+        org.junit.Assert.assertEquals(AgentRequestOverhead.estimate(c), silent)
+        assertTrue(silent > preview)
+    }
+
     @Test
     fun estimateIncludesSystemPromptAndTools() {
         val tokens = AgentRequestOverhead.estimate(

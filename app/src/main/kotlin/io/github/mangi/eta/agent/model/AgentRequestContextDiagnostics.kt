@@ -16,6 +16,37 @@ import org.json.JSONObject
  */
 internal object AgentRequestContextDiagnostics {
 
+    /** Shared across all transports; fixed labels and numeric aggregates only. */
+    fun wireBodyFields(shape: AgentWireRequestEstimate.Shape): JSONObject = JSONObject().apply {
+        put("body_basis", when (shape.endpoint) {
+            EndpointKind.RESPONSES -> "final_responses_http"
+            EndpointKind.CHAT_COMPLETIONS -> "final_chat_completions_http"
+            EndpointKind.ANTHROPIC_MESSAGES -> "final_anthropic_http"
+        })
+        put("request_tokens_est", shape.tokens)
+        for ((name, component) in listOf(
+            "instructions" to shape.instructions, "text" to shape.text,
+            "reasoning_text" to shape.reasoning, "tool_calls" to shape.toolCalls,
+            "tool_results" to shape.toolResults, "tool_schema" to shape.tools,
+            "format" to shape.format, "media" to shape.media,
+        )) {
+            put("${name}_chars", component.chars)
+            put("${name}_utf8_bytes", component.utf8Bytes)
+            put("${name}_tokens_est", component.tokens)
+        }
+        put("framing_tokens_est", shape.framingTokens)
+        put("message_count", shape.messageCount)
+        put("tool_count", shape.toolCount)
+        put("hosted_tool_count", shape.hostedToolCount)
+        put("image_count", shape.imageCount)
+        put("video_count", shape.videoCount)
+        put("opaque_replay_items", shape.opaqueItems)
+        put("encrypted_content_chars", shape.encryptedChars)
+        put("opaque_replay_priced", false)
+        put("hosted_internal_priced", false)
+        put("unknown_content_blocks", shape.unknownBlocks)
+    }
+
     /**
      * Shape of the *final* Responses HTTP body, paired with the messages it was built from so the
      * coverage gap between the raw history and the projected input stays attributable.
@@ -124,6 +155,7 @@ internal object AgentRequestContextDiagnostics {
         val cloudOutput: Int? = null,
         val opaqueReplayItems: Int = 0,
         val opaqueEncryptedChars: Long = 0,
+        val requestBodyTokens: Int? = null,
     )
 
     fun localRequestFields(local: LocalRequest): JSONObject = JSONObject()
@@ -135,6 +167,7 @@ internal object AgentRequestContextDiagnostics {
         .put("filtered_basis", local.filteredBasis)
         .apply {
             local.filteredTokens?.let { put("filtered_tokens_est", it) }
+            local.requestBodyTokens?.let { put("request_tokens_est", it) }
             local.cloudInput?.let { put("cloud_input", it) }
             local.cloudCached?.let { put("cloud_cached", it) }
             local.cloudCacheCreation?.let { put("cloud_cache_creation", it) }

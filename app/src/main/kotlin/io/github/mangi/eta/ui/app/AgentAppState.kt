@@ -512,6 +512,10 @@ internal class AgentAppState(
     var requestOverheadTokens by mutableStateOf(0)
         private set
 
+    // Display-only, never used by compression/send-budget callers.
+    var previewRequestOverheadTokens by mutableStateOf<Int?>(null)
+        private set
+
     var billedOverheadTokens by mutableStateOf<Int?>(null)
         private set
 
@@ -698,11 +702,13 @@ internal class AgentAppState(
         val overheadRequest = overheadSelection.begin(binding)
         // A previous binding's positive value is not a fallback for an unknown new binding.
         requestOverheadTokens = overheadSelection.tokensFor(binding) ?: 0
+        previewRequestOverheadTokens = null
         val state = homeState
         val owner = subAgentConfigOwner
         val assistant = requestOverheadAssistant()
         val providers = selectionProviders.toList()
         scope.launch(Dispatchers.IO) {
+            var previewTokens: Int? = null
             val tokens = try {
                 val provider = providers.firstOrNull { it.id == state.providerId && it.isEnabled }
                 val model = provider?.models?.firstOrNull { it.id == state.modelId && it.isEnabled }
@@ -715,7 +721,7 @@ internal class AgentAppState(
                         deviceSensitiveReadTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
                         deviceSensitiveActionTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
                     )
-                    estimateRequestOverhead(config, assistant, owner, providers)
+                    estimateRequestOverhead(config, assistant, owner, providers) { previewTokens = it }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -726,6 +732,7 @@ internal class AgentAppState(
                 if (requestOverheadAssistant() != assistant ||
                     !overheadSelection.complete(overheadRequest, currentOverheadBinding(), tokens)) return@withContext
                 requestOverheadTokens = requireNotNull(tokens)
+                previewRequestOverheadTokens = previewTokens
                 syncBilledOverhead(selectedConversationId, homeState.messages)
             }
         }
@@ -736,6 +743,7 @@ internal class AgentAppState(
         assistant: io.github.mangi.eta.data.model.AssistantProfile,
         owner: SubAgentConfigKey,
         providers: List<io.github.mangi.eta.data.model.ProviderSetting>,
+        onProtocolPreview: ((Int) -> Unit)? = null,
     ): Int {
         val enabledSkillIds = assistant.enabledSkillIds.toSet()
         val skillContext = SkillContext(
@@ -767,6 +775,9 @@ internal class AgentAppState(
             memoryContext = memoryContext,
             capabilities = AgentToolCapabilities.capture(appContext),
             additionalTools = additionalTools,
+            onProtocolPreview = onProtocolPreview?.let { publish ->
+                { tokens: Int -> publish(tokens + AgentContextBudget.countTokens(childPrompt)) }
+            },
         ) + AgentContextBudget.countTokens(childPrompt)
     }
 
