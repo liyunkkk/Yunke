@@ -2423,27 +2423,32 @@ internal class AgentAppState(
         contextWindow: Int? = null,
         billedTokens: Int? = null,
         localTokens: Int? = null,
+        sourceModelConfig: AgentModelClient.ModelConfig? = null,
     ): List<AgentModelClient.ConversationMessage> {
         val resolvedKeepRecent = keepRecent ?: keepRecentFor()
         val archive = conversationId?.let {
             io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, it)
         }
+        val window = compressionBoundaryWindow(contextWindow)
         val config = AgentContextCompactor.Config(
             keepRecentMessages = coerceKeepRecent(resolvedKeepRecent),
             compressModelConfig = compressModelConfig,
             compactionArchive = archive,
             usageConversationId = conversationId,
+            sourceModelConfig = sourceModelConfig?.copy(contextWindow = window),
+            summaryTokenBudget = io.github.mangi.eta.agent.model.AgentCompressionBoundary.summaryProgressBudget(window),
         )
         return try {
             var summaryFailure: String? = null
             val compressed = runInterruptible {
-                val window = compressionBoundaryWindow(contextWindow)
                 // billed/local lets the 16% tail target the provider's bill, as in AgentLoop.
                 val initialCut = io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(
-                    history, window, billedTokens = billedTokens, localTokens = localTokens)
+                    history, window, billedTokens = billedTokens, localTokens = localTokens,
+                    opaqueItems = config::replayedOpaqueItems)
                 val working = AgentContextCompactor.pruneOversizedToolResults(history, archive, initialCut)
                 val cut = io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(
-                    working, window, billedTokens = billedTokens, localTokens = localTokens)
+                    working, window, billedTokens = billedTokens, localTokens = localTokens,
+                    opaqueItems = config::replayedOpaqueItems)
                 if (cut <= 0 || cut >= working.size) return@runInterruptible working
                 val boundArchive = archive ?: error("缺少会话身份，无法保存压缩原文")
                 val prefix = working.take(cut)
@@ -2457,7 +2462,10 @@ internal class AgentAppState(
                         keepStartOverride = cut,
                     )
                     val result = boundArchive.attachReferences(prefix, id, summary, working.size - cut)
-                    require(result.sumOf { AgentContextBudget.countMessage(it).toLong() } < history.sumOf { AgentContextBudget.countMessage(it).toLong() }) { "摘要及索引未缩小上下文" }
+                    require(io.github.mangi.eta.agent.model.AgentCompressionBoundary.compactionReduced(
+                        history, result, working.size - cut, config.progressBudget(),
+                        countsOpaque = { config.replayedOpaqueItems(it) > 0 },
+                    )) { "摘要及索引未缩小上下文" }
                     boundArchive.record(id, "ready")
                     result
                 } catch (failure: Exception) {
@@ -2715,6 +2723,7 @@ internal class AgentAppState(
                 val compressed = tryCompressHistory(
                     history = history,
                     compressModelConfig = compressModelConfig,
+                    sourceModelConfig = config,
                     conversationId = conversationId,
                     contextWindow = config.contextWindow,
                     billedTokens = estimatedTokens.takeIf { billedForCompression != null },
@@ -4771,6 +4780,7 @@ internal class AgentAppState(
             ?: return
         val compressModelConfig = resolveCompressModelConfig(fallback)
         val compressed = tryCompressHistory(originalHistory, compressModelConfig,
+            sourceModelConfig = fallback,
             conversationId = conversationId, contextWindow = fallback.contextWindow,
             billedTokens = billedTokens, localTokens = localTokens)
         if (compressed == originalHistory) return
@@ -5750,6 +5760,7 @@ internal class AgentAppState(
                 val compressed = tryCompressHistory(
                     history = originalHistory,
                     compressModelConfig = modelConfig,
+                    sourceModelConfig = fallback,
                     keepRecent = request.keepRecent,
                     conversationId = request.conversationId,
                     contextWindow = fallback?.contextWindow,

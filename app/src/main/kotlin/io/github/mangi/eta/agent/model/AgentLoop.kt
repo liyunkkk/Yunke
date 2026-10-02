@@ -541,6 +541,7 @@ internal class AgentLoop(
         runCatching {
             val filteredTokens = preparedRequestTokens
                 ?: AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
+            val opaque = AgentRequestContextDiagnostics.replayedOpaque(filteredMessages, config)
             active.emit(
                 "request_context",
                 AgentRequestContextDiagnostics.localRequestFields(
@@ -556,6 +557,8 @@ internal class AgentLoop(
                         cloudCached = usage?.cachedTokens,
                         cloudCacheCreation = usage?.cacheCreationTokens,
                         cloudOutput = usage?.outputTokens,
+                        opaqueReplayItems = opaque.first,
+                        opaqueEncryptedChars = opaque.second,
                     ),
                 ),
             )
@@ -651,7 +654,14 @@ internal class AgentLoop(
         )
         budgetKeepRecent = keep
         var history = historyForCompaction()
-        var cut = compactionStart(history)
+        var plan = compactionPlan(history)
+        if (plan.stopReason != null) {
+            // A missing boundary is temporary. New history/receipts must be retried.
+            compactionFailure = plan.stopReason
+            onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(), reason = plan.stopReason))
+            return
+        }
+        var cut = plan.cut
         if (cut <= 0) {
             if (forced) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
                 reason = "当前保留范围内没有可压缩的完整历史单元。"))
@@ -670,7 +680,14 @@ internal class AgentLoop(
             }
             // Both the DTO and same-model JSON replay must come from this new snapshot.
             history = historyForCompaction()
-            cut = compactionStart(history)
+            plan = compactionPlan(history)
+            if (plan.stopReason != null) {
+                // Do not permanently suppress 80% checks while a batch is closing.
+                compactionFailure = plan.stopReason
+                onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(), reason = plan.stopReason))
+                return
+            }
+            cut = plan.cut
             if (!dueToRing) decisionTokens = requestBudgetTokens()
         }
         if (forced && cut <= 0) {
@@ -688,16 +705,23 @@ internal class AgentLoop(
         }
     }
 
-    private fun compactionStart(history: List<AgentModelClient.ConversationMessage>): Int {
+    private fun compactionStart(history: List<AgentModelClient.ConversationMessage>): Int = compactionPlan(history).cut
+
+    private fun compactionPlan(history: List<AgentModelClient.ConversationMessage>): AgentCompressionBoundary.RetentionPlan {
         return runCatching {
-            AgentCompressionBoundary.selectStart(history,
+            AgentCompressionBoundary.planRetention(history,
                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
                 overflowPending,
                 // Same request in both units: calibrated bill vs cheap local boundary.
                 billedTokens = requestBudgetTokens(),
-                localTokens = localRequestTokens())
-        }.getOrDefault(0)
+                localTokens = localRequestTokens(),
+                opaqueItems = ::scopedOpaqueItems)
+        }.getOrDefault(AgentCompressionBoundary.RetentionPlan(0))
     }
+
+    /** Responses transport only. Scope hash ignores endpoint mode, so Chat Completions must not opt in. */
+    private fun scopedOpaqueItems(message: AgentModelClient.ConversationMessage): Int =
+        AgentCompressionBoundary.replayedOpaqueItemCount(message, config)
 
     private fun tryBudgetCompaction(round: Int): Boolean {
         if (!compactPolicy.enabled && !manualBudgetAttempt) return false
@@ -706,7 +730,12 @@ internal class AgentLoop(
         if (!manualBudgetAttempt && !overflowPending &&
             requestBudgetTokens() <= AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))) return false
         val history = historyForCompaction()
-        val cut = compactionStart(history)
+        val plan = compactionPlan(history)
+        if (plan.stopReason != null) {
+            compactionFailure = plan.stopReason
+            return false
+        }
+        val cut = plan.cut
         if (cut <= 0) return false
         // Commit a pruning-only reduction first. The caller remeasures and takes a
         // fresh snapshot before attempting a summary if pressure is still high.
@@ -788,6 +817,7 @@ internal class AgentLoop(
         runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
             "运行中压缩开始：round=$round，选中=$cut，保留=${history.size - cut}，" +
                 "保留估算=${AgentCompressionBoundary.retainedTokens(history, cut)}/${AgentCompressionBoundary.retainedTokens(history, 0)}，" +
+                "不透明回放单元=${history.drop(cut).count { scopedOpaqueItems(it) > 0 }}（不可折算为输入 token），" +
                 "保留上限=${AgentCompressionBoundary.continuationRetentionBudget(window, overflowPending)}，决策=$decisionTokens，本地=${localRequestTokens()}") }
         val rewritten = try {
             val prefix = history.take(cut)
@@ -806,6 +836,8 @@ internal class AgentLoop(
                     compressConfig,
                     compactionArchive = compactionArchive,
                     usageConversationId = sessionId,
+                    sourceModelConfig = config.copy(contextWindow = window),
+                    summaryTokenBudget = AgentCompressionBoundary.summaryProgressBudget(window),
                 ),
                 keepStartOverride = cut, controller = runController,
                 replay = if (compressConfig.providerType == config.providerType && compressConfig.baseUrl == config.baseUrl &&
@@ -824,7 +856,11 @@ internal class AgentLoop(
             val withPointers = savedCheckpoint?.let {
                 requireNotNull(compactionArchive).attachReferences(durablePrefix, it, compressed, tail.size)
             } ?: compressed
-            require(withPointers.sumOf { AgentContextBudget.countMessage(it).toLong() } < history.sumOf { AgentContextBudget.countMessage(it).toLong() }) {
+            require(AgentCompressionBoundary.compactionReduced(
+                history, withPointers, tail.size,
+                AgentCompressionBoundary.summaryProgressBudget(window),
+                countsOpaque = { scopedOpaqueItems(it) > 0 },
+            )) {
                 "摘要及索引未减少上下文，已保留原文"
             }
             savedCheckpoint?.let { compactionArchive?.record(it, "ready") }

@@ -122,6 +122,85 @@ class AgentAutomaticCompactionTest {
         assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
     }
 
+    @Test fun noOpaqueCutDoesNotDisableNextCloudPressureRetry() {
+        val config = modelConfig().copy(openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+        val events = mutableListOf<AgentEvent>()
+        val executed = mutableListOf<String>()
+        var summaries = 0
+        fun opaqueReply(id: String): JSONObject = toolReply(id).also {
+            ResponsesEphemeralState.attachOutputItems(it, JSONArray().put(
+                JSONObject().put("type", "reasoning").put("id", "rs-$id").put("encrypted_content", "cipher-$id")))
+            ResponsesReasoningState.capture(it, config)
+            it.put("usage", JSONObject().put("prompt_tokens", AUTO_PRESSURE))
+        }
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> opaqueReply("first") },
+            { _, _ ->
+                assertEquals(0, summaries)
+                assertTrue(events.any { it is AgentEvent.ContextCompacted && !it.applied && !it.blocked &&
+                    it.reason == AgentCompressionBoundary.OPAQUE_CUT_STOP })
+                opaqueReply("second")
+            },
+            { _, _ ->
+                assertEquals(1, summaries)
+                assistant(promptTokens = 20)
+            },
+        ))
+        // State-machine fixture: the first reply establishes a sole complete batch,
+        // which is not yet compactable. No actual empty request is sent to a server.
+        assertEquals("done", runLoop(JSONArray(), provider, events, config = config,
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                executed += call.id
+                AgentModelClient.ToolResult("ok")
+            },
+            compactHistory = { source, policy ->
+                summaries++
+                assertEquals(2, requireNotNull(policy.keepStartOverride))
+                assertEquals(2, source.count { AgentCompressionBoundary.opaqueReplayItemCount(it) > 0 })
+                summarize(source, policy)
+            },
+        ).content)
+        assertEquals(listOf("first", "second"), executed)
+        assertEquals(3, provider.requests.size)
+        assertEquals(1, summaries)
+        assertEquals(listOf(1, 2), events.filterIsInstance<AgentEvent.AutoCompactWaiting>().map { it.round })
+        assertEquals(3, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        assertEquals(listOf(AUTO_PRESSURE, AUTO_PRESSURE, 20), events.filterIsInstance<AgentEvent.UsageReceived>()
+            .filterNot { it.projected }.map { it.usage.inputTokens })
+    }
+
+    @Test fun singleUserOpaqueToolRunStillCompactsAtEightyPercentCloudPressure() {
+        val config = modelConfig().copy(openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+        val messages = JSONArray()
+        messages.put(AgentConversationCodec.userTextMessage("single task").put(AgentTurnIdentity.JSON_KEY, "current-turn"))
+        repeat(57) { index ->
+            val call = "c$index"
+            val assistantMessage = JSONObject().put("role", "assistant").put("content", "note")
+                .put("tool_calls", JSONArray().put(JSONObject().put("id", call).put("type", "function")
+                    .put("function", JSONObject().put("name", "get_current_context").put("arguments", "{}"))))
+            ResponsesEphemeralState.attachOutputItems(assistantMessage, JSONArray().put(
+                JSONObject().put("type", "reasoning").put("id", "rs$index").put("encrypted_content", "cipher-$index"),
+            ))
+            ResponsesReasoningState.capture(assistantMessage, config)
+            messages.put(assistantMessage)
+            messages.put(JSONObject().put("role", "tool").put("tool_call_id", call).put("content", "ok"))
+        }
+        var cut = -1
+        var keptOpaque = -1
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }),
+            listOf(AgentTokenUsage(inputTokens = AUTO_PRESSURE, cachedTokens = AUTO_PRESSURE - 100)))
+        assertEquals("done", runLoop(messages, provider, mutableListOf(), config = config, compactHistory = { source, policy ->
+            cut = requireNotNull(policy.keepStartOverride)
+            keptOpaque = source.drop(cut).count { AgentCompressionBoundary.opaqueReplayItemCount(it) > 0 }
+            summarize(source, policy)
+        }).content)
+        assertEquals(1, provider.requests.size)
+        assertTrue(cut > 1)
+        assertTrue(keptOpaque <= 1)
+        assertTrue(AgentContextCompactor.recentKeepStartIndex(
+            (0 until messages.length()).map { AgentConversationCodec.fromJsonObject(messages.getJSONObject(it)) }, 0) == 0)
+    }
+
     @Test fun cacheHitFarAboveTheLocalEstimateStillCompactsAtEightyPercent() {
         // Images and screenshots under-count locally; a real hit must not be mistaken for inflation.
         val messages = smallHistory()

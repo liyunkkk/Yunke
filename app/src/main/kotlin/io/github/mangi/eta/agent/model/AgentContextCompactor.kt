@@ -69,7 +69,17 @@ internal object AgentContextCompactor {
         val summaryProvider: AgentProviderClient? = null,
         val compactionArchive: AgentCompactionArchive? = null,
         val usageConversationId: String? = null,
-    )
+        val sourceModelConfig: AgentModelClient.ModelConfig? = null,
+        val summaryTokenBudget: Int = 0,
+    ) {
+        fun replayedOpaqueItems(message: AgentModelClient.ConversationMessage): Int =
+            sourceModelConfig?.let { AgentCompressionBoundary.replayedOpaqueItemCount(message, it) } ?: 0
+
+        fun progressBudget(): Int {
+            val window = sourceModelConfig?.contextWindow?.takeIf { it > 0 } ?: return 0
+            return minOf(summaryTokenBudget.coerceAtLeast(0), AgentCompressionBoundary.summaryProgressBudget(window))
+        }
+    }
 
     fun keepRecentFor(): Int = 0
 
@@ -91,9 +101,10 @@ internal object AgentContextCompactor {
         keepRecentMessages: Int = DEFAULT_KEEP_RECENT,
         thresholdPercent: Int = AUTO_PRESSURE_PERCENT,
         estimatedTokens: Int? = null,
+        opaqueItems: (AgentModelClient.ConversationMessage) -> Int = { 0 },
     ): Boolean {
         if (contextWindow <= 0) return false
-        val cut = AgentCompressionBoundary.selectStart(history, contextWindow)
+        val cut = AgentCompressionBoundary.selectStart(history, contextWindow, opaqueItems = opaqueItems)
         if (cut <= 0 || cut >= history.size) return false
         val estimated = estimatedTokens?.takeIf { it > 0 } ?: return false
         return estimated >= contextWindow.toLong() * thresholdPercent / 100
@@ -115,17 +126,24 @@ internal object AgentContextCompactor {
         val historyStart = systemCount.coerceIn(0, messages.length())
         val history = (historyStart until messages.length()).map { AgentConversationCodec.fromJsonObject(messages.getJSONObject(it)) }
         val estimated = estimatedTokens?.takeIf { it > 0 } ?: return null
-        if (!shouldCompress(history, contextWindow, config.keepRecentMessages, estimatedTokens = estimated)) {
-            return null
-        }
-        val compressed = compress(history, config, toolExecutor, capabilitiesProvider)
-        if (compressed == history) return null
-        val cut = recentKeepStartIndex(history, config.keepRecentMessages)
+        if (!shouldCompress(history, contextWindow, config.keepRecentMessages, estimatedTokens = estimated,
+                opaqueItems = config::replayedOpaqueItems)) return null
+        // Pick once: the summarizer, returned DTO, and original JSON replay must all
+        // agree on the same tail, including protocol fields not represented in the DTO.
+        val cut = resolveKeepStart(history, config.keepRecentMessages, null, config::replayedOpaqueItems)
+        if (cut <= 0 || cut >= history.size) return null
         val keptJson = (historyStart + cut until messages.length()).map { messages.getJSONObject(it) }
         val prefix = (0 until historyStart).map { messages.getJSONObject(it) }
+        val compressed = compress(history, config, toolExecutor, capabilitiesProvider, keepStartOverride = cut)
+        if (compressed == history) return null
+        val tailSize = history.size - cut
+        require(compressed.size > tailSize && compressed.takeLast(tailSize) == history.drop(cut)) {
+            "摘要保留范围与请求历史不一致，原历史保持不变"
+        }
+        val summaryJson = compressed.dropLast(tailSize).map { AgentConversationCodec.toJsonObject(it) }
         while (messages.length() > 0) messages.remove(messages.length() - 1)
         prefix.forEach { messages.put(it) }
-        compressed.dropLast(history.size - cut).forEach { messages.put(AgentConversationCodec.toJsonObject(it)) }
+        summaryJson.forEach { messages.put(it) }
         keptJson.forEach { messages.put(it) }
         return compressed
     }
@@ -160,7 +178,9 @@ internal object AgentContextCompactor {
         controller.throwIfCancelled()
         // Summarization is read-only. Pruning must be committed by the caller BEFORE
         // taking the history/replay snapshot, and must never touch the retained tail.
-        val keepStart = keepStartOverride ?: recentKeepStartIndex(history, config.keepRecentMessages)
+        // An explicit cut is already scoped by the caller. Re-raising it with a different
+        // opaque policy would disagree with the same-model replay snapshot.
+        val keepStart = resolveKeepStart(history, config.keepRecentMessages, keepStartOverride, config::replayedOpaqueItems)
         require(keepStart in 0..history.size && keepStart in AgentCompressionBoundary.availableCuts(history)) { "压缩范围不是完整工具边界" }
         if (keepStart <= 0) return history
 
@@ -195,7 +215,11 @@ internal object AgentContextCompactor {
         }
 
         val result = summaryMessages + messagesToKeep
-        require(result.sumOf { AgentContextBudget.countMessage(it).toLong() } < history.sumOf { AgentContextBudget.countMessage(it).toLong() }) {
+        require(AgentCompressionBoundary.compactionReduced(
+            history, result, messagesToKeep.size,
+            config.progressBudget(),
+            countsOpaque = { config.replayedOpaqueItems(it) > 0 },
+        )) {
             "摘要未缩小上下文，原历史保持不变"
         }
         return result
@@ -208,6 +232,17 @@ internal object AgentContextCompactor {
      * assistant/tool record that belongs to those turns. Summaries, tool
      * records and steering supplements do not consume the quota.
      */
+    internal fun resolveKeepStart(
+        history: List<AgentModelClient.ConversationMessage>,
+        keepRecentMessages: Int,
+        keepStartOverride: Int?,
+        opaqueItems: (AgentModelClient.ConversationMessage) -> Int = { 0 },
+    ): Int = keepStartOverride ?: AgentCompressionBoundary.opaqueTailCut(
+        history,
+        recentKeepStartIndex(history, keepRecentMessages),
+        opaqueItems,
+    )
+
     fun recentKeepStartIndex(
         history: List<AgentModelClient.ConversationMessage>,
         keepRecentMessages: Int,

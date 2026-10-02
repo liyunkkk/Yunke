@@ -122,6 +122,8 @@ internal object AgentRequestContextDiagnostics {
         val cloudCached: Int? = null,
         val cloudCacheCreation: Int? = null,
         val cloudOutput: Int? = null,
+        val opaqueReplayItems: Int = 0,
+        val opaqueEncryptedChars: Long = 0,
     )
 
     fun localRequestFields(local: LocalRequest): JSONObject = JSONObject()
@@ -137,5 +139,42 @@ internal object AgentRequestContextDiagnostics {
             local.cloudCached?.let { put("cloud_cached", it) }
             local.cloudCacheCreation?.let { put("cloud_cache_creation", it) }
             local.cloudOutput?.let { put("cloud_output", it) }
+            if (local.opaqueReplayItems > 0) {
+                put("opaque_replay_items", local.opaqueReplayItems)
+                put("opaque_encrypted_content_chars", local.opaqueEncryptedChars)
+                put("opaque_replay_priced", false)
+                put("opaque_input_basis", "unknown_unpriced_replay")
+            }
         }
+
+    /** Counts replayed reasoning items. Ciphertext length is reported separately and is not a token price. */
+    fun replayedOpaque(messages: JSONArray, config: AgentModelClient.ModelConfig): Pair<Int, Long> {
+        if (config.openAiEndpointMode != io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES) return 0 to 0L
+        var items = 0
+        var chars = 0L
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            val replayed = replayedReasoning(message, config) ?: continue
+            for (itemIndex in 0 until replayed.length()) {
+                val item = replayed.optJSONObject(itemIndex) ?: continue
+                if (item.optString("type") != "reasoning") continue
+                items++
+                chars += item.optString("encrypted_content").length.toLong()
+            }
+        }
+        return items to chars
+    }
+
+    private fun replayedReasoning(message: JSONObject, config: AgentModelClient.ModelConfig): JSONArray? {
+        val ephemeral = ResponsesEphemeralState.outputItems(message)
+        if (ephemeral != null && ephemeral.length() > 0) {
+            val reasoning = JSONArray()
+            for (index in 0 until ephemeral.length()) {
+                val item = ephemeral.optJSONObject(index) ?: continue
+                if (item.optString("type") == "reasoning") reasoning.put(item)
+            }
+            return reasoning.takeIf { it.length() > 0 }
+        }
+        return ResponsesReasoningState.items(message, config)
+    }
 }
