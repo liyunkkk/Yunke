@@ -64,8 +64,12 @@ import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.config.RequestOverheadCalibrationStore
+import io.github.mangi.eta.ui.model.RequestOverheadCalibration
+import io.github.mangi.eta.ui.model.ContextEstimateDiagnostics
 import io.github.mangi.eta.config.AutoCompressPreference
 import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderTypes
@@ -178,6 +182,9 @@ internal class AgentAppState(
     private val runConversationIds = mutableMapOf<String, String>()
     private val runUsageResumeRounds = mutableMapOf<String, Int>()
     private val runUsageOwners = mutableMapOf<String, Pair<String, String>>()
+    private val contextEstimateDiagnostics = ContextEstimateDiagnostics()
+    private val runCalibrationRounds = mutableMapOf<String, Int>()
+    private var overheadCalibrationRevision by mutableStateOf(0)
     private val invalidatedUsageRuns = mutableSetOf<String>()
     private val runGeneratedAtMillis = mutableMapOf<String, Long>()
     // A stopped worker still owns its transcript until its terminal result is committed.
@@ -515,6 +522,14 @@ internal class AgentAppState(
     // Display-only, never used by compression/send-budget callers.
     var previewRequestOverheadTokens by mutableStateOf<Int?>(null)
         private set
+
+    // Display only: send-block and silent compaction budgets retain their existing units/semantics.
+    val overheadCalibrationTokens: Int?
+        get() {
+            overheadCalibrationRevision // Observe successful learning in Compose.
+            val model = modelPickerState.selectedModel ?: return null
+            return RequestOverheadCalibrationStore.read(model.providerId, model.id)?.offsetTokens
+        }
 
     var billedOverheadTokens by mutableStateOf<Int?>(null)
         private set
@@ -1284,6 +1299,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
         conversationUpdatedAt = conversationUpdatedAt +
             (conversationId to checkpoint.updatedAt)
         return true
@@ -2674,8 +2690,12 @@ internal class AgentAppState(
                 return@launch
             }
             // Recompute from THIS run's frozen model/assistant, never a positive global UI value.
+            var runPreviewOverhead: Int? = null
             val runOverhead = try {
-                estimateRequestOverhead(config, runAssistant, SubAgentConfigKey.Conversation(conversationId), runProviders)
+                estimateRequestOverhead(config, runAssistant, SubAgentConfigKey.Conversation(conversationId), runProviders,
+                    onProtocolPreview = if (AppFileLogger.isEnabled()) {
+                        { tokens: Int -> runPreviewOverhead = tokens }
+                    } else null)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -2768,6 +2788,38 @@ internal class AgentAppState(
                 }
             }
             if (!stillWanted) return@launch
+            withContext(Dispatchers.Main.immediate) {
+                if (AppFileLogger.isEnabled()) {
+                    val snapshotOverhead = runOverhead ?: 0
+                    val calibration = RequestOverheadCalibrationStore.read(runProvider.id, runModel.id)
+                    val hasReceiptDelta = !shouldCompress && calibratedForCompression
+                    val endpoint = if (calibration != null) io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
+                        else io.github.mangi.eta.agent.model.AgentWireRequestEstimate.endpoint(config)
+                    val historyEstimate = io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
+                        historyToSend, config.supportsVision, config.supportsVideo, endpoint)
+                    val displayOverhead = if (calibration != null) snapshotOverhead else runPreviewOverhead ?: snapshotOverhead
+                    // A receipt-backed snapshot uses the unchanged silent receipt-delta budget.
+                    // Otherwise snapshot the calibrated display fallback, not a wire/body modification.
+                    val estimate = if (hasReceiptDelta) estimatedTokens else liveContextUsage(
+                        history = historyToSend, currentInput = prompt, pendingImages = images,
+                        selectedModel = runModelOption, historyTokenCount = historyEstimate,
+                        requestOverheadTokens = displayOverhead,
+                        overheadCalibrationTokens = calibration?.offsetTokens,
+                    ).contextTokens
+                    contextEstimateDiagnostics.capture(runId, ContextEstimateDiagnostics.Snapshot(
+                        basis = if (hasReceiptDelta) ContextEstimateDiagnostics.Basis.RECEIPT_DELTA
+                            else ContextEstimateDiagnostics.Basis.LOCAL_FALLBACK,
+                        localEstimateTokens = estimate ?: 0,
+                        overheadTokensEst = if (hasReceiptDelta) snapshotOverhead else displayOverhead,
+                        historyTokensEst = ((if (hasReceiptDelta) historyToSend.sumOf {
+                            AgentContextBudget.countMessage(it).toLong()
+                        } else historyEstimate.toLong()) + AgentContextBudget.countCurrentTurn(prompt, modelImages))
+                            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                        overheadCalibrationTokens = calibration?.offsetTokens ?: 0,
+                        calibrationSamples = calibration?.samples ?: 0,
+                    ))
+                }
+            }
             val result = runInterruptible {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).run(
                     request = AgentRuntimeWire.RunRequest(
@@ -3018,6 +3070,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3037,6 +3090,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3553,6 +3607,7 @@ internal class AgentAppState(
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+            contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
             runCompressedDuringRun.remove(runId)
         }
         refreshConversationSummaries()
@@ -3625,6 +3680,7 @@ internal class AgentAppState(
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+            contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
             runCompressedDuringRun.remove(runId)
         }
         if (conversationId == null) {
@@ -4512,6 +4568,7 @@ internal class AgentAppState(
                     if (inflatedCache) {
                         // Ring keeps the last trusted cloud value; same rule as AgentSilentContextBudget.
                     } else if (measured != null) {
+                        if (!replaying) recordContextEstimateReceipt(runId, event, measured)
                         updateLivePromptTokens(runId, measured, projected = false,
                             historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens)
                     } else if (localBasis != null && localBasis > 0) {
@@ -4872,6 +4929,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations(
@@ -4936,6 +4994,27 @@ internal class AgentAppState(
         }
         billedOverheadConversationId = conversationId
         billedOverheadTokens = overhead
+    }
+
+    private fun recordContextEstimateReceipt(runId: String, event: AgentEvent.UsageReceived, measured: Int) {
+        val owner = runUsageOwners[runId]
+        val state = conversationIdForRun(runId)?.let(::conversationState)
+        val validOwner = owner?.takeIf { it == (state?.providerId to state?.modelId) }
+        val previous = validOwner?.let { RequestOverheadCalibrationStore.read(it.first, it.second) }
+        val history = event.requestHistoryTokens
+        val overhead = event.requestOverheadTokens
+        val learned = if (validOwner != null && history != null && overhead != null &&
+            event.round > (runCalibrationRounds[runId] ?: -1)) {
+            RequestOverheadCalibration.learn(previous, measured, history, overhead)
+        } else null
+        if (learned != null && validOwner != null) {
+            RequestOverheadCalibrationStore.save(validOwner.first, validOwner.second, learned)
+            runCalibrationRounds[runId] = event.round // Do not count partial usage twice in one round.
+            while (runCalibrationRounds.size > 32) runCalibrationRounds.remove(runCalibrationRounds.keys.first())
+            overheadCalibrationRevision++
+        }
+        contextEstimateDiagnostics.receipt(runId, measured, event.usage.cachedTokens,
+            learned != null, learned?.offsetTokens ?: previous?.offsetTokens)
     }
 
     private fun bindUsageRun(runId: String, conversationId: String) {

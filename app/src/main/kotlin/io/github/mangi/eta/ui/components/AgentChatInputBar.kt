@@ -159,6 +159,7 @@ internal fun AgentChatInputBar(
     billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
     previewRequestOverheadTokens: Int? = null,
+    overheadCalibrationTokens: Int? = null,
     billedOverheadTokens: Int? = null,
     uncommittedLiveTokens: Int = 0,
     activeRunContextWindow: Int? = null,
@@ -217,21 +218,25 @@ internal fun AgentChatInputBar(
     }
     val liveUsage = remember(
         previewHistoryTokens, projectedContextTokens, billedContextTokens,
-        requestOverheadTokens, previewRequestOverheadTokens, billedOverheadTokens, uncommittedLiveTokens, draftText,
+        requestOverheadTokens, previewRequestOverheadTokens, overheadCalibrationTokens, localHistoryTokenCount,
+        billedOverheadTokens, uncommittedLiveTokens, draftText,
         pendingImages, pendingFileReferences, conversationMentions.pending,
         modelPickerState.selectedModel, activeRunContextWindow,
     ) {
         liveContextUsage(
             history = emptyList(),
-            historyTokenCount = previewHistoryTokens,
+            historyTokenCount = if (overheadCalibrationTokens != null) localHistoryTokenCount else previewHistoryTokens,
             projectedContextTokens = projectedContextTokens,
+            overheadCalibrationTokens = overheadCalibrationTokens,
             currentInput = draftText,
             pendingImages = pendingImages,
             selectedModel = modelPickerState.selectedModel,
             pendingFileReferences = pendingFileReferences,
             pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens,
-            requestOverheadTokens = previewRequestOverheadTokens ?: requestOverheadTokens,
+            // Calibration was measured in legacy units; never add it to final-body preview units.
+            requestOverheadTokens = if (overheadCalibrationTokens != null) requestOverheadTokens
+                else previewRequestOverheadTokens ?: requestOverheadTokens,
             billedOverheadTokens = billedOverheadTokens,
             uncommittedLiveTokens = uncommittedLiveTokens,
             activeRunContextWindow = activeRunContextWindow,

@@ -29,7 +29,8 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         app = self.text('ui/app/AgentAppState.kt')
         self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', app)
         bar = self.text('ui/components/AgentChatInputBar.kt')
-        self.assertIn('requestOverheadTokens = previewRequestOverheadTokens ?: requestOverheadTokens', bar)
+        self.assertIn('requestOverheadTokens = if (overheadCalibrationTokens != null) requestOverheadTokens', bar)
+        self.assertIn('else previewRequestOverheadTokens ?: requestOverheadTokens', bar)
         send = bar.split('val sendBudget = remember(', 1)[1].split('val contextSendBlocked', 1)[0]
         self.assertNotIn('previewRequestOverheadTokens', send)
         self.assertIn('localHistoryTokenCount = localHistoryTokenCount', send)

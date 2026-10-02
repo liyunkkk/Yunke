@@ -287,6 +287,7 @@ internal fun liveContextUsage(
     uncommittedLiveTokens: Int = 0,
     projectedContextTokens: Int? = null,
     activeRunContextWindow: Int? = null,
+    overheadCalibrationTokens: Int? = null,
 ): AgentContextUsageUi {
     // An in-flight run keeps the window it was launched with, so a mid-run settings
     // change must not restate the percentage of a request that never saw the new limit.
@@ -295,11 +296,16 @@ internal fun liveContextUsage(
         return AgentContextUsageUi(billedContextTokens, window)
     }
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    val local = projectedContextTokens?.takeIf { it > 0 }?.toLong()
+    // The learned offset uses legacy overhead units, not final-body projection units.
+    // A calibrated fallback must therefore use legacy history + overhead; without calibration
+    // retain the existing final-body preview priority. Callers must pass legacy overhead here.
+    val local = projectedContextTokens?.takeIf { it > 0 && overheadCalibrationTokens == null }?.toLong()
         ?: ((historyTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
             history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true,
-            selectedModel?.requestEndpoint ?: io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS)).toLong() +
-            requestOverheadTokens.coerceAtLeast(0) + uncommittedLiveTokens.coerceAtLeast(0))
+            if (overheadCalibrationTokens != null) io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
+            else selectedModel?.requestEndpoint ?: io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS)).toLong() +
+            RequestOverheadCalibration.applyOffset(requestOverheadTokens, overheadCalibrationTokens ?: 0) +
+            uncommittedLiveTokens.coerceAtLeast(0))
     return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
 }
 
@@ -320,6 +326,7 @@ internal fun compressionContextUsage(
     localHistoryTokenCount: Int? = null,
     activeRunContextWindow: Int? = null,
     projectedContextTokens: Int? = null,
+    overheadCalibrationTokens: Int? = null,
 ): AgentContextUsageUi {
     if (billedContextTokens == null || billedContextTokens <= 0 ||
         billedHistoryTokens == null || billedOverheadTokens == null) {
@@ -332,6 +339,7 @@ internal fun compressionContextUsage(
             requestOverheadTokens = requestOverheadTokens,
             // Display-only final-body estimates must not change the silent send budget.
             projectedContextTokens = null,
+            overheadCalibrationTokens = overheadCalibrationTokens,
             activeRunContextWindow = activeRunContextWindow)
         val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
             draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
