@@ -48,6 +48,25 @@ class AgentWireRequestEstimateTest {
         assertEquals(100_000L, opaque(100_000).encryptedChars)
     }
 
+    @Test fun replayedFullResponsesReasoningCountsBothSupportedPlaintextRepresentations() {
+        val c = config(EndpointKind.RESPONSES)
+        for (nested in listOf(true, false)) {
+            val sent = "SENT_REASONING中文".repeat(100)
+            val item = JSONObject().put("type", "reasoning").put("encrypted_content", "OPAQUE".repeat(1000))
+            if (nested) item.put("content", JSONArray().put(JSONObject().put("type", "reasoning_text").put("text", sent)))
+            else item.put("reasoning_text", sent)
+            val assistant = msg("assistant", "answer")
+            ResponsesEphemeralState.attachOutputItems(assistant, JSONArray().put(item))
+            val finalBody = body(c, JSONArray().put(msg("user", "hello")).put(assistant))
+            val measured = shape(c, finalBody)
+            assertEquals(sent.length.toLong(), measured.reasoning.chars)
+            assertEquals(sent.toByteArray(Charsets.UTF_8).size.toLong(), measured.reasoning.utf8Bytes)
+            assertEquals(AgentContextBudget.countTokens(sent), measured.reasoning.tokens)
+            assertEquals(0, measured.unknownBlocks)
+            assertEquals(6000L, measured.encryptedChars)
+        }
+    }
+
     @Test fun finalOverridesAndHostedDefinitionsRatherThanSourceArraysArePriced() {
         val source = JSONArray().put(msg("system", "SOURCE_SYSTEM")).put(msg("user", "SOURCE_TEXT".repeat(100)))
         val replacement = """[{"role":"user","content":"sent"}]"""
@@ -90,11 +109,12 @@ class AgentWireRequestEstimateTest {
             val b = body(c, m, t)
             val before = b.toString()
             val events = mutableListOf<ProviderEvent>()
-            AgentWireRequestEstimate.publish(b, endpoint, request, events::add)
+            AgentWireRequestEstimate.publish(b, endpoint, request, events::add, before.toByteArray(Charsets.UTF_8).size.toLong())
             assertEquals(shape(c, b).tokens, (events.single() as ProviderEvent.RequestEstimate).tokens)
             assertEquals(before, b.toString())
             val record = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }.single { it.optString("stage") == "request_shape" }
             assertEquals(shape(c, b).tokens, record.getInt("request_tokens_est"))
+            assertEquals(before.toByteArray(Charsets.UTF_8).size.toLong(), record.getLong("body_utf8_bytes"))
             for (field in listOf("instructions", "text", "reasoning_text", "tool_calls", "tool_results", "tool_schema", "format", "media")) {
                 assertTrue(record.get("${field}_chars") is Number)
                 assertTrue(record.get("${field}_utf8_bytes") is Number)

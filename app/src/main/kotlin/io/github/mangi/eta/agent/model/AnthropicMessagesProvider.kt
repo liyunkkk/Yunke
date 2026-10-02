@@ -55,7 +55,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
-            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent)
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, body.contentLength())
             val assistant = readStreamingAssistantMessage(httpRequest, runController, onEvent)
             onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistant)

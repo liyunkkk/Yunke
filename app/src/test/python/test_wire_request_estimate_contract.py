@@ -34,6 +34,22 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         preview = self.text('ui/model/AgentModelPickerUiState.kt').split('internal fun compressionContextUsage(', 1)[1]
         self.assertIn('projectedContextTokens = null', preview)
 
+    def test_ring_consumes_display_estimate_and_screen_wrappers_forward_preview(self):
+        bar = self.text('ui/components/AgentChatInputBar.kt')
+        ring = bar.split('AgentContextUsageButton(', 1)[1].split(')', 1)[0]
+        self.assertIn('usage = liveUsage,', ring)
+        self.assertNotIn('else sendBudget', ring)
+        for path in ('ui/screens/chat/AgentChatScreen.kt', 'ui/screens/home/AgentHomeScreen.kt'):
+            screen = self.text(path)
+            self.assertIn('previewRequestOverheadTokens: Int? = null,', screen)
+            self.assertIn('previewRequestOverheadTokens = previewRequestOverheadTokens,', screen)
+
+    def test_diagnostic_wire_bytes_reuse_serialized_request_without_payload_logging(self):
+        for name in ('OpenAiResponsesProvider', 'OpenAiChatCompletionsProvider', 'AnthropicMessagesProvider'):
+            code = self.text(f'agent/model/{name}.kt')
+            publish = next(line for line in code.splitlines() if 'AgentWireRequestEstimate.publish(' in line)
+            self.assertIn('body.contentLength()', publish)
+
     def test_no_ciphertext_tokenizer_or_payload_logging(self):
         estimator = self.text('agent/model/AgentWireRequestEstimate.kt')
         self.assertIn('encrypted += item.optString("encrypted_content").length', estimator)

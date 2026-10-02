@@ -62,7 +62,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             deliver(ProviderEvent.RequestStarted)
-            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, prepared, deliver)
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, prepared, deliver, body.contentLength())
             val assistant = readStreamingResponse(
                 request = httpRequest,
                 runController = runController,

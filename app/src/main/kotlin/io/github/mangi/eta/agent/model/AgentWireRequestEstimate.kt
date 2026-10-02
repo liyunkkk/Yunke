@@ -55,15 +55,17 @@ internal object AgentWireRequestEstimate {
     fun measure(body: JSONObject, endpoint: EndpointKind): Shape = Counter(endpoint).measure(body)
 
     /** Same numeric snapshot drives the existing estimate channel and the bounded diagnostic. */
-    fun publish(body: JSONObject, endpoint: EndpointKind, request: ProviderRequest, onEvent: (ProviderEvent) -> Unit) {
+    fun publish(body: JSONObject, endpoint: EndpointKind, request: ProviderRequest, onEvent: (ProviderEvent) -> Unit,
+        serializedBodyBytes: Long? = null) {
         val shape = measure(body, endpoint)
         runCatching {
             request.toolDiagnosticAttempt?.emit("request_shape",
                 AgentRequestContextDiagnostics.wireBodyFields(shape).apply {
+                    serializedBodyBytes?.takeIf { it >= 0 }?.let { put("body_utf8_bytes", it) }
                     if (endpoint == EndpointKind.RESPONSES) {
                         val legacy = AgentRequestContextDiagnostics.responseBodyFields(
                             AgentRequestContextDiagnostics.responseBody(body, request.messages))
-                        legacy.keys().forEach { key -> put(key, legacy.get(key)) }
+                        legacy.keys().forEach { key -> if (!has(key)) put(key, legacy.get(key)) }
                     }
                 })
         }
@@ -116,6 +118,7 @@ internal object AgentWireRequestEstimate {
                                 opaque++; encrypted += item.optString("encrypted_content").length
                                 content(item.opt("summary"), reasoning)
                                 content(item.opt("content"), reasoning)
+                                reasoning.add(item.opt("reasoning_text"))
                             }
                             else -> unknown++
                         }
@@ -154,7 +157,7 @@ internal object AgentWireRequestEstimate {
                 is String -> target.add(value)
                 is JSONArray -> for (i in 0 until value.length()) content(value.opt(i), target)
                 is JSONObject -> when (value.optString("type")) {
-                    "text", "input_text", "output_text", "summary_text" -> target.add(value.opt("text"))
+                    "text", "input_text", "output_text", "summary_text", "reasoning_text" -> target.add(value.opt("text"))
                     "refusal" -> target.add(value.opt("refusal"))
                     "thinking" -> { reasoning.add(value.opt("thinking")); if (value.has("signature")) opaque++ }
                     "redacted_thinking" -> { opaque++; encrypted += value.optString("data").length }
