@@ -5091,9 +5091,10 @@ internal class AgentAppState(
             "$runId:${event.round}", measured, event.requestHistoryTokens, event.requestOverheadTokens)
         val history = evidence.history
         val overhead = evidence.overhead
-        val learned = if (history != null && overhead != null && event.round > (runCalibrationRounds[runId] ?: -1)) {
-            RequestOverheadCalibration.learn(previous, measured, history, overhead,
+        val learned = if (event.round >= (runCalibrationRounds[runId] ?: -1)) {
+            if (history != null && overhead != null) RequestOverheadCalibration.learn(previous, measured, history, overhead,
                 requestId = evidence.requestId, routeSignature = route)
+            else RequestOverheadCalibration.invalidateCorrection(previous, evidence.requestId, measured)
         } else null
         if (learned != null) {
             RequestOverheadCalibrationStore.save(owner.first, owner.second, learned)

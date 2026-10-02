@@ -28,6 +28,30 @@ class RequestOverheadCalibrationTest {
         assertEquals(37214, third.estimate(481, 25270))
     }
 
+    @Test fun correctedUsageReplacesItsSampleWithoutAddingOrReorderingRequests() {
+        val initial = stable()
+        val corrected = learn(initial, "request-1", 26000)
+        assertEquals(initial.observations.map { it.requestId }, corrected.observations.map { it.requestId })
+        assertEquals(3, corrected.samples)
+        assertEquals(26000, corrected.observations[1].cloudInput)
+        assertNull(corrected.ratio)
+        assertNull(corrected.estimate(481, 25270))
+        assertNull(RequestOverheadCalibration.learn(corrected, 26000, 481, 25270,
+            requestId = "request-1", routeSignature = corrected.routeSignature))
+    }
+
+    @Test fun incompleteCorrectionRevokesTheBasisUntilCompleteEvidenceReturns() {
+        val initial = stable()
+        val revoked = requireNotNull(RequestOverheadCalibration.invalidateCorrection(initial, "request-1", 26000))
+        assertEquals(3, revoked.samples)
+        assertFalse(revoked.observations[1].complete)
+        assertNull(revoked.ratio)
+        assertNull(revoked.estimate(481, 25270))
+        val restored = learn(revoked, "request-1")
+        assertEquals(initial.observations, restored.observations)
+        assertNotNull(restored.ratio)
+    }
+
     @Test fun claudeUnderestimateAndDeepSeekOverestimateAreBothCorrected() {
         for (input in listOf(37214, 19000)) {
             val sample = stable(input)
@@ -55,8 +79,10 @@ class RequestOverheadCalibrationTest {
         val otherRoute = learn(stable, "other-route", route = "p:other:config")
         assertEquals(1, otherRoute.samples)
         assertNull(otherRoute.ratio)
-        assertNull(RequestOverheadCalibration.learn(stable, 100000, 481, 25270,
+        val extreme = requireNotNull(RequestOverheadCalibration.learn(stable, 100000, 481, 25270,
             requestId = "bad", routeSignature = stable.routeSignature))
+        assertNull(extreme.ratio)
+        assertNull(extreme.estimate(481, 25270))
         assertNull(RequestOverheadCalibration.learn(stable, 37214, 481, 25270, inflatedCache = true,
             requestId = "cache", routeSignature = stable.routeSignature))
     }

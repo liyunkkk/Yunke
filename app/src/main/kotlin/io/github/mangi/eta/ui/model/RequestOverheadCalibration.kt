@@ -30,7 +30,8 @@ internal object RequestOverheadCalibration {
     }
 
     @Serializable
-    data class Observation(val requestId: String, val cloudInput: Int, val history: Int, val overhead: Int) {
+    data class Observation(val requestId: String, val cloudInput: Int, val history: Int, val overhead: Int,
+        val complete: Boolean = true) {
         val ratio: Double get() = cloudInput.toDouble() / (history.toLong() + overhead)
     }
 
@@ -38,7 +39,8 @@ internal object RequestOverheadCalibration {
     data class Sample(val observations: List<Observation>, val routeSignature: String = "") {
         val samples: Int get() = observations.size
         val ratio: Double? get() {
-            if (observations.size != WINDOW || observations.map { it.requestId }.distinct().size != WINDOW) return null
+            if (observations.size != WINDOW || observations.any { !it.complete } ||
+                observations.map { it.requestId }.distinct().size != WINDOW) return null
             val ratios = observations.map { it.ratio }
             if (ratios.any { !it.isFinite() || it !in 0.5..2.0 } || ratios.max() / ratios.min() > 1.10) return null
             return ratios.average()
@@ -66,11 +68,25 @@ internal object RequestOverheadCalibration {
         requestId: String, routeSignature: String = ""): Sample? {
         if (inflatedCache || routeSignature.isBlank() || requestId.isBlank() || cloudInput <= 0 || requestHistoryTokens < 0 || requestOverheadTokens <= 0) return null
         val observation = Observation(requestId, cloudInput, requestHistoryTokens, requestOverheadTokens)
-        if (!observation.ratio.isFinite() || observation.ratio !in 0.5..2.0) return null
         val scoped = previous?.takeIf { it.routeSignature == routeSignature }
-        if (scoped?.observations?.any { it.requestId == requestId } == true) return null
+        val existing = scoped?.observations?.indexOfFirst { it.requestId == requestId } ?: -1
+        if (existing >= 0) {
+            if (scoped!!.observations[existing] == observation) return null
+            // Correct the same request in place: never count a usage frame as a new sample.
+            return scoped.copy(observations = scoped.observations.toMutableList().also { it[existing] = observation })
+        }
         // Always retain the latest requests, including volatility; never cherry-pick stable history.
         return Sample((scoped?.observations.orEmpty() + observation).takeLast(WINDOW), routeSignature)
+    }
+
+    /** Keep the request's window position, but revoke its old basis after an incomplete correction. */
+    fun invalidateCorrection(previous: Sample?, requestId: String, cloudInput: Int): Sample? {
+        val sample = previous ?: return null
+        val index = sample.observations.indexOfFirst { it.requestId == requestId }
+        if (index < 0 || cloudInput <= 0 || sample.observations[index].cloudInput == cloudInput) return null
+        return sample.copy(observations = sample.observations.toMutableList().also {
+            it[index] = it[index].copy(cloudInput = cloudInput, complete = false)
+        })
     }
 
     /** A same-session last receipt may degrade to an estimate, within the same composition range. */
