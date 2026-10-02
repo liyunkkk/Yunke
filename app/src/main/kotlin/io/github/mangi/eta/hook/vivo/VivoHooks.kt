@@ -206,32 +206,63 @@ internal object VivoHooks {
     private fun registerBusiness(module: XposedModule, logger: ModuleLogger, api: NativeApi, state: Runtime) =
         HookRegistrar(module, logger, "VivoText").install {
             intercept("vivo.query-start", api.queryStart, "GatewayManager.g typed query lifecycle") { chain ->
-                if (state.ready && enabled()) runCatching {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.QUERY_ENTERED)
+                if (!state.ready || !enabled()) {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.QUERY_GATE_CLOSED)
+                } else runCatching {
                     api.queryIds(chain.args.getOrNull(0))?.let { (link, dialog) ->
                         state.begin(link, dialog)
-                        api.queryCandidate(chain.args.getOrNull(0))?.let { state.captureForLink(link, it) }
+                        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.QUERY_BEGUN)
                     }
+                }.onFailure {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.QUERY_REFLECTION_FAILED,
+                        VivoBridgeDiagnostics.failureCategory(it))
                 }
                 chain.proceed()
             }
             intercept("vivo.typed-query", api.mapper, "LinkParamsMapper.a(RemoteQueryRequest)") { chain ->
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_ENTERED)
                 val mapped = chain.proceed()
-                if (mapped != null && state.ready && enabled()) {
-                    runCatching { api.candidate(chain.args[1]!!)?.let { state.capture(mapped, it) } }
+                if (!state.ready || !enabled()) {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_GATE_CLOSED)
+                } else if (mapped == null) {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
+                } else runCatching {
+                    api.candidate(chain.args.getOrNull(1))?.let { state.capture(mapped, it) }
+                }.onFailure {
+                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_REFLECTION_FAILED,
+                        VivoBridgeDiagnostics.failureCategory(it))
                 }
                 mapped
             }
             intercept("vivo.outbound", api.send, "LinkServer.m(ChatPayload,linkId,callback)") { chain ->
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.OUTBOUND_ENTERED)
                 val payload = chain.args.getOrNull(0)
                 val link = chain.args.getOrNull(1) as? String
-                // Validate the unclaimed native dispatch before taking ownership.
-                val candidate = if (link != null && VivoNativePolicy.validId(link)) state.take(link, payload) else null
-                if (candidate == null || candidate.turn?.link != link) chain.proceed() else {
-                    VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.DISPATCH_CLAIMED)
-                    // Never proceed/fall back to vendor after this point, even for duplicates.
-                    runCatching { state.claim(link!!, candidate) }.onFailure { state.failClaim(link!!, candidate) }
-                    null
-                }
+                // Only the mapper's exact output object can carry a receipt. Never infer from link.
+                val candidate = payload?.let { state.receipt(it) }
+                val turn = candidate?.turn
+                val owned = turn != null && link != null &&
+                    VivoNativePolicy.validId(link) && turn.link == link
+                suppressOwnedVivoOutbound(
+                    owned = owned,
+                    onOwned = { state.claim(link!!, candidate!!) },
+                    onFailure = { error ->
+                        runCatching {
+                            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.DISPATCH_FAILED,
+                                VivoBridgeDiagnostics.failureCategory(error))
+                        }
+                        state.failClaim(link!!, candidate!!)
+                    },
+                    onDiagnostic = {
+                        VivoBridgeDiagnostics.record(when {
+                            owned -> VivoBridgeDiagnostics.Stage.DISPATCH_CLAIMED
+                            candidate == null -> VivoBridgeDiagnostics.Stage.OUTBOUND_RECEIPT_MISSING
+                            else -> VivoBridgeDiagnostics.Stage.OUTBOUND_LINK_MISMATCH
+                        })
+                    },
+                    proceed = { chain.proceed() },
+                )
             }
             for ((name, linkIndex, dialogIndex) in listOf(Triple("n", 2, -1), Triple("o", 2, 3))) {
                 intercept("vivo.cancel-$name", api.stopMethods.getValue(name), "LinkServer.$name native stop") { chain ->
@@ -264,28 +295,23 @@ internal object VivoHooks {
     private class Runtime(val api: NativeApi, val client: VivoTextBridgeClient) {
         @Volatile var ready = false
         private val receipts = WeakIdentityReceipts<Candidate>()
-        private val pending = ConcurrentHashMap<String, Candidate>()
         private val active = ConcurrentHashMap<String, Owned>()
         private val turns = VivoTurnLedger()
         @Synchronized fun begin(link: String, dialog: String) { turns.begin(link, dialog) }
-        @Synchronized fun captureForLink(link: String, candidate: Candidate) {
-            val turn = turns.find(candidate.dialog) ?: return
-            pending[link] = candidate.copy(turn = turn)
-        }
         @Synchronized fun capture(payload: Any, candidate: Candidate) {
-            val turn = turns.find(candidate.dialog) ?: return
-            val owned = candidate.copy(turn = turn)
-            receipts.put(payload, owned)
-            pending.remove(turn.link)
+            val turn = turns.find(candidate.dialog)
+            if (turn == null) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_TURN_MISSING)
+                return
+            }
+            receipts.put(payload, candidate.copy(turn = turn))
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_BOUND)
         }
-        @Synchronized fun take(link: String, payload: Any?): Candidate? {
-            if (payload != null) receipts.get(payload)?.let { return it }
-            return pending.remove(link)
-        }
+        @Synchronized fun receipt(payload: Any): Candidate? = receipts.get(payload)
         @Synchronized private fun stillOwns(owned: Owned) =
             active[owned.link] === owned && owned.candidate.turn?.let(turns::active) == true
         @Synchronized private fun finishOwned(owned: Owned): Boolean =
-            active.remove(owned.link, owned).also { if (it) pending.remove(owned.link) } &&
+            active.remove(owned.link, owned) &&
                 owned.candidate.turn?.let(turns::finish) == true
         @Synchronized fun failClaim(link: String, candidate: Candidate) {
             val turn = candidate.turn ?: return
@@ -335,7 +361,6 @@ internal object VivoHooks {
             }
         }
         @Synchronized fun cancel(link: String, dialog: String?, render: Boolean): Boolean {
-            pending.remove(link)
             turns.cancel(link, dialog, render) // also fences a query which has not reached the mapper
             val owned = active[link] ?: return false
             if (dialog != null && dialog != owned.candidate.dialog) return false
@@ -381,25 +406,23 @@ internal object VivoHooks {
         private val remoteQuery = clazz("gateway.model.Query\$Remote")
         private val remoteLink = method(remoteQuery, "getLinkId")
         private val remoteDialog = method(remoteQuery, "getDialogId")
-        private val remoteConversation = method(remoteQuery, "getConversationId")
-        private val remoteModel = method(remoteQuery, "getTextQueryModel")
         // ContinuationImpl has the same external ABI constraint; do not substitute Eta's class literal.
         val queryStart = method(gateway, "g", clazz("gateway.model.Query"),
             Class.forName("kotlin.coroutines.jvm.internal.ContinuationImpl", false, loader)).also {
             check(!Modifier.isStatic(it.modifiers) && it.returnType == Any::class.java && !it.isBridge)
         }
         fun queryIds(query: Any?): Pair<String, String>? {
-            if (query == null || !remoteQuery.isInstance(query)) return null
-            val link = remoteLink.invoke(query) as String
-            val dialog = remoteDialog.invoke(query) as String
-            return if (VivoNativePolicy.validId(link) && VivoNativePolicy.validId(dialog)) link to dialog else null
-        }
-        fun queryCandidate(query: Any?): Candidate? {
-            if (query == null || !remoteQuery.isInstance(query)) return null
-            val dialog = remoteDialog.invoke(query) as String
-            val conversation = remoteConversation.invoke(query) as String
-            val modelValue = remoteModel.invoke(query) ?: return null
-            return candidateFrom(modelValue, dialog, conversation)
+            if (query == null || !remoteQuery.isInstance(query)) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.QUERY_NON_REMOTE)
+                return null
+            }
+            val link = remoteLink.invoke(query) as? String
+            val dialog = remoteDialog.invoke(query) as? String
+            if (link == null || dialog == null || !VivoNativePolicy.validId(link) || !VivoNativePolicy.validId(dialog)) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.QUERY_IDS_REJECTED)
+                return null
+            }
+            return link to dialog
         }
         val mapper = static(clazz("gateway.util.LinkParamsMapper"), "a", payload, string, request)
         val send = static(server, "m", Void.TYPE, payload, string, function2)
@@ -428,11 +451,23 @@ internal object VivoHooks {
         private val extraQuery = clazz("framework.llm.cloud.logic.chat.common.NewQueryParams")
             .getDeclaredField("params").apply { isAccessible = true }
 
-        fun candidate(value: Any): Candidate? {
-            if (!request.isInstance(value)) return null
-            val modelValue = requestGetters.getValue("getModel").invoke(value) ?: return null
-            val dialog = requestGetters.getValue("getDialogId").invoke(value) as String
-            val conversation = requestGetters.getValue("getConversationId").invoke(value) as String
+        fun candidate(value: Any?): Candidate? {
+            if (value == null || !request.isInstance(value)) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
+                return null
+            }
+            val modelValue = requestGetters.getValue("getModel").invoke(value)
+            if (modelValue == null) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
+                return null
+            }
+            val dialog = requestGetters.getValue("getDialogId").invoke(value) as? String
+            val conversation = requestGetters.getValue("getConversationId").invoke(value) as? String
+            if (dialog == null || conversation == null ||
+                !VivoNativePolicy.validId(dialog) || !VivoNativePolicy.validId(conversation)) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_IDS_REJECTED)
+                return null
+            }
             return candidateFrom(modelValue, dialog, conversation)
         }
         private fun candidateFrom(modelValue: Any, dialog: String, conversation: String): Candidate? {
@@ -446,10 +481,16 @@ internal object VivoHooks {
             val shape = VivoNativePolicy.Shape(get("getAgentId") as? String, get("getInputType") as Int,
                 get("getBizSource") as? String, get("getRenderText") as Boolean, get("getShortcut") as Boolean,
                 get("getRegenerate") as Boolean, get("getSkipRemote") as Boolean, get("getFromRecommend") as Boolean, special)
-            if (!VivoNativePolicy.eligible(shape)) return null
+            if (!VivoNativePolicy.eligible(shape)) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_SHAPE_REJECTED)
+                return null
+            }
             val visible = (get("getDisplayQuery") as? String)?.takeIf { it.isNotBlank() } ?: get("getServerQuery") as? String
-            val prompt = VivoNativePolicy.prompt(visible, Prefs.isEnabled(Prefs.Keys.AGENT_REQUIRE_PREFIX)) ?: return null
-            if (!VivoNativePolicy.validId(dialog) || !VivoNativePolicy.validId(conversation)) return null
+            val prompt = VivoNativePolicy.prompt(visible, Prefs.isEnabled(Prefs.Keys.AGENT_REQUIRE_PREFIX))
+            if (prompt == null) {
+                VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MAPPER_PROMPT_REJECTED)
+                return null
+            }
             return Candidate(dialog, conversation, prompt)
         }
         private fun hide(link: String, candidate: Candidate) {

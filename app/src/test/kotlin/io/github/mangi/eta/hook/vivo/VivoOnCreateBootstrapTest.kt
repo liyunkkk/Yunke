@@ -4,8 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.util.Log
 import io.github.mangi.eta.agent.vivo.VivoBridgeDiagnostics
+import io.github.mangi.eta.agent.vivo.VivoDiagnosticTestScope
 import java.io.File
-import java.util.concurrent.atomic.AtomicInteger
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -19,21 +19,17 @@ import org.robolectric.shadows.ShadowLog
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
 class VivoOnCreateBootstrapTest {
-    private lateinit var lines: AtomicInteger
-    private var previousCount = 0
+    private lateinit var diagnosticScope: VivoDiagnosticTestScope
     private lateinit var context: Application
 
     @Before fun isolateDiagnostics() {
-        lines = VivoBridgeDiagnostics::class.java.getDeclaredField("lines").apply {
-            isAccessible = true
-        }.get(null) as AtomicInteger
-        previousCount = lines.getAndSet(0)
+        diagnosticScope = VivoDiagnosticTestScope()
         ShadowLog.clear()
         context = Application()
     }
 
     @After fun restoreDiagnostics() {
-        lines.set(previousCount)
+        if (::diagnosticScope.isInitialized) diagnosticScope.restore()
         ShadowLog.clear()
     }
 
@@ -77,7 +73,7 @@ class VivoOnCreateBootstrapTest {
         )
 
         ShadowLog.clear()
-        lines.set(0)
+        diagnosticScope.reset()
         assertEquals("rejected", bootstrap(
             identity = { false },
             install = { installs++; true },
@@ -91,7 +87,7 @@ class VivoOnCreateBootstrapTest {
         )
 
         ShadowLog.clear()
-        lines.set(0)
+        diagnosticScope.reset()
         var claims = 0
         bootstrap(identity = { null }, tryClaim = { claims++; true }, install = { installs++; true })
         assertEquals(0, claims)
@@ -131,7 +127,7 @@ class VivoOnCreateBootstrapTest {
         assertFalse(threw.msg.contains("vendor-oncreate"))
 
         ShadowLog.clear()
-        lines.set(0)
+        diagnosticScope.reset()
         proceeds = 0
         val armed = try {
             bootstrap(

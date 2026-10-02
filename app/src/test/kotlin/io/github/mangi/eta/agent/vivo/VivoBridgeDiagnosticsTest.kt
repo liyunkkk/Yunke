@@ -2,7 +2,6 @@ package io.github.mangi.eta.agent.vivo
 
 import android.app.Application
 import android.util.Log
-import java.util.concurrent.atomic.AtomicInteger
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -15,26 +14,22 @@ import org.robolectric.shadows.ShadowLog
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [35])
 class VivoBridgeDiagnosticsTest {
-    private lateinit var lines: AtomicInteger
-    private var previousCount = 0
+    private lateinit var diagnosticScope: VivoDiagnosticTestScope
 
     @Before fun isolateLogBudget() {
-        lines = VivoBridgeDiagnostics::class.java.getDeclaredField("lines").apply {
-            isAccessible = true
-        }.get(null) as AtomicInteger
-        previousCount = lines.getAndSet(0)
+        diagnosticScope = VivoDiagnosticTestScope()
         ShadowLog.clear()
     }
 
     @After fun restoreLogBudget() {
-        lines.set(previousCount)
+        if (::diagnosticScope.isInitialized) diagnosticScope.restore()
         ShadowLog.clear()
     }
 
     @Test fun stagesAndCategoriesAreFixedInfoMetadata() {
         VivoBridgeDiagnostics.Stage.values().forEach { VivoBridgeDiagnostics.record(it) }
-        VivoBridgeDiagnostics.Failure.values().forEach {
-            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED, it)
+        VivoBridgeDiagnostics.Failure.values().forEachIndexed { index, failure ->
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.entries[index], failure)
         }
         val logs = ShadowLog.getLogsForTag("EtaVivoText")
         assertEquals(VivoBridgeDiagnostics.Stage.values().size + VivoBridgeDiagnostics.Failure.values().size, logs.size)
@@ -57,13 +52,15 @@ class VivoBridgeDiagnosticsTest {
             NoClassDefFoundError(secret) to VivoBridgeDiagnostics.Failure.LINKAGE,
             IllegalStateException(secret) to VivoBridgeDiagnostics.Failure.OTHER,
         )
-        failures.forEach { (error, expected) ->
+        failures.forEachIndexed { index, (error, expected) ->
             val category = VivoBridgeDiagnostics.failureCategory(error)
             assertEquals(expected, category)
-            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_INIT_FAILED, category)
+            VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.entries[index], category)
         }
-        ShadowLog.getLogsForTag("EtaVivoText").forEachIndexed { index, log ->
-            assertEquals("v=1 stage=BOOTSTRAP_INIT_FAILED n=${index + 1} failure=${failures[index].second.name}", log.msg)
+        val logs = ShadowLog.getLogsForTag("EtaVivoText")
+        assertEquals(failures.size, logs.size)
+        logs.forEachIndexed { index, log ->
+            assertEquals("v=1 stage=${VivoBridgeDiagnostics.Stage.entries[index].name} n=${index + 1} failure=${failures[index].second.name}", log.msg)
             assertNull(log.throwable)
             assertFalse(log.msg.contains(secret))
         }
@@ -71,12 +68,22 @@ class VivoBridgeDiagnosticsTest {
 
     @Test fun oneSharedEightyLineBudgetCoversBootstrapAndBusinessStages() {
         repeat(120) {
-            if (it % 2 == 0) VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ENTERED)
-            else VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FINISHED)
+            val stages = VivoBridgeDiagnostics.Stage.entries
+            VivoBridgeDiagnostics.record(stages[it % stages.size])
         }
         val logs = ShadowLog.getLogsForTag("EtaVivoText")
         assertEquals(80, logs.size)
         assertTrue(logs.first().msg.endsWith("n=1"))
         assertTrue(logs.last().msg.endsWith("n=80"))
     }
+
+    @Test fun noisyStageHasFourEntriesAndLeavesRoomForOtherStages() {
+        repeat(120) { VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.BOOTSTRAP_ENTERED) }
+        VivoBridgeDiagnostics.record(VivoBridgeDiagnostics.Stage.MODEL_FINISHED)
+        val logs = ShadowLog.getLogsForTag("EtaVivoText")
+        assertEquals(5, logs.size)
+        assertEquals(4, logs.count { it.msg.contains("stage=BOOTSTRAP_ENTERED ") })
+        assertEquals("v=1 stage=MODEL_FINISHED n=5", logs.last().msg)
+    }
+
 }

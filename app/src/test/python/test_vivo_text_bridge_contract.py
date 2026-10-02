@@ -97,7 +97,8 @@ class VivoTextBridgeContractTest(unittest.TestCase):
     def test_diagnostics_accept_only_enums_and_do_not_log_dynamic_values(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoBridgeDiagnostics.kt').read_text()
         self.assertIn('fun record(stage: Stage, failure: Failure? = null)', source)
-        self.assertIn('if (count <= 80) runCatching {', source)
+        self.assertIn('totalLimit = 80, perStageLimit = 4', source)
+        self.assertIn('budget.claim(stage.ordinal) ?: return@runCatching', source)
         self.assertEqual(['i'], re.findall(r'Log\.([a-z]+)\(', source))
         self.assertIn('Log.i("EtaVivoText", "v=1 stage=${stage.name} n=$count$category")', source)
         self.assertIn('" failure=${it.name}"', source)
@@ -118,16 +119,34 @@ class VivoTextBridgeContractTest(unittest.TestCase):
         source = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt").read_text()
         typed = source.split("intercept(\"vivo.typed-query\"", 1)[1].split("intercept(\"vivo.outbound\"", 1)[0]
         self.assertNotIn("chain.args.getOrNull(0) == \"remote query\"", typed)
-        self.assertIn("api.candidate(chain.args[1]!!)?.let { state.capture(mapped, it) }", typed)
+        self.assertIn("api.candidate(chain.args.getOrNull(1))?.let { state.capture(mapped, it) }", typed)
 
-    def test_query_remote_candidate_is_bound_before_outbound_send(self):
+    def test_outbound_requires_mapper_identity_and_has_no_link_only_fallback(self):
         source = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt").read_text()
-        query_start = source.split("intercept(\"vivo.query-start\"", 1)[1].split("intercept(\"vivo.typed-query\"", 1)[0]
-        self.assertIn("api.queryCandidate(chain.args.getOrNull(0))?.let { state.captureForLink(link, it) }", query_start)
-        self.assertIn("getTextQueryModel", source)
-        self.assertIn("fun take(link: String, payload: Any?): Candidate?", source)
-        outbound = source.split("intercept(\"vivo.outbound\"", 1)[1].split("for ((name, linkIndex", 1)[0]
-        self.assertIn("state.take(link, payload)", outbound)
+        query_start = source.split('intercept("vivo.query-start"', 1)[1].split('intercept("vivo.typed-query"', 1)[0]
+        self.assertIn("state.begin(link, dialog)", query_start)
+        for forbidden in ("captureForLink", "queryCandidate", "pending", "state.take("):
+            self.assertNotIn(forbidden, source)
+        outbound = source.split('intercept("vivo.outbound"', 1)[1].split("for ((name, linkIndex", 1)[0]
+        self.assertIn("state.receipt(it)", outbound)
+        self.assertIn("turn.link == link", outbound)
+        self.assertIn("suppressOwnedVivoOutbound(", outbound)
+        self.assertEqual(1, outbound.count("chain.proceed()"))
+        self.assertIn("proceed = { chain.proceed() }", outbound)
+        helper = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoOutboundSuppression.kt").read_text()
+        self.assertIn("if (!owned) return proceed()", helper)
+        self.assertEqual(1, helper.count("proceed()"))
+        self.assertIn("runCatching { onFailure(error) }", helper)
+
+    def test_candidate_rejections_and_missing_identity_have_fixed_diagnostics(self):
+        source = (MAIN / "kotlin/io/github/mangi/eta/hook/vivo/VivoHooks.kt").read_text()
+        for stage in ("QUERY_ENTERED", "QUERY_GATE_CLOSED", "QUERY_NON_REMOTE", "QUERY_IDS_REJECTED",
+                      "QUERY_REFLECTION_FAILED", "QUERY_BEGUN", "MAPPER_ENTERED", "MAPPER_GATE_CLOSED",
+                      "MAPPER_SHAPE_REJECTED", "MAPPER_PROMPT_REJECTED", "MAPPER_IDS_REJECTED",
+                      "MAPPER_REFLECTION_FAILED", "MAPPER_TURN_MISSING", "MAPPER_BOUND",
+                      "OUTBOUND_ENTERED", "OUTBOUND_RECEIPT_MISSING", "OUTBOUND_LINK_MISMATCH"):
+            self.assertIn("VivoBridgeDiagnostics.Stage." + stage, source)
+        self.assertNotIn("Log.", source)
 
     def test_selection_is_read_only_and_body_overrides_fail_closed(self):
         source = (MAIN / 'kotlin/io/github/mangi/eta/agent/vivo/VivoTextModelGateway.kt').read_text()
