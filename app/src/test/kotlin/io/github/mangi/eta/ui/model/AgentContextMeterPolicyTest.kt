@@ -25,6 +25,14 @@ class AgentContextMeterPolicyTest {
         assertTrue(budget.estimated)
     }
 
+    @Test fun unchangedCloudBaselineIsNotMarkedEstimated() {
+        val budget = compressionContextUsage(emptyList(), "", emptyList(), null,
+            historyTokenCount = 1000, billedContextTokens = 10000, requestOverheadTokens = 700,
+            billedHistoryTokens = 1000, billedOverheadTokens = 700)
+        assertEquals(10000, budget.contextTokens)
+        assertFalse(budget.estimated)
+    }
+
     @Test fun legacyCloudReceiptDoesNotDisableSilentLocalPressure() {
         val ring = liveContextUsage(emptyList(), "", emptyList(), null,
             historyTokenCount = 20000, billedContextTokens = 10000, requestOverheadTokens = 3000)

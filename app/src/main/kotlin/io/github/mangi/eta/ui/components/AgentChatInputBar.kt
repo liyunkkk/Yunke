@@ -483,7 +483,7 @@ internal fun AgentChatInputBar(
 
                         // Keep context details accessible even for an empty draft or an unknown limit.
                         AgentContextUsageButton(
-                            usage = sendBudget,
+                            usage = if (billedContextTokens != null && billedContextTokens > 0) liveUsage else sendBudget,
                             popupMaxHeight = thinkingPopupMaxHeight,
                             sendBlocked = contextSendBlocked,
                         )

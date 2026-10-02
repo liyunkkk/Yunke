@@ -288,7 +288,8 @@ internal fun liveContextUsage(
     return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
 }
 
-/** Predict the next cloud input: a validated receipt is the full prompt baseline, including cache. */
+/** Predict the next cloud input: a validated receipt is the full prompt baseline, including cache.
+ * Keep an unchanged baseline marked as actual so the ring does not show a false estimate. */
 internal fun compressionContextUsage(
     history: List<AgentModelClient.ConversationMessage>,
     currentInput: String,
@@ -325,9 +326,13 @@ internal fun compressionContextUsage(
     } ?: 0L
     val fixedDelta = billedOverheadTokens?.let { requestOverheadTokens.toLong() - it } ?: 0L
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    return AgentContextUsageUi((billedContextTokens.toLong() + delta + fixedDelta + draft)
-        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
-        activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow, estimated = true)
+    val projected = (billedContextTokens.toLong() + delta + fixedDelta + draft)
+        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+    return AgentContextUsageUi(
+        projected,
+        activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow,
+        estimated = projected != billedContextTokens,
+    )
 }
 
 private fun draftContextTokens(
