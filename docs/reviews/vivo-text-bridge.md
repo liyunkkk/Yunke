@@ -141,3 +141,12 @@ checks are implemented. Terminal callback delivery is best effort, not guarantee
 - Native GUI acceptance and default keyboard eligibility remain NOT VERIFIED.
   Do not label compilation, metadata-only probe calls or queued native emission as
   successful model replacement or visible answer delivery.
+
+
+## Release 跨 ClassLoader 反射保名回归
+
+- 真实旧 release 的 NativeApi 将目标侧 `kotlin.jvm.functions.Function2` 与 `kotlin.coroutines.jvm.internal.ContinuationImpl` 分别改写为 Eta 内部 `oh2`、`lh1`；目标 APK 只有原名，没有这两个别名。源码 ABI 对照和普通单元测试不足以发现此发布变换。
+- 仅为这两个类型增加精确 `-keepnames`，不改用 Eta 的类字面量，不扩大 Kotlin 包保留范围，不修改签名、同意或调用边界。
+- 发布上传前检查实际 mapping 和 APK DEX 字符串表；缺条目、改名、缺反射字符串或损坏输入拒绝交付。解析范围是本项目常规 R8 little-endian DEX 035/037–040（data 区到 EOF），不声称支持所有合法链接布局、041 容器或完整指令验证。
+- 本地实际执行新增 22 项与全 193 项 Python 测试均通过。旧包配真实 mapping 被改名检查拒绝；旧包配明确标注 TEST-ONLY 的 identity mapping 也在完整 DEX 解析后因缺原始 ContinuationImpl 字符串被拒绝。测试用映射绝不作为发布产物。
+- 仍须检查新 CI 结果与最终反射调用字面量，并单独完成实机 Hook、模型替换、原生回复及取消验收；本修复不代表实机接管已经成功。

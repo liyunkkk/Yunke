@@ -238,10 +238,12 @@ internal object VivoHooks {
         private val emitter = clazz("gateway.BlockEmitter")
         private val executor = clazz("gateway.component.LocalIntentExecutor")
         private val report = clazz("base.tool.vcode.ReportBusinessData")
+        // External App ClassLoader ABI: keep this literal name via the precise R8 -keepnames rule.
         private val function2 = Class.forName("kotlin.jvm.functions.Function2", false, loader)
         private val remoteQuery = clazz("gateway.model.Query\$Remote")
         private val remoteLink = method(remoteQuery, "getLinkId")
         private val remoteDialog = method(remoteQuery, "getDialogId")
+        // ContinuationImpl has the same external ABI constraint; do not substitute Eta's class literal.
         val queryStart = method(gateway, "g", clazz("gateway.model.Query"),
             Class.forName("kotlin.coroutines.jvm.internal.ContinuationImpl", false, loader)).also {
             check(!Modifier.isStatic(it.modifiers) && it.returnType == Any::class.java && !it.isBridge)
