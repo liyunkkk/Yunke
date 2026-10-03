@@ -69,6 +69,23 @@ class RevisionEntryWiringContract(unittest.TestCase):
         self.assertIn("check(source.copyRecursively(target, overwrite = true))", cache)
         self.assertIn("Thread.currentThread().isInterrupted", method(cache, "copyConversation"))
 
+    def test_branch_archive_and_live_history_share_structured_attachment_relocation(self):
+        branch = method(self.app, "branchConversation")
+        self.assertIn("rewriteAttachmentPath = { value -> chatImageCache.rewriteCachedPath(value, sourceId, newId) }", branch)
+        publish = method(self.app, "publishPreparedBranch")
+        self.assertIn("history = prefix.history.map { it.rewritePaths(rewrite) }", publish)
+        self.assertIn("AgentConversationAttachmentRelocator.rewrite(this, rewrite)", self.reducer)
+        paths = self.reducer[self.reducer.index("internal fun AgentChatMessageUi.rewritePaths"):]
+        self.assertNotIn("content = rewrite(content)", paths)
+        self.assertNotIn("contentJson = rewrite(contentJson)", paths)
+        self.assertNotIn("argumentsSummary = rewrite", paths)
+        fork = (SRC / "agent/model/AgentCompactionArchiveFork.kt").read_text()
+        self.assertIn("rewriteAttachmentPath: ((String) -> String)? = null", fork)
+        self.assertLess(fork.index("roots.forEach { visit(it, 1) }"),
+                        fork.index("AgentConversationAttachmentRelocator.rewriteJsonMessage"))
+        self.assertIn("hash(relocated)", fork)
+        self.assertIn("byteLimit - targetBytes", fork)
+
     def test_stop_controls_and_history_protection_both_survive_integration(self):
         guard = method(self.app, "rejectConversationArchiveMutation")
         self.assertIn("protectStoppingRun: Boolean = true", guard)

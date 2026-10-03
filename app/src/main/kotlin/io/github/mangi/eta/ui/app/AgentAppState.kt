@@ -2384,6 +2384,7 @@ internal class AgentAppState(
                     // Retained A and its tool/checkpoint closure must be independent of the source.
                     io.github.mangi.eta.agent.model.AgentCompactionArchiveFork.copyReferenced(
                         appContext.filesDir, sourceId, newId, prefix.history,
+                        rewriteAttachmentPath = { value -> chatImageCache.rewriteCachedPath(value, sourceId, newId) },
                     )
                     chatImageCache.copyConversation(sourceId, newId)
                 }

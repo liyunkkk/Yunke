@@ -380,23 +380,15 @@ internal fun AgentChatMessageUi.withId(id: String): AgentChatMessageUi = when (t
 
 internal fun AgentChatMessageUi.rewritePaths(rewrite: (String) -> String): AgentChatMessageUi = when (this) {
     is UserMessageUi -> copy(
-        content = rewrite(content),
+        content = io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec.rewriteReferencePaths(content, rewrite),
         imageSources = imageSources.map(rewrite),
-    )
-    is AgentMessageUi -> copy(content = rewrite(content))
-    is ThinkingMessageUi -> copy(content = rewrite(content))
-    is ToolActivityMessageUi -> copy(
-        argumentsSummary = rewrite(argumentsSummary),
-        command = command?.let(rewrite),
-        resultSummary = resultSummary?.let(rewrite),
+        images = images.map(rewrite),
     )
     else -> this
 }
 
 internal fun AgentModelClient.ConversationMessage.rewritePaths(
     rewrite: (String) -> String,
-): AgentModelClient.ConversationMessage = copy(
-    content = rewrite(content),
-    contentJson = rewrite(contentJson),
-)
+): AgentModelClient.ConversationMessage =
+    io.github.mangi.eta.agent.model.AgentConversationAttachmentRelocator.rewrite(this, rewrite)
 
