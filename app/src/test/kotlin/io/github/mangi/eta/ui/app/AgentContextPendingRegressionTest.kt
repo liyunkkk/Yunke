@@ -338,7 +338,12 @@ class AgentContextPendingRegressionTest {
             assertEquals("$freshRun:1", freshActual.cloudReceiptRequestId)
             f.bind(run, id) // rejected old bind must not steal the fresh run's usage ownership
             f.send(run, receipt(3, 10, input = 99000), replaying = false)
-            assertEquals(freshActual, f.state(id))
+            // Historical bills may update messages; they must not change the current context receipt.
+            val afterOldReceipt = f.state(id)
+            assertEquals(freshActual.livePromptTokens, afterOldReceipt.livePromptTokens)
+            assertEquals(freshActual.contextReceiptEvidence, afterOldReceipt.contextReceiptEvidence)
+            assertEquals(freshActual.cloudReceiptRequestId, afterOldReceipt.cloudReceiptRequestId)
+            assertEquals(freshActual.cloudRouteSignature, afterOldReceipt.cloudRouteSignature)
             f.send(freshRun, receipt(2, 10, input = 17000))
             assertEquals(17000, f.usage(id).contextTokens)
             assertFalse(f.usage(id).estimated)
@@ -368,6 +373,10 @@ class AgentContextPendingRegressionTest {
         assertEquals("未知", formatContextUsage(f.usage("c")))
         assertNull(f.usage("c").progress)
         f.bind("r", "c") // reconnect must keep the post-compaction resume floor rejecting round 1
+        assertEquals("未知", formatContextUsage(f.usage("c")))
+        // Check before request-start, so only the retained compaction floor can reject this bill.
+        f.send("r", AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 99000)))
+        assertNull(f.state("c").livePromptTokens)
         assertEquals("未知", formatContextUsage(f.usage("c")))
         f.send("r", AgentEvent.ProviderRequestStarted(2))
         f.send("r", AgentEvent.ModelRetryScheduled(2, 1, 3, 1000, "NETWORK"))
