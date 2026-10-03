@@ -266,6 +266,16 @@ class AgentContextPendingRegressionTest {
         }
         val actual = f.state("c")
         assertTrue(requireNotNull(actual.cloudRouteSignature).startsWith("actual-local-v1:"))
+        val frozenScope = f.runScope("r")
+        assertEquals(actual.cloudRouteSignature, frozenScope)
+        f.bind("r", "c") // same-configuration reattachment preserves actual and the frozen run scope
+        assertEquals(actual, f.state("c"))
+        assertEquals(frozenScope, f.runScope("r"))
+        f.send("r", receipt(4, history))
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        assertEquals("r:4", f.state("c").cloudReceiptRequestId)
+        assertEquals(frozenScope, f.state("c").cloudRouteSignature)
         assertNull(RequestOverheadCalibrationStore.read(custom.id, "m"))
         assertNull(call(f.app, "budgetReceiptTokens", actual)) // local scope cannot unlock receipt-delta budget reuse
         f.bind("next-run", "c")
@@ -310,15 +320,29 @@ class AgentContextPendingRegressionTest {
             f.providers(changed) // exact provider-flow invalidation, before a new request boundary
             assertEquals("未知", formatContextUsage(f.usage(id)))
             assertNull(f.state(id).contextReceiptEvidence)
+            f.bind(run, id) // reattachment under B cannot revive the invalidated A run
             f.send(run, receipt(1, 10, input = 99000), replaying = false)
             assertNull(f.state(id).livePromptTokens)
+            assertEquals("未知", formatContextUsage(f.usage(id)))
             f.providers(custom) // reverting settings must not re-authorize the old run
+            f.bind(run, id)
             f.send(run, receipt(2, 10, input = 99000), replaying = false)
             assertNull(f.state(id).livePromptTokens)
-            f.bind("new-$index", id)
-            f.send("new-$index", receipt(1, 10, input = 16000))
+            assertNull(f.state(id).contextReceiptEvidence)
+            val freshRun = java.util.UUID.randomUUID().toString()
+            f.bind(freshRun, id)
+            f.send(freshRun, receipt(1, 10, input = 16000))
             assertEquals(16000, f.usage(id).contextTokens)
             assertFalse(f.usage(id).estimated)
+            val freshActual = f.state(id)
+            assertEquals("$freshRun:1", freshActual.cloudReceiptRequestId)
+            f.bind(run, id) // rejected old bind must not steal the fresh run's usage ownership
+            f.send(run, receipt(3, 10, input = 99000), replaying = false)
+            assertEquals(freshActual, f.state(id))
+            f.send(freshRun, receipt(2, 10, input = 17000))
+            assertEquals(17000, f.usage(id).contextTokens)
+            assertFalse(f.usage(id).estimated)
+            assertEquals("$freshRun:2", f.state(id).cloudReceiptRequestId)
         }
         assertNull(RequestOverheadCalibrationStore.read(custom.id, "m"))
     }
@@ -343,6 +367,8 @@ class AgentContextPendingRegressionTest {
             history = listOf(AgentModelClient.ConversationMessage("system", "summary")), compressorLabel = "摘要压缩"))
         assertEquals("未知", formatContextUsage(f.usage("c")))
         assertNull(f.usage("c").progress)
+        f.bind("r", "c") // reconnect must keep the post-compaction resume floor rejecting round 1
+        assertEquals("未知", formatContextUsage(f.usage("c")))
         f.send("r", AgentEvent.ProviderRequestStarted(2))
         f.send("r", AgentEvent.ModelRetryScheduled(2, 1, 3, 1000, "NETWORK"))
         f.send("r", AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 99000)))
@@ -393,6 +419,8 @@ class AgentContextPendingRegressionTest {
             input = "", isStreaming = true, thinkingEnabled = false, providerId = provider.id, modelId = "m")
         fun put(id: String, state: AgentChatHomeUiState) { call(app, "updateConversation", id, state, false) }
         fun bind(run: String, id: String) { call(app, "bindUsageRun", run, id) }
+        fun runScope(run: String): String? =
+            (app.javaClass.getDeclaredField("runUsageRoutes").apply { isAccessible = true }.get(app) as Map<*, *>)[run] as String?
         fun state(id: String) = call(app, "conversationState", id) as AgentChatHomeUiState
         fun send(run: String, event: AgentEvent, replaying: Boolean = true) {
             call(app, "applyRunEvent", run, event, false, replaying)
