@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -76,6 +77,7 @@ class BottomFollowDrawPhaseTest {
 
     private val bodyHeight = mutableIntStateOf(600)
     private val following = mutableStateOf(false)
+    @Volatile private var appliedFollowing = false
     private val measurableTail = mutableStateOf(true)
     private val markerColor = mutableStateOf(Color.Green)
     private val heldLift = intArrayOf(0)
@@ -141,13 +143,19 @@ class BottomFollowDrawPhaseTest {
         val readsBeforeRelease = overflowReads
 
         // The production caller removes the composer clip when a user starts scrolling.
+        assertTrue("Fixture must have committed follow mode", appliedFollowing)
         compose.runOnIdle { following.value = false }
+        // Unlike measure-only growth, follow mode is read in composition. With autoAdvance off,
+        // wait for that composition to commit before waiting for placement/draw; one clock frame
+        // can merely deliver the snapshot change and schedule recomposition for the next frame.
+        compose.mainClock.advanceTimeUntil { !appliedFollowing }
         advanceFrame()
         capture()
         assertEquals(0, heldLift[0])
         assertEquals(readsBeforeRelease, overflowReads)
 
         compose.runOnIdle { measurableTail.value = true; following.value = true }
+        compose.mainClock.advanceTimeUntil { appliedFollowing }
         advanceFrame()
         val resumed = capture()
         assertEquals(32, heldLift[0])
@@ -188,6 +196,7 @@ class BottomFollowDrawPhaseTest {
                     state = rememberLazyListState()
                     scope = rememberCoroutineScope()
                     val follow = following.value
+                    SideEffect { appliedFollowing = follow }
                     Box(Modifier.size(WIDTH.dp, HEIGHT.dp).testTag(VIEWPORT).drawBehind {
                         drawRect(BACKGROUND)
                         drawRect(INPUT, topLeft = Offset(0f, REST.toFloat()),
