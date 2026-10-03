@@ -1,6 +1,8 @@
 package io.github.mangi.eta.agent.delegation
 
 import io.github.mangi.eta.agent.model.*
+import io.github.mangi.eta.agent.browser.ChildBrowserAccess
+import io.github.mangi.eta.agent.browser.ChildBrowserPolicy
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import org.json.JSONArray
 import org.json.JSONObject
@@ -121,7 +123,12 @@ class SubAgentRunnerTest {
             val provider = scripted { request, _ ->
                 val schemas = (0 until request.tools.length()).map { request.tools.getJSONObject(it).getJSONObject("function") }
                 val browser = schemas.single { it.getString("name") == "browser_use" }
-                assertFalse(browser.getJSONObject("parameters").getJSONObject("properties").has("script"))
+                // Default task grant is full: click/type/JS/cookie/download stay advertised; terminal still never is.
+                val properties = browser.getJSONObject("parameters").getJSONObject("properties")
+                val actions = (0 until properties.getJSONObject("action").getJSONArray("enum").length())
+                    .map { properties.getJSONObject("action").getJSONArray("enum").getString(it) }.toSet()
+                for (name in listOf("script", "cookies", "text", "coordinate_x")) assertTrue(properties.has(name))
+                assertTrue(actions.containsAll(listOf("navigate", "click", "type", "execute_js", "get_cookies", "set_cookies", "fetch")))
                 assertFalse(schemas.any { it.getString("name") == "terminal" })
                 assertTrue(request.messages.toString().contains("标签页"))
                 if (++rounds == 1) ProviderResponse(JSONObject().put("role", "assistant").put("content", "")
@@ -160,6 +167,44 @@ class SubAgentRunnerTest {
             SubAgentRunner.run(model, "task", tools, { error("No browser granted") }, AgentRunController(), provider,
                 workspaceMode = workspace, compactPolicy = AgentLoop.CompactPolicy.Disabled)
         }
+    }
+
+    @Test fun readOnlyControllerGrantKeepsBrowserSchemaRestrictedAndStillDispatchesNavigate() {
+        val model = AgentModelClient.ModelConfig(baseUrl = "https://example.com", apiKey = "test",
+            model = "child", systemPrompt = "", browserTools = true)
+        val controller = AgentRunController()
+        assertTrue(controller.freezeChildBrowserAccess(ChildBrowserAccess.READ_ONLY))
+        assertFalse(controller.freezeChildBrowserAccess(ChildBrowserAccess.FULL))
+        var rounds = 0
+        var browserCalls = 0
+        val provider = scripted { request, _ ->
+            val schemas = (0 until request.tools.length()).map { request.tools.getJSONObject(it).getJSONObject("function") }
+            val properties = schemas.single { it.getString("name") == "browser_use" }
+                .getJSONObject("parameters").getJSONObject("properties")
+            assertFalse(properties.has("script"))
+            assertFalse(properties.has("cookies"))
+            val enum = properties.getJSONObject("action").getJSONArray("enum")
+            assertEquals(ChildBrowserPolicy.actions, (0 until enum.length()).map { enum.getString(it) }.toSet())
+            assertTrue(request.messages.toString().contains("当前授权是 read_only"))
+            if (++rounds == 1) ProviderResponse(JSONObject().put("role", "assistant").put("content", "")
+                .put("finish_reason", "tool_calls").put("tool_calls", JSONArray().put(JSONObject()
+                    .put("id", "page").put("type", "function").put("function", JSONObject()
+                        .put("name", "browser_use").put("arguments", "{\"action\":\"navigate\",\"url\":\"example.org\"}")))))
+            else {
+                assertTrue(request.messages.toString().contains("child page evidence"))
+                ProviderResponse(JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop"))
+            }
+        }
+        val result = SubAgentRunner.run(model, "research", JSONArray(),
+            { error("Browser must never use the parent/workspace executor") }, controller, provider,
+            compactPolicy = AgentLoop.CompactPolicy.Disabled,
+            browserExecutor = {
+                assertEquals("https://example.org", JSONObject(it.argumentsJson).getString("url"))
+                browserCalls++
+                AgentModelClient.ToolResult("child page evidence")
+            })
+        assertEquals("done", result)
+        assertEquals(1, browserCalls)
     }
 
     private fun scripted(block: (ProviderRequest, (ProviderEvent) -> Unit) -> ProviderResponse) = object : AgentProviderClient {

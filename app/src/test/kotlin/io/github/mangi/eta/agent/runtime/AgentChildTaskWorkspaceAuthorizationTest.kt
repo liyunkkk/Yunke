@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.agent.delegation.SubAgentCoordinator
+import io.github.mangi.eta.agent.delegation.SubAgentDeliveryFixture
 import io.github.mangi.eta.agent.delegation.SubAgentWorkspace
 import io.github.mangi.eta.agent.model.AgentModelClient
 import org.json.JSONObject
@@ -67,9 +68,13 @@ class AgentChildTaskWorkspaceAuthorizationTest {
             val command = JSONObject(call.argumentsJson).getString("command")
             val quoted = command.substringAfter("python3 -I -c '$script' ")
             val request = JSONObject(quoted.substring(1, quoted.length - 1).replace("'\"'\"'", "'"))
-            val result = JSONObject().put("ok", true).put("id", workspaceId)
-                .put("path", "$project/.agent/worktrees/$workspaceId")
-                .put("state", if (request.getString("action") == "begin_review") "reviewing" else "sealed")
+            // runtime_git receipts: seal and the independent inspect must both prove the same nonempty commit.
+            val action = request.getString("action")
+            val result = SubAgentDeliveryFixture.ready(workspaceId, project)
+            when (action) {
+                "prepare" -> { result.put("state", "editing"); result.remove("artifact_evidence") }
+                "begin_review" -> result.put("state", "reviewing")
+            }
             AgentModelClient.ToolResult(JSONObject().put("ok", true).put("exit_code", 0)
                 .put("environment", "debian").put("stdout", result.toString()).toString())
         })
@@ -156,8 +161,13 @@ class AgentChildTaskWorkspaceAuthorizationTest {
             assertEquals(workspaceId, started.getString("workspace_id"))
             val finished = snapshot(coordinator, started.getString("task_id"), wait = true)
             assertEquals("completed", finished.getString("status"))
+            assertTrue(finished.getBoolean("artifact_verified"))
+            val evidence = finished.getJSONObject("artifact_evidence")
+            assertEquals("runtime_git", evidence.getString("source"))
+            assertTrue(evidence.getLong("changed_file_count") > 0)
+            assertFalse(evidence.getString("base_commit") == evidence.getString("artifact_commit"))
             assertEquals(1, childCalls.get())
-            assertEquals(2, terminalCalls.get()) // prepare and automatic seal
+            assertEquals(3, terminalCalls.get()) // prepare, seal and the independent inspect
             assertEquals(setOf(workspaceId), store.ids(owner, "debian", project))
             assertEquals(setOf(workspaceId), registry.ownedWorkspaceIds(owner, project, "debian"))
             assertEquals(true, archive(group, finished).get("workspace_ownership_verified"))
