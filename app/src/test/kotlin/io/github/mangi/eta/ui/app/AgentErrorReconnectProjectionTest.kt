@@ -85,6 +85,25 @@ class AgentErrorReconnectProjectionTest {
         assertEquals("after completed", (messages.last() as AgentMessageUi).content)
     }
 
+    @Test fun completionAcrossRetryRoundsAddsOnlyUnseenTail() {
+        val projector = AgentRunMessageProjector { 0L }
+        var messages: List<AgentChatMessageUi> = listOf(
+            AgentMessageUi("assistant-run-1-0", "older tool round"),
+            AgentMessageUi("assistant-other-2-0", "other run"),
+            AgentMessageUi("assistant-run-2-0", "before "))
+        val reconnect = event().copy(round = 2)
+        messages = projector.reconnectChanged("run", reconnect, messages)
+        messages = projector.reconnectChanged("run", reconnect.copy(status = "succeeded"), messages)
+        assertEquals("after", AgentRunMessageProjector.completedResultTail(
+            "run", messages, -1, "before after"))
+        messages = projector.appendTextDelta("run", 3, 0, "after", messages)
+        val index = AgentRunMessageProjector.resultTargetIndex("run", messages)
+        assertEquals("after", AgentRunMessageProjector.completedResultTail(
+            "run", messages, index, "before after"))
+        assertEquals("different", AgentRunMessageProjector.completedResultTail(
+            "run", messages, index, "different"))
+    }
+
     @Test fun terminalFailureAndStopAreIdempotentAndDoNotInventSuccess() {
         val projector = AgentRunMessageProjector { 0L }
         val partial = AgentMessageUi("assistant-run-1-0", "partial", isStreaming = true)

@@ -13,6 +13,7 @@ class AgentErrorReconnectOverlayTest {
         assertEquals("", running.detailText)
         val stopped = running.applyEvent(
             AgentEvent.ErrorReconnectChanged(2, "disconnect", "stopped", 1500, "HTTP_500", "private diagnostic"))
+        assertEquals(AgentOverlayPhase.FINISHED, stopped.phase)
         assertEquals(AgentOverlayStatus.Stopped, stopped.status)
         assertEquals("", stopped.detailText)
         val failed = running.applyEvent(

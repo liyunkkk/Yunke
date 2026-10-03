@@ -41,7 +41,11 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
     )
 
     is AgentEvent.ErrorReconnectChanged -> copy(
-        phase = if (event.status == "failed") AgentOverlayPhase.FAILED else AgentOverlayPhase.RUNNING,
+        phase = when (event.status) {
+            "failed" -> AgentOverlayPhase.FAILED
+            "stopped" -> AgentOverlayPhase.FINISHED
+            else -> AgentOverlayPhase.RUNNING
+        },
         round = event.round,
         status = when (event.status) {
             "failed" -> AgentOverlayStatus.RunFailed

@@ -5429,10 +5429,11 @@ internal class AgentAppState(
     ) {
         updateMessages(runId) { messages ->
             val targetIndex = AgentRunMessageProjector.resultTargetIndex(runId, messages)
+            val resultTail = AgentRunMessageProjector.completedResultTail(runId, messages, targetIndex, fallbackContent)
             if (targetIndex < 0) {
                 messages + AgentMessageUi(
                     id = AgentRunMessageProjector.resultFallbackId(runId, messages),
-                    content = fallbackContent,
+                    content = resultTail,
                     isStreaming = false,
                     renderMarkdown = true,
                     generatedAtMillis = generatedAtMillis,
@@ -5448,7 +5449,7 @@ internal class AgentAppState(
                 messages.mapIndexed { index, message ->
                     if (index == targetIndex && message is AgentMessageUi) {
                         message.copy(
-                            content = mergeCompletedAssistantContent(message.content, fallbackContent, sameRoundBlocks),
+                            content = mergeCompletedAssistantContent(message.content, resultTail, sameRoundBlocks),
                             isStreaming = false,
                             renderMarkdown = true,
                             generatedAtMillis = message.generatedAtMillis ?: generatedAtMillis,

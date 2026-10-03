@@ -817,6 +817,24 @@ internal class AgentRunMessageProjector(
             } ?: -1
         }
 
+        /** Retry completion includes the interrupted prefix; only append its unseen tail.
+         * Earlier completed tool rounds and other runs never participate in this seam. */
+        fun completedResultTail(
+            runId: String, messages: List<AgentChatMessageUi>, targetIndex: Int, result: String,
+        ): String {
+            val reconnect = messages.filterIsInstance<ErrorReconnectMessageUi>()
+                .lastOrNull { it.runId == runId && it.status == ErrorReconnectStatus.Succeeded }
+                ?: return result
+            val end = if (targetIndex >= 0) targetIndex else messages.size
+            val prefix = messages.take(end).filterIsInstance<AgentMessageUi>()
+                .filter { message ->
+                    isAssistantMessageForRun(message.id, runId) &&
+                        (message.id.removePrefix("assistant-$runId-").substringBefore('-')
+                            .toIntOrNull() ?: -1) >= reconnect.round
+                }.joinToString("") { it.content }
+            return if (prefix.isNotEmpty() && result.startsWith(prefix)) result.removePrefix(prefix) else result
+        }
+
         fun resultFallbackId(runId: String, messages: List<AgentChatMessageUi>): String {
             val retry = messages.getOrNull(lastRetryIndex(runId, messages))
             if (retry == null) return "assistant-$runId-1"

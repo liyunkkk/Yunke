@@ -47,7 +47,7 @@ internal object AgentPendingResultRecovery {
             .also { messages ->
             if (!result.ok && result.error != "已停止") {
                 val projected = AgentRunMessageProjector(nowElapsedRealtime = { 0L })
-                    .terminalFailure(runId, result.error, messages)
+                    .terminalFailure(runId, result.error.orEmpty(), messages)
                 messages.clear()
                 messages.addAll(projected)
                 return@also
@@ -68,13 +68,16 @@ internal object AgentPendingResultRecovery {
                 }
             } ?: 0
             val partial = messages.getOrNull(assistantIndex) as? AgentMessageUi
+            val resultTail = content?.let {
+                AgentRunMessageProjector.completedResultTail(runId, messages, assistantIndex, it)
+            }
             val completedMessage: AgentChatMessageUi = when {
                 content != null -> AgentMessageUi(
                     id = resultId,
                     content = if (sameRoundBlocks > 1) {
-                        (messages[assistantIndex] as AgentMessageUi).content.ifBlank { content }
+                        (messages[assistantIndex] as AgentMessageUi).content.ifBlank { resultTail.orEmpty() }
                     } else {
-                        content
+                        resultTail.orEmpty()
                     },
                     isStreaming = false,
                     renderMarkdown = true,

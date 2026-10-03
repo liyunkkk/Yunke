@@ -632,7 +632,7 @@ internal object AgentContextCompactor {
         val activeDiagnostic = java.util.concurrent.atomic.AtomicReference<Pair<Int, SummaryRequestDiagnostics>?>(null)
         val deadlineExpired = java.util.concurrent.atomic.AtomicBoolean(false)
         val timed = io.github.mangi.eta.agent.runtime.AgentRunController()
-        val parentBinding = controller.register { timed.cancel() }
+        val parentBinding = controller.register(interruptible = true) { timed.cancel() }
         val requestThread = Thread.currentThread()
         val enforceTotalDeadline = io.github.mangi.eta.data.model.ErrorReconnectPolicy
             .fromPersistedValue(base.errorReconnectPolicy) == io.github.mangi.eta.data.model.ErrorReconnectPolicy.NONE
@@ -642,7 +642,8 @@ internal object AgentContextCompactor {
         val watchdog = Thread({
             try {
                 while (!Thread.currentThread().isInterrupted) {
-                    if (requestThread.isInterrupted || controller.isCancelled || (enforceTotalDeadline && System.nanoTime() >= deadline)) {
+                    if (requestThread.isInterrupted || controller.isCancelled || controller.isPaused ||
+                        controller.hasPendingImmediateSteering || (enforceTotalDeadline && System.nanoTime() >= deadline)) {
                         deadlineExpired.set(!requestThread.isInterrupted && !controller.isCancelled && System.nanoTime() >= deadline)
                         // Capture before cancelling HTTP so diagnostics survive a provider that
                         // is slow to unwind. This watchdog already enforces the existing deadline.
@@ -671,6 +672,9 @@ internal object AgentContextCompactor {
                 timed.cancel()
             }
             if (timed.isCancelled) {
+                if (controller.hasPausedInterrupt || controller.hasPendingImmediateSteering) {
+                    throw IllegalStateException("摘要已被暂停或新输入中断，原历史保持不变")
+                }
                 throw IllegalStateException("摘要超时（${SUMMARY_REQUEST_TIMEOUT_MS / 1000} 秒总时限内未完成），原历史保持不变")
             }
         }

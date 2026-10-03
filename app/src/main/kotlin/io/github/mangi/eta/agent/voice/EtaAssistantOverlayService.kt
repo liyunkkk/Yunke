@@ -665,6 +665,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             else -> null
         }
         val lastAssistantIndex = AgentRunMessageProjector.resultTargetIndex(runId, messages)
+        val resultTail = AgentRunMessageProjector.completedResultTail(runId, messages, lastAssistantIndex, result.content)
         messages = if (lastAssistantIndex >= 0) {
             val targetRound = (messages[lastAssistantIndex] as AgentMessageUi).id
                 .assistantRound(runId)
@@ -678,9 +679,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     if (notice == null) {
                         message.copy(
                             content = if (sameRoundBlocks <= 1) {
-                                result.content
+                                resultTail
                             } else {
-                                message.content.ifBlank { result.content }
+                                message.content.ifBlank { resultTail }
                             },
                             isStreaming = false,
                             renderMarkdown = true,
@@ -700,7 +701,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             if (notice == null) {
                 messages + AgentMessageUi(
                     id = AgentRunMessageProjector.resultFallbackId(runId, messages),
-                    content = result.content,
+                    content = resultTail,
                     isStreaming = false,
                     renderMarkdown = true,
                 )
