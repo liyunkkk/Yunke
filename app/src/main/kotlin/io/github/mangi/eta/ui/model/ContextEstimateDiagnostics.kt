@@ -4,27 +4,25 @@ import io.github.mangi.eta.core.AppFileLogger
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** Numeric-only request evidence. A run is not a request: mismatches deliberately have no error. */
+/** Numeric-only request evidence. A run is not a request: mismatches deliberately have no error.
+ * 显示学习已删除：这里只配对“发送前快照”与本次真实回执，不记录任何 learned/sample/ratio 字段。 */
 internal class ContextEstimateDiagnostics(
     private val enabled: () -> Boolean = { AppFileLogger.isEnabled() },
     private val sink: (String) -> Unit = { AppFileLogger.info(it) },
 ) {
     enum class Basis(val wireValue: String) {
-        RECEIPT_DELTA("receipt_delta"), LOCAL_FALLBACK("local_fallback"), LEARNED_RATIO("learned_ratio"),
+        RECEIPT_DELTA("receipt_delta"), LOCAL_FALLBACK("local_fallback"),
     }
-    enum class UiState { NONE, UNKNOWN, ACTUAL, ESTIMATE }
+    enum class UiState { NONE, UNKNOWN, ACTUAL }
     data class Snapshot(
         val basis: Basis,
         val localEstimateTokens: Int,
         val overheadTokensEst: Int,
         val historyTokensEst: Int,
-        val overheadCalibrationTokens: Int = 0, // v1 field retained only for source compatibility; never applied.
-        val calibrationSamples: Int = 0,
         val round: Int = 1,
         val contextEpoch: Int = 0,
         val uiState: UiState = UiState.UNKNOWN,
         val uiTokens: Int? = null,
-        val ratio: Double? = null,
     )
     private val pending = LinkedHashMap<String, Snapshot>()
     @Synchronized fun capture(runId: String, snapshot: Snapshot) {
@@ -32,9 +30,8 @@ internal class ContextEstimateDiagnostics(
         pending[runId] = snapshot
         while (pending.size > 32) pending.remove(pending.keys.first())
     }
-    @Synchronized fun receipt(runId: String, cloudInput: Int, cloudCached: Int?, learned: Boolean, newOffset: Int?,
-        round: Int? = null, historyTokens: Int? = null, overheadTokens: Int? = null, contextEpoch: Int = 0,
-        sampleCount: Int = 0, ratio: Double? = null) {
+    @Synchronized fun receipt(runId: String, cloudInput: Int, cloudCached: Int?, round: Int? = null,
+        historyTokens: Int? = null, overheadTokens: Int? = null, contextEpoch: Int = 0) {
         val snapshot = pending.remove(runId) ?: return
         if (!enabled()) return
         val matched = round == snapshot.round && contextEpoch == snapshot.contextEpoch &&
@@ -51,12 +48,9 @@ internal class ContextEstimateDiagnostics(
             put("history_tokens_est", snapshot.historyTokensEst)
             historyTokens?.let { put("request_history_tokens", it) }
             overheadTokens?.let { put("request_overhead_tokens", it) }
-            put("calibration_samples", sampleCount)
-            (ratio ?: snapshot.ratio)?.takeIf { it.isFinite() }?.let { put("calibration_ratio", it) }
             put("cloud_input", cloudInput)
             cloudCached?.let { put("cloud_cached", it) }
             if (matched) put("estimate_error", cloudInput.toLong() - snapshot.localEstimateTokens)
-            put("calibration_learned", learned)
         }
         runCatching { if (enabled()) sink(PREFIX + fields.toString()) }
     }

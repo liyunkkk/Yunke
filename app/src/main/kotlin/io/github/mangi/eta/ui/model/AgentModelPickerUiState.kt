@@ -273,24 +273,14 @@ internal fun windowTokensFromUsage(usage: TokenUsageUi?): Int? {
     return usage.contextTokens?.takeIf { it > 0 }
 }
 
-/** Ring display: keep actual input stable. Only an unmeasured context uses local budget. */
+/** Ring display: only a real cloud measurement moves the ring. Unmeasured contexts are never
+ * rendered from local counts, drafted text, images or learned sample/receipt ratios: a first
+ * turn shows a display-only "0k", every other unmeasured state stays "未知" with an unmoved ring. */
 internal fun liveContextUsage(
-    history: List<AgentModelClient.ConversationMessage>,
-    currentInput: String,
-    pendingImages: List<PendingImageUi>,
-    selectedModel: AgentModelOptionUi?,
-    pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
-    pendingConversationMentions: List<PendingConversationMentionUi> = emptyList(),
-    historyTokenCount: Int? = null,
     billedContextTokens: Int? = null,
-    requestOverheadTokens: Int = 0,
-    billedOverheadTokens: Int? = null,
-    uncommittedLiveTokens: Int = 0,
-    projectedContextTokens: Int? = null,
     activeRunContextWindow: Int? = null,
-    overheadCalibrationTokens: RequestOverheadCalibration.Sample? = null,
-    contextDisplayPolicy: ContextDisplayPolicy = ContextDisplayPolicy(firstTurn = history.isEmpty()),
-    receiptEstimateTokens: Int? = null,
+    selectedModel: AgentModelOptionUi? = null,
+    contextDisplayPolicy: ContextDisplayPolicy = ContextDisplayPolicy(),
 ): AgentContextUsageUi {
     // An in-flight run keeps the window it was launched with, so a mid-run settings
     // change must not restate the percentage of a request that never saw the new limit.
@@ -299,13 +289,7 @@ internal fun liveContextUsage(
         return AgentContextUsageUi(billedContextTokens, window)
     }
     if (contextDisplayPolicy.awaitingReceipt) return AgentContextUsageUi(null, window)
-    val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    val rawHistory = ((historyTokenCount?.toLong() ?: history.sumOf { AgentContextBudget.countMessage(it).toLong() }) +
-        draft + uncommittedLiveTokens.coerceAtLeast(0)).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-    val estimate = receiptEstimateTokens?.takeIf { it > 0 }
-        ?: overheadCalibrationTokens?.estimate(rawHistory, requestOverheadTokens)
-    return if (estimate != null) AgentContextUsageUi(estimate, window, estimated = true)
-    else AgentContextUsageUi(null, window, firstTurn = contextDisplayPolicy.firstTurn)
+    return AgentContextUsageUi(null, window, firstTurn = contextDisplayPolicy.firstTurn)
 }
 
 /** Predict the next cloud input: a validated receipt is the full prompt baseline, including cache.

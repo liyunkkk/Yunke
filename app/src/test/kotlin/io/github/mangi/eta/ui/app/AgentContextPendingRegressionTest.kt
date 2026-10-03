@@ -248,7 +248,7 @@ class AgentContextPendingRegressionTest {
             assertNull(revised.livePromptTokens)
             assertNull(revised.contextReceiptEvidence)
             assertTrue(revised.contextAwaitingReceipt)
-            assertEquals("未知", formatContextUsage(liveContextUsage(rewritten, "", emptyList(), null,
+            assertEquals("未知", formatContextUsage(liveContextUsage(
                 billedContextTokens = revised.livePromptTokens, contextDisplayPolicy = contextDisplayPolicy(revised))))
         }
     }
@@ -277,7 +277,8 @@ class AgentContextPendingRegressionTest {
         assertEquals("r:4", f.state("c").cloudReceiptRequestId)
         assertEquals(frozenScope, f.state("c").cloudRouteSignature)
         assertNull(RequestOverheadCalibrationStore.read(custom.id, "m"))
-        assertNull(call(f.app, "budgetReceiptTokens", actual)) // local scope cannot unlock receipt-delta budget reuse
+        // 学习签名已退场：同一有效实际回执同时解锁预算 seed（不再只看 learning 签名）。
+        assertEquals(15000, call(f.app, "budgetReceiptTokens", actual))
         f.bind("next-run", "c")
         f.send("next-run", AgentEvent.ProviderRequestStarted(1))
         f.send("next-run", AgentEvent.ModelRetryScheduled(1, 1, 3, 1000, "NETWORK"))
@@ -389,27 +390,96 @@ class AgentContextPendingRegressionTest {
         assertFalse(f.usage("c").estimated)
     }
 
-    @Test fun sameRoundZeroOverheadCorrectionRevokesPersistedLearningAndFreshBasisRepairsIt() = fixture { f ->
+    @Test fun liveReceiptsNeverPersistDisplayLearningButStillApplyTheRealBillAndBudgetSeed() = fixture { f ->
         f.put("c", f.pending())
         f.bind("zero-run", "c")
-        // Calibration intentionally ignores replay: this regression must deliver live usage.
+        // 这条回归故意投递 live usage：学习删除后仍不得写入持久样本。
         fun sendLive(event: AgentEvent) = f.send("zero-run", event, replaying = false)
         val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
         for (round in 1..3) {
             sendLive(AgentEvent.ProviderRequestStarted(round))
             sendLive(receipt(round, history))
         }
-        val stable = requireNotNull(RequestOverheadCalibrationStore.read(f.provider.id, "m"))
-        assertNotNull(stable.ratio)
+        // 三样本跨请求/会话显示学习已删除：没有任何生产调用方写持久样本。
+        assertNull(RequestOverheadCalibrationStore.read(f.provider.id, "m"))
+        // 真实回执、预算 seed 与诊断仍然照常工作。
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        assertEquals(15000, f.state("c").contextBudgetReceiptTokens)
+        assertEquals(15000, call(f.app, "budgetReceiptTokens", f.state("c")))
         sendLive(receipt(3, history, overhead = 0))
-        val revoked = requireNotNull(RequestOverheadCalibrationStore.read(f.provider.id, "m"))
-        assertEquals(stable.observations.map { it.requestId }, revoked.observations.map { it.requestId })
-        assertEquals(3, revoked.samples)
-        assertFalse(revoked.observations.last().complete)
-        assertNull(revoked.ratio)
         assertEquals(15000, f.usage("c").contextTokens) // still a genuine cloud receipt
-        sendLive(receipt(3, history))
-        assertEquals(stable, RequestOverheadCalibrationStore.read(f.provider.id, "m"))
+        assertNull(RequestOverheadCalibrationStore.read(f.provider.id, "m"))
+        val context = RuntimeEnvironment.getApplication() as Context
+        kotlinx.coroutines.runBlocking {
+            AgentConversationStore.save(context, "c", mapOf("c" to f.state("c")), mapOf("c" to "test"), mapOf("c" to 1L))
+        }
+        EtaDatabase.closeForTests()
+        assertNull(RequestOverheadCalibrationStore.read(f.provider.id, "m"))
+    }
+
+    @Test fun effectiveMeasurementStaysKnownForPrefixGrowthAndTurnIdMetadataButNotRouteChange() = fixture { f ->
+        f.put("c", f.pending())
+        f.bind("r", "c")
+        val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
+        f.send("r", AgentEvent.ProviderRequestStarted(1))
+        assertNull(call(f.app, "validMeasuredContextTokens", f.state("c"))) // 尚未收到回执 = 未知
+        f.send("r", receipt(1, history))
+        val actual = f.state("c")
+        assertEquals(15000, call(f.app, "validMeasuredContextTokens", actual))
+        // 普通前缀增长/补齐已显示 assistant 与 turnId 元数据差仍复用同一实测。
+        val committed = AgentConversationRevisionReducer.commitVisibleAssistantIntoHistory(
+            actual.history, actual.messages)
+        val normalised = call(f.app, "contextStateForRequestHistory", actual, committed) as AgentChatHomeUiState
+        assertEquals(actual, normalised)
+        assertEquals(15000, call(f.app, "validMeasuredContextTokens", normalised))
+        // 等待新回执、换路由、换模型都不再算实测。
+        assertNull(call(f.app, "validMeasuredContextTokens", actual.copy(contextAwaitingReceipt = true)))
+        assertNull(call(f.app, "validMeasuredContextTokens", actual.copy(cloudRouteSignature = "other-scope")))
+        assertNull(call(f.app, "validMeasuredContextTokens", actual.copy(modelId = "other")))
+        f.providers(f.provider.copy(baseUrl = "https://other.example/v1"))
+        assertNull(call(f.app, "validMeasuredContextTokens", f.state("c")))
+    }
+
+    @Test fun customGatewayActualReceiptUnlocksNeitherExemptionNorLearningAndKeepsTheBudgetSeed() = fixture { f ->
+        val custom = f.provider.copy(customHeaders = listOf(io.github.mangi.eta.data.model.CustomHeader("X-Route", "custom")))
+        f.providers(custom)
+        f.put("c", f.pending())
+        f.bind("r", "c")
+        val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
+        f.send("r", AgentEvent.ProviderRequestStarted(1))
+        f.send("r", receipt(1, history))
+        val actual = f.state("c")
+        // learning 签名对 headers 一律 fail closed；实际路由摘要仍然可验证。
+        assertEquals("", RequestOverheadCalibration.routeSignature(custom, custom.models.first()))
+        assertTrue(requireNotNull(actual.cloudRouteSignature).startsWith("actual-local-v1:"))
+        assertEquals(15000, call(f.app, "validMeasuredContextTokens", actual))
+        // 预算 seed 必须与未测豁免共用同一有效实际回执判定，而不是旧的 learning 签名。
+        assertEquals(15000, call(f.app, "budgetReceiptTokens", actual))
+        assertNull(call(f.app, "budgetReceiptTokens", actual.copy(contextAwaitingReceipt = true)))
+        // 跨模型/跨配置不得复用旧值。
+        assertNull(call(f.app, "budgetReceiptTokens", actual.copy(modelId = "other")))
+        f.providers(custom.copy(customHeaders = listOf(io.github.mangi.eta.data.model.CustomHeader("X-Route", "changed"))))
+        assertNull(call(f.app, "validMeasuredContextTokens", f.state("c")))
+        assertNull(call(f.app, "budgetReceiptTokens", f.state("c")))
+        assertNull(RequestOverheadCalibrationStore.read(custom.id, "m"))
+    }
+
+    @Test fun runtimeUnmeasuredExemptionOnlyForTrulyUnknownOrCommittedSummary() = fixture { f ->
+        f.put("c", f.pending())
+        f.bind("r", "c")
+        val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
+        // 真未知：允许 Runtime 依赖自身策略，UI 不因本地估计追加拦截。
+        assertTrue(call(f.app, "unmeasuredContextSendAllowed", f.state("c"), false) as Boolean)
+        f.send("r", AgentEvent.ProviderRequestStarted(1))
+        f.send("r", receipt(1, history))
+        // 有有效实测：不给未测豁免（known 仍受既有锚点/本地硬限约束）。
+        assertFalse(call(f.app, "unmeasuredContextSendAllowed", f.state("c"), false) as Boolean)
+        // 只有摘要真正提交过才放行；prune-only/摘要失败不会传 true。
+        assertTrue(call(f.app, "unmeasuredContextSendAllowed", f.state("c"), true) as Boolean)
+        // 换路由后退化为未知 → 再次允许。
+        f.providers(f.provider.copy(baseUrl = "https://other.example/v1"))
+        assertTrue(call(f.app, "unmeasuredContextSendAllowed", f.state("c"), false) as Boolean)
     }
 
     private fun receipt(round: Int, history: Int, input: Int = 15000, overhead: Int = 10000) =
@@ -436,9 +506,9 @@ class AgentContextPendingRegressionTest {
         }
         fun usage(id: String): AgentContextUsageUi {
             val state = state(id)
-            return liveContextUsage(state.history, "", emptyList(), null,
+            return liveContextUsage(
                 billedContextTokens = state.livePromptTokens.takeUnless { state.livePromptIsProjected },
-                contextDisplayPolicy = contextDisplayPolicy(state), receiptEstimateTokens = state.receiptPredictionTokens)
+                contextDisplayPolicy = contextDisplayPolicy(state))
         }
     }
 

@@ -68,14 +68,16 @@ class RequestOverheadCalibrationTest {
         }
     }
 
-    @Test fun claudeUnderestimateAndDeepSeekOverestimateAreBothCorrected() {
+    @Test fun learnedRatiosNeverReachTheRingEvenWhenAStableSampleExists() {
         for (input in listOf(37214, 19000)) {
             val sample = stable(input)
-            val ui = liveContextUsage(emptyList(), "", emptyList(), null, historyTokenCount = 481,
-                requestOverheadTokens = 25270, overheadCalibrationTokens = sample)
-            assertEquals(input, ui.contextTokens)
-            assertTrue(ui.estimated)
-            assertTrue(formatContextUsage(ui).startsWith("≈"))
+            // 样本仍作为纯计算辅助存在，但显示只认真实回执：没有 actual 时一律未知。
+            assertNotNull(sample.estimate(481, 25270))
+            val ui = liveContextUsage(contextDisplayPolicy = ContextDisplayPolicy(firstTurn = true))
+            assertNull(ui.contextTokens)
+            assertFalse(ui.estimated)
+            assertEquals("0k", formatContextUsage(ui))
+            // 本地单位仍进入内部静默预算（显示与预算保持分离）。
             assertEquals(25751, compressionContextUsage(emptyList(), "", emptyList(), null,
                 localHistoryTokenCount = 481, requestOverheadTokens = 25270).contextTokens)
         }
@@ -113,69 +115,65 @@ class RequestOverheadCalibrationTest {
         assertNotEquals(signature, RequestOverheadCalibration.routeSignature(provider.copy(endpointMode = "responses"), model))
     }
 
-    @Test fun noneAndUnknownIgnoreDraftAndRawProjectionAndActualWinsOverLearning() {
+    @Test fun noneAndUnknownIgnoreDraftAndSamplesWhileActualStaysExact() {
         for (first in listOf(true, false)) {
             val policy = ContextDisplayPolicy(firstTurn = first)
-            val idle = liveContextUsage(emptyList(), "", emptyList(), null, requestOverheadTokens = 25270, contextDisplayPolicy = policy)
-            val typing = liveContextUsage(emptyList(), "a long draft".repeat(100), emptyList(), null,
-                requestOverheadTokens = 25270, projectedContextTokens = 99999, contextDisplayPolicy = policy)
+            val idle = liveContextUsage(contextDisplayPolicy = policy)
+            val typing = liveContextUsage(contextDisplayPolicy = policy)
             assertEquals(idle, typing)
             assertNull(idle.contextTokens)
             assertNull(idle.progress)
             assertEquals(if (first) "0k" else "未知", formatContextUsage(idle))
         }
-        val actual = liveContextUsage(emptyList(), "draft", emptyList(), null, billedContextTokens = 12345,
-            overheadCalibrationTokens = stable(), requestOverheadTokens = 25270)
+        // 稳定样本也不能覆盖真实回执：actual 优先且不标 estimated。
+        val actual = liveContextUsage(billedContextTokens = 12345)
         assertEquals(12345, actual.contextTokens)
         assertFalse(actual.estimated)
     }
 
-    @Test fun pendingFirstTurnPolicyIgnoresVisibleMessagesButStillAllowsTrustedLearning() {
+    @Test fun pendingFirstTurnPolicyIgnoresVisibleMessagesAndNeverUsesSamples() {
         val pending = AgentChatUiState(messages = listOf(UserMessageUi("u", "pending")),
             history = listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "pending")),
             input = "", isStreaming = true, thinkingEnabled = false)
         val policy = contextDisplayPolicy(pending)
         assertTrue(policy.firstTurn)
-        val none = liveContextUsage(pending.history, "", emptyList(), null, contextDisplayPolicy = policy)
+        assertFalse(policy.awaitingReceipt)
+        val none = liveContextUsage(contextDisplayPolicy = policy)
         assertEquals("0k", formatContextUsage(none))
+        assertNull(none.contextTokens)
         assertNull(none.progress)
-        val learned = liveContextUsage(pending.history, "", emptyList(), null, historyTokenCount = 481,
-            requestOverheadTokens = 25270, overheadCalibrationTokens = stable(), contextDisplayPolicy = policy)
-        assertTrue(learned.estimated)
-        assertTrue(formatContextUsage(learned).startsWith("≈"))
-        val compacted = liveContextUsage(pending.history, "", emptyList(), null, historyTokenCount = 481,
-            requestOverheadTokens = 25270, overheadCalibrationTokens = stable(),
+        assertTrue(contextDisplayPolicy(pending.copy(contextAwaitingReceipt = true)).awaitingReceipt)
+        val compacted = liveContextUsage(
             contextDisplayPolicy = contextDisplayPolicy(pending.copy(contextAwaitingReceipt = true)))
         assertEquals("未知", formatContextUsage(compacted))
+        assertNull(compacted.contextTokens)
     }
 
-    @Test fun compressionForcesUnknownEvenWithStableLearningUntilFreshReceipt() {
-        val compacted = liveContextUsage(emptyList(), "draft", emptyList(), null, historyTokenCount = 481,
-            requestOverheadTokens = 25270, overheadCalibrationTokens = stable(),
-            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true), receiptEstimateTokens = 37000)
+    @Test fun awaitingReceiptAndFreshActualDoNotConsultStoredSamples() {
+        val compacted = liveContextUsage(
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true))
         assertNull(compacted.contextTokens)
         assertEquals("未知", formatContextUsage(compacted))
-        val fresh = liveContextUsage(emptyList(), "", emptyList(), null, billedContextTokens = 27723,
-            overheadCalibrationTokens = stable(), contextDisplayPolicy = ContextDisplayPolicy())
+        val fresh = liveContextUsage(billedContextTokens = 27723, contextDisplayPolicy = ContextDisplayPolicy())
         assertEquals(27723, fresh.contextTokens)
         assertFalse(fresh.estimated)
     }
 
-    @Test fun latestActualNeverDegradesToReceiptDeltaOrLearningWhenDraftOrCompositionChanges() {
+    @Test fun latestActualStaysExactWhileReceiptAndSampleHelpersAreNotDisplayed() {
+        // 纯辅助仍能算出 receipt 估计，但它不再进入显示。
         val estimate = RequestOverheadCalibration.receiptEstimate(37214, 481, 25270, 300, 25237)
         assertNotNull(estimate)
-        for (history in listOf(300, 120000)) {
-            val actual = liveContextUsage(emptyList(), "large draft".repeat(1000), emptyList(), null,
-                historyTokenCount = history, billedContextTokens = 37214, requestOverheadTokens = 25237,
-                receiptEstimateTokens = estimate, overheadCalibrationTokens = stable(), projectedContextTokens = 999999,
-                contextDisplayPolicy = ContextDisplayPolicy(firstTurn = false))
-            assertEquals(37214, actual.contextTokens)
-            assertFalse(actual.estimated)
-        }
-        // Local composition has no bearing on whether a positive provider receipt is actual.
-        val unpaired = liveContextUsage(emptyList(), "draft", emptyList(), null,
-            billedContextTokens = 43687, requestOverheadTokens = 0, projectedContextTokens = 999999)
+        val actual = liveContextUsage(
+            billedContextTokens = 37214, contextDisplayPolicy = ContextDisplayPolicy(firstTurn = false))
+        assertEquals(37214, actual.contextTokens)
+        assertFalse(actual.estimated)
+        // 本地 composition 不影响 positive receipt 是否算 actual。
+        val unpaired = liveContextUsage(billedContextTokens = 43687, contextDisplayPolicy = ContextDisplayPolicy())
         assertEquals(43687, unpaired.contextTokens)
         assertFalse(unpaired.estimated)
+        // 没有 actual 时不再回退任何旧估计：一律未知。
+        val withoutActual = liveContextUsage(contextDisplayPolicy = ContextDisplayPolicy(firstTurn = false))
+        assertNull(withoutActual.contextTokens)
+        assertEquals("未知", formatContextUsage(withoutActual))
     }
 }

@@ -64,7 +64,6 @@ import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.config.Prefs
-import io.github.mangi.eta.config.RequestOverheadCalibrationStore
 import io.github.mangi.eta.ui.model.RequestOverheadCalibration
 import io.github.mangi.eta.ui.model.ContextEstimateDiagnostics
 import io.github.mangi.eta.config.AutoCompressPreference
@@ -186,8 +185,6 @@ internal class AgentAppState(
     private val runUsageRoutes = mutableMapOf<String, String>()
     private val usageRunByConversation = mutableMapOf<String, String>()
     private val contextEstimateDiagnostics = ContextEstimateDiagnostics()
-    private val runCalibrationRounds = mutableMapOf<String, Int>()
-    private var overheadCalibrationRevision by mutableStateOf(0)
     private val invalidatedUsageRuns = mutableSetOf<String>()
     private val runGeneratedAtMillis = mutableMapOf<String, Long>()
     // A stopped worker still owns its transcript until its terminal result is committed.
@@ -522,23 +519,29 @@ internal class AgentAppState(
     var requestOverheadTokens by mutableStateOf(0)
         private set
 
-    // Display-only, never used by compression/send-budget callers.
-    var previewRequestOverheadTokens by mutableStateOf<Int?>(null)
-        private set
+    /** 有效回执判定：未在等待新回执 + 实际路由签名仍然一致。
+     * 学习签名已随显示学习一起退场：custom gateway/headers 取不到 learning 签名，但
+     * actual-local-v1 实际路由摘要能验证“同一 provider/模型/配置”，因此同样算已测。
+     * 未测豁免、压缩锚点与预算 seed 必须共用这一个判定（否则 UI 认为已测而 runtime 没有 seed）。 */
+    private fun hasEffectiveContextReceipt(state: AgentChatHomeUiState): Boolean =
+        !state.contextAwaitingReceipt && state.cloudRouteSignature != null &&
+            state.cloudRouteSignature == contextRouteSignature(state)
 
-    // Display only: send-block and silent compaction budgets retain their existing units/semantics.
-    val overheadCalibrationTokens: RequestOverheadCalibration.Sample?
-        get() {
-            overheadCalibrationRevision // Observe successful learning in Compose.
-            val option = modelPickerState.selectedModel ?: return null
-            val provider = selectionProviders.firstOrNull { it.id == option.providerId } ?: return null
-            val model = provider.models.firstOrNull { it.id == option.id } ?: return null
-            val signature = RequestOverheadCalibration.routeSignature(provider, model)
-            if (signature.isBlank()) return null
-            return RequestOverheadCalibrationStore.read(provider.id, model.id)?.takeIf { it.routeSignature == signature }
-        }
+    /** 有效实测 helper：正数真实回执 + 有效实际路由/历史证据。 */
+    private fun validMeasuredContextTokens(state: AgentChatHomeUiState): Int? =
+        billedPromptTokens(state)?.takeIf { tokens -> tokens > 0 && hasEffectiveContextReceipt(state) }
 
-    private fun contextLearningRouteSignature(state: AgentChatHomeUiState): String? {
+    /** Runtime 未实测豁免接线：只有“摘要真正提交过”（history 已被摘要替换）或本次请求确实
+     * 没有有效实测时才允许越界发送；known 仍由既有校准锚点/本地硬限约束。
+     * prune-only 或摘要失败都不算已压缩，也不能靠“看起来清了历史”来解锁。 */
+    private fun unmeasuredContextSendAllowed(
+        contextState: AgentChatHomeUiState,
+        summaryCommitted: Boolean,
+    ): Boolean = summaryCommitted || validMeasuredContextTokens(contextState) == null
+
+    /** 严格路由签名：customHeaders/customBody/sessionGatewayJson 一律 fail closed，
+     * 凭据内容从不参与任何持久化比较。 */
+    private fun strictRouteSignature(state: AgentChatHomeUiState): String? {
         val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
         val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
         return RequestOverheadCalibration.routeSignature(provider, model).takeIf { it.isNotBlank() }
@@ -549,7 +552,7 @@ internal class AgentAppState(
     private fun contextRouteSignature(state: AgentChatHomeUiState): String? {
         val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
         val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
-        contextLearningRouteSignature(state)?.let { return it }
+        strictRouteSignature(state)?.let { return it }
         val endpoint = when (provider) {
             is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
             is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
@@ -566,6 +569,11 @@ internal class AgentAppState(
         return "actual-local-v1:" + java.security.MessageDigest.getInstance("SHA-256")
             .digest(fields.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
+
+    /** UI 侧同一个“有效实测”：InputBar 只有在它为 null（真未知）时才因为本地估算解除发送禁用，
+     * 已有实测的 known 状态保持原有 99% 拦截与 autoCompress 短路。 */
+    val measuredContextTokens: Int?
+        get() = validMeasuredContextTokens(homeState)
 
     var billedOverheadTokens by mutableStateOf<Int?>(null)
         private set
@@ -753,13 +761,11 @@ internal class AgentAppState(
         val overheadRequest = overheadSelection.begin(binding)
         // A previous binding's positive value is not a fallback for an unknown new binding.
         requestOverheadTokens = overheadSelection.tokensFor(binding) ?: 0
-        previewRequestOverheadTokens = null
         val state = homeState
         val owner = subAgentConfigOwner
         val assistant = requestOverheadAssistant()
         val providers = selectionProviders.toList()
         scope.launch(Dispatchers.IO) {
-            var previewTokens: Int? = null
             val tokens = try {
                 val provider = providers.firstOrNull { it.id == state.providerId && it.isEnabled }
                 val model = provider?.models?.firstOrNull { it.id == state.modelId && it.isEnabled }
@@ -772,7 +778,7 @@ internal class AgentAppState(
                         deviceSensitiveReadTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
                         deviceSensitiveActionTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
                     )
-                    estimateRequestOverhead(config, assistant, owner, providers) { previewTokens = it }
+                    estimateRequestOverhead(config, assistant, owner, providers)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -783,7 +789,6 @@ internal class AgentAppState(
                 if (requestOverheadAssistant() != assistant ||
                     !overheadSelection.complete(overheadRequest, currentOverheadBinding(), tokens)) return@withContext
                 requestOverheadTokens = requireNotNull(tokens)
-                previewRequestOverheadTokens = previewTokens
                 syncBilledOverhead(selectedConversationId, homeState.messages)
             }
         }
@@ -794,7 +799,6 @@ internal class AgentAppState(
         assistant: io.github.mangi.eta.data.model.AssistantProfile,
         owner: SubAgentConfigKey,
         providers: List<io.github.mangi.eta.data.model.ProviderSetting>,
-        onProtocolPreview: ((Int) -> Unit)? = null,
     ): Int {
         val enabledSkillIds = assistant.enabledSkillIds.toSet()
         val skillContext = SkillContext(
@@ -826,9 +830,6 @@ internal class AgentAppState(
             memoryContext = memoryContext,
             capabilities = AgentToolCapabilities.capture(appContext),
             additionalTools = additionalTools,
-            onProtocolPreview = onProtocolPreview?.let { publish ->
-                { tokens: Int -> publish(tokens + AgentContextBudget.countTokens(childPrompt)) }
-            },
         ) + AgentContextBudget.countTokens(childPrompt)
     }
 
@@ -1358,7 +1359,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
-        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         conversationUpdatedAt = conversationUpdatedAt +
             (conversationId to checkpoint.updatedAt)
         return true
@@ -2434,11 +2435,10 @@ internal class AgentAppState(
         fileReferences: List<PendingFileReferenceUi> = emptyList(),
         conversationMentions: List<PendingConversationMentionUi> = homeState.pendingConversationMentions,
     ): Boolean {
-        val billed = if (homeState.messageEdit != null || history != homeState.history) {
-            null
-        } else {
-            budgetReceiptTokens(homeState)
-        }
+        // 普通历史前缀增长、补齐可见 assistant、turnId 元数据差都复用同一次云端实测
+        // （contextStateForRequestHistory）；只有编辑/改写历史或换路由才会退化成未实测。
+        val requestState = contextStateForRequestHistory(homeState, history)
+        val measured = if (homeState.messageEdit == null) validMeasuredContextTokens(requestState) else null
         val usage = compressionContextUsage(
             history = history,
             currentInput = prompt,
@@ -2446,12 +2446,13 @@ internal class AgentAppState(
             selectedModel = modelPickerState.selectedModel,
             pendingFileReferences = fileReferences,
             pendingConversationMentions = conversationMentions,
-            billedContextTokens = billed,
+            billedContextTokens = measured,
             requestOverheadTokens = requestOverheadTokens,
-            billedOverheadTokens = homeState.cloudRequestOverheadTokens.takeIf { billed != null },
-            billedHistoryTokens = homeState.cloudHistoryTokens.takeIf { billed != null },
+            billedOverheadTokens = requestState.cloudRequestOverheadTokens.takeIf { measured != null },
+            billedHistoryTokens = requestState.cloudHistoryTokens.takeIf { measured != null },
         )
-        if (!shouldBlockSendForContextWindow(autoCompressEnabled, usage)) {
+        // 真未知不能仅凭本地估算的 99% 拦截；known（有效实测）保留原有拦截与 autoCompress 短路。
+        if (measured == null || !shouldBlockSendForContextWindow(autoCompressEnabled, usage)) {
             return false
         }
         Toast.makeText(
@@ -2497,12 +2498,11 @@ internal class AgentAppState(
         )
     }
 
-    /** Budget deltas retain real evidence across request boundaries, never display-learning ratios. */
+    /** 预算 seed 与未测豁免共用同一个有效实际回执判定：custom gateway 的真实回执也能继续
+     * 作为同一路由/模型的预算锚点，不再被已退场的 learning 签名拦成“未测”。 */
     private fun budgetReceiptTokens(state: AgentChatHomeUiState): Int? =
-        (billedPromptTokens(state) ?: state.contextBudgetReceiptTokens).takeIf {
-            !state.contextAwaitingReceipt && state.cloudRouteSignature != null &&
-                state.cloudRouteSignature == contextLearningRouteSignature(state)
-        }
+        (billedPromptTokens(state) ?: state.contextBudgetReceiptTokens)
+            .takeIf { hasEffectiveContextReceipt(state) }
 
     private fun compressionContextWindow(fallback: Int? = null): Int? =
         modelPickerState.selectedModel?.contextWindow?.takeIf { it > 0 }
@@ -2545,6 +2545,8 @@ internal class AgentAppState(
         billedTokens: Int? = null,
         localTokens: Int? = null,
         sourceModelConfig: AgentModelClient.ModelConfig? = null,
+        /** 仅当本次确实产生了可用的摘要并已 ready 成功时触发；prune-only/摘要失败不触发。 */
+        onSummaryCommitted: (() -> Unit)? = null,
     ): List<AgentModelClient.ConversationMessage> {
         val resolvedKeepRecent = keepRecent ?: keepRecentFor()
         val archive = conversationId?.let {
@@ -2588,6 +2590,8 @@ internal class AgentAppState(
                         countsOpaque = { config.replayedOpaqueItems(it) > 0 },
                     )) { "摘要及索引未缩小上下文" }
                     boundArchive.record(id, "ready")
+                    // attachReferences + compactionReduced + ready 全部成功之后才宣告摘要提交成功。
+                    onSummaryCommitted?.invoke()
                     result
                 } catch (failure: Exception) {
                     runCatching { boundArchive.record(id, "failed") }
@@ -2708,7 +2712,8 @@ internal class AgentAppState(
         )
         val historyRewritten = history != state.history
         val relatedHistory = history == state.history.take(history.size) || state.history == history.take(state.history.size)
-        val validReceiptRoute = state.cloudRouteSignature != null && state.cloudRouteSignature == contextLearningRouteSignature(state)
+        // 同一有效实际回执判定：custom gateway 的真实回执同样可以作为压缩/预算锚点。
+        val validReceiptRoute = hasEffectiveContextReceipt(state)
         val contextState = contextStateForRequestHistory(state, history)
         val runMessages = if (generateImage || generateVideo) {
             messages + AgentMessageUi(
@@ -2847,6 +2852,7 @@ internal class AgentAppState(
                     setConversationCompressing(conversationId, shouldCompress)
                 }
             }
+            var summaryCommitted = false
             val historyToSend = if (shouldCompress) {
                 val compressed = tryCompressHistory(
                     history = history,
@@ -2856,6 +2862,7 @@ internal class AgentAppState(
                     contextWindow = config.contextWindow,
                     billedTokens = estimatedTokens.takeIf { billedForCompression != null },
                     localTokens = localForCompression,
+                    onSummaryCommitted = { summaryCommitted = true },
                 )
                 withContext(Dispatchers.Main) {
                     applyCompressedHistoryToConversation(
@@ -2871,6 +2878,9 @@ internal class AgentAppState(
             } else {
                 history
             }
+            // 只有摘要真正成功才算“已预压缩”：prune-only/摘要失败返回 working 时历史也可能不等，
+            // 不能拿 history != historyToSend 冒充压缩成功。
+            val compactedBeforeSend = shouldCompress && summaryCommitted
             // Pre-send compaction can outlive the 20s stop seal: the watchdog then settles the
             // run and drops it from runJobs. Re-check before handing anything to Runtime, or a
             // stopped run would start executing tools with no UI left to stop it.
@@ -2890,32 +2900,24 @@ internal class AgentAppState(
             if (AppFileLogger.isEnabled()) {
                 try {
                     val snapshotOverhead = runOverhead ?: 0
-                    val route = RequestOverheadCalibration.routeSignature(runProvider, runModel)
-                    val calibration = RequestOverheadCalibrationStore.read(runProvider.id, runModel.id)
-                        ?.takeIf { route.isNotBlank() && it.routeSignature == route }
-                    val hasReceiptDelta = !shouldCompress && calibratedForCompression
+                    val hasReceiptDelta = !compactedBeforeSend && calibratedForCompression
                     val rawHistory = (historyToSend.sumOf { AgentContextBudget.countMessage(it).toLong() } +
                         AgentContextBudget.countCurrentTurn(prompt, modelImages))
                         .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                    val learnedEstimate = calibration?.estimate(rawHistory, snapshotOverhead).takeUnless { shouldCompress || state.contextAwaitingReceipt }
-                    val estimate = if (hasReceiptDelta) estimatedTokens ?: 0 else learnedEstimate ?:
+                    val estimate = if (hasReceiptDelta) estimatedTokens ?: 0 else
                         (rawHistory.toLong() + snapshotOverhead).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
                     val uiActual = billedPromptTokens(contextState).takeIf {
-                        !shouldCompress && contextState.cloudRouteSignature != null &&
+                        !compactedBeforeSend && contextState.cloudRouteSignature != null &&
                             contextState.cloudRouteSignature == contextRouteSignature(contextState)
                     }
-                    val uiTokens = if (shouldCompress || contextState.contextAwaitingReceipt) null else
-                        uiActual ?: learnedEstimate
+                    val uiTokens = if (contextState.contextAwaitingReceipt) null else uiActual
                     contextEstimateDiagnostics.capture(runId, ContextEstimateDiagnostics.Snapshot(
                         basis = if (hasReceiptDelta) ContextEstimateDiagnostics.Basis.RECEIPT_DELTA
-                            else if (learnedEstimate != null) ContextEstimateDiagnostics.Basis.LEARNED_RATIO
                             else ContextEstimateDiagnostics.Basis.LOCAL_FALLBACK,
                         localEstimateTokens = estimate, overheadTokensEst = snapshotOverhead, historyTokensEst = rawHistory,
-                        calibrationSamples = calibration?.samples ?: 0, ratio = calibration?.ratio,
                         uiTokens = uiTokens,
                         uiState = when {
                             uiActual != null -> ContextEstimateDiagnostics.UiState.ACTUAL
-                            uiTokens != null -> ContextEstimateDiagnostics.UiState.ESTIMATE
                             !state.contextHasStarted -> ContextEstimateDiagnostics.UiState.NONE
                             else -> ContextEstimateDiagnostics.UiState.UNKNOWN
                         },
@@ -2938,10 +2940,14 @@ internal class AgentAppState(
                         history = historyToSend,
                         // UI owns context via auto-compress / 99% send block; Runtime must not trimHistory.
                         historyAlreadyCompacted = true,
-                        // 只在估算确实以同一段历史的云端回执为底、且没有在发送前压缩时传。
+                        // 只在估算确实以同一段历史的云端回执为底、且没有真正压缩掉这段历史时传。
+                        // 摘要尝试失败/仅 prune 不清掉仍然有效的旧锚点。
                         calibratedInputTokens = estimatedTokens?.takeIf {
-                            !shouldCompress && calibratedForCompression && it > 0
+                            !compactedBeforeSend && calibratedForCompression && it > 0
                         },
+                        // 只有实际未知（本次请求没有有效实测）或摘要真正提交过才放行；
+                        // known 一律沿用既有校准锚点，不免除 Runtime 的本地硬限。
+                        allowUnmeasuredContextSend = unmeasuredContextSendAllowed(contextState, compactedBeforeSend),
                         modelSessionId = conversationId,
                         handoff = AgentRuntimeWire.EntryHandoff(
                             id = runId,
@@ -3176,7 +3182,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
-        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3196,7 +3202,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
-        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3716,7 +3722,7 @@ internal class AgentAppState(
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
-            contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
+            contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
         }
         refreshConversationSummaries()
@@ -3789,7 +3795,7 @@ internal class AgentAppState(
             runGeneratedAtMillis.remove(runId)
             runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
-            contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
+            contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
         }
         if (conversationId == null) {
@@ -4677,10 +4683,14 @@ internal class AgentAppState(
                     if (inflatedCache) {
                         // Ring keeps the last trusted cloud value; same rule as AgentSilentContextBudget.
                     } else if (measured != null) {
-                        if (!replaying) recordContextEstimateReceipt(runId, event, measured)
                         updateLivePromptTokens(runId, measured, projected = false,
                             historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens,
                             round = event.round)
+                        // 诊断只配对本次真实回执；显示学习通路已删除，不再持久化三样本比率。
+                        if (!replaying) contextEstimateDiagnostics.receipt(runId, measured,
+                            event.usage.cachedTokens, round = event.round,
+                            historyTokens = event.requestHistoryTokens,
+                            overheadTokens = event.requestOverheadTokens)
                     } else if (localBasis != null && localBasis > 0) {
                         // Keep a usable, self-consistent basis instead of an implausible bill.
                         updateLivePromptTokens(runId, localBasis, projected = true)
@@ -5053,7 +5063,7 @@ internal class AgentAppState(
         runGeneratedAtMillis.remove(runId)
         runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
-        contextEstimateDiagnostics.clear(runId); runCalibrationRounds.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations(
@@ -5140,33 +5150,6 @@ internal class AgentAppState(
             cloudReceiptRequestId = null, cloudRouteSignature = null,
             contextReceiptEvidence = null, receiptPredictionTokens = null,
         ), updateTimestamp = false)
-    }
-
-    private fun recordContextEstimateReceipt(runId: String, event: AgentEvent.UsageReceived, measured: Int) {
-        val owner = runUsageOwners[runId] ?: return
-        val conversationId = conversationIdForRun(runId) ?: return
-        val state = conversationState(conversationId) ?: return
-        if (runId in invalidatedUsageRuns || usageRunByConversation[conversationId] != runId ||
-            owner != (state.providerId to state.modelId)) return
-        if (runUsageRoutes[runId] != contextRouteSignature(state)) return
-        val route = contextLearningRouteSignature(state) ?: return
-        val previous = RequestOverheadCalibrationStore.read(owner.first, owner.second)?.takeIf { it.routeSignature == route }
-        val evidence = io.github.mangi.eta.ui.model.ContextReceiptEvidence.merge(state.contextReceiptEvidence,
-            "$runId:${event.round}", measured, event.requestHistoryTokens, event.requestOverheadTokens)
-        val history = evidence.history
-        val overhead = evidence.overhead
-        val learned = if (event.round >= (runCalibrationRounds[runId] ?: -1)) {
-            RequestOverheadCalibration.recordReceipt(previous, measured, history, overhead,
-                requestId = evidence.requestId, routeSignature = route)
-        } else null
-        if (learned != null) {
-            RequestOverheadCalibrationStore.save(owner.first, owner.second, learned)
-            runCalibrationRounds[runId] = event.round
-            overheadCalibrationRevision++
-        }
-        contextEstimateDiagnostics.receipt(runId, measured, event.usage.cachedTokens,
-            learned != null, null, round = event.round, historyTokens = history, overheadTokens = overhead,
-            sampleCount = (learned ?: previous)?.samples ?: 0, ratio = (learned ?: previous)?.ratio)
     }
 
     private fun bindUsageRun(runId: String, conversationId: String) {

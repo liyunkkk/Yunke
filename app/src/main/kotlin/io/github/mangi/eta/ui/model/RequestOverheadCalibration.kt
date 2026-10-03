@@ -3,9 +3,12 @@ package io.github.mangi.eta.ui.model
 import kotlinx.serialization.Serializable
 import kotlin.math.roundToInt
 
-/** Display-only empirical ratios in raw request units, never an additive fixed overhead.
+/** Empirical request-unit ratios in raw request units, never an additive fixed overhead.
  * Provider/model and configuration scope are checked by the caller/store. Raw overhead and
- * history share are conservative composition proxies, NOT proof of identical tokenization. */
+ * history share are conservative composition proxies, NOT proof of identical tokenization.
+ *
+ * 显示学习已停用：没有任何生产调用方再持久化、复用或展示三样本跨请求/会话比率，
+ * 圆环只显示真实云端回执。此处纯函数与可序列化样本保留给作用域校验/预算辅助调用。 */
 internal object RequestOverheadCalibration {
     private const val WINDOW = 3
 
@@ -113,11 +116,11 @@ internal object RequestOverheadCalibration {
 }
 
 /** Unmeasured display state is independent of the conservative internal send budget. */
-internal data class ContextDisplayPolicy(val firstTurn: Boolean = false, val awaitingReceipt: Boolean = false,
-    val receiptEstimateTokens: Int? = null)
+internal data class ContextDisplayPolicy(val firstTurn: Boolean = false, val awaitingReceipt: Boolean = false)
 
+/** 圆环只消费真实云端回执：首轮固定 "0k"，其余未实测状态一律 "未知"。
+ * state.receiptPredictionTokens 仅供旧持久化字段兼容，不再进入任何显示判断。 */
 internal fun contextDisplayPolicy(state: AgentChatUiState) = ContextDisplayPolicy(
     firstTurn = !state.contextHasStarted,
     awaitingReceipt = state.contextAwaitingReceipt,
-    receiptEstimateTokens = state.receiptPredictionTokens,
 )

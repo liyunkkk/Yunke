@@ -29,11 +29,13 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         app = self.text('ui/app/AgentAppState.kt')
         self.assertIn('if (projected) return', app)
         bar = self.text('ui/components/AgentChatInputBar.kt')
-        self.assertIn('requestOverheadTokens = if (overheadCalibrationTokens != null) requestOverheadTokens', bar)
-        self.assertIn('else previewRequestOverheadTokens ?: requestOverheadTokens', bar)
+        # 显示不再消费任何本地预览 overhead/校准样本；只有 sendBudget（静默预算）保留 requestOverheadTokens。
+        self.assertNotIn('previewRequestOverheadTokens', bar)
+        self.assertNotIn('overheadCalibrationTokens', bar)
+        self.assertIn('val contextSendBlocked = measuredContextTokens != null &&', bar)
         send = bar.split('val sendBudget = remember(', 1)[1].split('val contextSendBlocked', 1)[0]
-        self.assertNotIn('previewRequestOverheadTokens', send)
         self.assertIn('localHistoryTokenCount = localHistoryTokenCount', send)
+        self.assertIn('requestOverheadTokens = requestOverheadTokens', send)
         preview = self.text('ui/model/AgentModelPickerUiState.kt').split('internal fun compressionContextUsage(', 1)[1]
         silent = preview.split('private fun draftContextTokens(', 1)[0]
         self.assertNotIn('liveContextUsage(', silent)
@@ -42,15 +44,17 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         # Display-only calibration must never reach the silent send/compaction budget.
         self.assertNotIn('overheadCalibrationTokens', preview.split('\n}\n', 1)[0])
 
-    def test_ring_consumes_display_estimate_and_screen_wrappers_forward_preview(self):
+    def test_ring_consumes_only_the_cloud_receipt_and_screens_forward_the_measurement(self):
         bar = self.text('ui/components/AgentChatInputBar.kt')
         ring = bar.split('AgentContextUsageButton(', 1)[1].split(')', 1)[0]
         self.assertIn('usage = liveUsage,', ring)
         self.assertNotIn('else sendBudget', ring)
         for path in ('ui/screens/chat/AgentChatScreen.kt', 'ui/screens/home/AgentHomeScreen.kt'):
             screen = self.text(path)
-            self.assertIn('previewRequestOverheadTokens: Int? = null,', screen)
-            self.assertIn('previewRequestOverheadTokens = previewRequestOverheadTokens,', screen)
+            self.assertIn('measuredContextTokens: Int? = null,', screen)
+            self.assertIn('measuredContextTokens = measuredContextTokens,', screen)
+            self.assertNotIn('overheadCalibrationTokens', screen)
+            self.assertNotIn('previewRequestOverheadTokens', screen)
 
     def test_diagnostic_wire_bytes_reuse_serialized_request_without_payload_logging(self):
         for name in ('OpenAiResponsesProvider', 'OpenAiChatCompletionsProvider', 'AnthropicMessagesProvider'):

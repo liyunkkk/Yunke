@@ -158,11 +158,9 @@ internal fun AgentChatInputBar(
     projectedContextTokens: Int? = null,
     billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
-    previewRequestOverheadTokens: Int? = null,
-    overheadCalibrationTokens: io.github.mangi.eta.ui.model.RequestOverheadCalibration.Sample? = null,
+    measuredContextTokens: Int? = null,
     contextDisplayPolicy: io.github.mangi.eta.ui.model.ContextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(),
     billedOverheadTokens: Int? = null,
-    uncommittedLiveTokens: Int = 0,
     activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
@@ -205,43 +203,20 @@ internal fun AgentChatInputBar(
     val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
     val draftText = textFieldState.text.toString()
-    // Raw counts calibrate existing cloud receipts; filtered counts are local preview only.
+    // 原始历史计数只服务静默发送/压缩预算；显示（圆环）不再消费任何本地计数。
     val historyTokenCount = remember(history) { history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) } }
     val supportsVision = modelPickerState.selectedModel?.supportsVision == true
     val supportsVideo = modelPickerState.selectedModel?.supportsVideo == true
     val localHistoryTokenCount = remember(history, supportsVision, supportsVideo) {
         io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
     }
-    val requestEndpoint = modelPickerState.selectedModel?.requestEndpoint
-        ?: io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
-    val previewHistoryTokens = remember(history, supportsVision, supportsVideo, requestEndpoint) {
-        io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo, requestEndpoint)
-    }
-    val liveUsage = remember(
-        contextDisplayPolicy, previewHistoryTokens, projectedContextTokens, billedContextTokens,
-        requestOverheadTokens, previewRequestOverheadTokens, overheadCalibrationTokens, historyTokenCount,
-        billedOverheadTokens, uncommittedLiveTokens, draftText,
-        pendingImages, pendingFileReferences, conversationMentions.pending,
-        modelPickerState.selectedModel, activeRunContextWindow,
-    ) {
+    val liveUsage = remember(contextDisplayPolicy, billedContextTokens, modelPickerState.selectedModel,
+        activeRunContextWindow) {
+        // 圆环只显示真实云端回执：没有实测回执时不投影任何本地估算。
         liveContextUsage(
-            history = emptyList(),
-            historyTokenCount = if (overheadCalibrationTokens != null) historyTokenCount else previewHistoryTokens,
-            projectedContextTokens = projectedContextTokens,
-            overheadCalibrationTokens = overheadCalibrationTokens,
-            contextDisplayPolicy = contextDisplayPolicy,
-            receiptEstimateTokens = contextDisplayPolicy.receiptEstimateTokens,
-            currentInput = draftText,
-            pendingImages = pendingImages,
-            selectedModel = modelPickerState.selectedModel,
-            pendingFileReferences = pendingFileReferences,
-            pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens,
-            // Calibration was measured in legacy units; never add it to final-body preview units.
-            requestOverheadTokens = if (overheadCalibrationTokens != null) requestOverheadTokens
-                else previewRequestOverheadTokens ?: requestOverheadTokens,
-            billedOverheadTokens = billedOverheadTokens,
-            uncommittedLiveTokens = uncommittedLiveTokens,
+            selectedModel = modelPickerState.selectedModel,
+            contextDisplayPolicy = contextDisplayPolicy,
             activeRunContextWindow = activeRunContextWindow,
         )
     }
@@ -259,7 +234,9 @@ internal fun AgentChatInputBar(
             activeRunContextWindow = activeRunContextWindow,
         )
     }
-    val contextSendBlocked = shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
+    // 真未知（没有有效实测）不因本地估算的 99% 被禁用；known 保留原有拦截与 autoCompress 短路。
+    val contextSendBlocked = measuredContextTokens != null &&
+        shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
     val compressionSendBlocked = isCompressingContext
     val canSend = !modelPickerState.isChanging && modelPickerState.selectedModel != null && !contextSendBlocked && !compressionSendBlocked && (
         textFieldState.text.isNotBlank() ||

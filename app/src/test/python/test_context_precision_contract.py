@@ -45,9 +45,11 @@ class ContextPrecisionContractTest(unittest.TestCase):
     def test_ui_preserves_raw_calibration_and_separate_capability_preview(self):
         bar = self.read('ui/components/AgentChatInputBar.kt')
         self.assertIn('remember(history, supportsVision, supportsVideo)', bar)
-        self.assertIn('historyTokenCount = if (overheadCalibrationTokens != null) historyTokenCount else previewHistoryTokens', bar)
-        self.assertIn('localHistoryTokenCount = localHistoryTokenCount', bar)
         self.assertIn('historyTokenCount = historyTokenCount', bar)
+        self.assertIn('localHistoryTokenCount = localHistoryTokenCount', bar)
+        # 圆环不再用能力预览做本地投影：显示只认真实云端回执，静默预算仍用历史原始计数。
+        self.assertNotIn('overheadCalibrationTokens', bar)
+        self.assertNotIn('previewHistoryTokens', bar)
         model = self.read('ui/model/AgentModelPickerUiState.kt')
         self.assertIn('localHistoryTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(', model)
         self.assertIn('history.sumOf { AgentContextBudget.countMessage(it) }', model)

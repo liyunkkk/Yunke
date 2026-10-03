@@ -48,8 +48,7 @@ class AgentCloudReceiptRegressionTest {
                 assertEquals(historyTokens, state(app).cloudHistoryTokens)
             }
             val current = state(app)
-            val ring = liveContextUsage(history = current.history, currentInput = "",
-                pendingImages = emptyList(), selectedModel = null,
+            val ring = liveContextUsage(selectedModel = null,
                 billedContextTokens = current.livePromptTokens, activeRunContextWindow = 272_000)
             assertEquals(270_648, ring.contextTokens)
             assertEquals(272_000, ring.contextWindow)

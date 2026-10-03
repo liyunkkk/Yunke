@@ -31,7 +31,7 @@ internal data class AgentChatUiState(
     val livePromptIsProjected: Boolean = false,
     /** Last real receipt retained for conservative budget deltas, never displayed as actual. */
     val contextBudgetReceiptTokens: Int? = null,
-    // Local snapshots paired with the valid cloud receipt. Never shown as cloud usage.
+    /** 旧显示学习字段：为兼容持久化保留，圆环已不再读取（见 contextDisplayPolicy）。 */
     val receiptPredictionTokens: Int? = null,
     val contextHasStarted: Boolean = false,
     val contextAwaitingReceipt: Boolean = false,

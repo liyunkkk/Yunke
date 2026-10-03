@@ -55,7 +55,7 @@ class AgentCloudUsageRegressionTest {
             // Late usage cannot replace the latest accepted actual after advancing the round.
             send(AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 160000)))
             assertEquals(152885, current().livePromptTokens)
-            val ring = liveContextUsage(current().history, "draft", emptyList(), null,
+            val ring = liveContextUsage(
                 billedContextTokens = current().livePromptTokens, contextDisplayPolicy = contextDisplayPolicy(current()))
             assertEquals(152885, ring.contextTokens)
             assertFalse(ring.estimated)
