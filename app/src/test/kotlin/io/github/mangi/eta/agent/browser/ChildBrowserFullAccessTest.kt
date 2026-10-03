@@ -65,4 +65,41 @@ class ChildBrowserFullAccessTest {
         assertFalse(ChildBrowserPolicy.sessionAllowed(true, "unknown"))
         assertEquals(1, count)
     }
+
+    @Test fun defaultGrantAndFrozenGrantSurvivePauseAndCancel() {
+        val controller = AgentRunController()
+        assertEquals(ChildBrowserAccess.FULL, controller.childBrowserAccess)
+        assertTrue(controller.freezeChildBrowserAccess(ChildBrowserAccess.READ_ONLY))
+        controller.pause(); controller.resume()
+        assertEquals(ChildBrowserAccess.READ_ONLY, controller.childBrowserAccess)
+        controller.cancel()
+        assertEquals(ChildBrowserAccess.READ_ONLY, controller.childBrowserAccess)
+        assertFalse(controller.freezeChildBrowserAccess(ChildBrowserAccess.FULL))
+    }
+    @Test fun fullForwardsAnExactScriptStringToTheBackend() {
+        val script = "return document.title;"
+        var actual: String? = null
+        val executor = ChildBrowserPolicy.guarded({ true }) {
+            actual = JSONObject(it.argumentsJson).getString("script")
+            AgentModelClient.ToolResult("ok")
+        }
+        assertEquals("ok", executor.execute(call(JSONObject().put("action", "execute_js").put("script", script))).content)
+        assertEquals(script, actual)
+    }
+    @Test fun dedicatedCookieToolsRedactValuesAndKeepOnlyMetadata() {
+        val secret = "cookie-value-that-must-not-be-returned"
+        val args = JSONObject().put("cookies", JSONArray().put(JSONObject().put("name", "session").put("value", secret)).toString())
+        val echoed = "cookie rejected: $secret"
+        assertFalse(ChildBrowserPolicy.redactToolContent("set_cookies", args, echoed).contains(secret))
+        val metadata = JSONObject().put("path", "/var/minis/offloads/child/cookies.sh")
+            .put("cookies", JSONArray().put(JSONObject().put("name", "session").put("value", secret)
+                .put("nested", JSONObject().put("SET-COOKIE", "session=$secret").put("Value", secret))))
+        val result = JSONObject(ChildBrowserPolicy.redactToolContent("get_cookies", JSONObject(), metadata.toString()))
+        assertEquals("/var/minis/offloads/child/cookies.sh", result.getString("path"))
+        val cookie = result.getJSONArray("cookies").getJSONObject(0)
+        assertEquals("session", cookie.getString("name"))
+        assertFalse(cookie.has("value"))
+        assertEquals(0, cookie.getJSONObject("nested").length())
+        assertFalse(result.toString().contains(secret))
+    }
 }

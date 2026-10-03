@@ -141,6 +141,19 @@ class ChildBrowserFullAccessContractTest(unittest.TestCase):
         self.assertNotIn('createTab(', fetch)
         self.assertIn('fetchChildResource(input.url, input.tabId)', pool)
 
+    def test_cookie_output_filter_is_used_in_the_session(self):
+        session = source("browser/ChildBrowserSession.kt")
+        self.assertIn('ChildBrowserPolicy.redactToolContent(', session)
+        policy = source("browser/ChildBrowserPolicy.kt")
+        self.assertIn('if (action != "get_cookies" && action != "set_cookies") return content', policy)
+        self.assertIn('stripCookieValues(json)', policy)
+
+    def test_invalid_dispatch_grant_is_rejected_before_creating_a_task(self):
+        dispatch = source("delegation/SubAgentCoordinator.kt")
+        start = dispatch.split('private fun start(', 1)[1] if 'private fun start(' in dispatch else dispatch
+        self.assertLess(start.index('ChildBrowserAccess.fromArgs(args)'), start.index('val t = Task('))
+        self.assertIn('?: return invalidArguments("browser_access', start)
+
     def test_new_kotlin_runtime_regressions_are_present_not_claimed_executed(self):
         tests = ROOT / 'app/src/test/kotlin/io/github/mangi/eta/agent/browser'
         for name in ('ChildBrowserFullAccessTest.kt', 'ported/browser/ChildBrowserBackendTest.kt', 'ported/browser/ChildBrowserDownloadsTest.kt'):
