@@ -468,8 +468,11 @@ internal class AgentRuntimeRunExecutor(
     @Synchronized private fun acceptEvent(session: AgentRuntimeSession, event: AgentEvent,
         archivedEvents: MutableList<AgentEvent>, entrySurfaceGuard: EntrySurfaceGuard?,
         checkpointRecorder: AgentRunCheckpointRecorder?) {
-        checkpointRecorder?.accept(event)
-        if (!session.emit(event)) return
+        if (event is AgentEvent.QuestionRequested || event is AgentEvent.QuestionResolved) {
+            AgentQuestionEventPublisher.publish(session, event) { checkpointRecorder?.accept(event) }
+        } else {
+            if (!session.emit(event) { checkpointRecorder?.accept(event) }) return
+        }
         archivedEvents += event
         if (event is AgentEvent.ModelRetryScheduled) AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")
         else if (event !is AgentEvent.AssistantBlockDelta) AndroidAgentLogger.debug { "Agent runtime event: ${event.toLogLine()}" }

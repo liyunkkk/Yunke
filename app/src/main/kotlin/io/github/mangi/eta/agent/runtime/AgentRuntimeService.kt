@@ -77,6 +77,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private val serviceMessenger = Messenger(IncomingHandler())
 
     private val sessions = AgentRuntimeSessionRegistry()
+    private val questionLedger by lazy { io.github.mangi.eta.agent.question.AgentQuestionLedgerAndroid.forContext(applicationContext) }
     private val stopWorker = AgentRuntimeStopWorker { failure ->
         AndroidAgentLogger.warn("Runtime stop failed: type=${failure.safeLogType()}")
     }
@@ -153,10 +154,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         // and pending choices; a replacement service must not receive a deferred global stop.
         destroyed = true
         val retiring = sessions.snapshot()
+        retiring.forEach { it.signalStop() }
         // Service destruction also runs on Main. Drain accepted stop work independently of
         // the lifecycle; neither child coordination nor resource cancellation may block Main.
         stopWorker.close(retiring.map { session ->
             {
+                session.controller.cancel()
                 try {
                     AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.USER_CANCEL)
                 } finally {
@@ -264,10 +267,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                             val questionId = data.getString("question_id").orEmpty()
                             val toolCallId = data.getString("tool_call_id").orEmpty()
                             require(listOf(conversationId, runId, questionId, toolCallId).all { it.isNotBlank() && it.length <= 1024 })
-                            val session = sessions.get(runId)
-                            if (session == null) io.github.mangi.eta.agent.question.AgentQuestionSnapshot(
-                                conversationId, runId, questionId, toolCallId, io.github.mangi.eta.agent.question.AgentQuestionStatus.Interrupted)
-                            else session.questionSnapshot(conversationId, questionId, toolCallId)
+                            AgentQuestionAuthority.query(sessions, questionLedger,
+                                conversationId, runId, questionId, toolCallId)
                         }.getOrNull()
                         runCatching { reply.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_QUESTION_RESPONSE).apply {
                             this.data = AgentRuntimeWire.questionSnapshotBundle(data, snapshot)
@@ -397,11 +398,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         replyTo: Messenger? = null,
     ) {
         sessions.get(request.runId)?.let { previous ->
-            AgentChildRunControl.terminate(previous, AgentChildControlPolicy.Reason.SETTINGS_CHANGED)
-            previous.cancel("已被同一任务的新请求替换")
+            previous.signalStop()
+            stopWorker.submit(previous) {
+                previous.controller.cancel()
+                try { AgentChildRunControl.terminate(previous, AgentChildControlPolicy.Reason.SETTINGS_CHANGED) }
+                finally { previous.cancel("已被同一任务的新请求替换") }
+            }
         }
         val session = AgentRuntimeSession(
             runId = request.runId,
+            questionLedger = questionLedger,
+            terminalWork = { action ->
+                if (Looper.myLooper() == Looper.getMainLooper()) thread(name = "eta-question-seal", block = action)
+                else action()
+                Unit
+            },
             eventSink = { event -> sendEventTo(replyTo, event, request.runId) },
             resultSink = { result -> sendResultTo(replyTo, result) },
         )
@@ -410,7 +421,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val runLease = AgentRuntimeRunLease.create(request.runId)
         val executionHeld = AgentExecutionService.acquire(
             this, runLease.id, allowBoundFallback = allowBoundFallback,
-        ) { session.cancel("已停止") }
+        ) {
+            session.signalStop()
+            stopWorker.submit(session) {
+                session.controller.cancel()
+                session.cancel("已停止")
+            }
+        }
         if (!executionHeld && (!allowBoundFallback || AgentExecutionService.backupMaintenance)) {
             session.complete(AgentRuntimeWire.RunResult(
                 runId = request.runId, ok = false, content = "",
@@ -841,18 +858,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val session = sessions.get(runId) ?: return
         // Capture this exact session before leaving Main; a delayed stop must never re-resolve
         // runId and cancel a replacement. Blocking cancellation used to starve UI watchdogs.
+        session.signalStop()
+        if (overlaySession === session && session.terminalResult == null) {
+            state.value = state.value.copy(status = AgentOverlayStatus.Stopping)
+        }
         stopWorker.submit(session) {
             if (!session.isTerminal) {
-                try {
-                    AgentChildRunControl.terminate(session, reason)
-                } finally {
-                    val accepted = session.requestStop()
-                    if (accepted) mainHandler.post {
-                        if (!destroyed && overlaySession === session && session.terminalResult == null) {
-                            state.value = state.value.copy(status = AgentOverlayStatus.Stopping)
-                        }
-                    }
-                }
+                // Wake ask_user before a slow child stop or terminal/file work.
+                session.controller.cancel()
+                session.requestStop()
+                AgentChildRunControl.terminate(session, reason)
             }
         }
     }
