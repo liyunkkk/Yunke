@@ -93,6 +93,8 @@ internal fun AgentChatScreen(
             onOpenBrowser = { onAction(AgentChatAction.OpenBrowser) },
             onEditAssistant = { id -> onAction(AgentChatAction.EditAssistant(id)) },
             onAssistantSelected = { id -> onAction(AgentChatAction.AssistantSelected(id)) },
+            gptSpeedMode = state.gptSpeedMode,
+            onCycleGptSpeedMode = { onAction(AgentChatAction.CycleGptSpeedMode) },
             scrollToMessageId = scrollToMessageId,
             onScrollToMessageConsumed = onScrollToMessageConsumed,
             modifier = modifier,

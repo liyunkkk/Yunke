@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.model
 import androidx.compose.runtime.Immutable
 import io.github.mangi.eta.agent.model.AgentFileReference
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ReasoningEffort
 
 @Immutable
@@ -53,6 +54,11 @@ internal data class AgentChatUiState(
     val selectedContextTaskId: String? = null,
     /** False means metadata/preview only; persistence must not replace its stored content. */
     val conversationContentLoaded: Boolean = true,
+    /**
+     * GPT 速度档位。会话临时真值（含模型切换重置，不持久化）由 AppState 路持有，
+     * UI 只读取渲染并派发切换事件，不本地假切状态。
+     */
+    val gptSpeedMode: GptSpeedMode = GptSpeedMode.NORMAL,
 )
 
 @Immutable

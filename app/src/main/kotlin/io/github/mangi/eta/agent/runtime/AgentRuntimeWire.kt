@@ -10,6 +10,7 @@ import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentContextCompactor
 import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomHeader
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ReasoningEffort
 import java.io.Closeable
@@ -122,6 +123,7 @@ internal object AgentRuntimeWire {
     private const val KEY_SUPPORTS_VISION = "supports_vision"
     private const val KEY_SUPPORTS_VIDEO = "supports_video"
     private const val KEY_REASONING_EFFORT = "reasoning_effort"
+    private const val KEY_GPT_SPEED_MODE = "gpt_speed_mode"
     private const val KEY_REASONING_CAPABILITIES_JSON = "reasoning_capabilities_json"
     private const val KEY_EXTRA_BODY_JSON = "extra_body_json"
     private const val KEY_CUSTOM_HEADERS_JSON = "custom_headers_json"
@@ -326,6 +328,7 @@ internal object AgentRuntimeWire {
         putBoolean(KEY_SUPPORTS_VISION, request.config.supportsVision)
         putBoolean(KEY_SUPPORTS_VIDEO, request.config.supportsVideo)
         putString(KEY_REASONING_EFFORT, request.config.effectiveReasoningEffort.wireValue)
+        request.config.gptSpeedMode?.let { putString(KEY_GPT_SPEED_MODE, it.name) }
         request.config.reasoningCapabilities?.let {
             putString(KEY_REASONING_CAPABILITIES_JSON, json.encodeToString(it))
         }
@@ -465,7 +468,10 @@ internal object AgentRuntimeWire {
                 ),
                 extraBodyJson = bundle.getString(KEY_EXTRA_BODY_JSON).orEmpty(),
                 customHeaders = decodeCustomHeaders(bundle.getString(KEY_CUSTOM_HEADERS_JSON)),
-                customBody = decodeCustomBody(bundle.getString(KEY_CUSTOM_BODY_JSON))
+                customBody = decodeCustomBody(bundle.getString(KEY_CUSTOM_BODY_JSON)),
+                gptSpeedMode = bundle.getString(KEY_GPT_SPEED_MODE)?.let { name ->
+                    GptSpeedMode.entries.firstOrNull { it.name == name }
+                },
             ),
             history = AgentRuntimeHistoryTransfer.readFromBundle(bundle),
             images = images,
