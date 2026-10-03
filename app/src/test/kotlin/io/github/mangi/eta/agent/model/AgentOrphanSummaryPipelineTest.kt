@@ -93,7 +93,7 @@ class AgentOrphanSummaryPipelineTest {
             AgentModelClient.ConversationMessage("assistant", toolCallsJson = "[{\"id\":\"paired\",\"type\":\"function\",\"function\":{\"name\":\"list_directory\",\"arguments\":\"{}\"}}]"),
             AgentModelClient.ConversationMessage("tool", "PAIRED_RESULT", toolCallId = "paired"),
             AgentModelClient.ConversationMessage("user", "protected"),
-        )
+        ).map { AgentConversationCodec.fromJsonObject(AgentConversationCodec.toJsonObject(it)) }
         val replay = replay(history).copy(historyMessages = JSONArray().also { a ->
             history.take(3).forEach { a.put(AgentConversationCodec.toJsonObject(it)) }
         })
