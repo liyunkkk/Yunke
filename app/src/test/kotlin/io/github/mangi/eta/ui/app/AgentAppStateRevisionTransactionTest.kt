@@ -12,6 +12,7 @@ import io.github.mangi.eta.ui.model.*
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -120,19 +121,25 @@ class AgentAppStateRevisionTransactionTest {
             { f.app.deleteMessageTurn("assistant-h-1") },
             { f.app.branchConversation("assistant-h-1") },
         )) {
-            operation(); f.settle()
+            operation()
+            assertTrue(f.busy())
+            f.settle()
             assertEquals(before, f.state())
             assertEquals(setOf(f.id), f.conversationIds())
         }
         File(f.archiveDir(f.id), "${f.bId}.json").delete()
-        f.app.beginMessageEdit("user-h"); f.settle()
+        f.app.beginMessageEdit("user-h")
+        assertTrue(f.busy())
+        f.settle()
         assertEquals(before, f.state())
     }
 
     @Test fun missingRetainedARejectsBranchAndCleansUnpublishedScope() = fixture { f ->
         val before = f.state()
         File(f.archiveDir(f.id), "${f.aId}.json").delete()
-        f.app.branchConversation("assistant-h-1"); f.settle()
+        f.app.branchConversation("assistant-h-1")
+        assertTrue(f.busy())
+        f.settle()
         assertEquals(before, f.state())
         assertEquals(setOf(f.id), f.conversationIds())
         f.assertOnlySourceArchive()
@@ -141,7 +148,9 @@ class AgentAppStateRevisionTransactionTest {
     @Test fun corruptRetainedARejectsBranchWithoutPublishing() = fixture { f ->
         val before = f.state()
         File(f.archiveDir(f.id), "${f.aId}.sha256").writeText("0".repeat(64))
-        f.app.branchConversation("assistant-h-1"); f.settle()
+        f.app.branchConversation("assistant-h-1")
+        assertTrue(f.busy())
+        f.settle()
         assertEquals(before, f.state())
         assertEquals(setOf(f.id), f.conversationIds())
         f.assertOnlySourceArchive()
@@ -249,6 +258,8 @@ class AgentAppStateRevisionTransactionTest {
         init {
             (get(app, "persistenceQueue\$delegate") as Lazy<*>).value
             set(app, "scope", revisionScope)
+            // The cancelled startup scope skips recovery's finally; simulate completed startup recovery.
+            (get(app, "runtimeRecoveryInProgress") as AtomicBoolean).set(false)
             val provider = OpenAiCompatibleProviderSetting("revision-provider", "Test", "https://example.org/v1",
                 models = listOf(Model("m", "gpt-5", "Model", contextWindow = 100000)))
             call(app, "updateSelectionProviders", listOf(provider))
