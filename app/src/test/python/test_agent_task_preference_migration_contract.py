@@ -3,7 +3,7 @@
 Guards wiring only; behaviour is covered by the Robolectric/JVM tests. No Android SDK needed.
 
 Confirmed local facts this pins down:
-- ``AgentTaskSurface.stored()`` already defaults a missing key (and unreadable values) to
+- ``AgentTaskSurface.stored()`` already defaults a missing key (and unknown string values) to
   FOREGROUND, so the only value worth rewriting is a stored, legal ``"ask"``.
 - The migration is a one-shot keyed by an independent, fixed marker: never a forced write on
   every launch, never a version-code reset, never a permanent getter clamp.

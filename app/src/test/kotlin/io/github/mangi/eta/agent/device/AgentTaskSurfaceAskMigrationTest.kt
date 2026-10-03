@@ -123,15 +123,20 @@ class AgentTaskSurfaceAskMigrationTest {
     }
 
     @Test
-    fun `failed commit is reported and the migration stays retryable`() {
+    fun `rejected commit is reported and a later successful attempt migrates`() {
         val storage = app.getSharedPreferences("surface-migration-fail-${UUID.randomUUID()}", Context.MODE_PRIVATE)
         storage.edit().putString(AgentTaskSurface.PREF_KEY, AgentTaskSurfaceMode.ASK.wire).commit()
         withLocalStorage(RejectingCommit(storage)) {
             assertFalse(AgentTaskSurface.migrateAskToForegroundOnce())
         }
-        // commit 报告失败：标记没有持久化为“已完成”，下次启动会重试。
+        // 此假存储没有发布 Editor 的修改；先核验返回失败且原始值仍在。
         assertFalse(marked(storage))
-        assertEquals(AgentTaskSurfaceMode.ASK, storage.getString(AgentTaskSurface.PREF_KEY, null))
+        assertEquals(AgentTaskSurfaceMode.ASK.wire, storage.getString(AgentTaskSurface.PREF_KEY, null))
+        withLocalStorage(storage) {
+            assertTrue(AgentTaskSurface.migrateAskToForegroundOnce())
+            assertTrue(marked(storage))
+            assertEquals(AgentTaskSurfaceMode.FOREGROUND.wire, storage.getString(AgentTaskSurface.PREF_KEY, null))
+        }
     }
 
     @Test
@@ -156,7 +161,7 @@ class AgentTaskSurfaceAskMigrationTest {
         }
     }
 
-    /** 提交被拒绝的存储：写入会更新内存，但 commit() 报告失败。 */
+    /** 只暂存 Editor 写入并拒绝提交；不模拟真实 Android 已更新可读内存、但落盘失败的情况。 */
     private class RejectingCommit(private val real: SharedPreferences) : SharedPreferences by real {
         override fun edit(): SharedPreferences.Editor {
             val delegate = real.edit()

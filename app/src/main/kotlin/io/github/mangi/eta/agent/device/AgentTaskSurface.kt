@@ -95,13 +95,13 @@ internal object AgentTaskSurface {
      * - 只有本地存储值恰好是 "ask" 才改写；缺键、前台、后台都原样保留，但仍写入
      *   一次性标记，表示该安装已经检查过，避免用户以后重新选择 ASK 时才被迁移。
      * - 原始值直接从同一份本地配置读取；读不出来（类型异常）时本次不算检查成功，
-     *   不写标记并返回 false，留待下次启动重试。
+     *   不写标记并返回 false，留待后续检查重试。
      * - 标记与值写在同一个 editor 里一次提交。commit() 返回 false 时不能宣告完成
-     *   （内存可能已被改动但没有持久化），返回 false 以便重试，也不会把值单独写坏。
+     *   （内存可能已被改动但未确认持久化）；冷启动重载后若仍无标记，才会再尝试。
      * - 只在 [Prefs.initLocal] 与备份恢复之后触发，早于任何 `stored`/`effective` 读取；
      *   标记存在时直接返回，所以迁移后用户重新选择的 ASK/后台会被后续启动与升级保留。
      *
-     * @return 迁移是否已完成并落盘；false 表示本次未完成，下次启动会重试。
+     * @return 本次是否确认完成；false 表示未确认落盘，不保证同进程立刻重试。
      */
     fun migrateAskToForegroundOnce(): Boolean {
         val prefs = Prefs.localAgentPreferences() ?: return false
@@ -116,7 +116,7 @@ internal object AgentTaskSurface {
         if (stored == AgentTaskSurfaceMode.ASK.wire) {
             editor.putString(PREF_KEY, AgentTaskSurfaceMode.FOREGROUND.wire)
         }
-        // 标记与值同一次提交；失败时两者都未确认落盘，返回 false 留待下次启动重试。
+        // 标记与值同一次提交；返回 false 时只能说未确认落盘，不能断言内存仍未改变。
         return editor.commit()
     }
 
