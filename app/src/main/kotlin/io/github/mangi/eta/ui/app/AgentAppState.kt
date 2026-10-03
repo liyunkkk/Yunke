@@ -1695,19 +1695,29 @@ internal class AgentAppState(
         if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.messageEdit != null) cancelMessageEdit()
         if (!beginNewSubAgentDraft()) return
+        val conversationId = newConversationId()
+        if (!bindSubAgentDraft(conversationId)) return
+        // A pending lazy selection must not replace the explicitly created conversation.
+        conversationSelectionVersion += 1
+        conversationSelectionJob?.cancel()
         fileAttachmentOwnerVersion += 1
-        selectedConversationId = null
+        selectedConversationId = conversationId
         pendingNewConversationFolderId = selectedFolderId
         homeState = newDraftChatState()
         rememberModelReasoningEffort(homeState.providerId, homeState.modelId, homeState.reasoningEffort)
         billedOverheadConversationId = null
         billedOverheadTokens = null
         conversationPaneState = conversationPaneState.copy(
-            selectedConversationId = null,
+            selectedConversationId = conversationId,
             searchQuery = "",
         )
+        // Explicit new conversations exist before their first message. Startup/deletion
+        // placeholders still use null IDs and are not automatically added to history.
+        updateConversation(conversationId, homeState)
+        assignPendingFolder(conversationId)
         restoreConversationRuntimeModel()
         refreshConversationSummaries()
+        persistConversations()
     }
 
     fun selectFolder(folderId: String?) {
