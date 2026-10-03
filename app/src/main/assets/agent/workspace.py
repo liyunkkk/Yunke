@@ -31,7 +31,7 @@ def require(condition, code):
         raise ValueError(code)
 
 
-def git(root, *args):
+def git(root, *args, strip=True):
     env = os.environ.copy()
     for key in list(env):
         if key.startswith('GIT_'):
@@ -42,7 +42,8 @@ def git(root, *args):
                        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)
     require(p.returncode == 0, 'GIT_OPERATION_FAILED')
     require(len(p.stdout) <= 2 * 1024 * 1024, 'WORKSPACE_OUTPUT_TOO_LARGE')
-    return p.stdout.decode('utf-8', errors='replace').strip()
+    text = p.stdout.decode('utf-8', errors='replace')
+    return text.strip() if strip else text
 
 
 def project_path(raw):
@@ -318,6 +319,53 @@ def workspace_tree_exists(root, record):
         return False
 
 
+def implementation_evidence(root, record):
+    """Recomputed Git evidence, never a model assertion or a persisted verdict.
+
+    It proves only a clean, nonempty committed artifact, NOT functional completion.
+    Path samples are independently bounded so wide diffs fit the terminal protocol.
+    """
+    base, commit = record.get('base'), record.get('commit')
+    evidence = {'schema_version': 1, 'source': 'runtime_git', 'workspace_id': record['id'],
+                'base_commit': base, 'artifact_commit': commit, 'net_diff_verified': False,
+                'base_is_ancestor': False, 'changed_file_count': 0, 'changed_files': [],
+                'changed_files_truncated': False, 'clean_worktree': False, 'head_matches_commit': False}
+    if not valid_commit(root, base) or not valid_commit(root, commit):
+        return evidence
+    try:
+        evidence['base_is_ancestor'] = git(root, 'merge-base', base, commit) == base
+        names = git(root, 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
+                    '--name-only', '-z', base, commit, '--', '.', ':(exclude).agent', strip=False)
+        files = [name for name in names.split('\0') if name]
+        evidence['net_diff_verified'] = True
+        evidence['changed_file_count'] = len(files)
+        budget = 0
+        for name in files[:20]:
+            size = escaped(name)
+            if budget + size > 1200:
+                break
+            evidence['changed_files'].append(name)
+            budget += size
+        evidence['changed_files_truncated'] = len(evidence['changed_files']) < len(files)
+        if workspace_tree_exists(root, record):
+            tree = tree_path(root, record)
+            evidence['clean_worktree'] = clean(tree)
+            evidence['head_matches_commit'] = git(tree, 'rev-parse', 'HEAD') == commit
+    except ValueError:
+        evidence['net_diff_verified'] = False
+    return evidence
+
+
+def implementation_blocker(evidence):
+    if not evidence['net_diff_verified'] or not evidence['base_is_ancestor']:
+        return 'IMPLEMENTATION_EVIDENCE_INVALID'
+    if evidence['changed_file_count'] == 0:
+        return 'NO_IMPLEMENTATION_CHANGES'
+    if not evidence['clean_worktree'] or not evidence['head_matches_commit']:
+        return 'IMPLEMENTATION_EVIDENCE_INVALID'
+    return None
+
+
 def merge_blockers(root, record):
     """Complete, read-only merge preconditions; never touch uncommitted work."""
     tree = tree_path(root, record)
@@ -343,6 +391,10 @@ def merge_blockers(root, record):
         blockers.append('PROJECT_MOVED_REVIEW_AGAIN')
     if exists and commit_valid and git(tree, 'rev-parse', 'HEAD') != record['commit']:
         blockers.append('WORKSPACE_CHANGED')
+    if commit_required and exists and base_valid and commit_valid:
+        artifact_blocker = implementation_blocker(implementation_evidence(root, record))
+        if artifact_blocker and artifact_blocker not in blockers:
+            blockers.append(artifact_blocker)
     return blockers
 
 
@@ -411,6 +463,12 @@ def summary(root, record):
         diff = git(tree, 'diff', '--no-ext-diff', '--no-textconv', '--stat', record['base'])
         out['diff_stat'] = diff[:2000]
     out.update(recovery(root, record))
+    out['artifact_evidence'] = implementation_evidence(root, record)
+    out['acceptance_verified'] = False  # Git cannot verify the user's business goal.
+    out['delivery_state'] = ('artifact_ready_pending_review' if record['state'] == 'ready' and
+                             implementation_blocker(out['artifact_evidence']) is None else
+                             'no_changes' if record.get('delivery_failure_code') == 'NO_IMPLEMENTATION_CHANGES' else
+                             'unverified')
     return out
 
 
@@ -545,10 +603,22 @@ def locked(root, args):
         return {'ok': True, 'id': record['id']}
     if action == 'seal':
         require(record['state'] == 'editing' and time.time() <= record.get('lease_until', 0), 'WORKSPACE_NOT_EDITING')
+        require(workspace_tree_exists(root, record), 'WORKSPACE_TREE_INVALID')
+        require(valid_commit(root, record.get('base')), 'WORKSPACE_BASE_INVALID')
         git(tree, 'add', '-A', '--', '.', ':(exclude).agent')
-        if git(tree, 'diff', '--cached', '--name-only'):
+        if git(tree, 'diff', '--cached', '--name-only', '--', '.', ':(exclude).agent'):
             git(tree, '-c', 'user.name=Eta Agent', '-c', 'user.email=agent@localhost', 'commit', '-m', 'Agent implementation')
-        record.update(state='ready', commit=git(tree, 'rev-parse', 'HEAD'), reviewed=False)
+        record.update(commit=git(tree, 'rev-parse', 'HEAD'), reviewed=False)
+        evidence = implementation_evidence(root, record)
+        blocker = implementation_blocker(evidence)
+        if blocker:
+            record.update(state='failed', delivery_failure_code=blocker)
+            save(root, record)
+            raise Refused(blocker, artifact_evidence=evidence, delivery_state='no_changes' if
+                          blocker == 'NO_IMPLEMENTATION_CHANGES' else 'unverified',
+                          acceptance_verified=False, next_step='inspect retained worktree; no automatic retry')
+        record.update(state='ready')
+        record.pop('delivery_failure_code', None)
         save(root, record)
     elif action == 'fail':
         if record['state'] in ('editing', 'ready'):
@@ -557,6 +627,9 @@ def locked(root, args):
     elif action == 'begin_review':
         require(record['state'] == 'ready' and clean(tree), 'WORKSPACE_NOT_READY')
         require(git(tree, 'rev-parse', 'HEAD') == record['commit'], 'WORKSPACE_CHANGED')
+        blocker = implementation_blocker(implementation_evidence(root, record))
+        if blocker:
+            raise Refused(blocker)
         record.update(state='reviewing', reviewed=False, lease_until=time.time() + 420)
         save(root, record)
     elif action == 'end_review':

@@ -115,6 +115,24 @@ class ChildGroupReplacementTest {
         assertEquals("inspect retained worktree", archived.getString("next_step"))
     }
 
+    @Test fun archivePreservesBoundedGitEvidenceSeparateFromModelClaims() {
+        val method = AgentChildTaskGroups.javaClass.declaredMethods.single { it.name == "archiveSnapshot" }
+            .apply { isAccessible = true }
+        val evidence = JSONObject().put("base_commit", "a".repeat(40)).put("artifact_commit", "b".repeat(40))
+            .put("changed_file_count", 2)
+        val input = snapshot().put("status", "completed").put("role", "implementation")
+            .put("delivery_state", "artifact_ready_pending_review").put("artifact_verified", true)
+            .put("artifact_evidence", evidence).put("acceptance_verified", false)
+            .put("model_report_unverified", "model-claim ".repeat(600))
+        val archived = JSONObject(method.invoke(AgentChildTaskGroups, input) as String)
+        assertEquals("artifact_ready_pending_review", archived.getString("delivery_state"))
+        assertTrue(archived.getBoolean("artifact_verified"))
+        assertFalse(archived.getBoolean("acceptance_verified"))
+        assertEquals(evidence.toString(), archived.getJSONObject("artifact_evidence").toString())
+        assertTrue(archived.getBoolean("model_report_unverified_truncated"))
+        assertEquals(2048, archived.getString("model_report_unverified").length)
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun groups() = AgentChildTaskGroups.javaClass.getDeclaredField("groups").apply { isAccessible = true }
         .get(AgentChildTaskGroups) as MutableMap<String, Any>

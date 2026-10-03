@@ -53,6 +53,8 @@ internal object SubAgentErrorHints {
         "WORKSPACE_TREE_INVALID" to "工作区目录不是对应的 Git 工作树，merge 未执行。先 inspect 核对，不要从父项目推断工作树已完成。",
         "WORKSPACE_BASE_INVALID" to "工作区记录的 base 缺失、非法或不再是有效提交，merge 未执行；先 inspect 核对记录，不要编造提交号。",
         "WORKSPACE_COMMIT_INVALID" to "工作区记录的 commit 缺失、非法或不再是有效提交，merge 未执行；先 inspect 核对实际改动，不要猜测 HEAD 或自动合并。",
+        "NO_IMPLEMENTATION_CHANGES" to "实现子任务没有相对基线的有效净改动，不能报已交付。工作树保留；先 inspect 检查，若确实无需修改，由主代理明确说明理由，不自动重试或生成凑数提交。",
+        "IMPLEMENTATION_EVIDENCE_INVALID" to "实现产物回执缺失、过期或与真实工作树不符，未认定完成。先 inspect 核对 base/commit/diff 和未提交改动；不要相信模型的完成声明。",
         "WORKSPACE_NOT_READY" to "工作区不在可操作状态（实现任务未完成、失败工作树没重新 ready，或工作树有未提交改动）。先 inspect 看 state 和 merge_blocked_by，再按 allowed_actions 处理。",
     )
 

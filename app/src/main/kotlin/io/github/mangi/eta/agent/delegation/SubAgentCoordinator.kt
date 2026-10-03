@@ -62,6 +62,9 @@ internal class SubAgentCoordinator(
         @Volatile var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
         @Volatile var leaseRenewal: java.util.concurrent.ScheduledFuture<*>? = null
         @Volatile var workspacePath = ""
+        @Volatile var workspaceBase = ""
+        @Volatile var artifactEvidence: JSONObject? = null
+        @Volatile var modelReport = ""
         @Volatile var workspaceLeaseOpen = false
         @Volatile var renewing = false
         @Volatile var executing = false
@@ -348,7 +351,7 @@ internal class SubAgentCoordinator(
                             if (t.workspaceId == null) {
                                 diagnostic(t, "workspace_prepare")
                                 val prepared = workspace!!.requireOperation(project, "prepare")
-                                synchronized(t) { t.workspaceId = prepared.getString("id"); t.workspacePath = prepared.getString("path"); t.workspaceOwnershipVerified = true; t.workspaceLeaseOpen = true }
+                                synchronized(t) { t.workspaceId = prepared.getString("id"); t.workspacePath = prepared.getString("path"); t.workspaceBase = prepared.optString("base"); t.workspaceOwnershipVerified = true; t.workspaceLeaseOpen = true }
                             }
                         } else if (workspaceId != null) {
                             diagnostic(t, "workspace_begin_review")
@@ -381,15 +384,28 @@ internal class SubAgentCoordinator(
                             // Never wait for a pause while holding the task monitor: resume,
                             // cancellation and snapshots all need it. Finalization waits below.
                             if (t.controller.isCancelled || t.state !in ACTIVE) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
-                            t.result = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
+                            val report = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
+                            if (role == "implementation") t.modelReport = report else t.result = report
                         }
                         awaitFinalization(t)
-                        if (role == "implementation") { diagnostic(t, "workspace_seal"); workspace!!.requireOperation(project, "seal", t.workspaceId) }
-                        else if (t.workspaceId != null) workspace!!.requireOperation(project, if (role == "review") "review" else "end_review", t.workspaceId)
+                        val implementationEvidence = if (role == "implementation") {
+                            diagnostic(t, "workspace_seal")
+                            workspace!!.sealImplementation(project, requireNotNull(t.workspaceId), t.workspaceBase, t.controller)
+                        } else {
+                            if (t.workspaceId != null) workspace!!.requireOperation(project, if (role == "review") "review" else "end_review", t.workspaceId)
+                            null
+                        }
                         t.workspaceLeaseOpen = false
                         t.controller.throwIfCancelled()
                         synchronized(t) {
-                            if (t.state == "running") { t.state = "completed"; t.journal.mark("completed", progress = true); diagnostic(t, "completed"); t.context.finish(t.state); changed() }
+                            t.controller.throwIfCancelled()
+                            if (t.state == "running") {
+                                if (role == "implementation") {
+                                    t.artifactEvidence = requireNotNull(implementationEvidence)
+                                    t.result = "已核验非空 Git 提交产物，等待独立审查；尚未验证业务接线、测试通过或用户目标完成。"
+                                }
+                                t.state = "completed"; t.journal.mark("completed", progress = true); diagnostic(t, "completed"); t.context.finish(t.state); changed()
+                            }
                         }
                     } catch (error: Exception) {
                         val interrupted = Thread.interrupted()
@@ -413,7 +429,11 @@ internal class SubAgentCoordinator(
                                         role == "video_generation" -> "VIDEO_GENERATION_FAILED"
                                         else -> "SUB_AGENT_FAILED"
                                     }
-                                    if (t.result.isBlank()) t.result = when {
+                                    if (role == "implementation" || t.result.isBlank()) t.result = when {
+                                        role == "implementation" && t.errorCode == SubAgentDeliveryEvidence.EMPTY ->
+                                            "未交付代码改动：相对任务基线的净 diff 为空。模型原回复仅保存在 model_report_unverified 字段；工作树保留，请 inspect 核对，不自动重试。"
+                                        role == "implementation" && error is WorkspaceOperationException ->
+                                            "实现产物未通过运行时核验（${t.errorCode}）；不能认定实现完成。工作树保留，先 inspect 核对，模型原回复不是交付证据。"
                                         error is ImageGenerationParameterException -> error.message.orEmpty()
                                         error is SubAgentContextLimitException -> "子代理上下文不足，自动压缩不可用或未能释放足够空间。请拆分任务；已有工作树改动保留。"
                                         // Built from runtime-owned fields only; no provider or tool text.
@@ -453,7 +473,7 @@ internal class SubAgentCoordinator(
                 val backend = requireNotNull(workspace)
                 if (task.state !in ACTIVE || stopping) return snapshot(task)
                 val prepared = backend.requireOperation(task.project, "prepare")
-                synchronized(task) { task.workspaceId = prepared.getString("id"); task.workspacePath = prepared.getString("path"); task.workspaceOwnershipVerified = true; task.workspaceLeaseOpen = true }
+                synchronized(task) { task.workspaceId = prepared.getString("id"); task.workspacePath = prepared.getString("path"); task.workspaceBase = prepared.optString("base"); task.workspaceOwnershipVerified = true; task.workspaceLeaseOpen = true }
                 renewWorkspaceLease(task)
             } catch (error: Exception) {
                 val code = (error as? WorkspaceOperationException)?.code ?: "WORKSPACE_PREPARE_FAILED"
@@ -637,6 +657,16 @@ internal class SubAgentCoordinator(
         JSONObject().put("ok", true).put("task_id", task.id).put("worker", task.worker + 1).put("agent_id", workerIds[task.worker]).put("agent_name", workerNames[task.worker])
             .put("model", model.model).put("model_display_name", model.modelDisplayName.ifBlank { model.model }).put("provider_id", model.providerId).put("provider_name", model.providerName)
             .put("status", task.state).put("result", task.result).put("partial_result", task.confirmedText.value()).put("partial_result_unverified", true)
+            .put("delivery_state", when {
+                task.role != "implementation" -> "not_applicable"
+                task.state == "completed" && task.artifactEvidence != null -> "artifact_ready_pending_review"
+                task.errorCode == SubAgentDeliveryEvidence.EMPTY -> "no_changes"
+                task.state in ACTIVE -> "pending"
+                else -> "unverified"
+            }).put("acceptance_verified", false)
+            .put("artifact_verified", task.role == "implementation" && task.state == "completed" && task.artifactEvidence != null)
+            .put("artifact_evidence", task.artifactEvidence?.let { JSONObject(it.toString()) } ?: JSONObject.NULL)
+            .put("model_report_unverified", task.modelReport)
             .put("execution_exited", !active(task)).put("stopping", stopping || (task.state !in ACTIVE && active(task))).put("pause_supported", task.role !in MEDIA)
             .put("pause_requested", paused || pendingPause).put("pause_confirmed", paused && task.boundaryReached && !task.preparing)
             .put("pause_source", if (pendingPause) "group" else if (!paused) "" else if (task.groupPauseEpoch != 0L) "group" else if (task.errorCode == "SUB_AGENT_MANUAL_PAUSE") "manual" else "supervision")
@@ -700,7 +730,7 @@ internal class SubAgentCoordinator(
         task.state in setOf("cancelled", "timed_out") && task.workspaceId != null ->
             "工作树改动已保留：先用 manage_agent_workspace inspect 查看；不能用 replace_task_id 替换带工作区的任务。"
         task.state == "completed" && task.workspaceId != null ->
-            "实现工作树已封存：先用 manage_agent_workspace inspect 确认 merge_blocked_by，再让 review 子任务在该 workspace_id 上完成审查，之后才能 ff-only merge。"
+            "运行已结束；completed 不代表业务验收。先用 manage_agent_workspace inspect 核对 artifact_evidence、实际 diff 与 merge_blocked_by，独立审查逐项确认任务要求后才可 ff-only merge；未运行测试不得称测试通过。"
         else -> ""
     }
     /** 某个已选 worker 能合法承担的 role；只用于解释拒绝，不做静默改派。 */

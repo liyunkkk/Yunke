@@ -95,6 +95,7 @@ class WorkspaceTest(unittest.TestCase):
 
     def test_cancel_after_review_completion_invalidates_review_marker(self):
         record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='original changed')
         self.op('seal', record)
         self.op('begin_review', record)
         self.op('review', record)
@@ -123,6 +124,7 @@ class WorkspaceTest(unittest.TestCase):
             self.op('prepare')
         w.git(self.root, 'restore', '.')
         record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='original changed')
         self.op('seal', record)
         self.op('begin_review', record)
         self.op('review', record)
@@ -223,6 +225,7 @@ class WorkspaceTest(unittest.TestCase):
     def reviewed_workspace(self):
         record = self.op('prepare')
         self.op('write', record, path='main.txt', content='child commit')
+        self.op('write', record, path='receipt-marker.txt', content=record['id'])
         self.op('seal', record)
         self.op('begin_review', record)
         self.op('review', record)
@@ -347,6 +350,118 @@ class WorkspaceTest(unittest.TestCase):
         self.assertEqual('failed', self.op('inspect', record)['state'])
         self.assertTrue(Path(record['path']).exists())
         self.op('discard', record)
+
+    def test_empty_implementation_fails_and_preserves_parent_and_workspace(self):
+        record = self.op('prepare')
+        base = w.git(self.root, 'rev-parse', 'HEAD')
+        refusal = self.refusal('seal', record)
+        self.assertEqual('NO_IMPLEMENTATION_CHANGES', str(refusal))
+        self.assertEqual(0, refusal.details['artifact_evidence']['changed_file_count'])
+        view = self.op('inspect', record)
+        self.assertEqual('failed', view['state'])
+        self.assertEqual('no_changes', view['delivery_state'])
+        self.assertFalse(view['acceptance_verified'])
+        self.assertFalse(view['merge_ready'])
+        self.assertTrue(Path(record['path']).is_dir())
+        self.assertEqual(base, w.git(self.root, 'rev-parse', 'HEAD'))
+        self.assertEqual('original', (self.root / 'main.txt').read_text())
+        self.assertEqual(['inspect', 'discard'], view['allowed_actions'])
+
+    def test_edit_then_restore_or_new_file_then_delete_has_no_artifact(self):
+        for mode in ('restore', 'delete'):
+            with self.subTest(mode=mode):
+                record = self.op('prepare')
+                if mode == 'restore':
+                    self.op('write', record, path='main.txt', content='changed')
+                    self.op('write', record, path='main.txt', content='original')
+                else:
+                    self.op('write', record, path='new.txt', content='changed')
+                    self.op('delete', record, path='new.txt')
+                self.assertEqual('NO_IMPLEMENTATION_CHANGES', str(self.refusal('seal', record)))
+                self.op('discard', record)
+
+    def test_empty_commits_and_committed_reverts_do_not_count_as_delivery(self):
+        for mode in ('empty_commit', 'revert'):
+            with self.subTest(mode=mode):
+                record = self.op('prepare'); tree = Path(record['path'])
+                if mode == 'revert':
+                    (tree / 'main.txt').write_text('intermediate')
+                    w.git(tree, 'add', '.'); w.git(tree, 'commit', '-m', 'intermediate')
+                    (tree / 'main.txt').write_text('original')
+                    w.git(tree, 'add', '.'); w.git(tree, 'commit', '-m', 'undo')
+                else:
+                    w.git(tree, 'commit', '--allow-empty', '-m', 'no-op')
+                self.assertNotEqual(record['base'], w.git(tree, 'rev-parse', 'HEAD'))
+                self.assertEqual('NO_IMPLEMENTATION_CHANGES', str(self.refusal('seal', record)))
+                self.op('discard', record)
+
+    def test_runtime_metadata_alone_does_not_count_as_code_changes(self):
+        record = self.op('prepare'); tree = Path(record['path'])
+        (tree / '.agent').mkdir(); (tree / '.agent' / 'claim.txt').write_text('complete')
+        self.assertEqual('NO_IMPLEMENTATION_CHANGES', str(self.refusal('seal', record)))
+        self.assertEqual(record['base'], w.git(tree, 'rev-parse', 'HEAD'))
+
+    def test_real_committed_artifact_and_deletion_have_verifiable_receipts(self):
+        for mode in ('edit', 'delete'):
+            with self.subTest(mode=mode):
+                record = self.op('prepare')
+                if mode == 'edit': self.op('write', record, path='main.txt', content='original\n')
+                else: self.op('delete', record, path='main.txt')
+                view = self.op('seal', record); evidence = view['artifact_evidence']
+                self.assertEqual('artifact_ready_pending_review', view['delivery_state'])
+                self.assertEqual('ready', view['state'])
+                self.assertFalse(view['acceptance_verified'])
+                self.assertEqual(record['id'], evidence['workspace_id'])
+                self.assertNotEqual(evidence['base_commit'], evidence['artifact_commit'])
+                self.assertEqual(1, evidence['changed_file_count'])
+                self.assertEqual(['main.txt'], evidence['changed_files'])
+                self.assertTrue(all(evidence[k] for k in ('net_diff_verified', 'base_is_ancestor', 'clean_worktree', 'head_matches_commit')))
+                self.assertEqual(evidence, self.op('inspect', record)['artifact_evidence'])
+                self.assertEqual(record['base'], w.git(self.root, 'rev-parse', 'HEAD'))
+                self.op('discard', record)
+
+    def test_legacy_reviewed_empty_artifact_cannot_merge_or_begin_review(self):
+        for empty_commit in (False, True):
+            record = self.op('prepare'); tree = Path(record['path'])
+            if empty_commit: w.git(tree, 'commit', '--allow-empty', '-m', 'legacy empty')
+            saved = w.load(self.root, record['id'])
+            saved.update(state='ready', reviewed=True, commit=w.git(tree, 'rev-parse', 'HEAD'))
+            w.save(self.root, saved)
+            self.assert_merge_refused_without_parent_mutation(record, 'NO_IMPLEMENTATION_CHANGES')
+            self.assertEqual('NO_IMPLEMENTATION_CHANGES', str(self.refusal('begin_review', record)))
+            self.op('discard', record)
+
+    def test_artifact_paths_are_bounded_without_losing_total_count(self):
+        record = self.op('prepare'); tree = Path(record['path'])
+        for i in range(300):
+            (tree / (f'{i:04d}-' + '文' * 60 + '.txt')).write_text('x')
+        view = self.op('seal', record); evidence = view['artifact_evidence']
+        self.assertEqual(300, evidence['changed_file_count'])
+        self.assertLessEqual(len(evidence['changed_files']), 20)
+        self.assertTrue(evidence['changed_files_truncated'])
+        self.assertTrue(json.loads(w.response_line(view))['ok'])
+        self.assertLessEqual(w.units(w.response_line(view)), w.STDOUT_LIMIT)
+
+    def test_artifact_names_preserve_newlines_spaces_and_unicode(self):
+        record = self.op('prepare'); name = '  空格\nfile.txt'
+        (Path(record['path']) / name).write_text('x')
+        view = self.op('seal', record)
+        self.assertEqual([name], view['artifact_evidence']['changed_files'])
+
+    def test_inspect_does_not_trust_persisted_artifact_claims(self):
+        record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='changed')
+        self.op('seal', record)
+        saved = w.load(self.root, record['id'])
+        saved['artifact_evidence'] = {'source': 'forged', 'changed_file_count': 999}
+        w.save(self.root, saved)
+        evidence = self.op('inspect', record)['artifact_evidence']
+        self.assertEqual('runtime_git', evidence['source'])
+        self.assertEqual(1, evidence['changed_file_count'])
+        (Path(record['path']) / 'main.txt').write_text('uncommitted')
+        view = self.op('inspect', record)
+        self.assertFalse(view['artifact_evidence']['clean_worktree'])
+        self.assertNotEqual('artifact_ready_pending_review', view['delivery_state'])
 
     def test_renew_keeps_workspace_and_cannot_revive_finished_lease(self):
         record = self.op('prepare')
@@ -567,6 +682,7 @@ class WorkspaceTest(unittest.TestCase):
 
     def test_frozen_workspace_rejects_replace(self):
         record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='original changed')
         self.op('seal', record)
         with self.assertRaisesRegex(ValueError, 'WORKSPACE_FROZEN'):
             self.op('replace', record, path='main.txt', old_text='original', new_text='late')

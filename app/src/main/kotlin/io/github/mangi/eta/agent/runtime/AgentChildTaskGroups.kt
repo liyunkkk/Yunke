@@ -211,8 +211,8 @@ internal object AgentChildTaskGroups {
             "workspace_path", "workspace_ownership_verified", "review_required", "can_continue", "can_replace", "replace_reason",
             "continuation_count", "parallel_limit", "successor_task_id", "replaces_task_id", "context_usage",
             "pause_supported", "pause_requested", "pause_confirmed", "pause_source", "execution_exited",
-            "execution_stopped", "handoff_version", "partial_result_unverified", "stopping", "allowed_actions", "next_step", "browser_access").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
-        listOf("result", "partial_result").forEach { key ->
+            "execution_stopped", "handoff_version", "partial_result_unverified", "stopping", "allowed_actions", "next_step", "browser_access", "delivery_state", "artifact_verified", "artifact_evidence", "acceptance_verified").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
+        listOf("result", "partial_result", "model_report_unverified").forEach { key ->
             snapshot.put(key, json.optString(key).take(MAX_RESULT_CHARS))
             snapshot.put("${key}_truncated", json.optString(key).length > MAX_RESULT_CHARS)
         }
@@ -564,7 +564,7 @@ internal object AgentChildTaskGroups {
                 "list-$id", "get_task_result", JSONObject().put("task_id", id).toString())).content) }.getOrNull() ?: continue
             val item = JSONObject().put("task_id", id).put("status", json.optString("status"))
                 .put("role", json.optString("role")).put("agent_id", json.optString("agent_id"))
-            listOf("pause_requested", "pause_confirmed", "pause_source", "pause_supported", "can_continue", "archived", "stopping", "execution_exited", "execution_stopped")
+            listOf("pause_requested", "pause_confirmed", "pause_source", "pause_supported", "can_continue", "archived", "stopping", "execution_exited", "execution_stopped", "delivery_state", "artifact_verified", "acceptance_verified", "error_code", "workspace_id", "review_required", "allowed_actions", "next_step")
                 .forEach { key -> if (json.has(key)) item.put(key, json.get(key)) }
             synchronized(this) { replacedBy[id]?.predecessorId }?.let { item.put("replaces_task_id", it) }
             page.put(item)
