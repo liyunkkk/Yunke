@@ -2816,7 +2816,10 @@ internal class AgentAppState(
         } else {
             Prefs.Keys.AGENT_COMPRESS_ENDPOINT_MODE
         }
-        return AgentCompressionEndpoint.apply(compressed, prefs?.getString(endpointKey, null))
+        return AgentCompressionEndpoint.apply(compressed, prefs?.getString(endpointKey, null)).copy(
+            errorReconnectPolicy = fallback?.errorReconnectPolicy
+                ?: SettingsDataStore.settings().errorReconnectPolicy.persistedValue,
+        )
     }
 
     private fun launchConversationRun(
@@ -2934,6 +2937,7 @@ internal class AgentAppState(
                 ReasoningEffort.OFF
             }
             val config = runConfig.copy(
+                errorReconnectPolicy = SettingsDataStore.settings().errorReconnectPolicy.persistedValue,
                 terminalTools = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
                 browserTools = agentBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
                 deviceDirectTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
@@ -3882,7 +3886,7 @@ internal class AgentAppState(
         }
         replaceLatestAssistantWithNotice(
             runId,
-            if (retrying) SystemNoticeCode.RuntimeFailed else SystemNoticeCode.Stopped,
+            SystemNoticeCode.Stopped,
             detail = when {
                 imageGen -> "已停止本地生成等待并取消网络请求；服务端任务可能仍在处理或计费，不会自动重发。"
                 retrying -> "已停止等待接口重试"
@@ -4948,11 +4952,22 @@ internal class AgentAppState(
                 }
             }
 
+            is AgentEvent.ErrorReconnectChanged -> {
+                if (event.status == "running") {
+                    contextEstimateDiagnostics.clear(runId)
+                    revokeContextActual(runId)
+                }
+                updateRunTrace(runId) { messages ->
+                    runMessageProjector.reconnectChanged(runId, event, messages)
+                }
+            }
+
             is AgentEvent.RunFailed -> {
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
                     val finalizedText = runMessageProjector.finalizeText(runId, finalizedThinking)
-                    runMessageProjector.failRunningTools(event.reason, finalizedText)
+                    runMessageProjector.terminalFailure(runId, event.reason,
+                        runMessageProjector.failRunningTools(event.reason, finalizedText))
                 }
                 runMessageProjector.seal(runId)
             }
@@ -5216,7 +5231,7 @@ internal class AgentAppState(
         when {
             stoppedDuringRetry != null -> replaceLatestAssistantWithNotice(
                 runId,
-                if (stoppedDuringRetry) SystemNoticeCode.RuntimeFailed else SystemNoticeCode.Stopped,
+                SystemNoticeCode.Stopped,
                 detail = if (stoppedDuringRetry) "已停止等待接口重试" else null,
             )
             result.ok && (result.content.isNotBlank() || VirtualCompletionNotice.confirmed(result)) -> completeLatestAssistantMessage(
@@ -5450,9 +5465,16 @@ internal class AgentAppState(
         detail: String? = null,
     ) {
         updateMessages(runId) { messages ->
-            // Never replace partial or completed answer text with a terminal notice.
-            // The write boundary deduplicates notices and orders only this run's body.
-            messages + SystemNoticeMessageUi("interrupted-$runId", code, detail)
+            // Error details belong in a clickable marker, never in the answer body.
+            // Keep stop/control notices and the existing child-disposition flow intact.
+            when (code) {
+                SystemNoticeCode.RuntimeFailed -> runMessageProjector.terminalFailure(
+                    runId, detail.orEmpty(), messages,
+                )
+                SystemNoticeCode.Stopped -> runMessageProjector.runStopped(runId, messages) +
+                    SystemNoticeMessageUi("interrupted-$runId", code, detail)
+                else -> messages + SystemNoticeMessageUi("interrupted-$runId", code, detail)
+            }
         }
     }
 
