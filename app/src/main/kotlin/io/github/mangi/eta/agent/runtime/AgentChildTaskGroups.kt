@@ -211,7 +211,7 @@ internal object AgentChildTaskGroups {
             "workspace_path", "workspace_ownership_verified", "review_required", "can_continue", "can_replace", "replace_reason",
             "continuation_count", "parallel_limit", "successor_task_id", "replaces_task_id", "context_usage",
             "pause_supported", "pause_requested", "pause_confirmed", "pause_source", "execution_exited",
-            "execution_stopped", "handoff_version", "partial_result_unverified", "stopping", "allowed_actions", "next_step").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
+            "execution_stopped", "handoff_version", "partial_result_unverified", "stopping", "allowed_actions", "next_step", "browser_access").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
         listOf("result", "partial_result").forEach { key ->
             snapshot.put(key, json.optString(key).take(MAX_RESULT_CHARS))
             snapshot.put("${key}_truncated", json.optString(key).length > MAX_RESULT_CHARS)

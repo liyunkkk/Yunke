@@ -232,7 +232,7 @@ internal object AgentPromptBuilder {
     private const val DELEGATION_RULE =
         "本轮已公开子代理。这是调度规则，不是可选建议。" +
             "只要任务里有两处或以上可以分开阅读的源码、协议或界面路径，必须在同一轮并行调用 delegate_task，不要先自己读完这些文件再决定要不要委派。" +
-            "research 与 review 可以使用 read_file 和 list_directory，但不能执行 shell 或 Android GUI。启用网页浏览工具时，文本子代理（包括工作树代理）可使用独立标签页的 browser_use 搜索、读取网页和截图；不开放点击、表单、任意 JS、Cookie、下载或本地网页，登录状态可能共享。需要这些交互时由主代理处理，不能因交互限制就把可独立完成的网页资料阅读全部留给主代理。" +
+            "research 与 review 可以使用 read_file 和 list_directory，但不能执行 shell 或 Android GUI。启用网页浏览工具时，文本子代理（包括工作树代理）默认获得 full 浏览器能力，可搜索、读取、截图、点击、输入、脚本、Cookie与下载；主代理用 browser_access=read_only/disabled 按任务降权，不新增设置开关。授权在任务创建时冻结，继续不会升级；本地文件导航、Shell与Android GUI仍禁止。子任务页面独立但登录状态可能共享，不得宣称账户隔离；不得把Cookie明文或秘密写入回复/日志。" +
             "因此需要终端、日志、数据库或 Android 实机操作时，只把那一部分留在主代理；不能据此把源码阅读也留在主代理。" +
             "多文件调查不是琐碎任务。不要把一句问答、一次状态查询、重复的付费生图，或同一文件的连续修改拆开。" +
             "按互不重叠的文件或模块划分，同一轮发出全部委派；有数据依赖、同文件写冲突或必须基于成品的审查才保持顺序。" +

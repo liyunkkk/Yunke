@@ -214,7 +214,8 @@ internal class AgentRuntimeRunExecutor(
                     fun runTextChild(config: AgentModelClient.ModelConfig, prompt: String,
                         controller: AgentRunController, project: String, id: String?, writable: Boolean,
                         progress: (AgentEvent) -> Unit = {}): String {
-                        val browser = if (allowBrowser && currentPermissions().browserTools)
+                        val browser = if (io.github.mangi.eta.agent.browser.ChildBrowserPolicy.sessionAllowed(
+                                allowBrowser && currentPermissions().browserTools, controller.childBrowserAccess.wire))
                             ChildBrowserSession(appContext, controller) { allowBrowser && currentPermissions().browserTools }
                         else null
                         try {

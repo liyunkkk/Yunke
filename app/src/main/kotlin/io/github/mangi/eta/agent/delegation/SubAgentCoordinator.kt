@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.model.AgentImageGenerationOptions
 import io.github.mangi.eta.agent.model.ImageGenerationParameterException
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.browser.ChildBrowserAccess
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -52,7 +53,7 @@ internal class SubAgentCoordinator(
     private val callbacks = SubAgentCallbackDispatcher()
     private var resourcesReleased = false
 
-    private inner class Task(val id: String, val worker: Int, val role: String, val project: String, @Volatile var workspaceId: String? = null) {
+    private inner class Task(val id: String, val worker: Int, val role: String, val project: String, @Volatile var workspaceId: String? = null, val browserAccess: ChildBrowserAccess = ChildBrowserAccess.FULL) {
         @Volatile var workspaceOwnershipVerified = false
         lateinit var context: SubAgentContextTracker
         lateinit var clock: SubAgentExecutionClock
@@ -81,7 +82,7 @@ internal class SubAgentCoordinator(
         @Volatile var lastProgress = queuedAt
         @Volatile var warnedStall = false
         val dispatchGate = java.util.concurrent.CountDownLatch(1)
-        val controller = AgentRunController()
+        val controller = AgentRunController().also { check(it.freezeChildBrowserAccess(browserAccess)) }
         @Volatile var state = "queued"
             set(value) { field = value; refreshContextStatus() }
         @Volatile var result = ""
@@ -219,6 +220,8 @@ internal class SubAgentCoordinator(
         val task = synchronized(this) {
             if (closed || stopping) return errorResult("RUN_CLOSED")
             if (activeGroupPauseEpoch != 0L || pendingGroupPauses.get() > 0) return errorResult("TASK_GROUP_PAUSED")
+            val browserAccess = ChildBrowserAccess.fromArgs(args)
+                ?: return invalidArguments("browser_access 必须是 full/read_only/disabled 字符串；未创建任务。")
             val instruction = args.getString("task")
             val context = args.optString("context")
             require(instruction.isNotBlank() && instruction.length <= 12000 && context.length <= 20000) {
@@ -282,7 +285,7 @@ internal class SubAgentCoordinator(
                 if (predecessor.state != "failed" && predecessor.errorCode != "REPLACED_AFTER_BLOCK") return errorResult("REPLACEMENT_NOT_ALLOWED")
                 if (predecessor.executing || predecessor.renewing) return errorResult("REPLACE_PENDING_STOP")
             }
-            val t = Task(UUID.randomUUID().toString(), worker, role, project, workspaceId)
+            val t = Task(UUID.randomUUID().toString(), worker, role, project, workspaceId, browserAccess)
             t.predecessorId = predecessor?.id
             t.preparing = role == "implementation"
             val model = workers[worker]
@@ -638,7 +641,7 @@ internal class SubAgentCoordinator(
             .put("pause_requested", paused || pendingPause).put("pause_confirmed", paused && task.boundaryReached && !task.preparing)
             .put("pause_source", if (pendingPause) "group" else if (!paused) "" else if (task.groupPauseEpoch != 0L) "group" else if (task.errorCode == "SUB_AGENT_MANUAL_PAUSE") "manual" else "supervision")
             .put("context_usage", task.context.value.copy(isCompacting = task.state in ACTIVE && task.context.value.isCompacting).toJson())
-            .put("role", task.role).put("project", task.project).put("error_code", task.errorCode).put("workspace_id", task.workspaceId ?: JSONObject.NULL).put("workspace_path", task.workspacePath)
+            .put("browser_access", task.browserAccess.wire).put("role", task.role).put("project", task.project).put("error_code", task.errorCode).put("workspace_id", task.workspaceId ?: JSONObject.NULL).put("workspace_path", task.workspacePath)
             .put("workspace_ownership_verified", task.workspaceOwnershipVerified).put("review_required", true).put("can_continue", paused && !closed && !stopping)
             // Eligibility is not a promise that execution has stopped: a no-progress pause still
             // needs the explicit stop/handoff path. Terminal tasks finishing cleanup are not eligible.

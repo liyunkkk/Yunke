@@ -20,8 +20,14 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -51,6 +57,15 @@ class BrowserUseManager(
     /** App context for the session-scoped path resolver. Null disables it. */
     private val appContext: android.content.Context? = null,
     private val researchMode: Boolean = false,
+    /**
+     * [T-child-browser-interactive] Whether a research-mode child may click,
+     * run JS, use the JS dialogs/cookie tools and download files. Only
+     * `researchMode && childInteractive` enables interaction; the default
+     * false keeps the original read-only background behaviour. Ignored for the
+     * parent browser, which passes `researchMode = false` (already interactive).
+     */
+    private val childInteractive: Boolean = false,
+    private val childOwnerId: String? = null,
 ) {
     companion object {
         private const val TAG = "BrowserUseManager"
@@ -131,6 +146,28 @@ class BrowserUseManager(
         }
     }
 
+    /**
+     * [T-child-browser-interactive] Reply-only async transport for a research
+     * child tab. The exposed object has exactly `resolve`/`reject`; see
+     * [ChildAsyncReplyBridge]. Never installed for the parent (which keeps the
+     * legacy `__minis__` bridge) or for a read-only child (which has no bridge).
+     */
+    private val childAbortKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val childReplyBridge = ChildAsyncReplyBridge()
+    private val childReplyInterface = object {
+        @JavascriptInterface
+        fun resolve(fresh: String, result: String) = childReplyBridge.resolve(fresh, result)
+
+        @JavascriptInterface
+        fun reject(fresh: String, error: String) = childReplyBridge.reject(fresh, error)
+    }
+
+    /** Scope for fire-and-forget page→native reads with no tool call to await them. */
+    private val asyncScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** True for a research-mode child that must not mutate the page or write files. */
+    private val readOnlyChild: Boolean = researchMode && !childInteractive
+
     private val _currentURL = MutableStateFlow("")
     val currentURL: StateFlow<String> = _currentURL.asStateFlow()
 
@@ -189,6 +226,7 @@ class BrowserUseManager(
     private var asyncJsDeferred: CompletableDeferred<String>? = null
     private val asyncJsGate = Any()
     private var asyncJsRequestId = 0L
+    /** Parent reply ids retain the legacy numeric sequence; child replies use separate random string tokens. */
 
     /** JavaScript interface for async script result callbacks. */
     private val jsBridge = object {
@@ -214,35 +252,47 @@ class BrowserUseManager(
          * I/O downstream is fine, but don't touch the WebView from here.
          */
         @JavascriptInterface
-        fun saveBlobDownload(dataUrl: String, filename: String) {
-            if (dataUrl.length > 44 * 1024 * 1024) return
-            val comma = dataUrl.indexOf(',')
-            if (comma < 0 || !dataUrl.startsWith("data:")) {
-                Log.w(TAG, "blob download: malformed data URL (len=${dataUrl.length})")
-                return
-            }
-            val header = dataUrl.substring(5, comma)
-            val mime = header.substringBefore(';').ifEmpty { null }
-            val bytes = try {
-                if (header.endsWith(";base64")) {
-                    android.util.Base64.decode(dataUrl.substring(comma + 1), android.util.Base64.DEFAULT)
-                } else {
-                    // Non-base64 data: URL — payload is percent-encoded text.
-                    java.net.URLDecoder.decode(dataUrl.substring(comma + 1), "UTF-8")
-                        .toByteArray(Charsets.UTF_8)
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "blob download: payload decode failed: ${t.message}")
-                return
-            }
-            Log.i(TAG, "blob download decoded: $filename (${bytes.size} bytes, mime=$mime)")
-            onBlobDownloadData?.invoke(bytes, filename, mime)
-        }
+        fun saveBlobDownload(dataUrl: String, filename: String) = ingestBlobDataUrl(dataUrl, filename)
 
         @JavascriptInterface
         fun blobDownloadError(error: String) {
             Log.w(TAG, "blob download failed in page JS: $error")
         }
+    }
+
+    /**
+     * [T-child-browser-interactive] Decode a `data:`/blob FileReader data URL
+     * and hand the bytes to the pool's workspace saver. Shared by the parent
+     * bridge callback and the child-interactive reply channel so both keep the
+     * same 44 MiB cap; the decoded bytes are never returned to the page.
+     */
+    private fun ingestBlobDataUrl(dataUrl: String, filename: String) {
+        if (dataUrl.length > 44 * 1024 * 1024) return
+        val comma = dataUrl.indexOf(',')
+        if (comma < 0 || !dataUrl.startsWith("data:")) {
+            Log.w(TAG, "blob download: malformed data URL (len=${dataUrl.length})")
+            return
+        }
+        val header = dataUrl.substring(5, comma)
+        val mime = header.substringBefore(';').ifEmpty { null }
+        val bytes = try {
+            if (header.endsWith(";base64")) {
+                android.util.Base64.decode(dataUrl.substring(comma + 1), android.util.Base64.DEFAULT)
+            } else {
+                // Non-base64 data: URL — payload is percent-encoded text.
+                java.net.URLDecoder.decode(dataUrl.substring(comma + 1), "UTF-8")
+                    .toByteArray(Charsets.UTF_8)
+            }
+        } catch (t: Throwable) {
+            // A research child's payload/message is page-controlled; don't echo it.
+            if (researchMode) Log.w(TAG, "blob download: payload decode failed")
+            else Log.w(TAG, "blob_download_decode_failed")
+            return
+        }
+        // The filename is page-controlled too: log it for the parent only.
+        if (researchMode) Log.i(TAG, "child_blob_decoded: bytes=${bytes.size}")
+        else Log.i(TAG, "blob download decoded: $filename (${bytes.size} bytes, mime=$mime)")
+        onBlobDownloadData?.invoke(bytes, filename, mime)
     }
 
     init {
@@ -254,6 +304,12 @@ class BrowserUseManager(
                 setSupportMultipleWindows(false)
                 javaScriptCanOpenWindowsAutomatically = false
             }
+            // [T-child-browser-interactive] A child-interactive tab needs a way
+            // to hand an async result back to native, but the full parent bridge
+            // must never be exposed. The installed object has EXACTLY two
+            // callbacks (resolve/reject), each gated by an unguessable
+            // per-request token; a read-only child gets no bridge at all.
+            if (!readOnlyChild) webView.addJavascriptInterface(childReplyInterface, "__eta_child__")
         } else webView.addJavascriptInterface(jsBridge, "__minis__")
         setupWebViewClient()
         setupWebChromeClient()
@@ -261,8 +317,9 @@ class BrowserUseManager(
         // <a download>, unrenderable MIME types). Without a listener, WebView
         // silently drops these — the user taps "download" and nothing happens.
         webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, contentLength ->
-            if (researchMode) return@setDownloadListener
-            Log.i(TAG, "onDownloadStart: ${url.take(120)} mime=$mimetype len=$contentLength")
+            if (readOnlyChild) return@setDownloadListener
+            // Log size/type only: a download URL can carry query-string tokens.
+            Log.i(TAG, "download_started: bytes=$contentLength")
             when {
                 // blob: object URLs only exist inside the page — read via JS.
                 url.startsWith("blob:") -> fetchBlobDownload(url, contentDisposition, mimetype)
@@ -270,7 +327,7 @@ class BrowserUseManager(
                 // (java.net.URL can't fetch them in the pool's downloader).
                 url.startsWith("data:") -> {
                     val name = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimetype)
-                    jsBridge.saveBlobDownload(url, name)
+                    ingestBlobDataUrl(url, name)
                 }
                 else -> onDownloadStart?.invoke(url, userAgent, contentDisposition, mimetype, contentLength)
             }
@@ -296,12 +353,20 @@ class BrowserUseManager(
 
     /**
      * Read a blob: URL from inside the page's JS context and deliver its bytes
-     * through the `__minis__.saveBlobDownload` bridge. blob: object URLs are
-     * scoped to the page — they cannot be fetched from native code, so this
-     * injected fetch + FileReader round-trip is the only way to get the data.
+     * to the pool's workspace saver. blob: object URLs are scoped to the page —
+     * they cannot be fetched from native code, so this injected fetch +
+     * FileReader round-trip is the only way to get the data.
+     *
+     * The parent uses the legacy `__minis__.saveBlobDownload` bridge; a research
+     * child-interactive tab has no such bridge, so it hands the data URL back
+     * through the reply-only `__eta_child__` channel instead.
      */
     private fun fetchBlobDownload(blobUrl: String, contentDisposition: String?, mimeType: String?) {
         val guessedName = android.webkit.URLUtil.guessFileName(blobUrl, contentDisposition, mimeType)
+        if (researchMode) {
+            fetchChildBlobDownload(blobUrl, guessedName)
+            return
+        }
         val js = """
             (function() {
                 fetch(${JSONObject.quote(blobUrl)})
@@ -318,6 +383,69 @@ class BrowserUseManager(
             })();
         """.trimIndent()
         webView.post { webView.evaluateJavascript(js, null) }
+    }
+
+    /**
+     * [T-child-browser-interactive] Research-child blob read through the
+     * reply-only channel. The data URL is capped by [ingestBlobDataUrl] and is
+     * only persisted through the pool's download saver; nothing is handed back
+     * into the page.
+     */
+    private fun fetchChildBlobDownload(blobUrl: String, guessedName: String) {
+        val deferred = CompletableDeferred<String>()
+        val token = childReplyBridge.begin(deferred) ?: return
+        val replyKey = JSONObject.quote(token)
+        val abortKey = "__eta_abort_${java.util.UUID.randomUUID().toString().replace("-", "")}"
+        val quotedAbortKey = JSONObject.quote(abortKey)
+        childAbortKeys.add(abortKey)
+        val js = """
+            (async function() {
+                const controller = new AbortController();
+                let reader = null, fileReader = null;
+                Object.defineProperty(window, $quotedAbortKey, {configurable:true, value:{abort:function() {
+                    controller.abort(); if(reader) reader.cancel().catch(function(){});
+                    if(fileReader && fileReader.readyState === 1) fileReader.abort();
+                }}});
+                try {
+                    const response = await fetch(${JSONObject.quote(blobUrl)}, {signal:controller.signal});
+                    const limit = 32 * 1024 * 1024;
+                    if (Number(response.headers.get('content-length') || 0) > limit) throw new Error('TOO_LARGE');
+                    const chunks = []; let count = 0;
+                    if(response.body) {
+                        reader = response.body.getReader();
+                        while(true) {
+                            const item = await reader.read(); if(item.done) break;
+                            count += item.value.byteLength;
+                            if(count > limit) { controller.abort(); await reader.cancel(); throw new Error('TOO_LARGE'); }
+                            chunks.push(item.value);
+                        }
+                    }
+                    const blob = new Blob(chunks, {type:response.headers.get('content-type') || ''});
+                    if(blob.size > limit) throw new Error('TOO_LARGE');
+                    fileReader = new FileReader();
+                    const payload = await new Promise(function(resolve,reject) {
+                        fileReader.onload = function(){resolve(String(fileReader.result || ''));};
+                        fileReader.onerror = fileReader.onabort = function(){reject(new Error('READ_FAILED'));};
+                        fileReader.readAsDataURL(blob);
+                    });
+                    __eta_child__.resolve($replyKey, payload);
+                } catch(error) { __eta_child__.reject($replyKey, 'CHILD_DOWNLOAD_FAILED'); }
+                finally { delete window[$quotedAbortKey]; }
+            })();
+        """.trimIndent()
+        asyncScope.launch {
+            try {
+                webView.evaluateJavascript(js, null)
+                val payload = withTimeoutOrNull(JS_EVALUATION_TIMEOUT_MS * 4) { deferred.await() }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (payload != null && payload.startsWith("data:")) ingestBlobDataUrl(payload, guessedName)
+            } finally {
+                childAbortKeys.remove(abortKey)
+                runCatching { webView.evaluateJavascript(
+                    "(function(){var h=window[$quotedAbortKey];if(h)h.abort();delete window[$quotedAbortKey];})()", null) }
+                childReplyBridge.end(token)
+            }
+        }
     }
 
     /**
@@ -674,6 +802,14 @@ class BrowserUseManager(
     // -- Execute Action --
 
     suspend fun execute(input: BrowserActionInput): BrowserActionResult {
+        // [T-child-browser-interactive] Low-level read-only gate: a research
+        // child without interaction must not mutate the page or its origin even
+        // if a stale or malicious tool call bypasses the policy whitelist.
+        if (readOnlyChild && ChildBrowserGate.deniesReadOnly(input.action)) {
+            return BrowserActionResult.error(
+                "Child browser is read-only; ${input.action.value} is not permitted",
+            )
+        }
         val prevUrl = withContext(Dispatchers.Main) { webView.url }
         var result: BrowserActionResult = when (input.action) {
             BrowserAction.GO_BACK -> return navigateHistory(-1, input.timeoutMs)
@@ -1110,10 +1246,13 @@ class BrowserUseManager(
     private suspend fun executeJS(script: String?): BrowserActionResult {
         if (script.isNullOrEmpty()) return BrowserActionResult.error("execute_js requires 'script'")
         // Wrap in an async IIFE so `await` works in user scripts.
-        // Android WebView doesn't resolve Promises from evaluateJavascript,
-        // so we use a JS bridge callback (__minis__.resolve / __minis__.reject).
+        // Android WebView doesn't resolve Promises from evaluateJavascript, so the
+        // value is handed back through a reply callback: the legacy __minis__
+        // bridge for parent tabs, or the reply-only __eta_child__ token bridge for
+        // a research child-interactive tab.
         val deferred = CompletableDeferred<String>()
-        val requestId = installAsyncJsRequest(deferred)
+        val delivery = openAsyncDelivery(deferred)
+            ?: return BrowserActionResult.error("JavaScript execution busy: too many pending async requests")
         return try {
             val wrapped = """
                 (async function(){
@@ -1121,14 +1260,14 @@ class BrowserUseManager(
                         var __r__ = (async function(){ $script })();
                         var __v__ = await __r__;
                         if (__v__ === undefined || __v__ === null) {
-                            __minis__.resolve($requestId, String(__v__));
+                            ${delivery.bridge}.resolve(${delivery.requestKey}, String(__v__));
                         } else if (typeof __v__ === 'object') {
-                            __minis__.resolve($requestId, JSON.stringify(__v__));
+                            ${delivery.bridge}.resolve(${delivery.requestKey}, JSON.stringify(__v__));
                         } else {
-                            __minis__.resolve($requestId, String(__v__));
+                            ${delivery.bridge}.resolve(${delivery.requestKey}, String(__v__));
                         }
                     } catch(e) {
-                        __minis__.reject($requestId, e.message || String(e));
+                        ${delivery.bridge}.reject(${delivery.requestKey}, e.message || String(e));
                     }
                 })();
             """.trimIndent()
@@ -1154,7 +1293,7 @@ class BrowserUseManager(
             if (e is kotlinx.coroutines.CancellationException) throw e
             BrowserActionResult.error("JavaScript error: ${e.message}")
         } finally {
-            clearAsyncJsRequest(requestId)
+            delivery.release()
         }
     }
 
@@ -1194,14 +1333,13 @@ class BrowserUseManager(
     // -- Fetch --
 
     private suspend fun fetch(urlString: String?): BrowserActionResult {
+        if (researchMode) return BrowserActionResult.error("CHILD_FETCH_REQUIRES_OWNED_POOL")
         if (urlString.isNullOrEmpty()) return BrowserActionResult.error("fetch requires 'url' parameter")
 
         // The fetch JS runs `await fetch(...)` inside an async IIFE, which
         // resolves to a Promise. Android's `WebView.evaluateJavascript` does
-        // NOT await Promises, so calling `evaluateJavascript(js)` returns the
-        // Promise's `{}` string representation and the caller sees a
-        // "No value for base64" parse error. Route through the __minis__
-        // bridge so we actually wait for the Promise to resolve.
+        // NOT await Promises, so the value is awaited through the reply
+        // callback (parent: __minis__; child-interactive: __eta_child__ token).
         val raw = awaitPromiseJs(BrowserUseJS.fetch(urlString))
             ?: return BrowserActionResult.error("fetch timed out")
         return try {
@@ -1230,7 +1368,8 @@ class BrowserUseManager(
             val filename = "fetch_${System.currentTimeMillis()}.${extensionForMimeType(contentType)}"
 
             val text = buildString {
-                appendLine("Fetched $finalURL")
+                // Only the userinfo is stripped (see BrowserOutput); never echo it.
+                appendLine("Fetched ${BrowserOutput.redactUrlCredentials(finalURL)}")
                 appendLine("  Status: $status")
                 appendLine("  Content-Type: $contentType")
                 appendLine("  Size: ${formatBytes(size)}")
@@ -1250,26 +1389,27 @@ class BrowserUseManager(
 
     /**
      * Evaluate an `(async function(){...})()` expression and wait for the
-     * returned Promise to resolve via the `__minis__` bridge. Returns the
-     * resolved string (JSON or plain) or null on timeout. Mirrors the same
-     * pattern used by [executeJS].
+     * returned Promise to resolve through the reply callback (parent:
+     * `__minis__`; child-interactive: reply-only `__eta_child__` token bridge).
+     * Returns the resolved string (JSON or plain) or null on timeout. Mirrors
+     * the same pattern used by [executeJS].
      */
     private suspend fun awaitPromiseJs(js: String): String? {
         val deferred = CompletableDeferred<String>()
-        val requestId = installAsyncJsRequest(deferred)
+        val delivery = openAsyncDelivery(deferred) ?: return null
         val wrapped = """
             (async function(){
                 try {
                     var __v__ = await ($js);
                     if (__v__ === undefined || __v__ === null) {
-                        __minis__.resolve($requestId, 'null');
+                        ${delivery.bridge}.resolve(${delivery.requestKey}, 'null');
                     } else if (typeof __v__ === 'object') {
-                        __minis__.resolve($requestId, JSON.stringify(__v__));
+                        ${delivery.bridge}.resolve(${delivery.requestKey}, JSON.stringify(__v__));
                     } else {
-                        __minis__.resolve($requestId, String(__v__));
+                        ${delivery.bridge}.resolve(${delivery.requestKey}, String(__v__));
                     }
                 } catch(e) {
-                    __minis__.reject($requestId, e && e.message ? e.message : String(e));
+                    ${delivery.bridge}.reject(${delivery.requestKey}, e && e.message ? e.message : String(e));
                 }
             })();
         """.trimIndent()
@@ -1279,7 +1419,7 @@ class BrowserUseManager(
             }
             withTimeoutOrNull(JS_EVALUATION_TIMEOUT_MS) { deferred.await() }
         } finally {
-            clearAsyncJsRequest(requestId)
+            delivery.release()
         }
     }
 
@@ -1431,6 +1571,13 @@ class BrowserUseManager(
         navigationDeferred?.cancel()
         navigationDeferred = null
         clearAsyncJsRequest()
+        childAbortKeys.toList().forEach { key ->
+            val quoted = JSONObject.quote(key)
+            runCatching { webView.evaluateJavascript("(function(){var h=window[$quoted];if(h)h.abort();delete window[$quoted];})()", null) }
+        }
+        childAbortKeys.clear()
+        childReplyBridge.endAll()
+        if (researchMode) asyncScope.coroutineContext[kotlinx.coroutines.Job]?.cancelChildren()
     }
 
     /**
@@ -1514,8 +1661,11 @@ class BrowserUseManager(
         navigationDeferred?.cancel()
         navigationDeferred = null
         clearAsyncJsRequest()
+        childReplyBridge.endAll()
+        asyncScope.cancel()
         (webView.parent as? android.view.ViewGroup)?.removeView(webView)
         webView.removeJavascriptInterface("__minis__")
+        webView.removeJavascriptInterface("__eta_child__")
         webView.destroy()
     }
 
@@ -1569,6 +1719,31 @@ class BrowserUseManager(
                 asyncJsDeferred = null
             }
         }
+    }
+
+    /**
+     * [T-child-browser-interactive] Open the reply transport for one async JS
+     * result. Parent tabs keep the legacy `__minis__` bridge and numeric request
+     * sequence; a research child uses the reply-only `__eta_child__` string-token
+     * bridge. Returns null when the child bridge is at capacity — the caller
+     * must refuse the new request rather than cancel an in-flight one.
+     */
+    private fun openAsyncDelivery(deferred: CompletableDeferred<String>): AsyncDelivery? =
+        if (researchMode) {
+            val token = childReplyBridge.begin(deferred) ?: return null
+            AsyncDelivery("__eta_child__", JSONObject.quote(token)) { childReplyBridge.end(token) }
+        } else {
+            val requestId = installAsyncJsRequest(deferred)
+            AsyncDelivery("__minis__", requestId.toString()) { clearAsyncJsRequest(requestId) }
+        }
+
+    /** A JS-visible bridge name + request key, with its per-request cleanup. */
+    private class AsyncDelivery(
+        val bridge: String,
+        val requestKey: String,
+        private val finish: () -> Unit,
+    ) {
+        fun release() = finish()
     }
 
     private suspend fun evaluateAndReturn(js: String): BrowserActionResult {
@@ -1762,12 +1937,21 @@ class BrowserUseManager(
     // -- Get Cookies --
 
     /**
+     * [T-child-browser-interactive] CookieManager is a PROCESS-WIDE singleton
+     * shared by every tab and every session, so this is NOT cookie isolation:
+     * sibling and child tabs may observe the same login state, and this must
+     * never be described to the model or the user as an isolated cookie jar. We
+     * never call removeAllCookies/removeSessionCookies — no global clear.
+     *
      * Return cookies for the current page's origin, filtered by keyword.
      * Android exposes cookies as a single `Cookie` header string via
      * [CookieManager]; we split on `;` and match each `name=value` pair.
      *
      * `fuzzy=false` (default): exact name match (case-insensitive).
      * `fuzzy=true`: substring match within the cookie name.
+     *
+     * Only names + a local env-file path are returned; the values are written to
+     * the env file and never echoed into this result or any log.
      */
     private fun getCookies(keywords: List<String>?, fuzzy: Boolean): BrowserActionResult {
         val url = _currentURL.value.takeIf { it.isNotEmpty() }
@@ -1779,14 +1963,27 @@ class BrowserUseManager(
         }.filter { (name, _) ->
             io.github.mangi.eta.agent.browser.BrowserCookieOffload.matches(name, keywords.orEmpty(), fuzzy)
         }.take(80)
+        val logicalDirectory = if (researchMode) {
+            val owner = childOwnerId?.takeIf { it.matches(Regex("child-browser-[a-f0-9-]{36}")) }
+                ?: return BrowserActionResult.error("CHILD_COOKIE_OWNER_REQUIRED")
+            "/var/minis/offloads/$owner"
+        } else "/var/minis/offloads"
         val dir = File(io.github.mangi.eta.agent.terminal.LinuxGuestPathResolver.resolveForApp(
-            webView.context.applicationContext, "/var/minis/offloads"))
-        val file = io.github.mangi.eta.agent.browser.BrowserCookieOffload.write(
+            webView.context.applicationContext, logicalDirectory))
+        val file = if (researchMode) {
+            dir.mkdirs()
+            File.createTempFile("env_cookies_", ".sh", dir).also {
+                it.setReadable(false, false); it.setWritable(false, false)
+                it.setReadable(true, true); it.setWritable(true, true)
+                try { it.writeText(io.github.mangi.eta.agent.browser.BrowserCookieOffload.script("task-owned current site", pairs)) }
+                catch (error: Exception) { it.delete(); throw error }
+            }
+        } else io.github.mangi.eta.agent.browser.BrowserCookieOffload.write(
             dir, android.net.Uri.parse(url).host.orEmpty(), url, pairs)
         return BrowserActionResult(JSONObject()
             .put("cookie_count", pairs.size)
             .put("cookie_names", io.github.mangi.eta.agent.browser.BrowserCookieOffload.namesArray(pairs))
-            .put("env_path", "/var/minis/offloads/${file.name}")
+            .put("env_path", "$logicalDirectory/${file.name}")
             .put("note", "Cookie values are only in the local env file, not in this response.").toString())
     }
 

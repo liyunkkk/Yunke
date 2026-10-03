@@ -10,7 +10,7 @@ import org.junit.Test
 
 class ChildBrowserPolicyTest {
     @Test fun schemaAndExecutorAgreeAndDoNotMutateParentCatalog() {
-        val schema = ChildBrowserPolicy.schema()
+        val schema = ChildBrowserPolicy.schema(ChildBrowserPolicy.READ_ONLY)
         val params = schema.getJSONObject("function").getJSONObject("parameters")
         val properties = params.getJSONObject("properties")
         val actions = properties.getJSONObject("action").getJSONArray("enum")
@@ -32,7 +32,7 @@ class ChildBrowserPolicyTest {
 
     @Test fun forbiddenActionsAndUnexpectedArgumentsFailClosedBeforeDispatch() {
         var calls = 0
-        val executor = ChildBrowserPolicy.guarded({ true }) { calls++; AgentModelClient.ToolResult("ok") }
+        val executor = ChildBrowserPolicy.guarded({ true }, ChildBrowserPolicy.READ_ONLY) { calls++; AgentModelClient.ToolResult("ok") }
         for (action in listOf("click", "type", "execute_js", "get_cookies", "set_cookies", "fetch", "set_user_agent",
                 "set_viewport", "hover", "new_tab", "future_action")) {
             assertTrue(executor.execute(call(JSONObject().put("action", action))).content.contains("SUB_AGENT_BROWSER_RESTRICTED"))
@@ -46,7 +46,7 @@ class ChildBrowserPolicyTest {
     @Test fun disablingPermissionImmediatelyStopsExistingExecutor() {
         var enabled = true
         var calls = 0
-        val executor = ChildBrowserPolicy.guarded({ enabled }) { calls++; AgentModelClient.ToolResult("ok") }
+        val executor = ChildBrowserPolicy.guarded({ enabled }, ChildBrowserPolicy.READ_ONLY) { calls++; AgentModelClient.ToolResult("ok") }
         val read = call(JSONObject().put("action", "get_readable"))
         executor.execute(read)
         enabled = false
@@ -71,7 +71,7 @@ class ChildBrowserPolicyTest {
 
     @Test fun normalizedNavigationIsPassedToBackendOnce() {
         var received = ""
-        val executor = ChildBrowserPolicy.guarded({ true }) {
+        val executor = ChildBrowserPolicy.guarded({ true }, ChildBrowserPolicy.READ_ONLY) {
             received = JSONObject(it.argumentsJson).getString("url")
             AgentModelClient.ToolResult("page")
         }
@@ -82,7 +82,7 @@ class ChildBrowserPolicyTest {
 
     @Test fun structuredRefusalIsSafeAndNeverDispatches() {
         var calls = 0
-        val executor = ChildBrowserPolicy.guarded({ true }) { calls++; AgentModelClient.ToolResult("ok") }
+        val executor = ChildBrowserPolicy.guarded({ true }, ChildBrowserPolicy.READ_ONLY) { calls++; AgentModelClient.ToolResult("ok") }
         val blocked = body(executor.execute(call(JSONObject().put("action", "click")
             .put("url", "https://secret.example/private?token=abc"))))
         assertEquals("SUB_AGENT_BROWSER_RESTRICTED", blocked.getString("code"))
@@ -104,7 +104,7 @@ class ChildBrowserPolicyTest {
 
     @Test fun urlOnNonNavigateActionExplainsNavigateFirstRecovery() {
         var calls = 0
-        val executor = ChildBrowserPolicy.guarded({ true }) { calls++; AgentModelClient.ToolResult("ok") }
+        val executor = ChildBrowserPolicy.guarded({ true }, ChildBrowserPolicy.READ_ONLY) { calls++; AgentModelClient.ToolResult("ok") }
         val refusal = body(executor.execute(call(JSONObject().put("action", "get_readable")
             .put("url", "https://secret.example/doc"))))
         assertEquals("SUB_AGENT_BROWSER_RESTRICTED", refusal.getString("code"))
@@ -131,7 +131,7 @@ class ChildBrowserPolicyTest {
 
     @Test fun disabledExecutorRefusesStructuredAndNeverRetries() {
         var calls = 0
-        val executor = ChildBrowserPolicy.guarded({ false }) { calls++; AgentModelClient.ToolResult("ok") }
+        val executor = ChildBrowserPolicy.guarded({ false }, ChildBrowserPolicy.READ_ONLY) { calls++; AgentModelClient.ToolResult("ok") }
         val first = body(executor.execute(call(JSONObject().put("action", "get_readable"))))
         assertEquals("BROWSER_TOOLS_DISABLED", first.getString("code"))
         assertEquals("BROWSER_DISABLED", first.getString("reason"))
@@ -144,7 +144,7 @@ class ChildBrowserPolicyTest {
     }
 
     @Test fun schemaDocumentsNavigateOnlyUrlAndKeepsWhitelist() {
-        val schema = ChildBrowserPolicy.schema()
+        val schema = ChildBrowserPolicy.schema(ChildBrowserPolicy.READ_ONLY)
         val function = schema.getJSONObject("function")
         val parameters = function.getJSONObject("parameters")
         val properties = parameters.getJSONObject("properties")

@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -33,7 +34,18 @@ import java.util.concurrent.ConcurrentHashMap
  * Manages up to 3 browser tabs for the agent, mirroring iOS BrowserTabPool.
  * All tabs share the same cookie store by default on Android.
  */
-class BrowserTabPool(private val context: Context, private val researchMode: Boolean = false) {
+class BrowserTabPool(
+    private val context: Context,
+    private val researchMode: Boolean = false,
+    /**
+     * [T-child-browser-interactive] Whether a research-mode child may click,
+     * run JS, use the cookie tools and download files. Only
+     * `researchMode && childInteractive` enables interaction; the default false
+     * keeps the original read-only background behaviour. The parent browser
+     * leaves `researchMode = false`, so this is ignored there.
+     */
+    private val childInteractive: Boolean = false,
+) {
 
     companion object {
         private const val TAG = "BrowserTabPool"
@@ -110,6 +122,13 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
      * tab-less navigates run in parallel instead of deadlocking on one tab.
      */
     private val tabLimit = if (researchMode) 1 else MAX_TABS
+
+    /**
+     * [T-child-browser-interactive] True for a research-mode child that must
+     * not mutate the page (click/type/js/hover), write files (fetch/download) or
+     * use the cookie tools, even if a stale call bypasses the policy whitelist.
+     */
+    private val readOnlyChild = researchMode && !childInteractive
     private val tabLocks = ConcurrentHashMap<Int, Mutex>()
 
     private fun lockForTab(id: Int): Mutex = tabLocks.getOrPut(id) { Mutex() }
@@ -372,10 +391,76 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
 
     /** The session's /var/minis/workspace/ host directory — downloads land here
      *  so the agent can read and operate on them in follow-up turns. */
-    private fun sessionWorkspaceDir(): File? {
-        return File(io.github.mangi.eta.agent.terminal.LinuxGuestPathResolver.resolveForApp(
-            context, "/var/minis/browser/downloads",
-        )).apply { mkdirs() }
+    private fun sessionDownloadPath(): String {
+        if (!researchMode) return "/var/minis/browser/downloads"
+        val owner = sessionId ?: throw ChildBrowserDownloads.Refused("CHILD_DOWNLOAD_OWNER_REQUIRED")
+        require(owner.matches(Regex("child-browser-[a-f0-9-]{36}"))) { "CHILD_DOWNLOAD_OWNER_INVALID" }
+        return "/var/minis/browser/downloads/$owner"
+    }
+    private fun sessionWorkspaceDir(): File = File(
+        io.github.mangi.eta.agent.terminal.LinuxGuestPathResolver.resolveForApp(context, sessionDownloadPath())
+    ).apply { mkdirs() }
+
+    private val childDownloads by lazy {
+        ChildBrowserDownloads(::sessionWorkspaceDir) { url -> android.webkit.CookieManager.getInstance().getCookie(url) }
+    }
+    private val childReceipts = java.util.concurrent.ConcurrentLinkedDeque<JSONObject>()
+    private fun childReceipt(saved: ChildBrowserDownloads.Saved): JSONObject = JSONObject()
+        .put("ok", true).put("path", sessionDownloadPath() + "/" + saved.file.name).put("size_bytes", saved.size)
+    private fun rememberChildReceipt(receipt: JSONObject) {
+        childReceipts.addLast(receipt)
+        while (childReceipts.size > 16) childReceipts.pollFirst()
+    }
+    fun childDownloadReceipts(): org.json.JSONArray = org.json.JSONArray(childReceipts.toList())
+    fun cancelChildDownloads() {
+        if (researchMode) { childDownloads.cancelAll(); downloadJobs.values.forEach { it.cancel() } }
+    }
+    private suspend fun fetchChildResource(url: String?, tabId: Int?): BrowserActionResult {
+        if (url.isNullOrBlank()) return BrowserActionResult.error("CHILD_DOWNLOAD_URL_REQUIRED")
+        // Read WebView settings only on Main; keep this task's site-visible UA.
+        // A fetch before navigate needs no page, and uses the configured profile.
+        val userAgent = withContext(Dispatchers.Main) {
+            val targetId = tabId ?: _selectedTabId.value
+            val tab = _tabs.value.firstOrNull { it.id == targetId }
+                ?: if (tabId == null) _tabs.value.firstOrNull() else null
+            tab?.manager?.webView?.settings?.userAgentString?.takeIf { it.isNotBlank() }
+                ?: customUserAgentString?.takeIf { userAgentProfile == UserAgentProfile.CUSTOM && it.isNotBlank() }
+                ?: userAgentProfile.userAgentString
+                ?: android.webkit.WebSettings.getDefaultUserAgent(context)
+        }
+        val work = downloadScope.async { childDownloads.fetch(url, userAgent) }
+        return try {
+            BrowserActionResult(childReceipt(work.await()).toString())
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            childDownloads.cancelAll()
+            throw error
+        } catch (error: Exception) {
+            BrowserActionResult.error((error as? ChildBrowserDownloads.Refused)?.code ?: "CHILD_DOWNLOAD_FAILED")
+        } finally { work.cancel() }
+    }
+    private fun startChildPageDownload(url: String, userAgent: String?, length: Long) {
+        val id = nextDownloadId.getAndIncrement()
+        val job = downloadScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            try { rememberChildReceipt(childReceipt(childDownloads.fetch(url, userAgent, length))) }
+            catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (error: Exception) { rememberChildReceipt(JSONObject().put("ok", false)
+                .put("code", (error as? ChildBrowserDownloads.Refused)?.code ?: "CHILD_DOWNLOAD_FAILED")) }
+            finally { downloadJobs.remove(id) }
+        }
+        downloadJobs[id] = job
+        job.start()
+    }
+    private fun saveChildBlob(bytes: ByteArray) {
+        val id = nextDownloadId.getAndIncrement()
+        val job = downloadScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            try { rememberChildReceipt(childReceipt(childDownloads.blob(bytes))) }
+            catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (error: Exception) { rememberChildReceipt(JSONObject().put("ok", false)
+                .put("code", (error as? ChildBrowserDownloads.Refused)?.code ?: "CHILD_DOWNLOAD_FAILED")) }
+            finally { downloadJobs.remove(id) }
+        }
+        downloadJobs[id] = job
+        job.start()
     }
 
     /** name.ext → name-1.ext → name-2.ext … until unused. */
@@ -402,6 +487,9 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
         mimeType: String?,
         contentLength: Long,
     ) {
+        // [T-child-browser-interactive] A read-only child never writes files.
+        if (readOnlyChild) return
+        if (researchMode) { startChildPageDownload(url, userAgent, contentLength); return }
         val dir = sessionWorkspaceDir() ?: run {
             Log.w(TAG, "download rejected: no session bound to pool")
             return
@@ -477,7 +565,10 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
 
     /** Persist decoded blob: bytes (from the JS bridge) into the workspace. */
     internal fun saveBlobDownload(data: ByteArray, filename: String, mimeType: String?) {
+        // [T-child-browser-interactive] A read-only child never writes files.
+        if (readOnlyChild) return
         if (data.size > 32 * 1024 * 1024) return
+        if (researchMode) { saveChildBlob(data); return }
         val dir = sessionWorkspaceDir() ?: run {
             Log.w(TAG, "blob download rejected: no session bound to pool")
             return
@@ -549,9 +640,19 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
         input: BrowserActionInput,
         singleTab: Boolean = false,
     ): BrowserActionResult {
-        if (input.tabId != null && _tabs.value.none { it.id == input.tabId } && input.action != BrowserAction.NEW_TAB) {
-            return BrowserActionResult.error("TAB_NOT_FOUND: ${input.tabId}; use list_tabs")
+        // [T-child-browser-interactive] Pool-level read-only gate so a stale or
+        // malicious tool call cannot mutate the page, write files or touch the
+        // cookie tools without a full-access grant, regardless of the schema.
+        if (readOnlyChild && ChildBrowserGate.deniesReadOnly(input.action)) {
+            return BrowserActionResult.error(
+                "Child browser is read-only; ${input.action.value} is not permitted",
+            )
         }
+        if (input.tabId != null && _tabs.value.none { it.id == input.tabId } && input.action != BrowserAction.NEW_TAB &&
+            !ChildBrowserGate.allowsInitialTab(researchMode, _tabs.value.isNotEmpty(), input.tabId, input.action)) {
+            return BrowserActionResult.error("TAB_NOT_FOUND: ${input.tabId}; use list_tabs; first child navigate may omit tab_id")
+        }
+        if (researchMode && input.action == BrowserAction.FETCH) return fetchChildResource(input.url, input.tabId)
         // Handle tab management actions at pool level
         return when (input.action) {
             BrowserAction.NEW_TAB -> newTab(input.url)
@@ -560,7 +661,7 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
             BrowserAction.SET_USER_AGENT -> {
                 val profile = input.userAgent ?: return BrowserActionResult.error("Unknown user_agent")
                 userAgentProfile = profile
-                context.getSharedPreferences("browser_prefs", Context.MODE_PRIVATE).edit()
+                if (!researchMode) context.getSharedPreferences("browser_prefs", Context.MODE_PRIVATE).edit()
                     .putString("user_agent_profile", profile.name).apply()
                 for (tab in _tabs.value) tab.manager.setUserAgent(profile, customUserAgentString)
                 applyViewportToAllTabs()
@@ -664,9 +765,12 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
         implicitTab: Boolean,
         acquireTabId: Int? = null,
     ): BrowserActionResult {
-        val tab = acquireTab(acquireTabId ?: input.tabId)
+        val requestedTabId = acquireTabId ?: input.tabId
+        val tab = acquireTab(requestedTabId, input.action)
             ?: return BrowserActionResult.error(
-                "This conversation already has 3 tabs in use. Close one with close_tab. Tab ids are only 0, 1 and 2.",
+                if (requestedTabId != null) "TAB_NOT_FOUND: $requestedTabId; use list_tabs"
+                else if (researchMode) "Child browser tab is busy; wait for the current call to finish"
+                else "This conversation already has 3 tabs in use. Close one with close_tab. Tab ids are only 0, 1 and 2.",
             )
         return try {
             val result = tab.manager.execute(input)
@@ -759,23 +863,17 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
     }
 
     /**
-     * Acquire a tab for agent use. Creates tab 0 if none exist.
-     *
-     * Mirrors iOS BrowserTabPool behavior: even when the model explicitly
-     * sends `tab_id: 0` (strict-schema providers like OpenAI Responses API
-     * always populate every field), fall back to the default tab when no
-     * such tab exists yet, instead of returning null. Otherwise the very
-     * first browser_use call in a session fails with "Failed to acquire
-     * browser tab" because the model can't know that tab 0 hasn't been
-     * lazily created.
+     * Acquire the requested existing tab, or select/create one when id is omitted.
+     * A child's very first navigate with explicit id 0 may create tab 0. No other
+     * missing explicit id falls back to the selected page, including after a race.
      */
-    private suspend fun acquireTab(requestedTabId: Int? = null): Tab? = withContext(Dispatchers.Main) {
+    private suspend fun acquireTab(requestedTabId: Int? = null, initialAction: BrowserAction? = null): Tab? = withContext(Dispatchers.Main) {
         var currentTabs = _tabs.value.toMutableList()
 
-        // Find requested tab, falling back to default-or-create when the
-        // requested id doesn't exist (covers `tab_id: 0` against an empty pool).
-        val tab = if (requestedTabId != null && currentTabs.any { it.id == requestedTabId }) {
-            currentTabs.first { it.id == requestedTabId }
+        val tab = if (requestedTabId != null) {
+            currentTabs.firstOrNull { it.id == requestedTabId }
+                ?: if (ChildBrowserGate.allowsInitialTab(researchMode, currentTabs.isNotEmpty(), requestedTabId, initialAction))
+                    createTab(currentTabs) else null
         } else {
             // [T-browser-use-per-tab-serial-android] No explicit (existing)
             // tab id: prefer a tab that is NOT already in use, and create a new
@@ -833,6 +931,8 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
             sessionIdProvider = { sessionId },
             appContext = context.applicationContext,
             researchMode = researchMode,
+            childInteractive = childInteractive,
+            childOwnerId = if (researchMode) sessionId else null,
         )
         if (userAgentProfile == UserAgentProfile.CUSTOM && !customUserAgentString.isNullOrEmpty()) {
             manager.setUserAgent(userAgentProfile, customUserAgentString)
@@ -940,6 +1040,8 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
             sessionIdProvider = { sessionId },
             appContext = context.applicationContext,
             researchMode = researchMode,
+            childInteractive = childInteractive,
+            childOwnerId = if (researchMode) sessionId else null,
         )
         if (userAgentProfile == UserAgentProfile.CUSTOM && !customUserAgentString.isNullOrEmpty()) {
             manager.setUserAgent(userAgentProfile, customUserAgentString)
@@ -1101,6 +1203,7 @@ class BrowserTabPool(private val context: Context, private val researchMode: Boo
 
     fun destroy() {
         evictionScope.cancel()
+        if (researchMode) childDownloads.close()
         downloadScope.cancel()
         _tabs.value.forEach { it.inUseGraceJob?.cancel(); it.manager.destroy() }
         _tabs.value = emptyList()
