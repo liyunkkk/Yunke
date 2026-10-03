@@ -35,6 +35,23 @@ class SubAgentDispatchRecoveryContract(unittest.TestCase):
         self.assertIn('(task.state in ACTIVE || !active(task)) &&', source)
         self.assertIn('task.role in MEDIA && task.state !in ACTIVE -> listOf("get_task_result")', source)
 
+    def test_closed_and_stopping_never_advertise_replacement(self):
+        source = self.source('delegation/SubAgentCoordinator.kt')
+        self.assertIn('"can_replace", !closed && !stopping &&', source)
+
+    def test_registry_allows_no_progress_pause_only_with_stop_and_read_evidence(self):
+        source = self.source('runtime/AgentChildTaskGroups.kt')
+        replacement = source.split('private fun replace(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('!ChildTaskReplacementSelection.eligibleStatus(snapshot)', replacement)
+        self.assertIn('if (!snapshot.optBoolean("execution_stopped")', replacement)
+        self.assertIn('!old.handoffs.matchesRead(predecessorId, handoffVersion)', replacement)
+        self.assertIn('put("can_replace", false)', replacement)
+        policy = self.source('runtime/ChildTaskReplacementSelection.kt')
+        eligible = policy.split('fun eligibleStatus(', 1)[1].split('fun choose(', 1)[0]
+        self.assertIn('"failed"', eligible)
+        self.assertIn('"awaiting_decision"', eligible)
+        self.assertIn('"SUB_AGENT_NO_PROGRESS"', eligible)
+
     def test_error_details_are_applied_before_tool_result_wrapping(self):
         source = self.source('runtime/AgentChildTaskGroups.kt')
         self.assertIn('details: JSONObject.() -> Unit = {}', source)

@@ -86,6 +86,9 @@ def load(root, task):
     except (OSError, UnicodeError, ValueError):
         raise ValueError('INVALID_WORKSPACE_RECORD')
     require(isinstance(record, dict) and record.get('id') == task, 'INVALID_WORKSPACE_RECORD')
+    state = record.get('state')
+    require(isinstance(state, str) and state in ('editing', 'reviewing', 'ready', 'failed', 'merged', 'discarded'),
+            'INVALID_WORKSPACE_RECORD')
     return record
 
 
@@ -336,7 +339,7 @@ def merge_blockers(root, record):
         blockers.append('WORKSPACE_COMMIT_INVALID')
     if (exists and not clean(tree)) or not clean(root):
         blockers.append('UNCOMMITTED_CHANGES')
-    if base_valid and git(root, 'rev-parse', 'HEAD') != record['base']:
+    if record['state'] not in ('merged', 'discarded') and base_valid and git(root, 'rev-parse', 'HEAD') != record['base']:
         blockers.append('PROJECT_MOVED_REVIEW_AGAIN')
     if exists and commit_valid and git(tree, 'rev-parse', 'HEAD') != record['commit']:
         blockers.append('WORKSPACE_CHANGED')

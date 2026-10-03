@@ -468,13 +468,13 @@ internal object AgentChildTaskGroups {
                 })
             }
         }
-        if (snapshot.optString("status") != "failed" || !snapshot.optBoolean("can_replace")) {
+        if (!ChildTaskReplacementSelection.eligibleStatus(snapshot) || !snapshot.optBoolean("can_replace")) {
             return error("REPLACEMENT_NOT_ALLOWED") {
-                put("can_replace", snapshot.optBoolean("can_replace"))
+                put("can_replace", false)
                 put("status", snapshot.optString("status"))
                 put("allowed_actions", snapshot.optJSONArray("allowed_actions") ?: JSONArray(listOf("get_task_result")))
                 put("next_step", snapshot.optString("next_step").ifBlank {
-                    "只有 can_replace=true 且 execution_stopped=true 的 failed 任务能显式替换；先读取实际状态，不重放任务。"
+                    "仅 failed 或 SUB_AGENT_NO_PROGRESS 的 awaiting_decision 任务，在 can_replace=true 且 execution_stopped=true 后可显式替换；先读取实际状态，不重放任务。"
                 })
             }
         }

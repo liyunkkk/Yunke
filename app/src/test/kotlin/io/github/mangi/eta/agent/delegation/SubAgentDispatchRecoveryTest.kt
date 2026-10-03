@@ -197,4 +197,20 @@ class SubAgentDispatchRecoveryTest {
         }
     }
 
+
+    @Test
+    fun stoppingOrClosedFailedTaskNeverAdvertisesReplacement() {
+        SubAgentCoordinator(listOf(model), executeChild = { _, _, _ ->
+            throw IllegalStateException("fixture failure")
+        }).use { c ->
+            val id = result(c, "delegate_task", JSONObject().put("task", "check")).getString("task_id")
+            assertTrue(awaitStatus(c, id, "failed").getBoolean("can_replace"))
+            c.preventNewTasks()
+            val stopping = result(c, "get_task_result", JSONObject().put("task_id", id))
+            assertFalse(stopping.getBoolean("can_replace"))
+            assertEquals(listOf("get_task_result"), strings(stopping.getJSONArray("allowed_actions")))
+            c.close()
+            assertFalse(result(c, "get_task_result", JSONObject().put("task_id", id)).getBoolean("can_replace"))
+        }
+    }
 }

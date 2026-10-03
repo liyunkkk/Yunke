@@ -304,6 +304,41 @@ class WorkspaceTest(unittest.TestCase):
         discarded = self.op('discard', record)
         self.assertEqual(['inspect'], discarded['allowed_actions'])
 
+    def test_terminal_record_does_not_claim_parent_requires_rereview(self):
+        record = self.reviewed_workspace()
+        merged = self.op('merge', record)
+        self.assertEqual(['WORKSPACE_NOT_READY'], merged['merge_blocked_by'])
+        record = self.reviewed_workspace()
+        self.op('discard', record)
+        w.git(self.root, 'commit', '--allow-empty', '-m', 'later parent commit')
+        inspected = self.op('inspect', record)
+        self.assertEqual(['WORKSPACE_NOT_READY'], inspected['merge_blocked_by'])
+        self.assertEqual(['inspect'], inspected['allowed_actions'])
+
+    def test_corrupt_record_state_is_stably_rejected_without_parent_mutation(self):
+        record = self.op('prepare')
+        saved = w.load(self.root, record['id'])
+        before = (w.git(self.root, 'rev-parse', 'HEAD'), w.git(self.root, 'status', '--porcelain'),
+                  (self.root / 'main.txt').read_text())
+        for value in (None, '', 'unknown-state', 1, True, [], {}):
+            with self.subTest(value=value):
+                corrupt = dict(saved)
+                if value is None:
+                    corrupt.pop('state')
+                else:
+                    corrupt['state'] = value
+                w.save(self.root, corrupt)
+                with self.assertRaisesRegex(ValueError, '^INVALID_WORKSPACE_RECORD$'):
+                    self.op('inspect', record)
+                listed = self.op('list', workspace_ids=[record['id']])
+                self.assertEqual([], listed['workspaces'])
+                self.assertEqual([record['id']], listed['unavailable_workspace_ids'])
+                self.assertEqual(before, (w.git(self.root, 'rev-parse', 'HEAD'),
+                    w.git(self.root, 'status', '--porcelain'), (self.root / 'main.txt').read_text()))
+        w.save(self.root, saved)
+        self.op('fail', record)
+        self.op('discard', record)
+
     def test_expired_task_is_recoverable_without_deleting_changes(self):
         record = self.op('prepare')
         saved = w.load(self.root, record['id'])

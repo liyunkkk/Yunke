@@ -39,6 +39,19 @@ class ChildGroupReplacementTest {
         assertNull(select(snapshot().put("workspace_id", JSONObject.NULL)).error)
     }
 
+    @Test fun stoppedNoProgressPauseIsEligibleButManualPauseIsNot() {
+        val stalled = snapshot().put("status", "awaiting_decision").put("error_code", "SUB_AGENT_NO_PROGRESS")
+        assertTrue(ChildTaskReplacementSelection.eligibleStatus(stalled))
+        assertFalse(ChildTaskReplacementSelection.eligibleStatus(snapshot().put("status", "awaiting_decision")))
+        assertFalse(ChildTaskReplacementSelection.eligibleStatus(snapshot().put("status", "cancelled")))
+        val selected = ChildTaskReplacementSelection.choose("owner", "old-generation", listOf(worker("owner")),
+            listOf(worker("owner", revision = "new")), stalled, JSONObject(), 7, false)
+        assertEquals(0, selected.index)
+        assertEquals("STOP_NOT_CONFIRMED", ChildTaskReplacementSelection.choose("owner", "old-generation",
+            listOf(worker("owner")), listOf(worker("owner", revision = "new")),
+            stalled.put("execution_stopped", false), JSONObject(), 7, false).error)
+    }
+
     @Test fun explicitOtherWorkerKeepsProviderIsolationButNoFirstAvailableFallback() {
         val old = worker("owner")
         val alternate = AgentChildTaskGroups.Worker("other", "review", "provider-b")

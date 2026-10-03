@@ -645,7 +645,7 @@ internal class SubAgentCoordinator(
             .put("workspace_ownership_verified", task.workspaceOwnershipVerified).put("review_required", true).put("can_continue", paused && !closed && !stopping)
             // Eligibility is not a promise that execution has stopped: a no-progress pause still
             // needs the explicit stop/handoff path. Terminal tasks finishing cleanup are not eligible.
-            .put("can_replace", (task.state in ACTIVE || !active(task)) &&
+            .put("can_replace", !closed && !stopping && (task.state in ACTIVE || !active(task)) &&
                 task.successorId == null && task.workspaceId == null &&
                 replaceReason in setOf("failed", "blocked_no_progress", "blocked_stopped"))
             .put("successor_task_id", task.successorId ?: JSONObject.NULL).put("replaces_task_id", task.predecessorId ?: JSONObject.NULL).put("replace_reason", replaceReason)
