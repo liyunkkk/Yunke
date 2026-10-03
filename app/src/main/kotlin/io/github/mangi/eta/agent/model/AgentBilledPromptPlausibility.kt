@@ -46,7 +46,8 @@ internal object AgentBilledPromptPlausibility {
      * the local estimate is deliberately avoided: the local heuristic under-counts images
      * and screenshots, so a genuine cache hit can be several times larger than it, and
      * dropping that receipt would freeze the ring and silence the 80% compaction.
-     * Smaller relay inflations are left to the decision budget's growth check.
+     * Plausible receipts are adopted immediately; no local-growth or later-request
+     * confirmation is required.
      */
     fun isInflatedCacheRead(inputTokens: Int?, cachedTokens: Int?, contextWindow: Int?): Boolean {
         val cached = cachedTokens?.takeIf { it > 0 } ?: return false
