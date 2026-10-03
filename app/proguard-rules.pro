@@ -37,11 +37,6 @@
 
 # 配置 key 是字符串常量并通过静态调用访问，不需要保留类名或成员名。
 
-# Vivo NativeApi 使用外部 App 的 ClassLoader 反射这两个 Kotlin 类型；原名是跨 ClassLoader ABI。
-# 仅保名，避免 R8 将 Class.forName 字符串改成 Eta 私有混淆名；不保留整个 Kotlin 包或成员。
--keepnames interface kotlin.jvm.functions.Function2
--keepnames class kotlin.coroutines.jvm.internal.ContinuationImpl
-
 # ── Release 日志策略 ────────────────────────────────────────────────────────
 # 仅删除 Eta 自有代码中的 Android VERBOSE/DEBUG 调用；INFO/WARN/ERROR 必须保留，
 # 第三方依赖的日志策略由依赖自身决定。
