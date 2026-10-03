@@ -4,6 +4,8 @@ import android.content.Context
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.ui.model.*
 import kotlinx.coroutines.*
 import org.junit.Assert.*
@@ -23,6 +25,9 @@ class AgentCloudUsageRegressionTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         try {
             val app = AgentAppState(context, scope)
+            call(app, "updateSelectionProviders", listOf(
+                OpenAiCompatibleProviderSetting("p", "Test", "https://example.org/v1",
+                    models = listOf(Model("m", "model", "Model")))))
             val state = AgentChatHomeUiState(messages = listOf(
                 ContextCompactedMessageUi("old-run-marker", 5, "summary", resumeRound = 9)),
                 input = "", isStreaming = true, thinkingEnabled = false, providerId = "p", modelId = "m")
