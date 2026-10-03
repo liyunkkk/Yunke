@@ -202,21 +202,45 @@ class AgentCompressionBoundaryTest {
     }
 
     @Test fun firstRequestDoesNotAutoCompactFromLocalHistoryEstimate() {
-        val source = JSONArray().put(AgentConversationCodec.userTextMessage("x".repeat(352_000)))
+        // The fixture must sit inside the band between the 80% auto-compaction pressure line and
+        // the conservative uncalibrated hard send limit (same shape as AgentAutomaticCompactionTest).
+        // A 100k window can no longer host that band once the 12% reserve landed: its hard limit
+        // (~78.9k) is below the 80% line (~80k), so the old ~90k fixture paused instead of sending.
+        // 260k reopens a 208k..211.7k band for the same local-only estimate.
+        val window = 260_000
+        val huge = "x".repeat(830_000)
+        val source = JSONArray().put(AgentConversationCodec.userTextMessage(huge))
             .put(JSONObject().put("role", "assistant").put("content", "old result"))
             .put(AgentConversationCodec.userTextMessage("y".repeat(8000)))
-        val model = config(100_000)
+        val model = config(window)
+        val outputReserve = AgentCompressionBoundary.outputReserve(model)
+        val pressure = AgentContextCompactor.autoPressureTokens(window)
+        val hardLimit = AgentCompressionBoundary.inputLimit(window, outputReserve, calibrated = false)
+        val local = AgentRequestTokenEstimate.boundary(source, JSONArray(), model.supportsVision, model.supportsVideo)
+        // Above 80% of the window, so a target receipt could schedule a summary...
+        assertTrue("local=$local pressure=$pressure", local >= pressure)
+        // ...but below the uncalibrated send limit, so the first request still leaves unsummarized.
+        assertTrue("local=$local hardLimit=$hardLimit", local <= hardLimit)
+        // The 12% reserve must keep the uncalibrated ceiling strictly below the calibrated one.
+        assertTrue(hardLimit < AgentCompressionBoundary.inputLimit(window, outputReserve))
         var compacted = false
         var requests = 0
+        val controller = AgentRunController()
         AgentLoop(model, source, JSONArray(), provider { request ->
             requests++
             assertFalse(compacted)
-            assertEquals("x".repeat(352_000), request.messages.getJSONObject(0).getString("content"))
+            assertEquals(huge, request.messages.getJSONObject(0).getString("content"))
             assertEquals("y".repeat(8000), request.messages.getJSONObject(2).getString("content"))
             JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop")
-        }, AgentModelClient.ToolExecutor { error("No tools") }, AgentRunController(), AgentTraceFormatter(),
-            onEvent = { if (it is AgentEvent.ContextCompacted && it.applied) compacted = true },
-            compactPolicy = AgentLoop.CompactPolicy(true, 100_000, 1, model),
+        }, AgentModelClient.ToolExecutor { error("No tools") }, controller, AgentTraceFormatter(),
+            onEvent = {
+                if (it is AgentEvent.ContextCompacted) {
+                    if (it.applied) compacted = true
+                    // A hard-limit pause must fail fast instead of hanging until the 45s rule.
+                    if (it.blocked) controller.cancel()
+                }
+            },
+            compactPolicy = AgentLoop.CompactPolicy(true, window, 1, model),
             compactHistory = { _, _ -> error("No cloud usage: must not summarize") },
         ).run()
         assertEquals(1, requests)
