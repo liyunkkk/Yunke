@@ -508,6 +508,7 @@ fun AgentAppRoot(
                         draftField = agentState.currentDraftField(),
                         onAction = { action ->
                             when (action) {
+                                AgentHomeAction.CycleGptSpeedMode -> agentState.cycleGptSpeedMode()
                                 is AgentHomeAction.ReasoningEffortChanged ->
                                     agentState.updateReasoningEffort(action.effort)
                                 is AgentHomeAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId, usageConversationId)
@@ -578,6 +579,7 @@ fun AgentAppRoot(
                         onAction = { action ->
                             when (action) {
                                 AgentChatAction.NavigateBack -> popRoute()
+                                AgentChatAction.CycleGptSpeedMode -> agentState.cycleGptSpeedMode()
                                 is AgentChatAction.ReasoningEffortChanged ->
                                     agentState.updateReasoningEffort(action.effort)
                                 is AgentChatAction.ContextTaskSelected -> agentState.selectContextTask(action.taskId, usageConversationId)
