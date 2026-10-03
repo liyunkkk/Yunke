@@ -124,9 +124,20 @@ class ChildWorkerGptSpeedTest {
         assertEquals(original.model.reasoningEffort, restored.reasoningEffort)
     }
 
-    @Test fun bindingLosingTextEligibilityDuringResolutionCannotMixRevisions() = runBlocking {
+    @Test fun mediaMetadataChangeDuringResolutionPreservesGptSpeed() = runBlocking {
         var reads = 0
         val changed = provider.copy(models = listOf(model.copy(outputModalities = listOf(Model.AUDIO_MODALITY))))
+        val selected = speed(GptSpeedMode.FAST)
+        val candidate = ChildWorkerConfigResolver.resolveWorker("owner", ConversationSubAgentConfig(listOf(selected)), selected.id, selected.role,
+            providerLookup = { if (reads++ == 0) provider else changed },
+            modelResolver = { RuntimeConfigRepository.buildRuntimeConfig(provider, model) })
+        assertEquals(Policy.Availability.AVAILABLE, candidate.availability)
+        assertEquals(GptSpeedMode.FAST, requireNotNull(candidate.configuration).model.gptSpeedMode)
+    }
+
+    @Test fun actualModelChangeDuringResolutionCannotMixRevisions() = runBlocking {
+        var reads = 0
+        val changed = provider.copy(models = listOf(model.copy(modelId = "claude-sonnet")))
         val selected = speed(GptSpeedMode.FAST)
         val candidate = ChildWorkerConfigResolver.resolveWorker("owner", ConversationSubAgentConfig(listOf(selected)), selected.id, selected.role,
             providerLookup = { if (reads++ == 0) provider else changed },
