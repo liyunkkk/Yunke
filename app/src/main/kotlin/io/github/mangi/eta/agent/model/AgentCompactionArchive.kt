@@ -193,6 +193,10 @@ internal class AgentCompactionArchive(filesDir: File, sessionId: String) {
         }
         val id = checkpoint.trim().removePrefix(POINTER_PREFIX).trim()
         if (!ID.matches(id)) throw CompactionArchiveRestoreException("检查点 ID 无效")
+        if (!root.isDirectory || Files.isSymbolicLink(root.toPath()) ||
+            Files.isSymbolicLink(root.parentFile!!.toPath())) {
+            throw CompactionArchiveRestoreException("会话原文目录无效或包含链接")
+        }
         val budget = RestoreBudget(archiveLimit, byteLimit)
         val messages = decodeArchive(readVerifiedArchive(id, budget), id)
         return expandPrunedToolOutputs(messages, budget, 0)
@@ -201,6 +205,10 @@ internal class AgentCompactionArchive(filesDir: File, sessionId: String) {
     /** 只按 ID 读取本会话根目录内的单个归档，复用 16 MiB 与 SHA-256 防护，不遍历目录。 */
     private fun readVerifiedArchive(id: String, budget: RestoreBudget): String {
         if (!ID.matches(id)) throw CompactionArchiveRestoreException("检查点 ID 无效")
+        if (Files.isSymbolicLink(root.toPath()) || Files.isSymbolicLink(root.parentFile!!.toPath()) ||
+            File(root.parentFile, "$scope.deleted").exists()) {
+            throw CompactionArchiveRestoreException("会话原文目录已失效")
+        }
         if (!budget.visited.add(id)) throw CompactionArchiveRestoreException("恢复路径出现重复或循环的检查点")
         if (budget.archives >= budget.archiveLimit) {
             throw CompactionArchiveRestoreException("单次恢复读取的归档数量超过上限")
@@ -231,10 +239,12 @@ internal class AgentCompactionArchive(filesDir: File, sessionId: String) {
         } catch (failure: Exception) {
             throw CompactionArchiveRestoreException("检查点 $id 的原文不是有效 JSON", failure)
         }
+        if (array.length() == 0) throw CompactionArchiveRestoreException("检查点原文为空")
         return (0 until array.length()).map { index ->
             val item = array.optJSONObject(index)
                 ?: throw CompactionArchiveRestoreException("检查点 $id 的原文第 ${index + 1} 条不是消息对象")
             try {
+                AgentCompactionArchiveSchema.validateMessage(item)
                 AgentConversationCodec.fromJsonObject(item)
             } catch (failure: Exception) {
                 throw CompactionArchiveRestoreException("检查点 $id 的原文无法还原为消息", failure)

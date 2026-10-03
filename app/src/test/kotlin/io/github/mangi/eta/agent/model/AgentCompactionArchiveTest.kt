@@ -320,4 +320,54 @@ context-checkpoint:22222222-2222-2222-2222-222222222222
         assertEquals("tool", restored.single().role)
         assertEquals(redacted, restored.single().content)
     }
+    @Test fun restoreRejectsLossySchemaEvenWhenChecksumMatches() {
+        val archive = AgentCompactionArchive(temporary.root, "schema")
+        val id = archive.save(listOf(AgentModelClient.ConversationMessage("user", "original")))
+        val file = temporary.root.walkTopDown().single { it.name == "$id.json" }
+        val malformed = listOf(
+            JSONObject(),
+            JSONObject().put("role", 123).put("content", "text"),
+            JSONObject().put("role", "bogus").put("content", "text"),
+            JSONObject().put("role", "user").put("content", 123),
+            JSONObject().put("role", "user").put("content", true),
+            JSONObject().put("role", "tool").put("content", "text").put("tool_call_id", 12),
+            JSONObject().put("role", "assistant").put("content", "").put("tool_calls", JSONObject()),
+            JSONObject().put("role", "assistant").put("content", "").put("tool_calls", JSONArray().put(7)),
+        )
+        for (message in malformed) {
+            file.writeText(JSONArray().put(message).toString())
+            File(file.parentFile, "$id.sha256").writeText(io.github.mangi.eta.data.repository.BackupDurability.digest(file))
+            assertThrows(CompactionArchiveRestoreException::class.java) { archive.restoreHistory(id) }
+        }
+        file.writeText("[]")
+        File(file.parentFile, "$id.sha256").writeText(io.github.mangi.eta.data.repository.BackupDurability.digest(file))
+        assertThrows(CompactionArchiveRestoreException::class.java) { archive.restoreHistory(id) }
+    }
+
+    @Test fun restoreRejectsScopeDirectoryLinkToAnotherConversation() {
+        val other = AgentCompactionArchive(temporary.root, "other-scope")
+        val id = other.save(listOf(AgentModelClient.ConversationMessage("user", "other original")))
+        val otherRoot = temporary.root.walkTopDown().single { it.name == "$id.json" }.parentFile!!
+        val own = AgentCompactionArchive(temporary.root, "own-scope")
+        val ownId = own.save(listOf(AgentModelClient.ConversationMessage("user", "own")))
+        val ownRoot = temporary.root.walkTopDown().single { it.name == "$ownId.json" }.parentFile!!
+        assertTrue(ownRoot.deleteRecursively())
+        java.nio.file.Files.createSymbolicLink(ownRoot.toPath(), otherRoot.toPath())
+        assertThrows(CompactionArchiveRestoreException::class.java) { own.restoreHistory(id) }
+    }
+
+    @Test fun restoreCountsToolBytesAndRejectsOversizedSingleArchive() {
+        val archive = AgentCompactionArchive(temporary.root, "limits")
+        val original = AgentModelClient.ConversationMessage("tool", "head ORIGINAL tail", toolCallId = "call", turnId = "turn")
+        val tool = archive.save(listOf(original))
+        val marker = original.copy(content = "head\n[Eta tool output pruned; original: context-checkpoint:$tool; read_compacted_history]\ntail")
+        val rootId = archive.save(listOf(marker))
+        val rootFile = temporary.root.walkTopDown().single { it.name == "$rootId.json" }
+        assertThrows(CompactionArchiveRestoreException::class.java) {
+            archive.restoreHistory(rootId, 128, rootFile.length())
+        }
+        java.io.RandomAccessFile(rootFile, "rw").use { it.setLength(16L * 1024 * 1024 + 1) }
+        assertThrows(CompactionArchiveRestoreException::class.java) { archive.restoreHistory(rootId) }
+    }
+
 }
