@@ -105,6 +105,7 @@ internal object AgentModelClient {
         compactionArchive: AgentCompactionArchive? = null,
         turnId: String = java.util.UUID.randomUUID().toString(),
         calibratedInputTokens: Int? = null,
+        allowUnmeasuredContextSend: Boolean = false,
     ): ModelResponse.Text {
         config.validate()
         val initialCapabilities = capabilitiesProvider()
@@ -192,6 +193,7 @@ internal object AgentModelClient {
             compactionArchive = compactionArchive,
             turnId = turnId,
             calibratedInputTokens = calibratedInputTokens,
+            allowUnmeasuredContextSend = allowUnmeasuredContextSend,
             onHistoryCompacted = { transcriptStartIndex = messages.length() },
             toolsForRound = {
                 val capabilities = capabilitiesProvider()

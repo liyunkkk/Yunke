@@ -707,6 +707,35 @@ class AgentRuntimeWireTest {
     }
 
     @Test
+    fun unknownContextSendPermissionRoundTripsAndOldBundleDefaultsFalse() {
+        val config = AgentModelClient.ModelConfig(
+            baseUrl = "https://example.invalid/v1", apiKey = "test", model = "test", systemPrompt = "",
+        )
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "unknown-context", prompt = "hello", config = config, images = emptyList(),
+        )
+        assertFalse(request.allowUnmeasuredContextSend)
+        for (allowed in listOf(false, true)) {
+            // Both encoders share requestBundle; verify the current and legacy entry points.
+            val restored = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toBundle(
+                request.copy(allowUnmeasuredContextSend = allowed), emptyList(), emptyHistoryDescriptor(),
+            ))
+            assertEquals(allowed, restored.allowUnmeasuredContextSend)
+            assertNull(restored.calibratedInputTokens) // Permission must never become trusted usage.
+            val seeded = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toLegacyBundle(
+                request.copy(allowUnmeasuredContextSend = allowed, calibratedInputTokens = 100_000),
+                emptyHistoryDescriptor(),
+            ))
+            assertEquals(allowed, seeded.allowUnmeasuredContextSend)
+            assertEquals(100_000, seeded.calibratedInputTokens)
+        }
+        val oldBundle = AgentRuntimeWire.toLegacyBundle(
+            request.copy(allowUnmeasuredContextSend = true), emptyHistoryDescriptor(),
+        ).apply { remove("allow_unmeasured_context_send") }
+        assertFalse(AgentRuntimeWire.runRequestFromBundle(oldBundle).allowUnmeasuredContextSend)
+    }
+
+    @Test
     fun largeResultTranscriptUsesFileDescriptorAndStaysOutOfBinderBundle() {
         val transcript = List(20) { index ->
             AgentModelClient.ConversationMessage(

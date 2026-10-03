@@ -39,6 +39,8 @@ internal class AgentLoop(
         List<AgentModelClient.ConversationMessage>,
         CompactPolicy,
     ) -> List<AgentModelClient.ConversationMessage>)? = null,
+    /** Explicit permission to send an unknown context; never a usage receipt or calibration. */
+    allowUnmeasuredContextSend: Boolean = false,
 ) {
     data class CompactPolicy(
         val enabled: Boolean,
@@ -107,6 +109,8 @@ internal class AgentLoop(
     private var hasDisplayCloudReceipt = false
     private val requestBudget = AgentRequestBudgetPolicy()
     private val silentBudget = AgentSilentContextBudget()
+    // A committed summary starts a new unknown context epoch. Pruning or failed summaries do not.
+    private var unmeasuredContextSendAllowed = allowUnmeasuredContextSend
     private var suppressThinkingForNextRequest = false
     private val continuationBlocks = AgentContinuationBlocks()
     private val continuationReasoning = AgentContinuationReasoning()
@@ -596,7 +600,8 @@ internal class AgentLoop(
             }
             return true
         }
-        // Hard send limit only. No target receipt keeps the extra 12% reserve; that reserve
+        // Hard send limit only, except explicitly permitted unknown contexts. No target
+        // receipt keeps the extra 12% reserve; that reserve
         // is not an exact guarantee, and a provider CONTEXT_WINDOW_EXCEEDED still retries once.
         // Automatic 80% scheduling reads same-model cloud input only. Do not open the window to 100%.
         return overHardInputLimit()
@@ -614,6 +619,9 @@ internal class AgentLoop(
 
     private fun overHardInputLimit(): Boolean {
         if ((config.contextWindow ?: 0) <= 0) return false
+        // Seeds and accepted receipts both retain the original hard guard. A stale cloud
+        // display still has an anchor; only an explicitly permitted unknown context is exempt.
+        if (unmeasuredContextSendAllowed && !silentBudget.isCalibrated()) return false
         val local = localRequestTokens()
         val calibrated = silentBudget.sendLimitTokens(local)
         // A previous-run seed has no independently verified target receipt. It may tighten,
@@ -762,8 +770,8 @@ internal class AgentLoop(
         if (reduced || pruned) {
             overflowPending = false
             skipIneffectiveAutoCompact = false
-            // A committed summary clears the receipt; the next one decides whether another
-            // pass is needed. The hard send limit still guards the request in between.
+            // A committed summary clears calibration and permits the new unknown context;
+            // the next accepted receipt restores the hard guard and decides further maintenance.
         } else if (!forced) {
             markIneffectiveAutoCompact()
         }
@@ -951,6 +959,7 @@ internal class AgentLoop(
         requestBudget.contextReplaced()
         hasDisplayCloudReceipt = false
         silentBudget.contextReplaced()
+        unmeasuredContextSendAllowed = true
         autoCompactLatched = false
         compactionFailure = ""
         onHistoryCompacted()

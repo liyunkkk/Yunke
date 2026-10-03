@@ -160,6 +160,7 @@ internal object AgentRuntimeWire {
     private const val LEGACY_BREENO_HANDOFF_SOURCE = "breeno"
     private const val KEY_HISTORY_ALREADY_COMPACTED = "history_already_compacted"
     private const val KEY_CALIBRATED_INPUT_TOKENS = "calibrated_input_tokens"
+    private const val KEY_ALLOW_UNMEASURED_CONTEXT_SEND = "allow_unmeasured_context_send"
     private const val KEY_CREATED_AT = "created_at"
     private const val KEY_RESULTS = "results"
     private const val KEY_VIRTUAL_DELIVERY_COMPLETED = "virtual_delivery_completed"
@@ -187,6 +188,8 @@ internal object AgentRuntimeWire {
          * 第一张回执之前用本地字符估算决定自动压缩。
          */
         val calibratedInputTokens: Int? = null,
+        /** Caller permission for an unknown context, not a trusted usage receipt or seed. */
+        val allowUnmeasuredContextSend: Boolean = false,
     ) {
         val effectiveTurnId: String get() = turnId.ifBlank { runId }
         // 旧入口沿用会话 handoff；无持久会话的入口以首个 run 为会话起点。
@@ -334,6 +337,7 @@ internal object AgentRuntimeWire {
         putString(KEY_SESSION_KEY_FIELD, request.config.sessionKeyField)
         putBoolean(KEY_HISTORY_ALREADY_COMPACTED, request.historyAlreadyCompacted)
         request.calibratedInputTokens?.takeIf { it > 0 }?.let { putInt(KEY_CALIBRATED_INPUT_TOKENS, it) }
+        putBoolean(KEY_ALLOW_UNMEASURED_CONTEXT_SEND, request.allowUnmeasuredContextSend)
         request.handoff?.let { putBundle(KEY_HANDOFF, toBundle(it)) }
         putParcelable(KEY_HISTORY_FD, historyDescriptor)
         putParcelableArrayList(
@@ -472,6 +476,7 @@ internal object AgentRuntimeWire {
                 false
             },
             calibratedInputTokens = bundle.optionalInt(KEY_CALIBRATED_INPUT_TOKENS)?.takeIf { it > 0 },
+            allowUnmeasuredContextSend = bundle.getBoolean(KEY_ALLOW_UNMEASURED_CONTEXT_SEND, false),
         )
 
     fun toBundle(handoff: EntryHandoff): Bundle = Bundle().apply {

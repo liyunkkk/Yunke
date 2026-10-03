@@ -18,6 +18,35 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentModelClientLoopTest {
+    @Test fun completeForwardsExplicitUnknownContextPermission() {
+        val prompt = "中".repeat(190_000) // >272k local tokens, safely below the stored-character cap.
+        assertTrue(AgentContextBudget.countTokens(prompt) > 272_000)
+        for (allowed in listOf(false, true)) {
+            val controller = AgentRunController()
+            val provider = ScriptedProvider(assistant(content = "done", finishReason = "stop"))
+            val run = {
+                AgentModelClient.complete(
+                    config = modelConfig().copy(contextWindow = 272_000), prompt = prompt,
+                    provider = provider, runController = controller,
+                    allowUnmeasuredContextSend = allowed,
+                    onEvent = { event ->
+                        if (event is AgentEvent.ContextCompacted && event.blocked) controller.cancel()
+                    },
+                    toolExecutor = AgentModelClient.ToolExecutor { error("Unexpected tool") },
+                )
+            }
+            if (allowed) {
+                assertEquals("done", run().content)
+                assertEquals(1, provider.requests.size)
+                assertEquals(prompt, provider.requests.single()
+                    .getJSONObject(provider.requests.single().length() - 1).getString("content"))
+            } else {
+                assertThrows(io.github.mangi.eta.agent.runtime.AgentRunCancelledException::class.java) { run() }
+                assertTrue(provider.requests.isEmpty())
+            }
+        }
+    }
+
     @Test fun stoppingMidBatchKeepsCompletedResultsAndMarksUnconfirmedCalls() {
         val controller = AgentRunController()
         val provider = ScriptedProvider(assistant(finishReason = "tool_calls", toolCalls = listOf(
