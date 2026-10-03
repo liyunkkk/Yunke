@@ -846,11 +846,20 @@ internal fun AgentConversationMessages(
     // 上提照常，标签随动画一帧一帧往上让开。
     val shouldLiftTail = shouldFollowBottom
     val shouldClipTail = shouldClipChatTail(
+        isStreaming = isStreaming,
+        isBottomSettling = isBottomSettling,
         keepBottomAnchored = keepBottomAnchored,
         isUserScrolling = isUserScrolling,
         isUserDragging = isUserDragging,
-        navigationActive = messageNavigationJob != null,
+        navigationActive = messageNavigationJob != null || scrollToMessageId != null,
     )
+    // 附件、输入框换行和 IME 改的是实际尾部留白，不是新消息增长。
+    // 静态时没有跟底控制器接手；只在仍锚定且视口静止线确实变化时重新停靠。
+    AnchorChatTailOnViewportChange(scrollState, bottomItemIndex) {
+        currentAnchor.value && !currentStreaming.value && !isBottomSettling &&
+            !initialBottomPositionPending && !pointerDown[0] && !currentDragging.value &&
+            !isUserScrolling && messageNavigationJob == null && currentScrollTarget == null
+    }
     SideEffect {
         traceChatListOwnerCommit(
             trace = chatListTrace,
@@ -1158,9 +1167,10 @@ internal fun AgentConversationMessages(
 
     // 输入器悬浮在会话之上：视口铺满到屏幕底，输入框四周透明、能看到后面的消息。
     // 跟底输出期间（思考/正文生成、未手动滑动），卡片/正文每长一行，跟底滚动要晚几帧
-    // 才追上。绘制阶段会把已经量到的尾部上提；底部锚定保护持续裁在输入框上方的静止线；
+    // 才追上。绘制阶段会把已经量到的尾部上提；输出及渲染收尾时才裁在输入框上方的静止线，
     // 覆盖超快输出在 isStreaming 结束后、列表滚动尚未完成的过渡帧。
-    // 用户一拖动或跳转消息，锚定保护解除，内容可以正常滑到输入框后面。
+    // 静态锚定只用于尾部停靠，不是永久绘制遮挡；无需先滑动，透明周边也能透出消息。
+    // 用户一拖动或跳转消息，输出保护也立即解除。
     val restClip = remember(bottomInset) { ComposerRestClip(bottomInset + ConversationComposerGap) }
     // 尾部这一帧量不到时不能把上提清零，否则卡片会掉进输入框再弹回来。
     val heldTailLift = remember { intArrayOf(0) }
@@ -1822,12 +1832,15 @@ internal fun resolveBottomFollowEnabled(
     isBottomSettling: Boolean = false,
 ): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
 
+/** 尾部留白负责静态停靠；整宽裁剪只负责输出及布局追平前的防溢出。 */
 internal fun shouldClipChatTail(
+    isStreaming: Boolean,
+    isBottomSettling: Boolean,
     keepBottomAnchored: Boolean,
     isUserScrolling: Boolean,
     isUserDragging: Boolean,
     navigationActive: Boolean,
-): Boolean = keepBottomAnchored &&
+): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored &&
     !isUserScrolling &&
     !isUserDragging &&
     !navigationActive
@@ -1860,6 +1873,39 @@ internal fun resolveConversationBottomSnap(
         return BottomFollowDecision(requestIndex = bottomItemIndex)
     }
     return BottomFollowDecision(scrollByPx = lastVisibleBottom - viewportEnd)
+}
+
+/**
+ * Reposition an idle anchored tail only when the measured rest line changes.
+ * Observe LazyColumn's applied padding/viewport, not a new bottomInset paired with
+ * stale layoutInfo. Do not restart on enable/content changes: those belong to initial
+ * positioning, navigation and the streaming follow controller respectively.
+ */
+@Composable
+internal fun AnchorChatTailOnViewportChange(
+    scrollState: LazyListState,
+    bottomItemIndex: Int,
+    canPosition: () -> Boolean,
+) {
+    val currentBottomIndex by rememberUpdatedState(bottomItemIndex)
+    val currentCanPosition by rememberUpdatedState(canPosition)
+    LaunchedEffect(scrollState) {
+        var previousRestLine: Int? = null
+        snapshotFlow {
+            val info = scrollState.layoutInfo
+            if (info.totalItemsCount == 0 || info.viewportSize.height == 0) null
+            else info.viewportEndOffset - info.afterContentPadding
+        }
+            .distinctUntilChanged()
+            .collectLatest { restLine ->
+                if (restLine == null) return@collectLatest
+                val changed = previousRestLine != null && previousRestLine != restLine
+                previousRestLine = restLine
+                if (changed && currentCanPosition()) {
+                    snapListToBottom(scrollState, currentBottomIndex) { currentCanPosition() }
+                }
+            }
+    }
 }
 
 private suspend fun snapListToBottom(
