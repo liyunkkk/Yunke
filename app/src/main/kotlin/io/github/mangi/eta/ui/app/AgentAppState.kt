@@ -4439,7 +4439,8 @@ internal class AgentAppState(
                 event !is AgentEvent.ContextCompacted &&
                 event !is AgentEvent.UserSupplementReceived &&
                 event !is AgentEvent.UsageReceived &&
-                event !is AgentEvent.ChildContextUpdated
+                event !is AgentEvent.ChildContextUpdated &&
+                !(event is AgentEvent.ErrorReconnectChanged && event.status != "running")
             ) {
                 return
             }
@@ -4515,7 +4516,8 @@ internal class AgentAppState(
     }
 
     private fun AgentEvent.allowedAfterSeal(): Boolean =
-        this is AgentEvent.UsageReceived || this is AgentEvent.ChildContextUpdated
+        this is AgentEvent.UsageReceived || this is AgentEvent.ChildContextUpdated ||
+            (this is AgentEvent.ErrorReconnectChanged && status != "running")
 
     private fun scheduleRunDeltaFlush(runId: String) {
         if (runEventFlushJobs[runId]?.isActive == true) return
