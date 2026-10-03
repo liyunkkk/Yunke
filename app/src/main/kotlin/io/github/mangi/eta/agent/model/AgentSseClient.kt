@@ -15,6 +15,7 @@ import okhttp3.ResponseBody.Companion.asResponseBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import okio.buffer
 
 /**
  * Blocking JSON/SSE collector backed by a single OkHttp call.
@@ -196,10 +197,11 @@ internal object AgentSseClient {
                                     when (inspection.kind) {
                                         AgentResponseFormat.Kind.SSE -> {
                                             source.skip(inspection.preambleBytes)
+                                            val sseSource = SseLineEndingSource(source).buffer()
                                             val mediaType = "text/event-stream".toMediaType()
                                             responseCallback.onResponse(call, response.newBuilder()
                                                 .header("Content-Type", mediaType.toString())
-                                                .body(source.asResponseBody(mediaType, -1L))
+                                                .body(sseSource.asResponseBody(mediaType, -1L))
                                                 .build())
                                         }
                                         AgentResponseFormat.Kind.JSON -> response.use {
