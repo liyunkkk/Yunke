@@ -189,9 +189,10 @@ class AgentModelPickerProjectorTest {
         assertEquals(0f, contextUsageProgress(0, 100_000) ?: -1f, 0f)
         assertEquals(1f, contextUsageProgress(120_000, 100_000) ?: -1f, 0f)
         assertEquals("1.05M", formatCompactTokenCount(1_050_000))
-        // Unknown occupancy must not be rendered as a measured 0K / 0.0%.
+        // Unknown occupancy must not be rendered as a measured 0K / 0.0%, but it still keeps
+        // the configured window as its denominator.
         assertEquals(
-            "未知",
+            "未知 / 100K tokens",
             formatContextUsage(AgentContextUsageUi(contextTokens = null, contextWindow = 100_000)),
         )
         assertEquals(
@@ -213,6 +214,67 @@ class AgentModelPickerProjectorTest {
                 locale = java.util.Locale.GERMANY,
             ),
         )
+    }
+
+    @Test
+    fun unmeasuredStatesKeepTheConfiguredWindowInTheMeasuredDenominatorFormat() {
+        val model = AgentModelOptionUi(
+            id = "model",
+            providerId = "provider",
+            providerName = "Provider",
+            providerSourceType = ProviderSourceTypes.CUSTOM,
+            modelId = "model",
+            displayName = "Model",
+            contextWindow = 128_000,
+        )
+        // First turn before any learned ratio: "无" still names the configured limit it will be
+        // measured against, in the same place a measured reading prints its denominator.
+        val firstTurn = liveContextUsage(
+            emptyList(), "", emptyList(), model,
+            contextDisplayPolicy = ContextDisplayPolicy(firstTurn = true),
+        )
+        assertEquals("无 / 128K tokens", formatContextUsage(firstTurn))
+        // First receipt after compaction: "未知" keeps the same denominator.
+        val awaitingReceipt = liveContextUsage(
+            emptyList(), "", emptyList(), model,
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true),
+        )
+        assertEquals("未知 / 128K tokens", formatContextUsage(awaitingReceipt))
+        // An in-flight run is measured against the window it was launched with, even while unknown.
+        val inFlight = liveContextUsage(
+            emptyList(), "", emptyList(), model, activeRunContextWindow = 200_000,
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true),
+        )
+        assertEquals("未知 / 200K tokens", formatContextUsage(inFlight))
+        // An unknown numerator never becomes a reading: no ratio, so the ring stays unmoved.
+        for (usage in listOf(firstTurn, awaitingReceipt, inFlight)) {
+            assertNull(usage.contextTokens)
+            assertNull(usage.progress)
+            assertFalse(usage.estimated)
+        }
+        // Structural contract: the unknown denominator is literally the measured one, and a model
+        // without a configured window still has no denominator to invent.
+        val measured = formatContextUsage(AgentContextUsageUi(64_000, 128_000), locale = java.util.Locale.US)
+        assertEquals("64K / 128K tokens · 50.0%", measured)
+        assertTrue(measured.contains(" / 128K tokens"))
+        assertTrue(formatContextUsage(awaitingReceipt, locale = java.util.Locale.US).endsWith(" / 128K tokens"))
+        val noWindow = AgentModelOptionUi(
+            id = "model",
+            providerId = "provider",
+            providerName = "Provider",
+            providerSourceType = ProviderSourceTypes.CUSTOM,
+            modelId = "model",
+            displayName = "Model",
+            contextWindow = null,
+        )
+        assertEquals("无", formatContextUsage(liveContextUsage(
+            emptyList(), "", emptyList(), noWindow,
+            contextDisplayPolicy = ContextDisplayPolicy(firstTurn = true),
+        )))
+        assertEquals("未知", formatContextUsage(liveContextUsage(
+            emptyList(), "", emptyList(), noWindow,
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true),
+        )))
     }
 
 
@@ -334,7 +396,8 @@ class AgentModelPickerProjectorTest {
             selectedModel = selected,
         )
         assertNull(usage.contextTokens)
-        assertEquals("未知", formatContextUsage(usage))
+        assertEquals("未知 / 8K tokens", formatContextUsage(usage))
+        assertNull(usage.progress)
         assertEquals(history.sumOf { AgentContextBudget.countMessage(it) },
             compressionContextUsage(history, "", emptyList(), selected).contextTokens)
     }
@@ -798,7 +861,8 @@ class AgentModelPickerProjectorTest {
             uncommittedLiveTokens = streaming,
         )
         assertNull(usage.contextTokens)
-        assertEquals("未知", formatContextUsage(usage))
+        assertEquals("未知 / 150K tokens", formatContextUsage(usage))
+        assertNull(usage.progress)
     }
 
     @Test
