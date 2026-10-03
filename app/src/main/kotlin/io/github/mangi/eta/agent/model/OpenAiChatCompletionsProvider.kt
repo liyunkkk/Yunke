@@ -151,19 +151,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             onEvent(ProviderEvent.BlockDelta(kind, block.contentIndex, delta))
         }
 
-        AgentSseClient.collect(
-            request = request,
-            runController = runController,
-            onOpen = { code -> onEvent(ProviderEvent.ResponseHeaders(code)) },
-            onEvent = sseEvent@{ _, _, data ->
-                val payload = data.trim()
-                if (payload.isBlank()) return@sseEvent
+        fun consumeFrame(payload: String) {
                 sawStreamData = true
-                if (payload == "[DONE]") {
-                    sawDone = true
-                    finish()
-                    return@sseEvent
-                }
                 val chunk = JSONObject(payload)
                 // Some gateways put billable usage on the same SSE frame as an error.
                 // Capture it before propagating the error so a completed/failed request
@@ -174,8 +163,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 throwStreamingErrorIfPresent(chunk)
                 val choices = chunk.optJSONArray("choices")
-                if (choices == null || choices.length() == 0) return@sseEvent
-                val choice = choices.optJSONObject(0) ?: return@sseEvent
+                if (choices == null || choices.length() == 0) return
+                val choice = choices.optJSONObject(0) ?: return
                 val reason = choice.optString("finish_reason")
                 if (reason.isNotBlank() && reason != "null") {
                     finishReason = reason
@@ -185,7 +174,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 val delta = choice.optJSONObject("delta")
                 val snapshot = choice.optJSONObject("message")
-                if (delta == null && snapshot == null) return@sseEvent
+                if (delta == null && snapshot == null) return
                 fun appendReasoning(text: String, isSnapshot: Boolean = false) {
                     if (text.isEmpty()) return
                     // A real delta is never a cumulative snapshot. Deduplicating repeated deltas
@@ -237,7 +226,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 val incomingToolCalls = delta?.optJSONArray("tool_calls")?.takeIf { it.length() > 0 }
                     ?: snapshot?.optJSONArray("tool_calls")?.takeIf { delta == null || toolCalls.isEmpty() }
-                    ?: return@sseEvent
+                    ?: return
                 if (incomingToolCalls.length() > 0) finishActiveVisibleBlock()
                 for (i in 0 until incomingToolCalls.length()) {
                     val item = incomingToolCalls.optJSONObject(i) ?: continue
@@ -272,6 +261,32 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                         )
                     }
                 }
+        }
+
+        AgentSseClient.collect(
+            request = request,
+            runController = runController,
+            onOpen = { code -> onEvent(ProviderEvent.ResponseHeaders(code)) },
+            onEvent = sseEvent@{ _, _, data ->
+                val payload = data.trim()
+                if (payload.isBlank()) return@sseEvent
+                if (payload == "[DONE]") {
+                    sawStreamData = true
+                    sawDone = true
+                    finish()
+                } else consumeFrame(payload)
+            },
+            onJson = { payload ->
+                val json = AgentResponseFormat.parseJsonObject(payload)
+                if (json.has("error") && !json.isNull("error") && json.optJSONObject("error") == null) {
+                    throw AgentModelFailure.stream(JSONObject(), "模型接口 JSON 返回错误")
+                }
+                if (json.optJSONObject("error") == null && json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message") == null) {
+                    throw AgentModelFailure.unexpectedResponse(200, "application/json", "")
+                }
+                consumeFrame(payload)
+                // A complete JSON message is terminal evidence, not an unfinished SSE tool delta.
+                sawDone = true
             },
             shouldIgnoreFailure = {
                 recoveredFinishReason(finishReason, content, reasoningContent, toolCalls) != null

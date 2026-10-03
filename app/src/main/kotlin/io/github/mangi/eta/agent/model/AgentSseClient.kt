@@ -3,21 +3,26 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import java.io.IOException
-import java.net.SocketException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.asResponseBody
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 
 /**
- * Blocking SSE collector backed by OkHttp EventSource.
+ * Blocking JSON/SSE collector backed by a single OkHttp call.
  *
- * Providers keep a synchronous complete() API. EventSource owns framing,
- * charset, and cancellation. Call [SseStream.finish] on terminal events
+ * Inspect a bounded prefix of that same response before choosing the protocol path.
+ * EventSource still owns SSE framing, charset, backpressure and cancellation;
+ * JSON is delivered once to the provider's terminal-response adapter.
+ * Call [SseStream.finish] on terminal events
  * such as `[DONE]` so a keep-alive connection cannot hang the turn.
  */
 internal object AgentSseClient {
@@ -26,6 +31,7 @@ internal object AgentSseClient {
         runController: AgentRunController,
         onOpen: (Int) -> Unit = {},
         onEvent: SseStream.(id: String?, type: String?, data: String) -> Unit,
+        onJson: (String) -> Unit = { throw AgentModelFailure.unexpectedResponse(null, "application/json", "") },
         shouldIgnoreFailure: () -> Boolean = { false },
         inspectHttpErrorBody: (String) -> Unit = {},
     ) {
@@ -143,22 +149,6 @@ internal object AgentSseClient {
                             )
                         }
                         t != null &&
-                            t.message.orEmpty().startsWith("Invalid content-type") -> {
-                            val body = response?.let {
-                                runCatching { it.body?.string() }.getOrNull()
-                            }.orEmpty()
-                            failure.compareAndSet(
-                                null,
-                                AgentModelFailure.unexpectedResponse(
-                                    status = response?.code,
-                                    contentType = response?.header("Content-Type")
-                                        ?: t.message?.substringAfter("Invalid content-type:")?.trim(),
-                                    body = body,
-                                    cause = t,
-                                ),
-                            )
-                        }
-                        t != null &&
                             !shouldIgnoreFailure() ->
                             failure.compareAndSet(null, t)
                     }
@@ -173,10 +163,100 @@ internal object AgentSseClient {
         } else {
             request
         }
-        val eventSource = EventSources
-            .createFactory(AgentHttpClient.modelClient)
-            .newEventSource(sseRequest, listener)
+        // Adapt only this response, not all requests on modelClient. The delegated Call owns
+        // cancellation even while sniffing/reading JSON; no generation request is replayed.
+        val callFactory = object : Call.Factory {
+            override fun newCall(request: Request): Call {
+                val call = AgentHttpClient.modelClient.newCall(request)
+                return object : Call by call {
+                    override fun enqueue(responseCallback: Callback) {
+                        call.enqueue(object : Callback {
+                            override fun onFailure(call: Call, e: IOException) = responseCallback.onFailure(call, e)
+
+                            override fun onResponse(call: Call, response: Response) {
+                                if (completed.get()) {
+                                    response.close()
+                                    return
+                                }
+                                // Preserve HTTP rejection handling before any format adaptation.
+                                if (!response.isSuccessful) {
+                                    responseCallback.onResponse(call, response)
+                                    return
+                                }
+                                try {
+                                    val body = response.body ?: throw AgentModelFailure.unexpectedResponse(
+                                        response.code, response.header("Content-Type"), "",
+                                    )
+                                    val source = body.source()
+                                    val inspection = AgentResponseFormat.inspect(source, response.header("Content-Type"))
+                                    if (completed.get()) {
+                                        response.close()
+                                        return
+                                    }
+                                    when (inspection.kind) {
+                                        AgentResponseFormat.Kind.SSE -> {
+                                            source.skip(inspection.preambleBytes)
+                                            val mediaType = "text/event-stream".toMediaType()
+                                            responseCallback.onResponse(call, response.newBuilder()
+                                                .header("Content-Type", mediaType.toString())
+                                                .body(source.asResponseBody(mediaType, -1L))
+                                                .build())
+                                        }
+                                        AgentResponseFormat.Kind.JSON -> response.use {
+                                            opened.set(true)
+                                            // Callback failures (including IOException) are not network
+                                            // disconnects and must never enter shouldIgnoreFailure.
+                                            try {
+                                                runController.withTransportCallback {
+                                                    runController.throwIfCancelled()
+                                                    emitOpen(response.code)
+                                                }
+                                            } catch (error: Throwable) {
+                                                failure.compareAndSet(null, error)
+                                                stream.finish()
+                                                return@use
+                                            }
+                                            // Keep body reads outside the callback catches so transport
+                                            // cancellation/pause handling still follows the network path.
+                                            source.skip(inspection.preambleBytes)
+                                            val json = body.string()
+                                            try {
+                                                if (!completed.get()) runController.withTransportCallback {
+                                                    runController.throwIfCancelled()
+                                                    onJson(json)
+                                                }
+                                            } catch (error: Throwable) {
+                                                failure.compareAndSet(null, error)
+                                                stream.finish()
+                                                return@use
+                                            }
+                                            stream.finish()
+                                        }
+                                        AgentResponseFormat.Kind.UNKNOWN -> response.use {
+                                            // Do not retain/log arbitrary successful-response bodies as diagnostics.
+                                            throw AgentModelFailure.unexpectedResponse(
+                                                response.code, response.header("Content-Type"), "",
+                                            )
+                                        }
+                                    }
+                                } catch (error: Throwable) {
+                                    response.close()
+                                    if (error is IOException) {
+                                        responseCallback.onFailure(call, error)
+                                    } else {
+                                        failure.compareAndSet(null, error)
+                                        stream.finish()
+                                    }
+                                }
+                            }
+                        })
+                    }
+                }
+            }
+        }
+        val eventSource = EventSources.createFactory(callFactory).newEventSource(sseRequest, listener)
         eventSourceRef.set(eventSource)
+        if (completed.get()) eventSource.cancel()
         // finish() 先标记 completed 并唤醒 collect，再 cancel EventSource。
         // 若先 cancel，OkHttp 可能排完当前 body 才返回，追加指令就会等到整段输出结束。
         val binding = runController.register(interruptible = true) {
@@ -212,15 +292,4 @@ internal object AgentSseClient {
         }
     }
 
-    private fun isBenignClose(error: Throwable): Boolean {
-        if (error is AgentRunCancelledException) return true
-        val message = error.message.orEmpty()
-        if (error is SocketException) return true
-        return error is IOException && (
-            message.contains("Socket closed", ignoreCase = true) ||
-                message.contains("stream was reset", ignoreCase = true) ||
-                message.contains("canceled", ignoreCase = true) ||
-                message.contains("Cancelled", ignoreCase = true)
-            )
-    }
 }

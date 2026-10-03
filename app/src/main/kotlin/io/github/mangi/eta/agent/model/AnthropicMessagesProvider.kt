@@ -235,6 +235,39 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             request = request,
             runController = runController,
             onOpen = { code -> onEvent(ProviderEvent.ResponseHeaders(code)) },
+            onJson = { payload ->
+                val message = AgentResponseFormat.parseJsonObject(payload)
+                if (message.has("error") || message.optString("type") == "error") {
+                    parseUsage(message.optJSONObject("usage"))?.let { onEvent(ProviderEvent.Usage(it)) }
+                    dispatch("error", JSONObject(message.toString()).put("type", "error").toString())
+                }
+                val messageBlocks = message.optJSONArray("content")
+                if (message.optString("type") != "message" || messageBlocks == null) {
+                    throw AgentModelFailure.unexpectedResponse(200, "application/json", "")
+                }
+                // Reuse the SSE block consumer rather than creating a second normalization path.
+                dispatch("message_start", JSONObject().put("message", message).toString())
+                for (index in 0 until messageBlocks.length()) {
+                    val block = messageBlocks.optJSONObject(index) ?: continue
+                    dispatch("content_block_start", JSONObject().put("index", index).put("content_block", block).toString())
+                    val delta = when (block.optString("type")) {
+                        "text" -> JSONObject().put("type", "text_delta").put("text", block.optString("text"))
+                        "thinking" -> JSONObject().put("type", "thinking_delta").put("thinking", block.optString("thinking"))
+                        // Nonempty input was already appended by content_block_start.
+                        // Empty input needs one delta so BlockEnd matches the final tool call.
+                        "tool_use" -> block.optJSONObject("input")?.takeIf { it.length() == 0 }
+                            ?.let { JSONObject().put("type", "input_json_delta").put("partial_json", "{}") }
+                        else -> null
+                    }
+                    delta?.let { dispatch("content_block_delta", JSONObject().put("index", index).put("delta", it).toString()) }
+                    dispatch("content_block_stop", JSONObject().put("index", index).toString())
+                }
+                dispatch("message_delta", JSONObject()
+                    .put("delta", JSONObject().put("stop_reason", message.opt("stop_reason")))
+                    .put("usage", message.optJSONObject("usage"))
+                    .toString())
+                dispatch("message_stop", "{}")
+            },
             onEvent = sseEvent@{ _, type, data ->
                 val payload = data.trim()
                 if (payload.isBlank()) return@sseEvent

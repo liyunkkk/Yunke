@@ -394,6 +394,26 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             runController = runController,
             onOpen = { code -> onEvent(ProviderEvent.ResponseHeaders(code)) },
             inspectHttpErrorBody = { body -> deliveryGuard.inspectHttpBody(body) },
+            onJson = { payload ->
+                val response = AgentResponseFormat.parseJsonObject(payload)
+                // Preserve usage/error delivery and the tool-envelope guard on JSON errors too.
+                deliveryGuard.observe(response)
+                reportEventUsage(response)
+                throwEventError(response)
+                if (response.has("error") && !response.isNull("error")) {
+                    throw AgentModelFailure.stream(JSONObject(), "模型接口 JSON 返回错误")
+                }
+                val type = when (response.optString("status")) {
+                    "completed" -> "response.completed"
+                    "incomplete" -> "response.incomplete"
+                    "failed" -> "response.failed"
+                    else -> throw AgentModelFailure.unexpectedResponse(200, "application/json", "")
+                }
+                if (type != "response.failed" && response.optJSONArray("output") == null) {
+                    throw AgentModelFailure.unexpectedResponse(200, "application/json", "")
+                }
+                consumeFrame(JSONObject().put("type", type).put("response", response).toString())
+            },
             onEvent = sseEvent@{ _, _, data ->
                 val payload = data.trim()
                 if (payload.isBlank()) return@sseEvent
