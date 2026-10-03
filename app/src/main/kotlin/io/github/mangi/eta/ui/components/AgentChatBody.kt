@@ -1,7 +1,6 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -84,6 +83,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -645,14 +645,41 @@ internal fun AgentConversationMessages(
     var workExpansionOverrides by rememberSaveable(stateSaver = expansionSaver) {
         mutableStateOf<Map<String, Boolean>>(emptyMap())
     }
+    val workAnimations = remember(scrollState) { mutableStateMapOf<String, WorkGroupAnimation>() }
+    val mountedWorkSteps = remember(scrollState) { HashMap<String, MutableSet<String>>() }
+    val workAnimationGeneration = remember(scrollState) { longArrayOf(0L) }
+    fun finishWorkExit(groupKey: String, rowKey: String, generation: Long) {
+        val current = workAnimations[groupKey] ?: return
+        val next = current.finishExit(rowKey, generation)
+        if (next == null) workAnimations.remove(groupKey)
+        else if (next !== current) workAnimations[groupKey] = next
+    }
     LaunchedEffect(timelineEntries) {
         val activeKeys = timelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().mapTo(mutableSetOf()) { it.key }
         if (workExpansionOverrides.keys.any { it !in activeKeys }) {
             workExpansionOverrides = workExpansionOverrides.filterKeys { it in activeKeys }
         }
+        workAnimations.keys.toList().filter { it !in activeKeys }.forEach { workAnimations.remove(it) }
+        // A streaming update may remove a pending row without composing it again.
+        timelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().forEach { group ->
+            val animation = workAnimations[group.key] ?: return@forEach
+            val keys = group.messages.mapTo(HashSet()) { "work-step:${it.id}" }
+            (animation.pendingExitKeys - keys).forEach { finishWorkExit(group.key, it, animation.generation) }
+        }
     }
-    val timelineRows = remember(timelineEntries, workExpansionOverrides, isStreaming) {
-        timelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming)
+    workAnimations.forEach { (groupKey, animation) ->
+        androidx.compose.runtime.key(groupKey, animation.generation) {
+            LaunchedEffect(Unit) {
+                // Only the click's first lazy measurement cohort may enter. Later
+                // virtualization is settled, even while another row is animating.
+                withFrameNanos { }
+                animation.entrance.seal()
+            }
+        }
+    }
+    val retainedWorkSteps = workAnimations.mapValues { it.value.retainedStepKeys }
+    val timelineRows = remember(timelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps) {
+        timelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming, retainedWorkSteps)
     }
     LaunchedEffect(scrollToMessageId, timelineRows) {
         val target = scrollToMessageId ?: return@LaunchedEffect
@@ -758,6 +785,7 @@ internal fun AgentConversationMessages(
                         return Offset.Zero
                     }
                     messageNavigationJob?.cancel()
+                    workAnimations.values.forEach { it.entrance.seal() }
                     isUserScrolling = true
                     navigationDirection = directionTracker.onScroll(available.y, userInput = true)
                 }
@@ -911,10 +939,9 @@ internal fun AgentConversationMessages(
             }
         }
     }
-    // 点开工作过程时新插入的步骤行从 0 高度展开（只在下沿被钉住时）。
-    // 滚动进可视区、或过了这段时间才组合的行不播放。只在步骤行首次组合时读，
-    // 用普通 Map，写入不触发任何重组。
-    val workExpandStarts = remember { HashMap<String, Long>() }
+    // A measured/recovered message can be virtualized during a large expansion. Its stable
+    // key must not replay the root opacity animation when composed again in the same chat.
+    val appearedMessageKeys = remember { HashSet<String>() }
     // 点开工具或推理后，逐帧记下列表状态：跟底、上提、暂停上提、哨兵相对静止线的位置、
     // 用户是否在拖动。只在点击窗口内运行，读 layoutInfo 不参与组合。
     LaunchedEffect(scrollState) {
@@ -1185,6 +1212,18 @@ internal fun AgentConversationMessages(
     val viewportRecovery = remember(scrollState) {
         BottomFollowViewportRecovery(scrollState, ChatBottomSentinelKey)
     }
+    val canOwnWorkExpansionViewport: () -> Boolean = remember(scrollState) {
+        {
+            resolveWorkExpansionViewportOwnership(
+                keepBottomAnchored = currentAnchor.value,
+                initialBottomPositionPending = initialBottomPositionPending,
+                pointerDown = pointerDown[0],
+                isUserDragging = currentDragging.value,
+                isUserScrolling = isUserScrolling,
+                navigationActive = messageNavigationJob != null || currentScrollTarget != null,
+            )
+        }
+    }
     Box(
         modifier = modifier
             .clipToBounds()
@@ -1252,11 +1291,13 @@ internal fun AgentConversationMessages(
                     }
                 }
                 .onGloballyPositioned {
-                    // Consume only overflow that cannot fit in the existing draw buffer.
-                    // Keep the presentation layer and all card animations unchanged.
-                    val consumed = viewportRecovery.recover {
-                        shouldFollowBottom && !pointerDown[0] && !currentDragging.value &&
-                            !isUserScrolling && messageNavigationJob == null
+                    // Post-layout, before draw: pinned work insertion preserves a measured
+                    // pre-click key even when the tail is outside the lazy measurement window.
+                    // Normal follow still consumes only excess beyond the existing draw buffer.
+                    val consumed = viewportRecovery.recover(
+                        canRecoverExpansion = canOwnWorkExpansionViewport,
+                    ) {
+                        shouldFollowBottom && canOwnWorkExpansionViewport()
                     }
                     if (consumed > 0f) {
                         StreamPerformanceDiagnostics.record(
@@ -1323,10 +1364,16 @@ internal fun AgentConversationMessages(
                     LocalExpansionHoldsBottom provides expansionHoldsBottom,
                     LocalCompletedMarkdownCache provides completedMarkdownCache,
                 ) {
+                val firstMessageAppearance = if (entry is AgentTimelineRow.Message) {
+                    // Retire an existing root's appearance on an explicit work toggle even
+                    // if LazyColumn retains its composition while temporarily unmeasured.
+                    // New message keys still get the normal fade; work height animation is unchanged.
+                    remember(entry.key, workExpansionOverrides) { appearedMessageKeys.add(entry.key) }
+                } else false
                 Column(
                     modifier = Modifier.fillMaxWidth().then(
                         if (entry is AgentTimelineRow.Message) Modifier.animateItem(
-                            fadeInSpec = tween(durationMillis = 180),
+                            fadeInSpec = if (firstMessageAppearance) tween(durationMillis = 180) else null,
                             placementSpec = null,
                             fadeOutSpec = null,
                         ) else Modifier,
@@ -1376,10 +1423,47 @@ internal fun AgentConversationMessages(
                             messages = entry.group.messages,
                             isPaused = isPaused,
                             expanded = entry.expanded,
+                            // Deleted retained keys no longer own a card slice or its bottom gap.
+                            hasVisibleSteps = entry.expanded || entry.group.messages.any { message ->
+                                "work-step:${message.id}" in retainedWorkSteps[entry.key].orEmpty()
+                            },
                             onToggle = {
-                                val pinned = expansionHoldsBottom()
-                                if (!entry.expanded && pinned) workExpandStarts[entry.key] = System.nanoTime()
-                                else workExpandStarts.remove(entry.key)
+                                // Retire the root fade for every message that already exists
+                                // before this explicit toggle mutates the projection. LazyColumn
+                                // composes a row only once it enters the viewport, so a pre-click
+                                // answer that was never mounted would otherwise be mistaken for a
+                                // new one and replay the 180ms fade on collapse/expand. Messages
+                                // created after this click are absent here and keep their fade.
+                                markExistingMessages(appearedMessageKeys, timelineRows, visibleMessages)
+                                val now = System.nanoTime()
+                                val alreadyPinned = expansionHoldsBottom()
+                                val captured = if (!entry.expanded) {
+                                    viewportRecovery.beginWorkExpansion(
+                                        groupKey = entry.key,
+                                        stepKeys = entry.group.messages.mapTo(HashSet<Any>()) { "work-step:${it.id}" },
+                                        expiresAtNanos = now + WORK_EXPANSION_RECOVERY_NANOS,
+                                        canOwnViewport = canOwnWorkExpansionViewport() &&
+                                            (alreadyPinned || scrollState.isConversationAtBottom()),
+                                    )
+                                } else {
+                                    viewportRecovery.cancelWorkExpansion(entry.key)
+                                    false
+                                }
+                                val pinned = alreadyPinned || captured ||
+                                    (entry.expanded && canOwnWorkExpansionViewport() &&
+                                        scrollState.isConversationAtBottom())
+                                if (pinned) bottomSnapUntilNanos = now + EXPANSION_BOTTOM_SNAP_NANOS
+                                workAnimations[entry.key]?.entrance?.seal()
+                                val animation = newWorkGroupAnimation(
+                                    generation = ++workAnimationGeneration[0],
+                                    expanded = !entry.expanded,
+                                    fromBottom = pinned,
+                                    stepKeys = entry.group.messages.map { "work-step:${it.id}" },
+                                    mountedStepKeys = mountedWorkSteps[entry.key].orEmpty(),
+                                )
+                                if (animation.expanded || animation.pendingExitKeys.isNotEmpty()) {
+                                    workAnimations[entry.key] = animation
+                                } else workAnimations.remove(entry.key)
                                 val token = StreamPerformanceDiagnostics.markToggle("work", !entry.expanded)
                                 StreamPerformanceDiagnostics.probeEvent(
                                     token,
@@ -1396,20 +1480,52 @@ internal fun AgentConversationMessages(
                             (message.isStreaming || streamingMarkdownStates.containsKey(message.id))) {
                             streamingMarkdownStates.getOrPut(message.id) { StreamingMarkdownState() }
                         } else null
-                        val appearStartedAt = workExpandStarts[entry.groupKey]
-                        val appear = remember {
-                            val animate = appearStartedAt != null &&
-                                System.nanoTime() - appearStartedAt < WORK_STEP_APPEAR_WINDOW_NANOS
-                            MutableTransitionState(!animate).apply { targetState = true }
+                        val animation = workAnimations[entry.groupKey]
+                        // Do not key this state by generation/target: a rapid opposite
+                        // click reverses the same transition at its current height.
+                        val appear = remember(entry.key) {
+                            val animate = entry.expanded && animation?.expanded == true &&
+                                animation.entrance.claim(entry.key)
+                            MutableTransitionState(entry.expanded && !animate)
                         }
-                        // 与工具、推理展开同一套时长和缓动；下沿被钉住，从下沿长出，标签随之上移。
+                        SideEffect { appear.targetState = entry.expanded }
+                        DisposableEffect(entry.groupKey, entry.key) {
+                            mountedWorkSteps.getOrPut(entry.groupKey) { HashSet() }.add(entry.key)
+                            onDispose {
+                                mountedWorkSteps[entry.groupKey]?.let { keys ->
+                                    keys.remove(entry.key)
+                                    if (keys.isEmpty()) mountedWorkSteps.remove(entry.groupKey)
+                                }
+                                // An unmeasured exit must not keep the projection alive.
+                                workAnimations[entry.groupKey]?.let { current ->
+                                    finishWorkExit(entry.groupKey, entry.key, current.generation)
+                                }
+                            }
+                        }
+                        LaunchedEffect(entry.expanded, animation?.generation) {
+                            if (!entry.expanded && animation != null) {
+                                snapshotFlow { appear.isIdle && !appear.currentState && !appear.targetState }
+                                    .first { it }
+                                finishWorkExit(entry.groupKey, entry.key, animation.generation)
+                            }
+                        }
+                        val fromBottom = animation?.fromBottom ?: false
                         AnimatedVisibility(
                             visibleState = appear,
-                            enter = tailDetailsEnter(fromBottom = true),
-                            exit = ExitTransition.None,
+                            enter = tailDetailsEnter(fromBottom = fromBottom),
+                            exit = tailDetailsExit(toBottom = fromBottom),
                         ) {
                         WorkProcessCardSlice(
                             part = if (entry.isLast) WorkProcessCardPart.Last else WorkProcessCardPart.Middle,
+                            // The 4dp exterior card gap belongs outside visibility.
+                            // Transfer it to the Whole header only when all exits finish;
+                            // neither add a second gap at click nor jump at disposal.
+                            modifier = if (entry.isLast) Modifier.layout { measurable, constraints ->
+                                val placeable = measurable.measure(constraints)
+                                layout(placeable.width, (placeable.height - 4.dp.roundToPx()).coerceAtLeast(0)) {
+                                    placeable.placeRelative(0, 0)
+                                }
+                            } else Modifier,
                         ) {
                             ChatMessageItem(
                                 message = message,
@@ -1427,6 +1543,7 @@ internal fun AgentConversationMessages(
                             )
                         }
                         }
+                        if (entry.isLast) Spacer(Modifier.height(4.dp))
                     }
                 }
                 turnFooters[entry.key]?.let { owner ->
@@ -2030,7 +2147,8 @@ internal fun resolveExpansionHoldsBottom(
     listScrollable: Boolean,
 ): Boolean = following || (arrangedToBottom && !listScrollable)
 
-private const val WORK_STEP_APPEAR_WINDOW_NANOS = 500_000_000L
+// Preserve the measured recovery budget; it is NOT an entrance admission window.
+private const val WORK_EXPANSION_RECOVERY_NANOS = 680_000_000L
 // 180ms 展开动画加淡入，再留一点给最后一帧布局。
 private const val EXPANSION_BOTTOM_SNAP_NANOS = 400_000_000L
 

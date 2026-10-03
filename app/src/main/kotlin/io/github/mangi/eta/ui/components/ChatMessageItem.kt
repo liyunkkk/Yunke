@@ -435,6 +435,7 @@ internal fun AgentWorkProcessHeader(
     modifier: Modifier = Modifier,
     isPaused: Boolean = false,
     expanded: Boolean,
+    hasVisibleSteps: Boolean = expanded,
     onToggle: () -> Unit,
 ) {
     val running = messages.any { message ->
@@ -466,7 +467,7 @@ internal fun AgentWorkProcessHeader(
     val pulseAlpha = rememberActivePulse(active = running && !isPaused, label = "work_pulse")
 
     WorkProcessCardSlice(
-        part = if (expanded && messages.isNotEmpty()) WorkProcessCardPart.First else WorkProcessCardPart.Whole,
+        part = if (hasVisibleSteps && messages.isNotEmpty()) WorkProcessCardPart.First else WorkProcessCardPart.Whole,
         modifier = modifier,
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -530,7 +531,7 @@ internal fun AgentWorkProcessHeader(
                 )
             }
 
-            if (expanded && messages.isNotEmpty()) {
+            if (hasVisibleSteps && messages.isNotEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
