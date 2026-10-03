@@ -313,6 +313,7 @@ internal object AgentRuntimeWire {
         putString(KEY_API_KEY, request.config.apiKey)
         putString(KEY_MODEL, request.config.model)
         putString(KEY_MODEL_DISPLAY_NAME, request.config.modelDisplayName)
+        putString("error_reconnect_policy", request.config.errorReconnectPolicy)
         request.config.contextWindow?.let { putInt(KEY_CONTEXT_WINDOW, it) }
         putString(KEY_SYSTEM_PROMPT, request.config.systemPrompt)
         putString(KEY_ANTHROPIC_VERSION, request.config.anthropicVersion)
@@ -428,6 +429,7 @@ internal object AgentRuntimeWire {
                 apiKey = bundle.getString(KEY_API_KEY).orEmpty(),
                 model = bundle.getString(KEY_MODEL).orEmpty(),
                 modelDisplayName = bundle.getString(KEY_MODEL_DISPLAY_NAME).orEmpty(),
+                errorReconnectPolicy = bundle.getString("error_reconnect_policy") ?: "none",
                 contextWindow = bundle.optionalInt(KEY_CONTEXT_WINDOW),
                 systemPrompt = bundle.getString(KEY_SYSTEM_PROMPT).orEmpty(),
                 anthropicVersion = bundle.getString(KEY_ANTHROPIC_VERSION).orEmpty()
@@ -693,6 +695,16 @@ internal object AgentRuntimeWire {
                 putString("reason_detail", event.reasonDetail)
             }
 
+            is AgentEvent.ErrorReconnectChanged -> {
+                putString(KEY_TYPE, "error_reconnect_changed")
+                putInt("round", event.round)
+                putString("reconnect_id", event.reconnectId)
+                putString("status", event.status)
+                putLong("elapsed_ms", event.elapsedMs)
+                putString("reason_code", event.reasonCode)
+                putString("reason_detail", event.reasonDetail)
+            }
+
             is AgentEvent.ProviderRequestStarted -> {
                 putString(KEY_TYPE, "provider_request_started")
                 putInt("round", event.round)
@@ -864,6 +876,15 @@ internal object AgentRuntimeWire {
             attempt = bundle.getInt("attempt", 1),
             maxAttempts = bundle.getInt("max_attempts", 3),
             delayMs = bundle.getInt("delay_ms", 2_000),
+            reasonCode = bundle.getString("reason_code").orEmpty(),
+            reasonDetail = bundle.getString("reason_detail").orEmpty(),
+        )
+
+        "error_reconnect_changed" -> AgentEvent.ErrorReconnectChanged(
+            round = bundle.getInt("round"),
+            reconnectId = bundle.getString("reconnect_id").orEmpty(),
+            status = bundle.getString("status").orEmpty(),
+            elapsedMs = bundle.getLong("elapsed_ms"),
             reasonCode = bundle.getString("reason_code").orEmpty(),
             reasonDetail = bundle.getString("reason_detail").orEmpty(),
         )

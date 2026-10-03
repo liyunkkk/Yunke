@@ -33,8 +33,9 @@ internal object ChildWorkerConfigResolver {
         config: ConversationSubAgentConfig,
         providerLookup: (suspend (String) -> ProviderSetting?)? = null,
         modelResolver: (suspend (SubAgentProfile) -> AgentModelClient.ModelConfig?)? = null,
+        parentConfig: AgentModelClient.ModelConfig? = null,
     ): List<ChildTaskConfigPolicy.Candidate<Configuration>> = config.profiles.map { profile ->
-        resolveWorker(ownerId, config, profile.id, profile.role, providerLookup, modelResolver)
+        resolveWorker(ownerId, config, profile.id, profile.role, providerLookup, modelResolver, parentConfig)
     }
 
     /** Resolve by stable ID, never by a position in the filtered configuredChildren list. */
@@ -45,6 +46,7 @@ internal object ChildWorkerConfigResolver {
         expectedRole: String,
         providerLookup: (suspend (String) -> ProviderSetting?)? = null,
         modelResolver: (suspend (SubAgentProfile) -> AgentModelClient.ModelConfig?)? = null,
+        parentConfig: AgentModelClient.ModelConfig? = null,
     ): ChildTaskConfigPolicy.Candidate<Configuration> {
         val expected = ChildTaskConfigPolicy.WorkerKey(ownerId, workerId, expectedRole)
         fun unavailable(reason: ChildTaskConfigPolicy.Availability) =
@@ -84,7 +86,8 @@ internal object ChildWorkerConfigResolver {
             if (revision != userConfigurationRevision(profile, RuntimeConfigRepository.buildRuntimeConfig(currentProvider, currentModel), speedEligible))
                 return unavailable(ChildTaskConfigPolicy.Availability.SELECTION_CHANGED_DURING_RESOLUTION)
             val configured = applyProfile(profile, resolved, speedEligible).let {
-                it.copy(customHeaders = it.customHeaders.toList(), customBody = it.customBody.toList())
+                it.copy(customHeaders = it.customHeaders.toList(), customBody = it.customBody.toList(),
+                    errorReconnectPolicy = parentConfig?.errorReconnectPolicy ?: it.errorReconnectPolicy)
             }
             if (configured.apiKey.isBlank()) return unavailable(ChildTaskConfigPolicy.Availability.CREDENTIALS_MISSING)
             if (configured.baseUrl.isBlank()) return unavailable(ChildTaskConfigPolicy.Availability.ENDPOINT_MISSING)

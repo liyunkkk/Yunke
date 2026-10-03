@@ -22,6 +22,8 @@ import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.ConversationFolderUi
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectStatus
 import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
@@ -440,6 +442,15 @@ internal object AgentConversationStore {
                 renderMarkdown = false,
             )
 
+            is ErrorReconnectMessageUi -> ConversationMessageEntity(
+                id = id,
+                conversationId = conversationId,
+                sortIndex = sortIndex,
+                type = TYPE_ERROR_RECONNECT,
+                content = AgentErrorReconnectCodec.encode(this),
+                renderMarkdown = false,
+            )
+
             is ThinkingMessageUi -> ConversationMessageEntity(
                 id = id,
                 conversationId = conversationId,
@@ -520,12 +531,18 @@ internal object AgentConversationStore {
             )
 
             TYPE_SYSTEM_NOTICE -> SystemNoticeCode.fromWireValue(content)?.let { code ->
-                SystemNoticeMessageUi(
+                if (code == SystemNoticeCode.RuntimeFailed) ErrorReconnectMessageUi(
                     id = id,
-                    code = code,
-                    detail = resultSummary,
-                )
+                    runId = "",
+                    reconnectId = "legacy:$id",
+                    round = 0,
+                    status = ErrorReconnectStatus.Failed,
+                    reasonDetail = resultSummary.orEmpty(),
+                    isReconnect = false,
+                ) else SystemNoticeMessageUi(id = id, code = code, detail = resultSummary)
             }
+
+            TYPE_ERROR_RECONNECT -> AgentErrorReconnectCodec.decode(id, content)
 
             TYPE_THINKING -> ThinkingMessageUi(
                 id = id,
@@ -622,6 +639,7 @@ internal object AgentConversationStore {
     private const val TYPE_USER = "user"
     private const val TYPE_ASSISTANT = "assistant"
     private const val TYPE_SYSTEM_NOTICE = "system_notice"
+    private const val TYPE_ERROR_RECONNECT = "error_reconnect"
     private const val TYPE_THINKING = "thinking"
     private const val TYPE_TOOL = "tool"
     private const val TYPE_TOOL_SUMMARY = "tool_summary"

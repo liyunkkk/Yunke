@@ -1706,6 +1706,10 @@ internal fun resolveFinalResultMessageIds(
                 lastAgentMessageId = null
             }
             is AgentMessageUi -> lastAgentMessageId = message.id
+            is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> if (message.isRetryableFailure()) {
+                ids.add(lastAgentMessageId ?: message.id)
+                lastAgentMessageId = null
+            }
             is SystemNoticeMessageUi -> if (message.code.isRetryableFailure()) {
                 ids.add(message.id)
                 lastAgentMessageId = null
@@ -1892,7 +1896,8 @@ internal fun shouldShowMorphLoadingIndicator(
 internal fun isWaitingForFirstModelOutput(messages: List<AgentChatMessageUi>): Boolean {
     val lastUserIndex = messages.indexOfLast { message ->
         (message is UserMessageUi && !message.isSteerSupplement()) ||
-            (message is SystemNoticeMessageUi && message.code.isRetryableFailure())
+            (message is SystemNoticeMessageUi && message.code.isRetryableFailure()) ||
+            (message is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi && message.isRetryableFailure())
     }
     if (lastUserIndex < 0) return false
     return messages.asSequence()
@@ -1904,6 +1909,7 @@ private fun isModelOutputMessage(message: AgentChatMessageUi): Boolean = when (m
     is ThinkingMessageUi -> true
     is ToolActivityMessageUi -> true
     is ToolSummaryMessageUi -> true
+    is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> true
     is AgentMessageUi -> message.content.isNotBlank()
     else -> false
 }

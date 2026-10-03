@@ -69,7 +69,10 @@ internal class AgentLoop(
         val result: AgentModelClient.ToolResult,
     )
 
-    private val auxiliaryVision = AuxiliaryVision.create(config, runController, sessionId)
+    private var auxiliaryRound = 1
+    private val auxiliaryVision = AuxiliaryVision.create(config, runController, sessionId) {
+        onEvent(it.copy(round = auxiliaryRound))
+    }
 
     private var toolCallValidator = AgentToolCallValidator(tools)
     private val delegationArgumentRepair = AgentDelegationArgumentRepair()
@@ -155,6 +158,7 @@ internal class AgentLoop(
             appendPendingSteeringMessage()
             currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
             try {
+                auxiliaryRound = round
                 auxiliaryVision.prepare(messages)
             } catch (failure: Exception) {
                 runController.throwIfCancelled()
@@ -181,6 +185,7 @@ internal class AgentLoop(
                 appendPendingSteeringMessage()
                 currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
                 try {
+                    auxiliaryRound = round
                     auxiliaryVision.prepare(messages)
                 } catch (failure: Exception) {
                     runController.throwIfCancelled()
@@ -910,6 +915,7 @@ internal class AgentLoop(
                     usageConversationId = sessionId,
                     sourceModelConfig = config.copy(contextWindow = window),
                     summaryTokenBudget = AgentCompressionBoundary.summaryProgressBudget(window),
+                    onErrorReconnect = { onEvent(it.copy(round = round)) },
                 ),
                 keepStartOverride = cut, controller = runController,
                 replay = if (compressConfig.providerType == config.providerType && compressConfig.baseUrl == config.baseUrl &&

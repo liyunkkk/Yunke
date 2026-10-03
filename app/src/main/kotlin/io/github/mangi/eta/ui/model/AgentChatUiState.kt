@@ -120,7 +120,7 @@ internal fun List<AgentChatMessageUi>.stoppedDuringModelRetry(): Boolean {
     val last = lastOrNull { message ->
         when (message) {
             is UserMessageUi -> !message.isSteerSupplement()
-            is AgentMessageUi, is SystemNoticeMessageUi -> true
+            is AgentMessageUi, is SystemNoticeMessageUi, is ErrorReconnectMessageUi -> true
             else -> false
         }
     } ?: return false
@@ -140,7 +140,7 @@ internal fun lastContinuableNotice(messages: List<AgentChatMessageUi>): SystemNo
     val last = messages.lastOrNull { message ->
         when (message) {
             is UserMessageUi -> !message.isSteerSupplement()
-            is AgentMessageUi, is SystemNoticeMessageUi -> true
+            is AgentMessageUi, is SystemNoticeMessageUi, is ErrorReconnectMessageUi -> true
             else -> false
         }
     }
@@ -153,8 +153,23 @@ internal fun canContinuePausedGeneration(messages: List<AgentChatMessageUi>): Bo
 }
 
 internal fun canContinueDisconnectedRun(messages: List<AgentChatMessageUi>): Boolean {
-    val notice = lastContinuableNotice(messages) ?: return false
-    return notice.code.canContinueDisconnectedRun() || messages.stoppedDuringModelRetry()
+    val last = messages.lastOrNull { message ->
+        when (message) {
+            is UserMessageUi -> !message.isSteerSupplement()
+            is AgentMessageUi, is SystemNoticeMessageUi -> true
+            is ErrorReconnectMessageUi -> message.status != ErrorReconnectStatus.Succeeded
+            else -> false
+        }
+    }
+    if (last is ErrorReconnectMessageUi) return last.isRetryableFailure()
+    val notice = last as? SystemNoticeMessageUi ?: return false
+    if (notice.code.canContinueDisconnectedRun() || messages.stoppedDuringModelRetry()) return true
+    if (notice.code != SystemNoticeCode.Stopped) return false
+    // Manual stop retains its control notice for paused/sub-agent continuation. A stopped
+    // reconnect immediately before it still offers the disconnected-run continuation.
+    val boundary = messages.indexOfLast { it is UserMessageUi && !it.isSteerSupplement() }
+    return messages.drop(boundary + 1).filterIsInstance<ErrorReconnectMessageUi>()
+        .lastOrNull()?.let { it.isReconnect && it.isRetryableFailure() } == true
 }
 
 @Immutable

@@ -45,6 +45,18 @@ internal object AgentPendingResultRecovery {
             .filterNot { it is SystemNoticeMessageUi && it.id == interruptedNoticeId(runId) }
             .toMutableList()
             .also { messages ->
+            if (!result.ok && result.error != "已停止") {
+                val projected = AgentRunMessageProjector(nowElapsedRealtime = { 0L })
+                    .terminalFailure(runId, result.error, messages)
+                messages.clear()
+                messages.addAll(projected)
+                return@also
+            }
+            if (!result.ok) {
+                val stopped = AgentRunMessageProjector(nowElapsedRealtime = { 0L }).runStopped(runId, messages)
+                messages.clear()
+                messages.addAll(stopped)
+            }
             val assistantIndex = AgentRunMessageProjector.resultTargetIndex(runId, messages, includeNotices = true)
             val resultId = AgentRunMessageProjector.resultFallbackId(runId, messages)
             val targetRound = (messages.getOrNull(assistantIndex) as? AgentMessageUi)

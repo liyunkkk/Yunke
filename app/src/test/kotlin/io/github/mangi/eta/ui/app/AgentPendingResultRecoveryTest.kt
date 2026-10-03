@@ -151,6 +151,28 @@ class AgentPendingResultRecoveryTest {
         assertEquals(recovered.state, replay.state)
     }
 
+    @Test fun failedOutboxRetainsPartialTextToolAndDisconnectedMarkerIdentity() {
+        val partial = AgentMessageUi("assistant-run-failed-1-0", "partial response", isStreaming = true)
+        val tool = ToolActivityMessageUi("run-failed-tool-1-call", "read_file", ToolActivityStatusUi.Success, "{}")
+        val marker = io.github.mangi.eta.ui.model.ErrorReconnectMessageUi(
+            id = io.github.mangi.eta.ui.model.errorReconnectMessageId("run-failed", "disconnect"),
+            runId = "run-failed", reconnectId = "disconnect", round = 1,
+            status = io.github.mangi.eta.ui.model.ErrorReconnectStatus.Running,
+            reasonCode = "HTTP_502", reasonDetail = "provider diagnostic",
+        )
+        val state = AgentChatUiState(messages = listOf(partial, tool, marker), input = "",
+            isStreaming = true, thinkingEnabled = false)
+        val result = AgentRuntimeWire.RunResult("run-failed", ok = false, content = "", error = "terminal error")
+        val recovered = AgentPendingResultRecovery.apply(state, "run-failed", result, supplements = emptyList())
+        assertEquals(listOf(partial.id, tool.id, marker.id), recovered.state.messages.map { it.id })
+        assertEquals("partial response", (recovered.state.messages.first() as AgentMessageUi).content)
+        assertEquals(tool, recovered.state.messages[1])
+        assertEquals(marker.copy(status = io.github.mangi.eta.ui.model.ErrorReconnectStatus.Failed), recovered.state.messages.last())
+        val repeated = AgentPendingResultRecovery.apply(recovered.state, "run-failed", result, supplements = emptyList())
+        assertTrue(repeated.alreadyApplied)
+        assertEquals(recovered.state, repeated.state)
+    }
+
     @Test
     fun recoveryCreatesAssistantWhenStreamingPlaceholderWasNeverPersisted() {
         val state = AgentChatUiState(
@@ -172,10 +194,11 @@ class AgentPendingResultRecoveryTest {
             supplements = emptyList(),
         )
 
-        assertEquals("assistant-run-2-1", recovered.state.messages.single().id)
-        val message = recovered.state.messages.single() as SystemNoticeMessageUi
-        assertEquals(SystemNoticeCode.RuntimeFailed, message.code)
-        assertEquals("失败原因", message.detail)
+        val message = recovered.state.messages.single() as io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+        assertEquals(io.github.mangi.eta.ui.model.errorReconnectMessageId("run-2", "terminal-failure"), message.id)
+        assertEquals(io.github.mangi.eta.ui.model.ErrorReconnectStatus.Failed, message.status)
+        assertEquals("失败原因", message.reasonDetail)
+        org.junit.Assert.assertFalse(message.isReconnect)
     }
 
     @Test

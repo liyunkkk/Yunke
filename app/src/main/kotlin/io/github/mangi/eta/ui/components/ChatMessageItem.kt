@@ -160,6 +160,8 @@ import io.github.mangi.eta.ui.markdown.StreamingGfmSnapshot
 import io.github.mangi.eta.ui.markdown.nextStreamingSnapshot
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectStatus
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.RunTraceMessageUi
 import io.github.mangi.eta.ui.model.SuggestionChipsMessageUi
@@ -368,7 +370,15 @@ internal fun ChatMessageItem(
             onBranch = { actions.onBranchMessage(message.id) },
             modifier = modifier,
         )
-        is SystemNoticeMessageUi -> if (message.code == SystemNoticeCode.Completed) {
+        is ErrorReconnectMessageUi -> ErrorReconnectDivider(message, modifier)
+        is SystemNoticeMessageUi -> if (message.code == SystemNoticeCode.RuntimeFailed) {
+            ErrorReconnectDivider(
+                ErrorReconnectMessageUi(
+                    id = message.id, runId = "", reconnectId = "legacy:${message.id}", round = 0,
+                    status = ErrorReconnectStatus.Failed, reasonDetail = message.detail.orEmpty(), isReconnect = false,
+                ), modifier,
+            )
+        } else if (message.code == SystemNoticeCode.Completed) {
             TaskCompletedDivider(modifier)
         } else AgentMessageBlock(
             message = AgentMessageUi(

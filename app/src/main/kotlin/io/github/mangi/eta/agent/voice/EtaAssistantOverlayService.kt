@@ -428,7 +428,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 } else {
                     uiState = uiState.copy(
                         phase = EtaVoicePhase.ERROR,
-                        status = EtaVoiceStatus.Failed(result.error),
+                        status = EtaVoiceStatus.Failed(null),
                         messages = finishRunMessages(runId, result),
                     )
                 }
@@ -585,16 +585,18 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 messages = runMessageProjector.finishHostedTool(runId, event, messages)
             }
 
+            is AgentEvent.ErrorReconnectChanged -> {
+                messages = runMessageProjector.reconnectChanged(runId, event, messages)
+                status = EtaVoiceStatus.Reasoning
+            }
+
             is AgentEvent.RunFailed -> {
                 phase = EtaVoicePhase.ERROR
-                status = EtaVoiceStatus.Failed(event.reason)
-                messages = runMessageProjector.failRunningTools(
-                    event.reason,
-                    runMessageProjector.finalizeText(
-                        runId,
-                        runMessageProjector.finalizeThinking(runId, messages),
-                    ),
-                )
+                status = EtaVoiceStatus.Failed(null)
+                messages = runMessageProjector.terminalFailure(runId, event.reason,
+                    runMessageProjector.failRunningTools(event.reason,
+                        runMessageProjector.finalizeText(runId,
+                            runMessageProjector.finalizeThinking(runId, messages))))
             }
 
             is AgentEvent.AssistantReceived -> {
@@ -646,6 +648,15 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 result.error ?: SYNTHETIC_RUNTIME_FAILED,
                 messages,
             )
+        }
+        if (!result.ok) {
+            messages = if (result.error == LEGACY_STOPPED_ERROR) {
+                runMessageProjector.runStopped(runId, messages) +
+                    SystemNoticeMessageUi("interrupted-$runId", SystemNoticeCode.Stopped)
+            } else runMessageProjector.terminalFailure(runId,
+                result.error ?: SYNTHETIC_RUNTIME_FAILED, messages)
+            runMessageProjector.clearRun(runId)
+            return messages
         }
         val notice = when {
             result.ok && result.content.isBlank() -> SystemNoticeCode.EmptyResult
@@ -723,13 +734,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             uiState = uiState.copy(
                 phase = EtaVoicePhase.READY,
                 status = EtaVoiceStatus.Stopped,
-                messages = runMessageProjector.failRunningTools(
-                    SYNTHETIC_STOPPED,
-                    runMessageProjector.finalizeText(
-                        runId,
-                        runMessageProjector.finalizeThinking(runId, uiState.messages),
-                    ),
-                ),
+                messages = runMessageProjector.runStopped(runId,
+                    runMessageProjector.failRunningTools(SYNTHETIC_STOPPED, uiState.messages)),
             )
             runMessageProjector.clearRun(runId)
             updateSoftInput(visible = true)

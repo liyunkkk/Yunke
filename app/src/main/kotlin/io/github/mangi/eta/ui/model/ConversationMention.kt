@@ -204,6 +204,7 @@ internal object ConversationMention {
             else "Context compressed (${message.compactedCount} messages): $summary"
         }
         is SystemNoticeMessageUi -> "系统状态：${message.code.name}"
+        is ErrorReconnectMessageUi -> "Connection status: ${message.status.wireValue} (${formatReconnectElapsed(message.elapsedMs)})"
         is RunTraceMessageUi, is SuggestionChipsMessageUi -> null
     }
     }

@@ -48,6 +48,19 @@ internal sealed interface AgentEvent {
             "model_retry_scheduled round=$round, attempt=$attempt, delay_ms=$delayMs, code=${reasonCode.toSafeLogToken()}"
     }
 
+    /** One request-scoped disconnect; independent of bounded tool-envelope correction. */
+    data class ErrorReconnectChanged(
+        val round: Int,
+        val reconnectId: String,
+        val status: String,
+        val elapsedMs: Long,
+        val reasonCode: String = "",
+        val reasonDetail: String = "",
+    ) : AgentEvent {
+        override fun toLogLine(): String =
+            "error_reconnect_changed round=$round, id=${reconnectId.toSafeLogToken()}, status=${status.toSafeLogToken()}, elapsed_ms=$elapsedMs, code=${reasonCode.toSafeLogToken()}"
+    }
+
     data class ProviderRequestStarted(
         val round: Int
     ) : AgentEvent {

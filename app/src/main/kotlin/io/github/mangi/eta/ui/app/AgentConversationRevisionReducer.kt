@@ -165,6 +165,14 @@ internal object AgentConversationRevisionReducer {
                         owner = message
                     }
                 }
+                is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> {
+                    if (message.status == io.github.mangi.eta.ui.model.ErrorReconnectStatus.Failed ||
+                        message.status == io.github.mangi.eta.ui.model.ErrorReconnectStatus.Stopped
+                    ) {
+                        if (owner == null) owner = message
+                        terminalIndex = index
+                    }
+                }
                 is SystemNoticeMessageUi -> {
                     if (message.code == SystemNoticeCode.ModelRetry) {
                         if (terminalIndex >= 0) flush(terminalIndex)
@@ -495,6 +503,7 @@ internal fun AgentChatMessageUi.withId(id: String): AgentChatMessageUi = when (t
     is UserMessageUi -> copy(id = id)
     is AgentMessageUi -> copy(id = id)
     is SystemNoticeMessageUi -> copy(id = id)
+    is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> copy(id = id)
     is ThinkingMessageUi -> copy(id = id)
     is RunTraceMessageUi -> copy(id = id)
     is ToolSummaryMessageUi -> copy(id = id)

@@ -323,6 +323,7 @@ internal object AgentModelClient {
         val supportsVideo: Boolean = false,
         val assistantId: String = "",
         val gptSpeedMode: GptSpeedMode? = null,
+        val errorReconnectPolicy: String = "none",
     ) {
         val effectiveReasoningEffort: ReasoningEffort
             get() = reasoningEffort ?: ReasoningEffort.fromLegacy(thinkingEnabled)

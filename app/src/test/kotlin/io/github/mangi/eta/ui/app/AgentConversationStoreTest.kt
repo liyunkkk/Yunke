@@ -255,10 +255,41 @@ class AgentConversationStoreTest {
 
         val snapshot = AgentConversationStore.load(context)
         assertEquals("", snapshot.titles.getValue("conv-notice"))
-        assertEquals(
-            notice,
-            snapshot.conversationsById.getValue("conv-notice").messages.single(),
-        )
+        val loaded = snapshot.conversationsById.getValue("conv-notice").messages.single()
+            as io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+        assertEquals(notice.id, loaded.id)
+        assertEquals(notice.detail, loaded.reasonDetail)
+        assertEquals(io.github.mangi.eta.ui.model.ErrorReconnectStatus.Failed, loaded.status)
+        assertFalse(loaded.isReconnect)
+    }
+
+    @Test fun reconnectMarkersSurviveDatabaseReopenWithStableIdsAndFullDiagnostics() {
+        val detail = "HTTP 502\n" + "long diagnostic\n".repeat(2_000)
+        val statuses = io.github.mangi.eta.ui.model.ErrorReconnectStatus.entries
+        val markers = statuses.mapIndexed { index, status ->
+            io.github.mangi.eta.ui.model.ErrorReconnectMessageUi(
+                id = io.github.mangi.eta.ui.model.errorReconnectMessageId("run", "disconnect-$index"),
+                runId = "run", reconnectId = "disconnect-$index", round = 2, status = status,
+                elapsedMs = 90_061_123L + index, reasonCode = "MODEL_TIMEOUT", reasonDetail = detail,
+            )
+        }
+        val partial = AgentMessageUi("assistant-run-2-0", "partial answer", isStreaming = true)
+        val tool = ToolActivityMessageUi("run-tool-1-call", "read_file", ToolActivityStatusUi.Success, "{}")
+        val state = AgentChatHomeUiState(messages = listOf(partial, tool) + markers,
+            input = "", isStreaming = true, thinkingEnabled = false)
+        runBlocking { AgentConversationStore.save(context, "c", mapOf("c" to state), mapOf("c" to "task"), mapOf("c" to 1L)) }
+        EtaDatabase.closeForTests()
+        val restored = AgentConversationStore.load(context).conversationsById.getValue("c")
+        assertEquals(state.messages.map { it.id }, restored.messages.map { it.id })
+        assertEquals("partial answer", (restored.messages.first() as AgentMessageUi).content)
+        assertEquals(tool, restored.messages[1])
+        val loadedMarkers = restored.messages.filterIsInstance<io.github.mangi.eta.ui.model.ErrorReconnectMessageUi>()
+        markers.zip(loadedMarkers).forEach { (before, after) ->
+            assertEquals(before.copy(status = if (before.status == io.github.mangi.eta.ui.model.ErrorReconnectStatus.Running)
+                io.github.mangi.eta.ui.model.ErrorReconnectStatus.Stopped else before.status), after)
+        }
+        assertFalse(restored.isStreaming)
+        assertTrue(restored.history.none { it.content.contains("MODEL_TIMEOUT") || it.content.contains("long diagnostic") })
     }
 
     @Test

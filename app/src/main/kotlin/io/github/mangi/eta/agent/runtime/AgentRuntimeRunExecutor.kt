@@ -189,7 +189,7 @@ internal class AgentRuntimeRunExecutor(
             // This never re-resolves a retained child's healthy configuration for continue.
             val ownerKey = SubAgentConfigKey.Conversation(request.effectiveModelSessionId)
             val childConfig = ConversationSubAgentPreferences().snapshot(ownerKey)
-            val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig) }
+            val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig, parentConfig = request.config) }
             val configuredChildren = AgentChildWorkerAvailability.configuredChildren(childCandidates)
             val childModels = configuredChildren.map { it.second }
             val frozenParallelLimits = childModels.map { childConfig.parallelLimit(SubAgentParallelModel(it.providerId, it.model)) }
@@ -362,7 +362,8 @@ internal class AgentRuntimeRunExecutor(
             AgentRuntimeWire.RunResult(runId = request.runId, ok = true, content = completedResponse.content,
                 reasoningContent = completedResponse.reasoningContent, transcript = completedResponse.transcript)
         } catch (throwable: Throwable) {
-            cancelled = runController.isCancelled || throwable is AgentRunCancelledException
+            cancelled = runController.isCancelled || throwable is AgentRunCancelledException ||
+                throwable is java.util.concurrent.CancellationException || throwable is InterruptedException
             val modelFailure = throwable as? AgentModelExecutionException
             val message = if (cancelled) "已停止" else throwable.message ?: throwable.javaClass.simpleName
             // This catch is after the retry loop has given up, not a ModelRetryScheduled event.
@@ -375,6 +376,9 @@ internal class AgentRuntimeRunExecutor(
                 AndroidAgentLogger.error("Agent runtime failed: type=${throwable.safeLogType()}, " +
                     "model_code=${requestFailure?.code.orEmpty()}, cause_type=${requestFailure?.cause?.safeLogType().orEmpty()}, " +
                     "detail=${(requestFailure?.message ?: throwable.message).orEmpty().take(600)}")
+                AgentErrorReconnectTerminal.failureEvent(archivedEvents, throwable, request.config.apiKey)?.let {
+                    runCatching { acceptEvent(session, it, archivedEvents, entrySurfaceGuard, checkpointRecorder) }
+                }
                 val event = AgentEvent.RunFailed(message)
                 runCatching { acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder) }
                     .onFailure { checkpointFailure ->
@@ -382,6 +386,7 @@ internal class AgentRuntimeRunExecutor(
                         session.emit(event)
                     }
             }
+            if (throwable is Error || throwable is java.util.concurrent.CancellationException) throw throwable
             AgentRuntimeWire.RunResult(runId = request.runId, ok = false, content = "", error = message,
                 reasoningContent = modelFailure?.reasoningContent ?: (throwable as? AgentRunCancelledException)?.reasoningContent.orEmpty(),
                 transcript = modelFailure?.transcript ?: (throwable as? AgentRunCancelledException)?.transcript.orEmpty())

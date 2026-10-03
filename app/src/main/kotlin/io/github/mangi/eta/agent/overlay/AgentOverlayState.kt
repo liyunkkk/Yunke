@@ -40,6 +40,17 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
         status = AgentOverlayStatus.ReasoningRound(event.round),
     )
 
+    is AgentEvent.ErrorReconnectChanged -> copy(
+        phase = if (event.status == "failed") AgentOverlayPhase.FAILED else AgentOverlayPhase.RUNNING,
+        round = event.round,
+        status = when (event.status) {
+            "failed" -> AgentOverlayStatus.RunFailed
+            "stopped" -> AgentOverlayStatus.Stopped
+            else -> AgentOverlayStatus.RequestingModel
+        },
+        detailText = "",
+    )
+
     is AgentEvent.ModelRetryScheduled -> copy(
         phase = AgentOverlayPhase.RUNNING,
         round = event.round,
@@ -157,7 +168,7 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
     is AgentEvent.RunFailed -> copy(
         phase = AgentOverlayPhase.FAILED,
         status = AgentOverlayStatus.RunFailed,
-        detailText = event.reason,
+        detailText = "",
     )
 }
 
