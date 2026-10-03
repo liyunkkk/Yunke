@@ -47,7 +47,7 @@ class CloudUsageReceiptCodecTest {
             "未知 / 260K tokens",
             formatContextUsage(usage, noUsageText = "暂无上下文用量", locale = Locale.US),
         )
-        assertEquals("无 / 260K tokens", formatContextUsage(usage.copy(firstTurn = true), locale = Locale.US))
+        assertEquals("0k / 260K tokens", formatContextUsage(usage.copy(firstTurn = true), locale = Locale.US))
         assertNull(usage.contextTokens)
         assertNull(usage.progress)
         assertFalse(isContextWindowExceeded(usage))

@@ -122,7 +122,7 @@ class RequestOverheadCalibrationTest {
             assertEquals(idle, typing)
             assertNull(idle.contextTokens)
             assertNull(idle.progress)
-            assertEquals(if (first) "无" else "未知", formatContextUsage(idle))
+            assertEquals(if (first) "0k" else "未知", formatContextUsage(idle))
         }
         val actual = liveContextUsage(emptyList(), "draft", emptyList(), null, billedContextTokens = 12345,
             overheadCalibrationTokens = stable(), requestOverheadTokens = 25270)
@@ -137,7 +137,7 @@ class RequestOverheadCalibrationTest {
         val policy = contextDisplayPolicy(pending)
         assertTrue(policy.firstTurn)
         val none = liveContextUsage(pending.history, "", emptyList(), null, contextDisplayPolicy = policy)
-        assertEquals("无", formatContextUsage(none))
+        assertEquals("0k", formatContextUsage(none))
         assertNull(none.progress)
         val learned = liveContextUsage(pending.history, "", emptyList(), null, historyTokenCount = 481,
             requestOverheadTokens = 25270, overheadCalibrationTokens = stable(), contextDisplayPolicy = policy)

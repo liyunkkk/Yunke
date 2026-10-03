@@ -227,13 +227,13 @@ class AgentModelPickerProjectorTest {
             displayName = "Model",
             contextWindow = 128_000,
         )
-        // First turn before any learned ratio: "无" still names the configured limit it will be
+        // First turn before any learned ratio: "0k" still names the configured limit it will be
         // measured against, in the same place a measured reading prints its denominator.
         val firstTurn = liveContextUsage(
             emptyList(), "", emptyList(), model,
             contextDisplayPolicy = ContextDisplayPolicy(firstTurn = true),
         )
-        assertEquals("无 / 128K tokens", formatContextUsage(firstTurn))
+        assertEquals("0k / 128K tokens", formatContextUsage(firstTurn))
         // First receipt after compaction: "未知" keeps the same denominator.
         val awaitingReceipt = liveContextUsage(
             emptyList(), "", emptyList(), model,
@@ -267,7 +267,7 @@ class AgentModelPickerProjectorTest {
             displayName = "Model",
             contextWindow = null,
         )
-        assertEquals("无", formatContextUsage(liveContextUsage(
+        assertEquals("0k", formatContextUsage(liveContextUsage(
             emptyList(), "", emptyList(), noWindow,
             contextDisplayPolicy = ContextDisplayPolicy(firstTurn = true),
         )))

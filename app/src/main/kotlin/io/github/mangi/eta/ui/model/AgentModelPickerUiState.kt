@@ -440,16 +440,16 @@ internal fun formatContextUsage(
     noLimitText: String = "The current model does not provide a context limit",
     locale: Locale = Locale.getDefault(),
 ): String {
-    // "Not measured yet" and "measured as zero" are different states. Rendering both as
-    // 0K / 0.0% made an unknown occupancy look like a real reading, while the ring stayed
-    // empty because progress is null — one state shown two ways.
+    // A first-turn "0k" is a display-only label, not a measured zero.
+    // Unmeasured states keep null occupancy/progress and omit a percentage;
+    // measured values and trusted estimates are formatted separately below.
     val measured = usage.contextTokens
     val window = usage.contextWindow
     if (measured == null) {
         // Only the numerator is unknown; the configured window the ring is measured against is
         // already known, so keep it in the same denominator format a measured reading uses.
         // The ratio stays null, so the ring is still shown unmoved for both unmeasured states.
-        val state = if (usage.firstTurn) "无" else "未知"
+        val state = if (usage.firstTurn) "0k" else "未知"
         if (window == null || window <= 0) return state
         return "$state / ${formatCompactTokenCount(window, locale)} tokens"
     }

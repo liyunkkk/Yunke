@@ -24,7 +24,7 @@ class AgentContextMeterPolicyTest {
     @Test fun finalBodyProjectionIsEstimatedOnlyUntilACloudReceiptExists() {
         val first = liveContextUsage(emptyList(), "", emptyList(), null, projectedContextTokens = 1234)
         assertNull(first.contextTokens)
-        assertEquals("无", formatContextUsage(first))
+        assertEquals("0k", formatContextUsage(first))
         val cloud = liveContextUsage(emptyList(), "", emptyList(), null,
             projectedContextTokens = 1234, billedContextTokens = 4321)
         assertEquals(4321, cloud.contextTokens)
@@ -38,7 +38,7 @@ class AgentContextMeterPolicyTest {
     @Test fun emptyFirstDraftIncludesSystemAndToolOverhead() {
         val usage = liveContextUsage(emptyList(), "", emptyList(), null, requestOverheadTokens = 12000)
         assertNull(usage.contextTokens)
-        assertEquals("无", formatContextUsage(usage))
+        assertEquals("0k", formatContextUsage(usage))
         assertEquals(12000, compressionContextUsage(emptyList(), "", emptyList(), null, requestOverheadTokens = 12000).contextTokens)
     }
 

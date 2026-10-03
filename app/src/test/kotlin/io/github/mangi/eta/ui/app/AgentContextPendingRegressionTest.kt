@@ -39,9 +39,9 @@ class AgentContextPendingRegressionTest {
                 f.put(id, f.pending())
                 f.bind(run, id)
                 assertFalse(f.state(id).contextHasStarted)
-                assertEquals("无", formatContextUsage(f.usage(id)))
+                assertEquals("0k", formatContextUsage(f.usage(id)))
                 if (requestStarted) f.send(run, AgentEvent.ProviderRequestStarted(1))
-                assertEquals("无", formatContextUsage(f.usage(id)))
+                assertEquals("0k", formatContextUsage(f.usage(id)))
                 call(f.app, "applyRunResult", run, outcome.copy(runId = run), false)
                 assertTrue(f.state(id).contextHasStarted)
                 assertEquals("未知", formatContextUsage(f.usage(id)))
@@ -57,9 +57,9 @@ class AgentContextPendingRegressionTest {
         f.put("empty", empty.copy(providerId = f.provider.id, modelId = "m"))
         assertFalse(f.state("empty").contextHasStarted)
         assertFalse(f.state("empty").contextAwaitingReceipt)
-        assertEquals("无", formatContextUsage(f.usage("empty")))
+        assertEquals("0k", formatContextUsage(f.usage("empty")))
         f.put("empty", f.state("empty").copy(modelId = "other"))
-        assertEquals("无", formatContextUsage(f.usage("empty")))
+        assertEquals("0k", formatContextUsage(f.usage("empty")))
     }
 
     @Test fun providerAndRetryBoundariesKeepActualAndSameRequestEvidence() = fixture { f ->
