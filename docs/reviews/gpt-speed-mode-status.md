@@ -1,4 +1,4 @@
-# GPT speed mode — merged in the integration tree, verification pending
+# GPT speed mode — merged into local main (uncompiled)
 
 ## Scope and provenance
 
@@ -6,12 +6,12 @@
 - Candidate-internal commits carried by that candidate: `fbd4a69f` (request field, Bundle transfer, tier injection, binding/snapshot policy), `c85c269a` (complete UI wiring and shared eligibility; background/draft invalidation; static contracts), `abec772e` (Compose manual-clock reentry/reset tests and invalid test-import cleanup).
 - Final independent review: task `a1de9cf2-ede1-4f3f-9353-ea855a3ac266`, reviewed worktree `3acaa0e6ccb04921aea356324d5f09f5`; no substantiated blocking findings. That review's test-only delta was merged through the workspace review gate into the candidate (`467eb56d`) only; it did not touch main.
 - Integration stage (this round): the user explicitly asked for this work to be merged into main. In the isolated integration repository the original main `44cac24b` was merged with the reviewed candidate `467eb56d`, producing merge commit `b28493bd`. The merge was conflict-free.
-- Provenance caveat: the commit identifiers in this section are as reported by the parent agent. This document's worktree has no Git access, so they were not recomputed here; the candidate content itself is present and verifiable in the integration tree.
+- Git provenance was independently verified by the parent: both `44cac24b` and `467eb56d` are ancestors of the merged local main. Non-overlapping candidate files match exactly; unrelated main files are preserved. The sole overlap, `AgentChatBody.kt`, adds only 12 speed-parameter/call lines relative to the previous main.
 
 ## Where the work has and has not landed
 
 - CARRIED INTO THE INTEGRATION TREE: the reviewed candidate content is present in integration commit `b28493bd`; the speed-mode sources, Kotlin test classes, and Python contract tests are all visible in this integration worktree.
-- NOT YET LANDED ON THE ORIGINAL MAIN: the original checkout `/workspace/Eta` has not been moved. Its main ref still sits at the pre-merge state whose baseline is `44cac24b`; it will be fast-forwarded to `b28493bd` only after this review round and the Python test run are complete. Until that fast-forward happens, this must not be described as already merged into the original main, and no release/CI artifact may claim otherwise.
+- LANDED ON LOCAL MAIN: `/workspace/Eta` on branch `main` was fast-forwarded from `44cac24b` to reviewed integration tip `ba75dede` (merge `b28493bd` plus integration-stage documentation). This status update is a subsequent documentation-only commit. No remote push was performed.
 - Historical note (superseded): an earlier revision of this document stated that the original repository remained `/workspace/Eta` at baseline `5c997e4c` and that nothing had been merged there. That text described the earlier candidate-only stage; `5c997e4c` is no longer the mainline baseline recorded here.
 
 ## Implemented behavior
@@ -43,7 +43,8 @@ git diff --check
 
 Current round:
 
-- The Python source-contract suite is being run by the parent agent against the integration tree (`b28493bd`). Its outcome is PENDING VERIFICATION: no pass/fail count is recorded here until the parent reports it.
+- The parent executed the full Python source-contract suite against integration tree `b28493bd`: **296 tests in 16.104s, OK**. `git diff --check 44cac24b..HEAD` passed. Subsequent changes are documentation only.
+- Independent integration review `0a507885-d0be-4f3f-8cc7-a12990692a47` found no blocking issues, including the speed callback chain and preservation of placement-phase tail following. Worktree `9571547b86f442f6a6506b28bcf58bc3` passed the explicit review/merge gate before the original main was advanced.
 - Kotlin/Compose tests have NOT been executed. No Gradle/Android compilation, CI build, push, APK installation, or real provider requests were performed.
 - Static review and Python contracts do not prove rendered behavior, Kotlin compilation, provider acceptance, pricing, or actual latency. These remain later validation work once compilation/testing is authorized.
 - This document was updated for this round only; no source, build, or test file was modified by that update.
