@@ -41,6 +41,12 @@ internal enum class AgentTaskSurfaceMode(val wire: String, val labelRes: Int) {
 internal object AgentTaskSurface {
     const val PREF_KEY = "agent_task_surface"
 
+    /**
+     * 一次性迁移标记：记录“每次询问 → 前台执行”的升级迁移已经跑过。
+     * 标记名固定，不由版本号派生；迁移后用户重新选择 ASK/后台不会被再次改写。
+     */
+    const val ASK_MIGRATION_KEY = "agent_task_surface_ask_migrated"
+
     private val traditionalScreenGuiTools: Set<String> = setOf(
         "observe_screen",
         "wait",
@@ -81,6 +87,37 @@ internal object AgentTaskSurface {
     fun save(mode: AgentTaskSurfaceMode) {
         if (!allowsPersist(mode)) throw VirtualDisplayHandoffNotReadyException()
         Prefs.putString(PREF_KEY, mode.wire)
+    }
+
+    /**
+     * 升级时只跑一次的迁移：把升级前显式存过的合法 ASK 改成 FOREGROUND。
+     *
+     * - 只有本地存储值恰好是 "ask" 才改写；缺键、前台、后台都原样保留，但仍写入
+     *   一次性标记，表示该安装已经检查过，避免用户以后重新选择 ASK 时才被迁移。
+     * - 原始值直接从同一份本地配置读取；读不出来（类型异常）时本次不算检查成功，
+     *   不写标记并返回 false，留待下次启动重试。
+     * - 标记与值写在同一个 editor 里一次提交。commit() 返回 false 时不能宣告完成
+     *   （内存可能已被改动但没有持久化），返回 false 以便重试，也不会把值单独写坏。
+     * - 只在 [Prefs.initLocal] 与备份恢复之后触发，早于任何 `stored`/`effective` 读取；
+     *   标记存在时直接返回，所以迁移后用户重新选择的 ASK/后台会被后续启动与升级保留。
+     *
+     * @return 迁移是否已完成并落盘；false 表示本次未完成，下次启动会重试。
+     */
+    fun migrateAskToForegroundOnce(): Boolean {
+        val prefs = Prefs.localAgentPreferences() ?: return false
+        if (runCatching { prefs.getBoolean(ASK_MIGRATION_KEY, false) }.getOrDefault(false)) return true
+        val stored = try {
+            prefs.getString(PREF_KEY, null)
+        } catch (_: Exception) {
+            // 读不出原始值就无从判断是否旧 ASK，不能写完成标记。
+            return false
+        }
+        val editor = prefs.edit().putBoolean(ASK_MIGRATION_KEY, true)
+        if (stored == AgentTaskSurfaceMode.ASK.wire) {
+            editor.putString(PREF_KEY, AgentTaskSurfaceMode.FOREGROUND.wire)
+        }
+        // 标记与值同一次提交；失败时两者都未确认落盘，返回 false 留待下次启动重试。
+        return editor.commit()
     }
 
     fun effective(): AgentTaskSurfaceMode = AgentTaskSurfaceMode.resolve(stored(), moduleInstalled())

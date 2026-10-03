@@ -3,6 +3,7 @@ package io.github.mangi.eta.config
 import android.content.Context
 import android.content.SharedPreferences
 import io.github.libxposed.service.XposedService
+import io.github.mangi.eta.agent.device.AgentTaskSurface
 
 /**
  * 模块配置中枢。
@@ -155,6 +156,8 @@ internal object Prefs {
                 }
             }
         }
+        // 一次性迁移必须在任何 Agent 偏好读取之前完成；固定标记保证只跑一次。
+        AgentTaskSurface.migrateAskToForegroundOnce()
     }
 
     /** Hook 进程调用：缓存框架提供的只读 SharedPreferences。 */
@@ -232,6 +235,10 @@ internal object Prefs {
             }
         }
         check(editor.commit()) { "Agent preferences 恢复未落盘" }
+        // 恢复会清空并重写全部本地标量，可能抹掉刚写的一次性标记。
+        // 落盘后重新套用迁移：带标记的备份（迁移后导出）原样保留用户选择，
+        // 无标记的旧备份若存过 ASK 则补做一次迁移。
+        AgentTaskSurface.migrateAskToForegroundOnce()
     }
 
     /** 关闭时压缩用当前对话模型；已选过自定义模型的旧配置视为开启。 */
