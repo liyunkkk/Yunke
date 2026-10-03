@@ -3,11 +3,10 @@ package io.github.mangi.eta.ui.components
 import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsActions
-import androidx.compose.ui.test.assertDoesNotExist
-import androidx.compose.ui.test.assertExists
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.longClick
@@ -96,6 +95,93 @@ class AgentChatSpeedChipGestureTest {
         chip().performTouchInput { click() }
         compose.onNodeWithText(reasoningDialogTitle()).assertExists()
         compose.runOnIdle { assertEquals(1, cycles) }
+    }
+
+    @Test
+    fun semanticLongPressIgnoresReentryUntilAnimationFinishes() {
+        compose.mainClock.autoAdvance = false
+        render()
+        compose.mainClock.advanceTimeByFrame()
+
+        val startedAt = compose.mainClock.currentTime
+        chip().performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        // 直接走真实语义入口，不让触摸长按的等待时间替我们跑完450ms动画。
+        repeat(3) {
+            chip().performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        }
+        compose.mainClock.advanceTimeBy(200)
+        repeat(3) {
+            chip().performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        }
+        assertTrue(compose.mainClock.currentTime - startedAt < 450L)
+        compose.runOnUiThread {
+            assertEquals(1, cycles)
+            assertEquals(GptSpeedMode.FAST, mode.value)
+            assertEquals(0, effortChanges)
+        }
+
+        // 留出启动帧余量；被拒绝的长按不能在动画结束后排队补执行。
+        compose.mainClock.advanceTimeBy(500)
+        compose.runOnUiThread {
+            assertEquals(1, cycles)
+            assertEquals(GptSpeedMode.FAST, mode.value)
+        }
+        chip().performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        compose.runOnUiThread {
+            assertEquals(2, cycles)
+            assertEquals(GptSpeedMode.ULTRA_FAST, mode.value)
+        }
+        compose.mainClock.advanceTimeBy(500)
+        compose.runOnUiThread {
+            assertEquals(2, cycles)
+            assertEquals(GptSpeedMode.ULTRA_FAST, mode.value)
+            assertEquals(0, effortChanges)
+        }
+    }
+
+    @Test
+    fun switchingAwayDuringAnimationRemovesLongPressAndGptCanRestartFromOwnerNormal() {
+        compose.mainClock.autoAdvance = false
+        render()
+        compose.mainClock.advanceTimeByFrame()
+        chip().performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        compose.mainClock.advanceTimeBy(200)
+        compose.runOnUiThread {
+            assertEquals(1, cycles)
+            assertEquals(GptSpeedMode.FAST, mode.value)
+            gptSupported.value = false
+        }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeByFrame()
+        assertFalse(chip().fetchSemanticsNode().config.contains(SemanticsActions.OnLongClick))
+        compose.runOnUiThread {
+            assertEquals(1, cycles)
+            // Chip只撤掉入口/动画；业务档位仍由owner持有，不能把归一化算作UI行为。
+            assertEquals(GptSpeedMode.FAST, mode.value)
+            mode.value = GptSpeedMode.NORMAL
+        }
+        compose.mainClock.advanceTimeByFrame()
+        assertFalse(chip().fetchSemanticsNode().config.contains(SemanticsActions.OnLongClick))
+        compose.runOnUiThread {
+            assertEquals(1, cycles)
+            assertEquals(GptSpeedMode.NORMAL, mode.value)
+            gptSupported.value = true
+        }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeByFrame()
+        assertTrue(chip().fetchSemanticsNode().config.contains(SemanticsActions.OnLongClick))
+        chip().performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        chip().performSemanticsAction(SemanticsActions.OnLongClick) { it() }
+        compose.runOnUiThread {
+            assertEquals(2, cycles)
+            assertEquals(GptSpeedMode.FAST, mode.value)
+        }
+        compose.mainClock.advanceTimeBy(500)
+        compose.runOnUiThread {
+            assertEquals(2, cycles)
+            assertEquals(GptSpeedMode.FAST, mode.value)
+            assertEquals(0, effortChanges)
+        }
     }
 
     @Test
