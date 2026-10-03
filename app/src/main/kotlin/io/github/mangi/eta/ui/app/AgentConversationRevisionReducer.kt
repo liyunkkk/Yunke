@@ -500,6 +500,9 @@ internal object AgentConversationRevisionReducer {
 }
 
 internal fun AgentChatMessageUi.withId(id: String): AgentChatMessageUi = when (this) {
+    is io.github.mangi.eta.ui.model.AgentQuestionMessageUi -> copy(id = id,
+        status = if (status == io.github.mangi.eta.agent.question.AgentQuestionStatus.Waiting)
+            io.github.mangi.eta.agent.question.AgentQuestionStatus.Interrupted else status, submitting = false)
     is UserMessageUi -> copy(id = id)
     is AgentMessageUi -> copy(id = id)
     is SystemNoticeMessageUi -> copy(id = id)

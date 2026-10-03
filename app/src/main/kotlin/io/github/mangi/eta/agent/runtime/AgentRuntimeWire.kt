@@ -3,6 +3,10 @@ package io.github.mangi.eta.agent.runtime
 import android.content.ComponentName
 import android.content.Intent
 import android.os.Bundle
+import io.github.mangi.eta.agent.question.AgentQuestionAnswer
+import io.github.mangi.eta.agent.question.AgentQuestionCodec
+import io.github.mangi.eta.agent.question.AgentQuestionReceipt
+import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import io.github.mangi.eta.agent.model.AgentModelClient
@@ -89,6 +93,53 @@ internal object AgentRuntimeWire {
 
     /** Stop only the parent; independently owned child groups remain available. */
     const val MSG_STOP_MAIN_RUN = 17
+
+    /** A structured answer is separate from steering and must receive a runtime ACK. */
+    const val MSG_QUESTION_ANSWER = 18
+    const val MSG_QUESTION_ANSWER_RESPONSE = 19
+
+    data class QuestionAnswerSubmission(
+        val conversationId: String,
+        val runId: String,
+        val questionId: String,
+        val toolCallId: String,
+        val answer: AgentQuestionAnswer,
+    )
+
+    fun questionAnswerBundle(conversationId: String, runId: String, questionId: String,
+        toolCallId: String, answer: AgentQuestionAnswer): Bundle = Bundle().apply {
+        require(listOf(conversationId, runId, questionId, toolCallId).all { it.isNotBlank() && it.length <= 1024 })
+        putString("conversation_id", conversationId)
+        putString(KEY_RUN_ID, runId)
+        putString("question_id", questionId)
+        putString(KEY_TOOL_CALL_ID, toolCallId)
+        val encoded = AgentQuestionCodec.answerToJson(answer).toString()
+        require(encoded.toByteArray(Charsets.UTF_8).size <= 24 * 1024)
+        putString("question_answer_json", encoded)
+    }
+
+    fun questionAnswerFromBundle(bundle: Bundle): QuestionAnswerSubmission {
+        fun id(key: String): String = bundle.getString(key).orEmpty().also {
+            require(it.isNotBlank() && it.length <= 1024) { "Invalid question ownership" }
+        }
+        val raw = bundle.getString("question_answer_json").orEmpty()
+        require(raw.toByteArray(Charsets.UTF_8).size <= 24 * 1024)
+        return QuestionAnswerSubmission(id("conversation_id"), id(KEY_RUN_ID), id("question_id"),
+            id(KEY_TOOL_CALL_ID), AgentQuestionCodec.answerFromJson(org.json.JSONObject(raw)))
+    }
+
+    fun questionReceiptBundle(questionId: String, receipt: AgentQuestionReceipt): Bundle = Bundle().apply {
+        putString("question_id", questionId)
+        putBoolean("question_accepted", receipt.accepted)
+        putString("question_code", receipt.code)
+        putString("question_message", receipt.message)
+    }
+
+    fun questionReceiptFromBundle(bundle: Bundle): AgentQuestionReceipt = AgentQuestionReceipt(
+        bundle.getBoolean("question_accepted", false),
+        bundle.getString("question_code") ?: "QUESTION_ACK_INVALID",
+        bundle.getString("question_message").orEmpty(),
+    )
 
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"
@@ -775,6 +826,19 @@ internal object AgentRuntimeWire {
                 putString("images_json", event.imagesJson)
             }
 
+            is AgentEvent.QuestionRequested -> {
+                putString(KEY_TYPE, "question_requested")
+                putString("question_request_json", AgentQuestionCodec.requestToJson(event.request).toString())
+            }
+
+            is AgentEvent.QuestionResolved -> {
+                putString(KEY_TYPE, "question_resolved")
+                putString("question_id", event.questionId)
+                putString(KEY_RUN_ID, event.runId)
+                putString("question_status", event.status.name)
+                event.answer?.let { putString("question_answer_json", AgentQuestionCodec.answerToJson(it).toString()) }
+            }
+
             is AgentEvent.ToolStarted -> {
                 putString(KEY_TYPE, "tool_started")
                 putInt("round", event.round)
@@ -953,6 +1017,22 @@ internal object AgentRuntimeWire {
             requestId = bundle.getString("request_id").orEmpty(),
             imagesJson = bundle.getString("images_json") ?: "[]",
         )
+
+        "question_requested" -> runCatching {
+            AgentEvent.QuestionRequested(AgentQuestionCodec.requestFromJson(
+                org.json.JSONObject(bundle.getString("question_request_json").orEmpty())))
+        }.getOrNull()
+
+        "question_resolved" -> runCatching {
+            val status = AgentQuestionStatus.valueOf(bundle.getString("question_status").orEmpty())
+            require(status != AgentQuestionStatus.Waiting)
+            val answer = bundle.getString("question_answer_json")?.let {
+                AgentQuestionCodec.answerFromJson(org.json.JSONObject(it))
+            }
+            require((status == AgentQuestionStatus.Answered) == (answer != null))
+            AgentEvent.QuestionResolved(bundle.getString("question_id").orEmpty(),
+                bundle.getString(KEY_RUN_ID).orEmpty(), status, answer)
+        }.getOrNull()
 
         "tool_started" -> AgentEvent.ToolStarted(
             round = bundle.getInt("round"),

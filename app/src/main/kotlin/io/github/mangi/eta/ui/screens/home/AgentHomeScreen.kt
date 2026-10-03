@@ -89,6 +89,8 @@ internal fun AgentHomeScreen(
             onDeleteMessage = { id -> onAction(AgentHomeAction.DeleteMessage(id)) },
             onRegenerateMessage = { id -> onAction(AgentHomeAction.RegenerateMessage(id)) },
             onBranchMessage = { id -> onAction(AgentHomeAction.BranchMessage(id)) },
+            onQuestionDraftChanged = { c, q, a -> onAction(AgentHomeAction.QuestionDraftChanged(c, q, a)) },
+            onSubmitQuestionAnswer = { c, q -> onAction(AgentHomeAction.SubmitQuestionAnswer(c, q)) },
             onSuggestionClick = { prompt ->
                 onAction(AgentHomeAction.SubmitMessage(prompt))
             },

@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.model
 
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 
 sealed interface AgentHomeAction {
     data class ContextTaskSelected(val taskId: String?) : AgentHomeAction
@@ -29,6 +30,8 @@ sealed interface AgentHomeAction {
     data class DeleteMessage(val id: String) : AgentHomeAction
     data class RegenerateMessage(val id: String) : AgentHomeAction
     data class BranchMessage(val id: String) : AgentHomeAction
+    data class QuestionDraftChanged(val conversationId: String, val questionId: String, val answer: AgentQuestionAnswer) : AgentHomeAction
+    data class SubmitQuestionAnswer(val conversationId: String, val questionId: String) : AgentHomeAction
     data object OpenTools : AgentHomeAction
     data object OpenSkills : AgentHomeAction
     data object OpenPermissions : AgentHomeAction
@@ -71,6 +74,8 @@ sealed interface AgentChatAction {
     data class DeleteMessage(val id: String) : AgentChatAction
     data class RegenerateMessage(val id: String) : AgentChatAction
     data class BranchMessage(val id: String) : AgentChatAction
+    data class QuestionDraftChanged(val conversationId: String, val questionId: String, val answer: AgentQuestionAnswer) : AgentChatAction
+    data class SubmitQuestionAnswer(val conversationId: String, val questionId: String) : AgentChatAction
 }
 
 sealed interface AgentToolsAction {

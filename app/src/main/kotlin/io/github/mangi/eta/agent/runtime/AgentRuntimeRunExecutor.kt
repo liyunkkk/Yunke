@@ -1,6 +1,8 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
+import io.github.mangi.eta.agent.question.AgentQuestionCodec
+import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.delegation.*
 import io.github.mangi.eta.agent.browser.ChildBrowserSession
@@ -290,9 +292,23 @@ internal class AgentRuntimeRunExecutor(
             } else {
                 ExistingChildTaskTools.appendTo(mcpTools)
             }
+            val questionCoordinator = AgentQuestionCoordinator(runController) { event ->
+                acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
+            }
+            session.questionCoordinator = questionCoordinator
             val delegatedExecutor = AgentModelClient.ToolExecutor { call ->
                 runController.throwIfCancelled()
-                if (call.name == "manage_agent_workspace") {
+                if (call.name == "ask_user") {
+                    val question = AgentQuestionCodec.parseArguments(call.argumentsJson,
+                        conversationId = request.effectiveModelSessionId,
+                        runId = request.runId, toolCallId = call.id,
+                        questionId = "question-${UUID.randomUUID()}", createdAtMillis = System.currentTimeMillis())
+                    val answer = questionCoordinator.awaitAnswer(question)
+                    AgentModelClient.ToolResult(if (answer == null) {
+                        org.json.JSONObject().put("ok", false).put("code", "QUESTION_CANCELLED")
+                            .put("status", "cancelled").put("question_id", question.questionId).toString()
+                    } else AgentQuestionCodec.resultJson(question, answer).toString())
+                } else if (call.name == "manage_agent_workspace") {
                     val backend = childWorkspace
                     val payload = try { AgentWorkspaceAccessPolicy.execute(
                         argumentsJson = call.argumentsJson,

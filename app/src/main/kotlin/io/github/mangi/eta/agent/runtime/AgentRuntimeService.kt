@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.app.Service
+import io.github.mangi.eta.agent.question.AgentQuestionReceipt
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -251,6 +252,27 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         runId = AgentRuntimeWire.runIdFromBundle(msg.data ?: return),
                         replyTo = msg.replyTo,
                     )
+                }
+
+                AgentRuntimeWire.MSG_QUESTION_ANSWER -> {
+                    val data = msg.data ?: return
+                    val reply = msg.replyTo ?: return
+                    // Decoding is bounded; answer validation and event callbacks do not run on Main.
+                    val questionId = data.getString("question_id").orEmpty().take(1024)
+                    thread(name = "eta-question-answer") {
+                        val receipt = runCatching {
+                            val submission = AgentRuntimeWire.questionAnswerFromBundle(data)
+                            sessions.get(submission.runId)?.submitQuestionAnswer(submission)
+                                ?: AgentQuestionReceipt(false, "QUESTION_RUN_NOT_ACTIVE", "该任务已停止或结束")
+                        }.getOrElse {
+                            AgentQuestionReceipt(false, "QUESTION_INVALID_ANSWER", "回答格式无效")
+                        }
+                        runCatching {
+                            reply.send(Message.obtain(null, AgentRuntimeWire.MSG_QUESTION_ANSWER_RESPONSE).apply {
+                                this.data = AgentRuntimeWire.questionReceiptBundle(questionId, receipt)
+                            })
+                        }
+                    }
                 }
 
                 AgentRuntimeWire.MSG_STEER_RUN -> {

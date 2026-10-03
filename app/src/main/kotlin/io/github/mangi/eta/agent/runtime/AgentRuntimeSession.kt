@@ -1,6 +1,11 @@
 package io.github.mangi.eta.agent.runtime
 
 
+import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
+import io.github.mangi.eta.agent.question.AgentQuestionAnswer
+import io.github.mangi.eta.agent.question.AgentQuestionCodec
+import io.github.mangi.eta.agent.question.AgentQuestionReceipt
+import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.agent.device.AgentTaskSurface
 import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -193,6 +198,19 @@ internal class AgentRuntimeSession(
             dispatchDepth--
             drainEvents()
         }
+    }
+
+    @Volatile var questionCoordinator: AgentQuestionCoordinator? = null
+
+    fun submitQuestionAnswer(submission: AgentRuntimeWire.QuestionAnswerSubmission): AgentQuestionReceipt {
+        val coordinator = withSessionLock {
+            if (state != State.RUNNING || submission.runId != runId) return AgentQuestionReceipt(
+                false, "QUESTION_RUN_NOT_ACTIVE", "该任务已停止或结束")
+            questionCoordinator
+        } ?: return AgentQuestionReceipt(false, "QUESTION_NOT_PENDING", "没有待回答的问题")
+        // Never hold the session lock while the coordinator publishes a resolved event.
+        return coordinator.submitAnswer(submission.conversationId, submission.runId,
+            submission.questionId, submission.toolCallId, submission.answer)
     }
 
     fun steer(text: String): Boolean = withSessionLock {

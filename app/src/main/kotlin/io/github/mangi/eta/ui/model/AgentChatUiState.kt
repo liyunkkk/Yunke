@@ -1,6 +1,9 @@
 package io.github.mangi.eta.ui.model
 
 import androidx.compose.runtime.Immutable
+import io.github.mangi.eta.agent.question.AgentQuestionRequest
+import io.github.mangi.eta.agent.question.AgentQuestionAnswer
+import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.agent.model.AgentFileReference
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.GptSpeedMode
@@ -13,6 +16,7 @@ internal data class AgentChatUiState(
     val input: String,
     val isStreaming: Boolean,
     val isPaused: Boolean = false,
+    val isWaitingForAnswer: Boolean = false,
     val isCompressingContext: Boolean = false,
     val compactingModelName: String = "",
     val isWaitingForCompression: Boolean = false,
@@ -65,6 +69,20 @@ internal data class AgentChatUiState(
 sealed interface AgentChatMessageUi {
     val id: String
 }
+
+@Immutable
+internal data class AgentQuestionMessageUi(
+    override val id: String,
+    val request: AgentQuestionRequest,
+    val status: AgentQuestionStatus = AgentQuestionStatus.Waiting,
+    val answer: AgentQuestionAnswer? = null,
+    val selectedOptionId: String? = null,
+    val answerKind: String = "option",
+    val otherText: String = "",
+    val note: String = "",
+    val submitting: Boolean = false,
+    val error: String? = null,
+) : AgentChatMessageUi
 
 @Immutable
 data class UserMessageUi(

@@ -50,6 +50,10 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationParser
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.question.AgentQuestionAnswer
+import io.github.mangi.eta.agent.question.AgentQuestionCodec
+import io.github.mangi.eta.agent.question.AgentQuestionStatus
+import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
 import io.github.mangi.eta.agent.runtime.AgentRunArchiveStore
@@ -1362,10 +1366,10 @@ internal class AgentAppState(
             val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
             val finalizedText = runMessageProjector.finalizeText(runId, finalizedThinking)
             if (interrupted) {
-                val interruptedTools = runMessageProjector.interruptRunningTools(
+                val interruptedTools = AgentQuestionProjection.interruptWaiting(runId, runMessageProjector.interruptRunningTools(
                     reason = appContext.getString(R.string.system_notice_interrupted),
                     messages = finalizedText,
-                )
+                ))
                 val noticeId = "interrupted-$runId"
                 if (interruptedTools.any { it.id == noticeId }) {
                     interruptedTools
@@ -4758,6 +4762,58 @@ internal class AgentAppState(
         }
     }
 
+    /** Draft edits and submissions are bound to stored four-ID ownership, not selected chat. */
+    fun updateQuestionDraft(conversationId: String, questionId: String, draft: AgentQuestionAnswer) {
+        val state = conversationState(conversationId) ?: return
+        val question = state.messages.filterIsInstance<AgentQuestionMessageUi>()
+            .singleOrNull { it.request.questionId == questionId } ?: return
+        if (question.status != AgentQuestionStatus.Waiting || question.submitting) return
+        val kind = when {
+            draft.kind == "option" -> "option"
+            draft.kind == "other" && question.request.allowOther -> "other"
+            draft.kind == "delegate" && question.request.allowDelegation -> "delegate"
+            else -> return
+        }
+        val selected = draft.optionId?.takeIf { id -> question.request.options.any { it.id == id } }
+        val updated = question.copy(answerKind = kind, selectedOptionId = selected,
+            otherText = draft.otherText.take(2000), note = if (question.request.allowNote) draft.note.take(2000) else "",
+            error = null)
+        updateConversation(conversationId, state.copy(messages = state.messages.map {
+            if (it.id == question.id) updated else it
+        }))
+        persistConversations()
+    }
+
+    fun submitQuestionAnswer(conversationId: String, questionId: String) {
+        val state = conversationState(conversationId) ?: return
+        val question = state.messages.filterIsInstance<AgentQuestionMessageUi>()
+            .singleOrNull { it.request.questionId == questionId } ?: return
+        if (question.request.conversationId != conversationId || question.status != AgentQuestionStatus.Waiting || question.submitting) return
+        val answer = AgentQuestionProjection.draftAnswer(question)
+        val validation = AgentQuestionCodec.validateAnswer(question.request, answer)
+        if (!validation.accepted) {
+            updateConversation(conversationId, state.copy(messages = state.messages.map {
+                if (it.id == question.id) question.copy(error = validation.message.ifBlank { validation.code }) else it
+            }))
+            return
+        }
+        val owner = question.request
+        updateConversation(conversationId, state.copy(messages = state.messages.map {
+            if (it.id == question.id) question.copy(submitting = true, error = null) else it
+        }))
+        scope.launch {
+            val receipt = withContext(Dispatchers.IO) {
+                AgentRuntimeClient(appContext, AndroidAgentLogger).submitQuestionAnswer(
+                    owner.conversationId, owner.runId, owner.questionId, owner.toolCallId, answer)
+            }
+            val current = conversationState(conversationId) ?: return@launch
+            val messages = current.messages.map { m -> if (m is AgentQuestionMessageUi &&
+                AgentQuestionProjection.sameOwner(m.request, owner)) AgentQuestionProjection.acknowledged(m, answer, receipt) else m }
+            updateConversation(conversationId, current.copy(messages = messages))
+            persistConversations()
+        }
+    }
+
     private fun applyRunEventBody(
         runId: String,
         event: AgentEvent,
@@ -4765,6 +4821,16 @@ internal class AgentAppState(
         replaying: Boolean,
     ) {
         when (event) {
+            is AgentEvent.QuestionRequested -> {
+                val owner = conversationIdForRun(runId) ?: return
+                updateRunTrace(runId) { messages -> runMessageProjector.requestQuestion(owner, runId, event, messages, replaying) }
+                if (!replaying) persistConversations()
+            }
+            is AgentEvent.QuestionResolved -> {
+                val owner = conversationIdForRun(runId) ?: return
+                updateRunTrace(runId) { messages -> runMessageProjector.resolveQuestion(owner, runId, event, messages) }
+                if (!replaying) persistConversations()
+            }
             is AgentEvent.AssistantBlockStart -> {
                 updateRunTrace(runId) { messages ->
                     runMessageProjector.startAssistantBlock(runId, event, messages)
@@ -5586,7 +5652,8 @@ internal class AgentAppState(
         }
         val ownerContext = ownerContexts[conversationId]
         val view = ownerContext?.projection()
-        val current = if (view == null || ownerContext == null) projected else projected.copy(
+        val questionProjected = projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+        val current = if (view == null || ownerContext == null) questionProjected else questionProjected.copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
             childStatusRoster = ownerContext.roster(),
         )

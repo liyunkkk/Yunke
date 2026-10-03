@@ -47,6 +47,14 @@ internal class AgentRunMessageProjector(
     private val roundEventStates = mutableMapOf<RoundEventKey, RoundEventState>()
     private val textSegments = mutableMapOf<RoundEventKey, String>()
 
+    fun requestQuestion(conversationId: String, runId: String, event: AgentEvent.QuestionRequested,
+        messages: List<AgentChatMessageUi>, replaying: Boolean = false): List<AgentChatMessageUi> =
+        AgentQuestionProjection.requested(conversationId, runId, event.request, messages, !isSealed(runId), replaying)
+
+    fun resolveQuestion(conversationId: String, runId: String, event: AgentEvent.QuestionResolved,
+        messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> =
+        AgentQuestionProjection.resolved(conversationId, runId, event, messages)
+
     fun isSealed(runId: String): Boolean = runId in sealedRunIds
 
     fun seal(runId: String) {
@@ -364,7 +372,7 @@ internal class AgentRunMessageProjector(
     /** 终态不依赖各块结束事件全部到齐；缺少工具结果时只能标为未知，不能推断执行成功。 */
     fun finalizeRun(runId: String, messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> {
         seal(runId)
-        return finalizeText(runId, finalizeThinking(runId, messages)).map { message ->
+        val finalized = finalizeText(runId, finalizeThinking(runId, messages)).map { message ->
             if (
                 message is ToolActivityMessageUi &&
                 message.id.startsWith("$runId-tool-") &&
@@ -375,6 +383,7 @@ internal class AgentRunMessageProjector(
                 message
             }
         }
+        return AgentQuestionProjection.interruptWaiting(runId, finalized)
     }
 
     fun finalizeThinkingRound(

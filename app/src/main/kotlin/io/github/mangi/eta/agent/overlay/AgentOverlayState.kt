@@ -118,6 +118,11 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
         detailText = "",
     )
 
+    is AgentEvent.QuestionRequested -> copy(phase = AgentOverlayPhase.RUNNING,
+        status = AgentOverlayStatus.WaitingForAnswer, detailText = event.request.title)
+    is AgentEvent.QuestionResolved -> copy(phase = AgentOverlayPhase.RUNNING,
+        status = AgentOverlayStatus.Continuing, detailText = "")
+
     is AgentEvent.ToolStarted -> copy(
         phase = AgentOverlayPhase.RUNNING,
         round = event.round,

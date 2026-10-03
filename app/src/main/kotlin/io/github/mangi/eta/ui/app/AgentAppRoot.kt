@@ -543,6 +543,8 @@ fun AgentAppRoot(
                                     }
                                 }
                                 is AgentHomeAction.BranchMessage -> agentState.branchConversation(action.id)
+                                is AgentHomeAction.QuestionDraftChanged -> agentState.updateQuestionDraft(action.conversationId, action.questionId, action.answer)
+                                is AgentHomeAction.SubmitQuestionAnswer -> agentState.submitQuestionAnswer(action.conversationId, action.questionId)
                                 AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
                                 AgentHomeAction.OpenSkills -> pushRoute(AppRoute.Skills)
                                 AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
@@ -616,6 +618,8 @@ fun AgentAppRoot(
                                     }
                                 }
                                 is AgentChatAction.BranchMessage -> agentState.branchConversation(action.id)
+                                is AgentChatAction.QuestionDraftChanged -> agentState.updateQuestionDraft(action.conversationId, action.questionId, action.answer)
+                                is AgentChatAction.SubmitQuestionAnswer -> agentState.submitQuestionAnswer(action.conversationId, action.questionId)
                             }
                         },
                     )

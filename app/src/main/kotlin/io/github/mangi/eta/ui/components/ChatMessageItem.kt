@@ -310,6 +310,8 @@ private val StaticPulseAlpha: () -> Float = { 1f }
 
 @Stable
 internal class ChatMessageActions {
+    var onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit by mutableStateOf({ _, _, _ -> })
+    var onSubmitQuestionAnswer: (String, String) -> Unit by mutableStateOf({ _, _ -> })
     var onSuggestionClick: (String) -> Unit by mutableStateOf<(String) -> Unit>({})
     var onRunTraceClick: () -> Unit by mutableStateOf<() -> Unit>({})
     var onOpenBrowser: () -> Unit by mutableStateOf<() -> Unit>({})
@@ -345,6 +347,9 @@ internal fun ChatMessageItem(
     speechPreface: String = "",
 ) {
     when (message) {
+        is io.github.mangi.eta.ui.model.AgentQuestionMessageUi -> AgentQuestionCard(message, modifier,
+            onDraftChanged = { draft -> actions.onQuestionDraftChanged(message.request.conversationId, message.request.questionId, draft) },
+            onSubmit = { actions.onSubmitQuestionAnswer(message.request.conversationId, message.request.questionId) })
         is UserMessageUi -> UserMessageBubble(
             message = message,
             actionsEnabled = messageActionsEnabled,

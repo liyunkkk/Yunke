@@ -31,6 +31,7 @@ import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
+import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
@@ -309,6 +310,7 @@ internal object AgentConversationStore {
             cloudRouteSignature = receipt?.routeSignature,
             conversationContentLoaded = withContent,
             messages = messages,
+            isWaitingForAnswer = AgentQuestionProjection.hasWaiting(messages),
             history = history,
             appliedRuntimeRunIds = conversation.appliedRuntimeRunIdsJson.toStringList(),
             input = "",
@@ -460,6 +462,11 @@ internal object AgentConversationStore {
                 elapsedSeconds = elapsedSeconds,
             )
 
+            is AgentQuestionMessageUi -> ConversationMessageEntity(
+                id = id, conversationId = conversationId, sortIndex = sortIndex,
+                type = AgentQuestionPersistence.TYPE, content = AgentQuestionPersistence.encode(this), renderMarkdown = false,
+            )
+
             is ToolActivityMessageUi -> ConversationMessageEntity(
                 id = id,
                 conversationId = conversationId,
@@ -551,6 +558,8 @@ internal object AgentConversationStore {
                 elapsedSeconds = elapsedSeconds,
                 collapsed = true,
             )
+
+            AgentQuestionPersistence.TYPE -> AgentQuestionPersistence.decode(id, conversationId, content)
 
             TYPE_TOOL -> ToolActivityMessageUi(
                 id = id,

@@ -208,6 +208,8 @@ internal fun AgentChatBody(
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
     onBranchMessage: (String) -> Unit = {},
+    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
+    onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
     onOpenBrowser: () -> Unit,
@@ -403,6 +405,8 @@ internal fun AgentChatBody(
                 onDeleteMessage = onDeleteMessage,
                 onRegenerateMessage = onRegenerateMessage,
                 onBranchMessage = onBranchMessage,
+                onQuestionDraftChanged = onQuestionDraftChanged,
+                onSubmitQuestionAnswer = onSubmitQuestionAnswer,
                 onSuggestionClick = onSuggestionClick,
                 onRunTraceClick = onRunTraceClick,
                 onOpenBrowser = onOpenBrowser,
@@ -474,6 +478,8 @@ private fun AgentChatScaffold(
     onDeleteMessage: (String) -> Unit,
     onRegenerateMessage: (String) -> Unit,
     onBranchMessage: (String) -> Unit = {},
+    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
+    onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
     onSuggestionClick: (String) -> Unit,
     onRunTraceClick: () -> Unit,
     onOpenBrowser: () -> Unit,
@@ -585,6 +591,8 @@ private fun AgentChatScaffold(
                 onDeleteMessage = onDeleteMessage,
                 onRegenerateMessage = onRegenerateMessage,
                 onBranchMessage = onBranchMessage,
+                onQuestionDraftChanged = onQuestionDraftChanged,
+                onSubmitQuestionAnswer = onSubmitQuestionAnswer,
                 messageActionsEnabled = !isStreaming && !isPaused &&
                     !isCompressingContext &&
                     messageEdit == null,
@@ -619,6 +627,8 @@ internal fun AgentConversationMessages(
     onDeleteMessage: (String) -> Unit = {},
     onRegenerateMessage: (String) -> Unit = {},
     onBranchMessage: (String) -> Unit = {},
+    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit = { _, _, _ -> },
+    onSubmitQuestionAnswer: (String, String) -> Unit = { _, _ -> },
     messageActionsEnabled: Boolean = false,
     branchEnabled: Boolean = false,
     editTargetMessageId: String? = null,
@@ -1266,6 +1276,8 @@ internal fun AgentConversationMessages(
             messageActions.onDeleteMessage = onDeleteMessage
             messageActions.onRegenerateMessage = onRegenerateMessage
             messageActions.onBranchMessage = onBranchMessage
+            messageActions.onQuestionDraftChanged = onQuestionDraftChanged
+            messageActions.onSubmitQuestionAnswer = onSubmitQuestionAnswer
         }
         LazyColumn(
             state = scrollState,
