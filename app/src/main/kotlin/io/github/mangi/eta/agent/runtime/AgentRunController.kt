@@ -77,9 +77,11 @@ internal class AgentRunController {
         }
         // Wake the in-flight model request before releasing tool owners. Tool/browser cleanup
         // may block; insertion order used to put it ahead of the SSE cancellation binding.
-        resources.toList().sortedByDescending {
-            when { it.wakeBeforeCleanup -> 2; it.interruptible -> 1; else -> 0 }
-        }
+        // Keep the contract-visible interruptible ordering, then stably prioritize resources
+        // that must wake the provider before slower tool/browser cleanup starts.
+        resources.toList()
+            .sortedByDescending { it.interruptible }
+            .sortedByDescending { it.wakeBeforeCleanup }
             .forEach { resource -> runCatching { resource.cancel() } }
     }
 

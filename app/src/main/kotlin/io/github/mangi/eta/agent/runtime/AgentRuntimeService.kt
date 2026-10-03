@@ -859,15 +859,20 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         // Capture this exact session before leaving Main; a delayed stop must never re-resolve
         // runId and cancel a replacement. Blocking cancellation used to starve UI watchdogs.
         session.signalStop()
-        if (overlaySession === session && session.terminalResult == null) {
-            state.value = state.value.copy(status = AgentOverlayStatus.Stopping)
-        }
         stopWorker.submit(session) {
             if (!session.isTerminal) {
-                // Wake ask_user before a slow child stop or terminal/file work.
-                session.controller.cancel()
-                session.requestStop()
-                AgentChildRunControl.terminate(session, reason)
+                // Publish the child-choice decision before requestStop cancels the controller;
+                // otherwise the cancellation gate can make the continue/pause prompt disappear.
+                try {
+                    AgentChildRunControl.terminate(session, reason)
+                } finally {
+                    val accepted = session.requestStop()
+                    if (accepted) mainHandler.post {
+                        if (!destroyed && overlaySession === session && session.terminalResult == null) {
+                            state.value = state.value.copy(status = AgentOverlayStatus.Stopping)
+                        }
+                    }
+                }
             }
         }
     }
