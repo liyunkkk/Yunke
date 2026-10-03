@@ -12,6 +12,32 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunControllerTest {
+    @Test fun cancellationInterruptsTransportBeforePotentiallyBlockingToolCleanup() {
+        val controller = AgentRunController()
+        val transportStopped = CountDownLatch(1)
+        val cleanupEntered = CountDownLatch(1)
+        val releaseCleanup = CountDownLatch(1)
+        val cleanupSawTransport = AtomicReference<Boolean>()
+        // This is the runtime's registration order: the tool owner precedes the SSE binding.
+        controller.register {
+            cleanupSawTransport.set(transportStopped.count == 0L)
+            cleanupEntered.countDown()
+            releaseCleanup.await()
+        }
+        controller.register(interruptible = true) { transportStopped.countDown() }
+        val stopping = thread(isDaemon = true) { controller.cancel() }
+        try {
+            assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS))
+            assertTrue(controller.isCancelled)
+            assertEquals(true, cleanupSawTransport.get())
+            assertTrue(transportStopped.await(1, TimeUnit.SECONDS))
+        } finally {
+            releaseCleanup.countDown()
+            stopping.join(2_000)
+            controller.cancel()
+        }
+    }
+
     @Test fun budgetPauseWaitsOnlyAtWorkerCheckpoints() {
         val controller = AgentRunController()
         val interrupted = AtomicInteger()

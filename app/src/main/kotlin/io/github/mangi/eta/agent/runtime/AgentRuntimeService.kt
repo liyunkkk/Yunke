@@ -76,6 +76,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private val serviceMessenger = Messenger(IncomingHandler())
 
     private val sessions = AgentRuntimeSessionRegistry()
+    private val stopWorker = AgentRuntimeStopWorker { failure ->
+        AndroidAgentLogger.warn("Runtime stop failed: type=${failure.safeLogType()}")
+    }
+    @Volatile private var destroyed = false
     private val pendingStartRequests = linkedMapOf<String, PendingStartRequest>()
     // Keep the originating identity and frozen mode even after terminal registry removal.
     @Volatile
@@ -146,9 +150,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     override fun onDestroy() {
         // Losing the presentation/service is not consent to stop children. Keep their snapshots
         // and pending choices; a replacement service must not receive a deferred global stop.
-        sessions.snapshot().forEach { AgentChildRunControl.terminate(it, AgentChildControlPolicy.Reason.USER_CANCEL) }
+        destroyed = true
+        val retiring = sessions.snapshot()
+        // Service destruction also runs on Main. Drain accepted stop work independently of
+        // the lifecycle; neither child coordination nor resource cancellation may block Main.
+        stopWorker.close(retiring.map { session ->
+            {
+                try {
+                    AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.USER_CANCEL)
+                } finally {
+                    session.cancel("Agent Runtime 服务已停止")
+                }
+                Unit
+            }
+        })
         failPendingStarts("Agent Runtime 服务已停止")
-        sessions.cancelAll("Agent Runtime 服务已停止")
         overlaySession = null
         mainHandler.removeCallbacksAndMessages(null)
         resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
@@ -780,10 +796,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (runId.isBlank()) return
         pendingStartRequests.remove(runId)?.let { pending -> failPendingStart(pending, "已停止") }
         val session = sessions.get(runId) ?: return
-        if (session.isTerminal) return
-        AgentChildRunControl.terminate(session, reason)
-        if (session.requestStop() && overlaySession === session) {
-            state.value = state.value.copy(status = AgentOverlayStatus.Stopping)
+        // Capture this exact session before leaving Main; a delayed stop must never re-resolve
+        // runId and cancel a replacement. Blocking cancellation used to starve UI watchdogs.
+        stopWorker.submit(session) {
+            if (!session.isTerminal) {
+                try {
+                    AgentChildRunControl.terminate(session, reason)
+                } finally {
+                    val accepted = session.requestStop()
+                    if (accepted) mainHandler.post {
+                        if (!destroyed && overlaySession === session && session.terminalResult == null) {
+                            state.value = state.value.copy(status = AgentOverlayStatus.Stopping)
+                        }
+                    }
+                }
+            }
         }
     }
 

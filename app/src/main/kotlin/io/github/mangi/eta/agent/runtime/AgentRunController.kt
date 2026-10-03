@@ -49,7 +49,10 @@ internal class AgentRunController {
             taskProgressReporter = null
             pauseCondition.signalAll()
         }
-        resources.forEach { resource -> runCatching { resource.cancel() } }
+        // Wake the in-flight model request before releasing tool owners. Tool/browser cleanup
+        // may block; insertion order used to put it ahead of the SSE cancellation binding.
+        resources.toList().sortedByDescending { it.interruptible }
+            .forEach { resource -> runCatching { resource.cancel() } }
     }
 
     /** Existing interactive steering keeps its immediate-interrupt semantics. */

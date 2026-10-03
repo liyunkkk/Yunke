@@ -8,7 +8,7 @@ import org.junit.Test
 
 /**
  * 钉住 AgentAppState 停止解锁接线的不变量。
- * 断言直接读源码文本：AgentAppState 依赖 Android 框架，单测里无法实例化。
+ * 这里直接核验源码接线；实际状态交互另由 AgentStopInteractionTest 在 Robolectric 验证。
  */
 class RunStopSealWiringTest {
 
@@ -66,7 +66,9 @@ class RunStopSealWiringTest {
     fun `finishStopSeal only shortens the grace period`() {
         val start = source.indexOf("private fun finishStopSeal(")
         assertTrue("未找到 finishStopSeal", start >= 0)
-        val body = source.substring(start, start + 400)
+        val end = source.indexOf("private fun AgentEvent.allowedAfterSeal", start)
+        assertTrue("未找到 finishStopSeal 的后续方法", end > start)
+        val body = source.substring(start, end)
         assertTrue(
             "终态事件后改用短宽限看门狗",
             body.contains("armStopSealWatchdog(runId, stopSealTerminalTimeout)"),
@@ -75,6 +77,26 @@ class RunStopSealWiringTest {
             "finishStopSeal 不得自行移除 stoppingRuns",
             body.contains("stoppingRuns.remove(runId)"),
         )
+    }
+
+    @Test
+    fun `duplicate terminal events do not disarm the terminal watchdog`() {
+        val start = source.indexOf("private fun finishStopSeal(")
+        val end = source.indexOf("private fun AgentEvent.allowedAfterSeal", start)
+        val body = source.substring(start, end)
+        val duplicate = body.indexOf("if (stopSealTerminalTimeout.isPending(runId)) return")
+        val cancel = body.indexOf("stopSealWatchdogJobs.remove(runId)?.cancel()")
+        assertTrue("重复终态必须在撤看门狗之前返回", duplicate >= 0 && duplicate < cancel)
+    }
+
+    @Test
+    fun `stale watchdog cannot remove the current watchdog handle`() {
+        val start = source.indexOf("private fun armStopSealWatchdog(")
+        val end = source.indexOf("private fun cancelStopSealWatchdog(", start)
+        val body = source.substring(start, end).substringAfter("withContext(Dispatchers.Main.immediate)")
+        val claim = body.indexOf("if (!timeout.claimUnlock(ticket)) return@withContext")
+        val remove = body.indexOf("stopSealWatchdogJobs.remove(runId)")
+        assertTrue("过期回调必须先核验票据再清理句柄", claim >= 0 && claim < remove)
     }
 
     @Test

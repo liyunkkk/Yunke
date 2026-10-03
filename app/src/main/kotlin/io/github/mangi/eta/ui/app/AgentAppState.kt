@@ -1057,8 +1057,10 @@ internal class AgentAppState(
         memoryState = memoryState.copy(notice = null)
     }
 
-    private fun rejectConversationArchiveMutation(): Boolean {
-        if (stoppingRuns.keys.any { runConversationIds[it] == selectedConversationId }) {
+    private fun rejectConversationArchiveMutation(protectStoppingRun: Boolean = true): Boolean {
+        // Stop settlement owns the current transcript, not navigation, metadata or model choice.
+        // Those safe operations still obey the independent archive/backup maintenance lock.
+        if (protectStoppingRun && stoppingRuns.keys.any { runConversationIds[it] == selectedConversationId }) {
             Toast.makeText(appContext, StopSealNotices.PENDING, Toast.LENGTH_SHORT).show()
             return true
         }
@@ -1523,7 +1525,7 @@ internal class AgentAppState(
     }
 
     fun selectModel(modelId: String, providerId: String = "") {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.isStreaming && !homeState.isPaused) return
         val provider = selectionProviders.filter { it.isEnabled && (providerId.isBlank() || it.id == providerId) && it.models.any { m -> m.id == modelId && m.isEnabled } }.singleOrNull() ?: return
         val model = provider.models.first { it.id == modelId && it.isEnabled }
@@ -1605,7 +1607,7 @@ internal class AgentAppState(
     fun selectConversation(conversationId: String) = selectConversationContent(conversationId) {}
 
     private fun selectConversationContent(conversationId: String, onSelected: () -> Unit) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.messageEdit != null) cancelMessageEdit()
         val version = ++conversationSelectionVersion
         conversationSelectionJob?.cancel()
@@ -1657,7 +1659,7 @@ internal class AgentAppState(
     }
 
     fun createConversation() {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.messageEdit != null) cancelMessageEdit()
         if (!beginNewSubAgentDraft()) return
         fileAttachmentOwnerVersion += 1
@@ -1676,13 +1678,13 @@ internal class AgentAppState(
     }
 
     fun selectFolder(folderId: String?) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         selectedFolderId = folderId
         refreshConversationSummaries()
     }
 
     fun createFolder(name: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         val trimmed = name.trim()
         if (trimmed.isBlank()) return
         val folder = ConversationFolderUi(
@@ -1697,7 +1699,7 @@ internal class AgentAppState(
     }
 
     fun renameFolder(folderId: String, name: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         val trimmed = name.trim()
         if (trimmed.isBlank()) return
         conversationFolders = conversationFolders.map { folder ->
@@ -1708,7 +1710,7 @@ internal class AgentAppState(
     }
 
     fun deleteFolder(folderId: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         conversationFolders = conversationFolders.filterNot { it.id == folderId }
         conversationFolderIds = conversationFolderIds.filterValues { it != folderId }
         if (selectedFolderId == folderId) selectedFolderId = null
@@ -1718,7 +1720,7 @@ internal class AgentAppState(
     }
 
     fun moveConversationToFolder(conversationId: String, folderId: String?) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (conversationId !in conversationsById) return
         conversationFolderIds = if (folderId.isNullOrBlank()) {
             conversationFolderIds - conversationId
@@ -1730,7 +1732,7 @@ internal class AgentAppState(
     }
 
     fun toggleConversationPinned(conversationId: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (conversationId !in conversationsById) return
         conversationPinned = if (conversationId in conversationPinned) {
             conversationPinned - conversationId
@@ -1861,7 +1863,7 @@ internal class AgentAppState(
     private val manuallyRenamedDuringTitleRequest = mutableSetOf<String>()
 
     fun renameConversation(conversationId: String, title: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         val trimmed = title.trim()
         if (trimmed.isBlank()) return
         manuallyRenamedDuringTitleRequest += conversationId
@@ -3684,6 +3686,9 @@ internal class AgentAppState(
                 val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
                 val accepted = if (keepChildren) client.stopMainRun(runId, reason) else { client.cancelRun(runId); true }
                 if (!accepted) withContext(Dispatchers.Main.immediate) {
+                    // A late transport failure cannot resurrect a run already settled by its
+                    // result/watchdog, nor mark a newer run in the same conversation streaming.
+                    if (!stoppingRuns.containsKey(runId)) return@withContext
                     stoppingRuns.remove(runId)
                     cancelStopSealWatchdog(runId)
                     conversationIdForRun(runId)?.let { owner ->
@@ -4297,8 +4302,8 @@ internal class AgentAppState(
         stopSealWatchdogJobs[runId] = scope.launch {
             delay(timeout.timeoutMillis)
             withContext(Dispatchers.Main.immediate) {
-                stopSealWatchdogJobs.remove(runId)
                 if (!timeout.claimUnlock(ticket)) return@withContext
+                stopSealWatchdogJobs.remove(runId)
                 // applyRunResult consumes the stoppingRuns entry itself; removing it here would
                 // erase the retry flag that decides which stop notice the user sees.
                 if (!stoppingRuns.containsKey(runId)) return@withContext
@@ -4329,6 +4334,8 @@ internal class AgentAppState(
      * 这里不动 stoppingRuns，transcript 归属与 retry 标志仍由 applyRunResult 统一收尾。
      */
     private fun finishStopSeal(runId: String) {
+        // Duplicate terminal notifications must not cancel the one remaining grace watchdog.
+        if (stopSealTerminalTimeout.isPending(runId)) return
         stopSealWatchdogJobs.remove(runId)?.cancel()
         stopSealTimeout.release(runId)
         armStopSealWatchdog(runId, stopSealTerminalTimeout)
