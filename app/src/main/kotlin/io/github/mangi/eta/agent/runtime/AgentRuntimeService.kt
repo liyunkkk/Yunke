@@ -254,6 +254,27 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     )
                 }
 
+                AgentRuntimeWire.MSG_QUERY_QUESTION -> {
+                    val data = msg.data ?: return
+                    val reply = msg.replyTo ?: return
+                    thread(name = "eta-question-query") {
+                        val snapshot = runCatching {
+                            val conversationId = data.getString("conversation_id").orEmpty()
+                            val runId = AgentRuntimeWire.runIdFromBundle(data)
+                            val questionId = data.getString("question_id").orEmpty()
+                            val toolCallId = data.getString("tool_call_id").orEmpty()
+                            require(listOf(conversationId, runId, questionId, toolCallId).all { it.isNotBlank() && it.length <= 1024 })
+                            val session = sessions.get(runId)
+                            if (session == null) io.github.mangi.eta.agent.question.AgentQuestionSnapshot(
+                                conversationId, runId, questionId, toolCallId, io.github.mangi.eta.agent.question.AgentQuestionStatus.Interrupted)
+                            else session.questionSnapshot(conversationId, questionId, toolCallId)
+                        }.getOrNull()
+                        runCatching { reply.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_QUESTION_RESPONSE).apply {
+                            this.data = AgentRuntimeWire.questionSnapshotBundle(data, snapshot)
+                        }) }
+                    }
+                }
+
                 AgentRuntimeWire.MSG_QUESTION_ANSWER -> {
                     val data = msg.data ?: return
                     val reply = msg.replyTo ?: return

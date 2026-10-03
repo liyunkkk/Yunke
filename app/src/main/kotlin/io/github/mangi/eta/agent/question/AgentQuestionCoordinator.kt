@@ -36,7 +36,7 @@ internal class AgentQuestionCoordinator(
         var interrupted = false
         try {
             // register 在 controller 已取消时会同步调用 cancel；此时 slot 已安装。
-            binding = controller.register {
+            binding = controller.register(wakeBeforeCleanup = true) {
                 lock.withLock {
                     if (active === slot) cancelBeforePublication(slot)
                 }

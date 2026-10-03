@@ -20,6 +20,7 @@ internal object AgentQuestionPersistence {
 
     fun decode(id: String, conversationId: String, content: String): AgentQuestionMessageUi? = runCatching {
         val json = JSONObject(content)
+        require(json.optInt("version") == 1) { "Unknown question storage version" }
         val r = AgentQuestionCodec.requestFromJson(json.getJSONObject("request"))
         require(r.conversationId == conversationId && r.runId.isNotBlank() && r.toolCallId.isNotBlank())
         var status = AgentQuestionStatus.entries.firstOrNull { it.name == json.optString("status") }

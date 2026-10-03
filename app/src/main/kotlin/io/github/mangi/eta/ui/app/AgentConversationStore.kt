@@ -260,6 +260,9 @@ internal object AgentConversationStore {
             AgentConversationCodec.encodeConversationCheckpoint(history.map { it.copy(turnId = "") })
         }
 
+    suspend fun questionConversationIds(context: Context): List<String> =
+        EtaDatabase.get(context.applicationContext).conversationDao().questionConversationIds()
+
     fun loadConversation(context: Context, id: String): AgentChatHomeUiState? = runBlocking(Dispatchers.IO) {
         val database = EtaDatabase.get(context.applicationContext)
         database.withTransaction {

@@ -1271,6 +1271,32 @@ internal class AgentAppState(
             activeRunIds = activeRunIds,
             locallyObservedRunIds = locallyObservedRunIds,
         )
+        val questionOwners = if (activeStateKnown && terminalStateKnown) withContext(Dispatchers.IO) {
+            AgentConversationStore.questionConversationIds(appContext)
+        } else emptyList()
+        val liveQuestionRuns = activeRunIds + completedRuns.map { it.result.runId.ifBlank { it.handoff.id } }
+        val questionChanges = withContext(Dispatchers.Main) {
+            var changed = false
+            val owners = questionOwners + conversationsById.filterValues {
+                it.conversationContentLoaded && AgentQuestionProjection.hasWaiting(it.messages)
+            }.keys
+            if (activeStateKnown && terminalStateKnown) owners.distinct().forEach { id ->
+                val state = conversationState(id) ?: return@forEach
+                var messages = state.messages
+                state.messages.filterIsInstance<AgentQuestionMessageUi>()
+                    .filter { it.status == AgentQuestionStatus.Waiting && it.request.runId !in liveQuestionRuns &&
+                        it.request.runId !in runJobs }
+                    .map { it.request.runId }.distinct().forEach { run ->
+                        messages = AgentQuestionProjection.interruptWaiting(run, messages)
+                    }
+                if (messages != state.messages) {
+                    updateConversation(id, state.copy(messages = messages), updateTimestamp = false)
+                    changed = true
+                }
+            }
+            changed
+        }
+        if (questionChanges) withContext(Dispatchers.Main) { persistConversations() }.await()
         if (
             plan.completed.isEmpty() &&
             plan.interrupted.isEmpty() &&
@@ -2415,10 +2441,15 @@ internal class AgentAppState(
         onPublished: () -> Unit,
     ) {
         val rewrite = { value: String -> chatImageCache.rewriteCachedPath(value, sourceId, newId) }
+        val branchMessages = freezeStreamingMessages(prefix.messages).map { message ->
+                val frozen = message.withId("$newId:${message.id}").rewritePaths(rewrite)
+                if (frozen is AgentQuestionMessageUi) frozen.copy(
+                    request = frozen.request.copy(conversationId = newId), submitting = false,
+                ) else frozen
+            }
         val branched = snapshot.copy(
-            messages = freezeStreamingMessages(prefix.messages).map { message ->
-                message.withId("$newId:${message.id}").rewritePaths(rewrite)
-            },
+            messages = branchMessages,
+            isWaitingForAnswer = AgentQuestionProjection.hasWaiting(branchMessages),
             history = prefix.history.map { it.rewritePaths(rewrite) },
             input = "",
             isStreaming = false,
@@ -4801,7 +4832,7 @@ internal class AgentAppState(
         updateConversation(conversationId, state.copy(messages = state.messages.map {
             if (it.id == question.id) question.copy(submitting = true, error = null) else it
         }))
-        scope.launch {
+        scope.launch(Dispatchers.Main.immediate) {
             val receipt = withContext(Dispatchers.IO) {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).submitQuestionAnswer(
                     owner.conversationId, owner.runId, owner.questionId, owner.toolCallId, answer)
@@ -4811,6 +4842,22 @@ internal class AgentAppState(
                 AgentQuestionProjection.sameOwner(m.request, owner)) AgentQuestionProjection.acknowledged(m, answer, receipt) else m }
             updateConversation(conversationId, current.copy(messages = messages))
             persistConversations()
+            // Bounded submission-receipt reconciliation, not a timeout on waiting for the user.
+            if (receipt.accepted) delay(1_000)
+            val check = conversationState(conversationId)?.messages?.filterIsInstance<AgentQuestionMessageUi>()
+                ?.singleOrNull { AgentQuestionProjection.sameOwner(it.request, owner) }
+            if (check?.status == AgentQuestionStatus.Waiting) {
+                val snapshot = withContext(Dispatchers.IO) {
+                    AgentRuntimeClient(appContext, AndroidAgentLogger).queryQuestion(owner.conversationId,
+                        owner.runId, owner.questionId, owner.toolCallId)
+                }
+                val latest = conversationState(conversationId) ?: return@launch
+                updateConversation(conversationId, latest.copy(messages = latest.messages.map { m ->
+                    if (m is AgentQuestionMessageUi && AgentQuestionProjection.sameOwner(m.request, owner))
+                        AgentQuestionProjection.reconcile(m, snapshot) else m
+                }))
+                persistConversations()
+            }
         }
     }
 

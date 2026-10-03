@@ -97,6 +97,8 @@ internal object AgentRuntimeWire {
     /** A structured answer is separate from steering and must receive a runtime ACK. */
     const val MSG_QUESTION_ANSWER = 18
     const val MSG_QUESTION_ANSWER_RESPONSE = 19
+    const val MSG_QUERY_QUESTION = 20
+    const val MSG_QUERY_QUESTION_RESPONSE = 21
 
     data class QuestionAnswerSubmission(
         val conversationId: String,
@@ -140,6 +142,35 @@ internal object AgentRuntimeWire {
         bundle.getString("question_code") ?: "QUESTION_ACK_INVALID",
         bundle.getString("question_message").orEmpty(),
     )
+
+    fun questionQueryBundle(conversationId: String, runId: String, questionId: String, toolCallId: String): Bundle = Bundle().apply {
+        require(listOf(conversationId, runId, questionId, toolCallId).all { it.isNotBlank() && it.length <= 1024 })
+        putString("conversation_id", conversationId); putString(KEY_RUN_ID, runId)
+        putString("question_id", questionId); putString(KEY_TOOL_CALL_ID, toolCallId)
+    }
+
+    fun questionSnapshotBundle(query: Bundle, snapshot: io.github.mangi.eta.agent.question.AgentQuestionSnapshot?): Bundle = Bundle(query).apply {
+        putBoolean("question_known", snapshot != null)
+        snapshot?.let {
+            putString("question_status", it.status.name)
+            it.answer?.let { a -> putString("question_answer_json", AgentQuestionCodec.answerToJson(a).toString()) }
+        }
+    }
+
+    fun questionSnapshotFromBundle(bundle: Bundle): io.github.mangi.eta.agent.question.AgentQuestionSnapshot? {
+        if (!bundle.getBoolean("question_known", false)) return null
+        return runCatching {
+            fun id(key: String) = bundle.getString(key).orEmpty().also { require(it.isNotBlank() && it.length <= 1024) }
+            val status = AgentQuestionStatus.valueOf(bundle.getString("question_status").orEmpty())
+            val answer = bundle.getString("question_answer_json")?.let {
+                require(it.toByteArray(Charsets.UTF_8).size <= 24 * 1024)
+                AgentQuestionCodec.answerFromJson(org.json.JSONObject(it))
+            }
+            require((status == AgentQuestionStatus.Answered) == (answer != null))
+            io.github.mangi.eta.agent.question.AgentQuestionSnapshot(id("conversation_id"), id(KEY_RUN_ID),
+                id("question_id"), id(KEY_TOOL_CALL_ID), status, answer)
+        }.getOrNull()
+    }
 
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"

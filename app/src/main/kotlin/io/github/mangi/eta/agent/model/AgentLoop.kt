@@ -1127,6 +1127,8 @@ internal class AgentLoop(
             } else toolExecutor.execute(toolCall)
         } catch (throwable: Exception) {
             runController.throwIfCancelled()
+            if (throwable is io.github.mangi.eta.agent.question.AgentQuestionInterruptedException ||
+                throwable is io.github.mangi.eta.agent.runtime.AgentRunCancelledException) throw throwable
             AgentModelClient.ToolResult(
                 content = JSONObject()
                     .put("ok", false)

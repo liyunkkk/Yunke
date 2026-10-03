@@ -303,11 +303,16 @@ internal class AgentRuntimeRunExecutor(
                         conversationId = request.effectiveModelSessionId,
                         runId = request.runId, toolCallId = call.id,
                         questionId = "question-${UUID.randomUUID()}", createdAtMillis = System.currentTimeMillis())
-                    val answer = questionCoordinator.awaitAnswer(question)
-                    AgentModelClient.ToolResult(if (answer == null) {
-                        org.json.JSONObject().put("ok", false).put("code", "QUESTION_CANCELLED")
-                            .put("status", "cancelled").put("question_id", question.questionId).toString()
-                    } else AgentQuestionCodec.resultJson(question, answer).toString())
+                    val answer = try { questionCoordinator.awaitAnswer(question) }
+                    catch (failure: Exception) {
+                        runController.throwIfCancelled()
+                        throw io.github.mangi.eta.agent.question.AgentQuestionInterruptedException(failure)
+                    }
+                    if (answer == null) {
+                        runController.throwIfCancelled()
+                        throw io.github.mangi.eta.agent.question.AgentQuestionInterruptedException()
+                    }
+                    AgentModelClient.ToolResult(AgentQuestionCodec.resultJson(question, answer).toString())
                 } else if (call.name == "manage_agent_workspace") {
                     val backend = childWorkspace
                     val payload = try { AgentWorkspaceAccessPolicy.execute(

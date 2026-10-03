@@ -129,7 +129,8 @@ internal class AgentRuntimeSession(
 
     fun emit(event: AgentEvent): Boolean =
         withSessionLock {
-            if (state != State.RUNNING) return false
+            if (state != State.RUNNING && !(state == State.STOPPING &&
+                (event is AgentEvent.QuestionRequested || event is AgentEvent.QuestionResolved))) return false
             publishEvent(event)
             true
         }
@@ -211,6 +212,20 @@ internal class AgentRuntimeSession(
         // Never hold the session lock while the coordinator publishes a resolved event.
         return coordinator.submitAnswer(submission.conversationId, submission.runId,
             submission.questionId, submission.toolCallId, submission.answer)
+    }
+
+    fun questionSnapshot(conversationId: String, questionId: String, toolCallId: String):
+        io.github.mangi.eta.agent.question.AgentQuestionSnapshot? = withSessionLock {
+        val request = replayEvents.filterIsInstance<AgentEvent.QuestionRequested>().lastOrNull {
+            it.request.conversationId == conversationId && it.request.runId == runId &&
+                it.request.questionId == questionId && it.request.toolCallId == toolCallId
+        }?.request ?: return null
+        val resolved = replayEvents.filterIsInstance<AgentEvent.QuestionResolved>().lastOrNull {
+            it.runId == runId && it.questionId == questionId
+        }
+        val status = resolved?.status ?: if (state == State.RUNNING) AgentQuestionStatus.Waiting else AgentQuestionStatus.Interrupted
+        io.github.mangi.eta.agent.question.AgentQuestionSnapshot(request.conversationId, runId,
+            questionId, toolCallId, status, resolved?.answer)
     }
 
     fun steer(text: String): Boolean = withSessionLock {
@@ -416,7 +431,12 @@ internal class AgentRuntimeSession(
         terminalResult = result
         val recipients = subscribers.toList()
         subscribers.clear()
-        replayEvents.clear()
+        // Terminal sessions reject attach/emit, but a concurrently admitted query
+        // must still see published question evidence, not lose an accepted answer.
+        // Release ordinary replay text while retaining only question lifecycle data.
+        replayEvents.removeAll {
+            it !is AgentEvent.QuestionRequested && it !is AgentEvent.QuestionResolved
+        }
         pendingEvents.clear()
         afterUnlock += {
             try {

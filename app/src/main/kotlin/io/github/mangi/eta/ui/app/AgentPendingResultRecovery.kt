@@ -39,7 +39,11 @@ internal object AgentPendingResultRecovery {
                 }
             ) + result.transcript,
         )
-        if (history.alreadyApplied) return Outcome(state, alreadyApplied = true)
+        if (history.alreadyApplied) {
+            val closed = AgentQuestionProjection.interruptWaiting(runId, state.messages)
+            return Outcome(state.copy(messages = closed,
+                isWaitingForAnswer = AgentQuestionProjection.hasWaiting(closed)), alreadyApplied = true)
+        }
 
         val messagesWithResult = state.messages
             .filterNot { it is SystemNoticeMessageUi && it.id == interruptedNoticeId(runId) }
@@ -110,13 +114,15 @@ internal object AgentPendingResultRecovery {
                 messages = mergeSupplements(
                     runId = runId,
                     supplements = listOfNotNull(promptSupplement) + supplements,
-                    messages = VirtualCompletionNotice.append(messagesWithResult, runId, result),
+                    messages = AgentQuestionProjection.interruptWaiting(runId, VirtualCompletionNotice.append(messagesWithResult, runId, result)),
                     beforeLatestAssistant = true,
                 ),
                 history = history.state.history,
                 appliedRuntimeRunIds = history.state.appliedRuntimeRunIds,
                 isStreaming = false,
                 isPaused = false,
+                isWaitingForAnswer = AgentQuestionProjection.hasWaiting(
+                    AgentQuestionProjection.interruptWaiting(runId, state.messages)),
             ),
             alreadyApplied = false,
         )

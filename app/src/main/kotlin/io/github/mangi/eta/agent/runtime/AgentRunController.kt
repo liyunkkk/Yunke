@@ -77,7 +77,9 @@ internal class AgentRunController {
         }
         // Wake the in-flight model request before releasing tool owners. Tool/browser cleanup
         // may block; insertion order used to put it ahead of the SSE cancellation binding.
-        resources.toList().sortedByDescending { it.interruptible }
+        resources.toList().sortedByDescending {
+            when { it.wakeBeforeCleanup -> 2; it.interruptible -> 1; else -> 0 }
+        }
             .forEach { resource -> runCatching { resource.cancel() } }
     }
 
@@ -208,8 +210,8 @@ internal class AgentRunController {
         finally { binding.close() }
         throwIfCancelled()
     }
-    fun register(interruptible: Boolean = false, cancel: () -> Unit): ResourceBinding {
-        val resource = CancellableResource(cancel, interruptible)
+    fun register(interruptible: Boolean = false, wakeBeforeCleanup: Boolean = false, cancel: () -> Unit): ResourceBinding {
+        val resource = CancellableResource(cancel, interruptible, wakeBeforeCleanup)
         resources.add(resource)
         if (interruptible) transportScope.get()?.attach(resource)
         if (cancelled) resource.cancel()
@@ -218,7 +220,8 @@ internal class AgentRunController {
     inner class ResourceBinding internal constructor(private val closeBlock: () -> Unit) {
         fun close() { closeBlock() }
     }
-    internal class CancellableResource(private val cancelBlock: () -> Unit, val interruptible: Boolean) {
+    internal class CancellableResource(private val cancelBlock: () -> Unit, val interruptible: Boolean,
+        val wakeBeforeCleanup: Boolean) {
         private val cancelled = AtomicBoolean(false)
         fun cancel() { if (cancelled.compareAndSet(false, true)) cancelBlock() }
     }

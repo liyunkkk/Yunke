@@ -18,13 +18,8 @@ internal object AgentQuestionProjection {
         messages: List<AgentChatMessageUi>, acceptNew: Boolean = true, replaying: Boolean = false): List<AgentChatMessageUi> {
         if (request.conversationId != conversationId || request.runId != runId) return messages
         val index = messages.indexOfFirst { it is AgentQuestionMessageUi && sameOwner(it.request, request) }
-        if (index >= 0) {
-            val existing = messages[index] as AgentQuestionMessageUi
-            // A confirmed live runtime replay can restore a locally interrupted draft.
-            val restored = if (replaying && existing.status == AgentQuestionStatus.Interrupted)
-                existing.copy(status = AgentQuestionStatus.Waiting, submitting = false, error = null) else existing
-            return if (replaying) messages.filterIndexed { i, _ -> i != index } + restored else messages
-        }
+        if (index >= 0) return messages // Replay never reactivates or moves existing cards.
+
         return if (acceptNew) messages + AgentQuestionMessageUi(messageId(request), request) else messages
     }
 
@@ -58,15 +53,29 @@ internal object AgentQuestionProjection {
         m.selectedOptionId.takeIf { m.answerKind == "option" },
         if (m.answerKind == "other") m.otherText else "", if (m.request.allowNote) m.note else "")
 
+    fun reconcile(current: AgentQuestionMessageUi,
+        snapshot: io.github.mangi.eta.agent.question.AgentQuestionSnapshot?): AgentQuestionMessageUi {
+        if (current.status != AgentQuestionStatus.Waiting) return current.copy(submitting = false)
+        if (snapshot == null) return current.copy(submitting = false, error = "QUESTION_STATE_UNCONFIRMED")
+        val r = current.request
+        if (snapshot.conversationId != r.conversationId || snapshot.runId != r.runId ||
+            snapshot.questionId != r.questionId || snapshot.toolCallId != r.toolCallId) return current
+        if (snapshot.status == AgentQuestionStatus.Answered &&
+            (snapshot.answer == null || !AgentQuestionCodec.validateAnswer(r, snapshot.answer).accepted)) return current.copy(submitting = false)
+        return current.copy(status = snapshot.status, answer = snapshot.answer,
+            submitting = false, error = null)
+    }
+
     fun acknowledged(current: AgentQuestionMessageUi, answer: AgentQuestionAnswer,
         receipt: AgentQuestionReceipt): AgentQuestionMessageUi {
-        if (current.status == AgentQuestionStatus.Answered) return current.copy(submitting = false, error = null)
+        if (current.status != AgentQuestionStatus.Waiting) return current.copy(submitting = false)
         if (!receipt.accepted) {
             val ended = receipt.code in setOf("QUESTION_RUN_NOT_ACTIVE", "QUESTION_NOT_PENDING", "QUESTION_LATE")
             return current.copy(submitting = false,
                 status = if (ended) AgentQuestionStatus.Interrupted else current.status,
                 error = receipt.message.ifBlank { receipt.code })
         }
-        return current.copy(status = AgentQuestionStatus.Answered, answer = answer, submitting = false, error = null)
+        // Acceptance is not publication. Never synthesize an Answered event from a receipt.
+        return current.copy(submitting = true, error = null)
     }
 }

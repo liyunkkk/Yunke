@@ -213,6 +213,28 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
         }
     }
 
+    fun queryQuestion(conversationId: String, runId: String, questionId: String, toolCallId: String):
+        io.github.mangi.eta.agent.question.AgentQuestionSnapshot? {
+        if (Looper.myLooper() == Looper.getMainLooper()) return null
+        val payload = runCatching { AgentRuntimeWire.questionQueryBundle(conversationId, runId, questionId, toolCallId) }.getOrNull() ?: return null
+        return withRuntimeMessenger<io.github.mangi.eta.agent.question.AgentQuestionSnapshot?>(null) { service ->
+            val snapshot = AtomicReference<io.github.mangi.eta.agent.question.AgentQuestionSnapshot?>(null)
+            val latch = CountDownLatch(1)
+            val reply = Messenger(Handler(Looper.getMainLooper()) { response ->
+                if (response.what == AgentRuntimeWire.MSG_QUERY_QUESTION_RESPONSE &&
+                    response.data.getString("conversation_id") == conversationId &&
+                    AgentRuntimeWire.runIdFromBundle(response.data) == runId &&
+                    response.data.getString("question_id") == questionId &&
+                    response.data.getString("tool_call_id") == toolCallId) {
+                    snapshot.set(AgentRuntimeWire.questionSnapshotFromBundle(response.data)); latch.countDown()
+                }
+                true
+            })
+            service.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_QUESTION).apply { data = payload; replyTo = reply })
+            if (latch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) snapshot.get() else null
+        }
+    }
+
     fun ackResult(runId: String): Boolean {
         if (runId.isBlank()) return false
         return withRuntimeMessenger(false) { serviceMessenger ->
