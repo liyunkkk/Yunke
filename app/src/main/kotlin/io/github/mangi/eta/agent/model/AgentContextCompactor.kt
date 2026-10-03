@@ -184,17 +184,21 @@ internal object AgentContextCompactor {
         require(keepStart in 0..history.size && keepStart in AgentCompressionBoundary.availableCuts(history)) { "压缩范围不是完整工具边界" }
         if (keepStart <= 0) return history
 
-        val messagesToCompress = history.subList(0, keepStart).toList()
+        val rawPrefix = history.subList(0, keepStart).toList()
         val messagesToKeep = history.subList(keepStart, history.size).toList()
         replay?.let {
-            require(it.historyMessages.length() == keepStart && messagesToCompress.indices.all { index ->
-                AgentConversationCodec.fromJsonObject(it.historyMessages.getJSONObject(index)) == messagesToCompress[index]
+            require(it.historyMessages.length() == keepStart && rawPrefix.indices.all { index ->
+                AgentConversationCodec.fromJsonObject(it.historyMessages.getJSONObject(index)) == rawPrefix[index]
             }) { "摘要回放与选中历史不一致，未发送请求" }
         }
+        val messagesToCompress = AgentCompressionBoundary.normalizeOrphanToolResults(rawPrefix)
+        // A repaired prefix is text evidence only; never send its orphaned raw tool protocol.
+        val summaryReplay = replay.takeIf { messagesToCompress === rawPrefix }
 
         val diagnosticGroup = java.util.UUID.randomUUID().toString()
-        val evidence = AgentCompactionEvidence.collect(messagesToCompress)
-        val chunks = splitMessages(messagesToCompress, config, replay, controller, diagnosticGroup, "source")
+        // Collect from the source roles so repaired tool results never become user intent.
+        val evidence = AgentCompactionEvidence.collect(rawPrefix)
+        val chunks = splitMessages(messagesToCompress, config, summaryReplay, controller, diagnosticGroup, "source")
         runCatching { AndroidAgentLogger.info("开始摘要：group=$diagnosticGroup，${messagesToCompress.size} 条历史，分 ${chunks.size} 块，保留 ${messagesToKeep.size} 条，文本分片=${chunks.count { it.fragment }}") }
         val summaries = chunks.mapIndexed { index, chunk ->
             checkPlanningCancellation(controller)
