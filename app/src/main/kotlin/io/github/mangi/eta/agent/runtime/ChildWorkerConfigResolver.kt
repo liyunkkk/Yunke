@@ -5,6 +5,9 @@ import io.github.mangi.eta.agent.delegation.SubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.isGptSpeedModel
+import io.github.mangi.eta.data.model.supportsGptSpeedBinding
+import io.github.mangi.eta.data.model.supportsGptSpeedProtocol
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import java.security.MessageDigest
@@ -51,7 +54,7 @@ internal object ChildWorkerConfigResolver {
         val profiles = config.profiles.filter { it.id == workerId }
         if (profiles.isEmpty()) return unavailable(ChildTaskConfigPolicy.Availability.WORKER_REMOVED)
         if (profiles.size != 1) return unavailable(ChildTaskConfigPolicy.Availability.INVALID_CONFIGURATION)
-        val profile = profiles.single().let { it.copy(reasoningByModel = it.reasoningByModel.toMap()) }
+        val profile = profiles.single().let { it.copy(reasoningByModel = it.reasoningByModel.toMap(), gptSpeedByModel = it.gptSpeedByModel.toMap()) }
         if (!profile.enabled) return unavailable(ChildTaskConfigPolicy.Availability.WORKER_DISABLED)
         if (profile.role != expectedRole) return unavailable(ChildTaskConfigPolicy.Availability.ROLE_INCOMPATIBLE)
         if (profile.providerId.isBlank() || profile.modelId.isBlank())
@@ -66,7 +69,8 @@ internal object ChildWorkerConfigResolver {
                 return unavailable(ChildTaskConfigPolicy.Availability.ROLE_INCOMPATIBLE)
             // The revision is based on persisted user settings BEFORE OAuth token refresh. A parent
             // network failure, token renewal, profile rename or another worker's edit is not a change.
-            val revision = userConfigurationRevision(profile, RuntimeConfigRepository.buildRuntimeConfig(provider, model))
+            val revision = userConfigurationRevision(profile, RuntimeConfigRepository.buildRuntimeConfig(provider, model),
+                supportsGptSpeedBinding(provider, model))
             val resolved = if (modelResolver != null) modelResolver(profile)
                 else profile.selection.resolve(generationRole = profile.role.takeIf { profile.isMedia })
             if (resolved == null) return unavailable(ChildTaskConfigPolicy.Availability.MODEL_UNAVAILABLE)
@@ -77,9 +81,10 @@ internal object ChildWorkerConfigResolver {
                 ?: return unavailable(ChildTaskConfigPolicy.Availability.PROVIDER_UNAVAILABLE)
             val currentModel = currentProvider.models.firstOrNull { it.id == profile.modelId && it.isEnabled }
                 ?: return unavailable(ChildTaskConfigPolicy.Availability.MODEL_UNAVAILABLE)
-            if (revision != userConfigurationRevision(profile, RuntimeConfigRepository.buildRuntimeConfig(currentProvider, currentModel)))
+            val speedEligible = supportsGptSpeedBinding(currentProvider, currentModel)
+            if (revision != userConfigurationRevision(profile, RuntimeConfigRepository.buildRuntimeConfig(currentProvider, currentModel), speedEligible))
                 return unavailable(ChildTaskConfigPolicy.Availability.SELECTION_CHANGED_DURING_RESOLUTION)
-            val configured = applyProfile(profile, resolved).let {
+            val configured = applyProfile(profile, resolved, speedEligible).let {
                 it.copy(customHeaders = it.customHeaders.toList(), customBody = it.customBody.toList())
             }
             if (configured.apiKey.isBlank()) return unavailable(ChildTaskConfigPolicy.Availability.CREDENTIALS_MISSING)
@@ -126,8 +131,10 @@ internal object ChildWorkerConfigResolver {
         }
 
     /** In-memory equality token only; do not persist/log/send it as a configuration description. */
-    internal fun userConfigurationRevision(profile: SubAgentProfile, userModel: AgentModelClient.ModelConfig): String {
-        val execution = applyProfile(profile, userModel).copy(providerName = "", modelDisplayName = "")
+    internal fun userConfigurationRevision(profile: SubAgentProfile, userModel: AgentModelClient.ModelConfig,
+        speedEligible: Boolean = runtimeSupportsGptSpeed(userModel),
+    ): String {
+        val execution = applyProfile(profile, userModel, speedEligible).copy(providerName = "", modelDisplayName = "")
         val values = listOf(profile.id, profile.role, profile.providerId, profile.modelId,
             profile.reasoning?.wireValue.orEmpty(), profile.imageResolution.orEmpty(),
             profile.tier?.wireValue.orEmpty(), RuntimeConfigRepository.runtimeConfigJson(execution))
@@ -136,6 +143,13 @@ internal object ChildWorkerConfigResolver {
             .joinToString("") { "%02x".format(it) }
     }
 
-    private fun applyProfile(profile: SubAgentProfile, model: AgentModelClient.ModelConfig) =
-        SubAgentPreferences.applyImageResolution(profile, SubAgentPreferences.applyReasoning(profile, model))
+    private fun runtimeSupportsGptSpeed(model: AgentModelClient.ModelConfig): Boolean =
+        supportsGptSpeedProtocol(model.providerType, model.openAiEndpointMode) && isGptSpeedModel(model.model)
+
+    private fun applyProfile(profile: SubAgentProfile, model: AgentModelClient.ModelConfig, speedEligible: Boolean) =
+        SubAgentPreferences.applyImageResolution(profile, SubAgentPreferences.applyReasoning(profile, model)).copy(
+            // Always replace the incoming value: a child never inherits the parent's speed selection.
+            gptSpeedMode = if (!profile.isMedia && speedEligible && runtimeSupportsGptSpeed(model))
+                profile.gptSpeedForModel() else null,
+        )
 }
