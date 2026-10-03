@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.model.AgentImageGenerationOptions
 import io.github.mangi.eta.agent.model.ImageGenerationParameterException
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.browser.ChildBrowserAccess
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -52,7 +53,7 @@ internal class SubAgentCoordinator(
     private val callbacks = SubAgentCallbackDispatcher()
     private var resourcesReleased = false
 
-    private inner class Task(val id: String, val worker: Int, val role: String, val project: String, @Volatile var workspaceId: String? = null) {
+    private inner class Task(val id: String, val worker: Int, val role: String, val project: String, @Volatile var workspaceId: String? = null, val browserAccess: ChildBrowserAccess = ChildBrowserAccess.FULL) {
         @Volatile var workspaceOwnershipVerified = false
         lateinit var context: SubAgentContextTracker
         lateinit var clock: SubAgentExecutionClock
@@ -61,6 +62,9 @@ internal class SubAgentCoordinator(
         @Volatile var watchdog: java.util.concurrent.ScheduledFuture<*>? = null
         @Volatile var leaseRenewal: java.util.concurrent.ScheduledFuture<*>? = null
         @Volatile var workspacePath = ""
+        @Volatile var workspaceBase = ""
+        @Volatile var artifactEvidence: JSONObject? = null
+        @Volatile var modelReport = ""
         @Volatile var workspaceLeaseOpen = false
         @Volatile var renewing = false
         @Volatile var executing = false
@@ -81,7 +85,7 @@ internal class SubAgentCoordinator(
         @Volatile var lastProgress = queuedAt
         @Volatile var warnedStall = false
         val dispatchGate = java.util.concurrent.CountDownLatch(1)
-        val controller = AgentRunController()
+        val controller = AgentRunController().also { check(it.freezeChildBrowserAccess(browserAccess)) }
         @Volatile var state = "queued"
             set(value) { field = value; refreshContextStatus() }
         @Volatile var result = ""
@@ -108,7 +112,7 @@ internal class SubAgentCoordinator(
     private val pools = poolLeases.map { it.executor }
     private val timer = Executors.newScheduledThreadPool(2)
     private val tasks = linkedMapOf<String, Task>()
-    private var closed = false
+    @Volatile private var closed = false
     @Volatile private var stopping = false
     @Volatile private var activeGroupPauseEpoch = 0L
     private var nextGroupPauseEpoch = 0L
@@ -219,6 +223,8 @@ internal class SubAgentCoordinator(
         val task = synchronized(this) {
             if (closed || stopping) return errorResult("RUN_CLOSED")
             if (activeGroupPauseEpoch != 0L || pendingGroupPauses.get() > 0) return errorResult("TASK_GROUP_PAUSED")
+            val browserAccess = ChildBrowserAccess.fromArgs(args)
+                ?: return invalidArguments("browser_access 必须是 full/read_only/disabled 字符串；未创建任务。")
             val instruction = args.getString("task")
             val context = args.optString("context")
             require(instruction.isNotBlank() && instruction.length <= 12000 && context.length <= 20000) {
@@ -235,15 +241,17 @@ internal class SubAgentCoordinator(
             val worker = workerById ?: if (args.has("worker")) args.getInt("worker") - 1 else {
                 val desired = if (role == "summary") "review" else role
                 val candidates = if (role == "research") roles.indices.filter { roles[it] !in MEDIA } else roles.indices.filter { roles[it] == desired }
-                candidates.minByOrNull { i -> tasks.values.count { it.worker == i && active(it) } } ?: return errorResult("ROLE_NOT_CONFIGURED")
+                candidates.minByOrNull { i -> tasks.values.count { it.worker == i && active(it) } } ?: return roleNotConfigured(role)
             }
             require(worker in workers.indices) { "worker 必须在 1..${workers.size} 之间" }
             if (predecessor != null) {
                 if (worker == predecessor.worker) return errorResult("REPLACEMENT_REQUIRES_NEW_WORKER")
                 if (predecessor.errorCode == "SUB_AGENT_PROVIDER_UNAVAILABLE" && workers[worker].providerId == workers[predecessor.worker].providerId) return errorResult("REPLACEMENT_PROVIDER_UNAVAILABLE")
             }
-            if (role == "research" && roles[worker] in MEDIA) return errorResult("WORKER_ROLE_MISMATCH")
-            if (role != "research" && roles[worker] != (if (role == "summary") "review" else role)) return errorResult("WORKER_ROLE_MISMATCH")
+            // Rejected here, before any model pool slot or isolated worktree is used, and never
+            // silently re-routed to another worker, provider or model.
+            if (role == "research" && roles[worker] in MEDIA) return roleMismatch(worker, role)
+            if (role != "research" && roles[worker] != (if (role == "summary") "review" else role)) return roleMismatch(worker, role)
             val imageOptions = if (args.has("image_options")) {
                 if (role != "image_generation") AgentImageGenerationOptions.invalid("image_options 仅适用于 image_generation。")
                 val options = args.optJSONObject("image_options") ?: AgentImageGenerationOptions.invalid("image_options 必须是对象。")
@@ -266,12 +274,21 @@ internal class SubAgentCoordinator(
             require(role != "implementation" || workspaceId == null) { "implementation 会自己创建工作树，不能带 workspace_id；审查已有工作区用 role=review" }
             if (predecessor != null) {
                 if (predecessor.role in MEDIA || role != predecessor.role) return errorResult("REPLACEMENT_ROLE_MISMATCH")
-                if (predecessor.workspaceId != null) return errorResult("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW")
+                if (predecessor.role == "implementation" || predecessor.workspaceId != null) return errorResult("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW")
+                    .put("workspace_id", predecessor.workspaceId)
+                    .put("can_replace", false)
+                    .put("allowed_actions", JSONArray(allowedActions(predecessor)))
+                    .put("next_step", nextStep(predecessor).ifBlank {
+                        "带工作区（含失败实现）的任务不能用 replace_task_id 替换；先读取任务状态，执行未退出时只等待结果。"
+                    })
+                if (SubAgentExecutionFailure.nextStep(predecessor.errorCode) != null)
+                    return errorResult("REPLACEMENT_NOT_ALLOWED")
+                        .put("can_replace", false).put("next_step", nextStep(predecessor))
                 if (predecessor.state == "awaiting_decision" && predecessor.errorCode == "SUB_AGENT_NO_PROGRESS") { blockedPredecessor = predecessor; return@synchronized null }
                 if (predecessor.state != "failed" && predecessor.errorCode != "REPLACED_AFTER_BLOCK") return errorResult("REPLACEMENT_NOT_ALLOWED")
                 if (predecessor.executing || predecessor.renewing) return errorResult("REPLACE_PENDING_STOP")
             }
-            val t = Task(UUID.randomUUID().toString(), worker, role, project, workspaceId)
+            val t = Task(UUID.randomUUID().toString(), worker, role, project, workspaceId, browserAccess)
             t.predecessorId = predecessor?.id
             t.preparing = role == "implementation"
             val model = workers[worker]
@@ -334,7 +351,7 @@ internal class SubAgentCoordinator(
                             if (t.workspaceId == null) {
                                 diagnostic(t, "workspace_prepare")
                                 val prepared = workspace!!.requireOperation(project, "prepare")
-                                synchronized(t) { t.workspaceId = prepared.getString("id"); t.workspacePath = prepared.getString("path"); t.workspaceOwnershipVerified = true; t.workspaceLeaseOpen = true }
+                                synchronized(t) { t.workspaceId = prepared.getString("id"); t.workspacePath = prepared.getString("path"); t.workspaceBase = prepared.optString("base"); t.workspaceOwnershipVerified = true; t.workspaceLeaseOpen = true }
                             }
                         } else if (workspaceId != null) {
                             diagnostic(t, "workspace_begin_review")
@@ -367,18 +384,30 @@ internal class SubAgentCoordinator(
                             // Never wait for a pause while holding the task monitor: resume,
                             // cancellation and snapshots all need it. Finalization waits below.
                             if (t.controller.isCancelled || t.state !in ACTIVE) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
-                            t.result = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
+                            val report = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
+                            if (role == "implementation") t.modelReport = report else t.result = report
                         }
                         awaitFinalization(t)
-                        if (role == "implementation") { diagnostic(t, "workspace_seal"); workspace!!.requireOperation(project, "seal", t.workspaceId) }
-                        else if (t.workspaceId != null) workspace!!.requireOperation(project, if (role == "review") "review" else "end_review", t.workspaceId)
+                        val implementationEvidence = if (role == "implementation") {
+                            diagnostic(t, "workspace_seal")
+                            workspace!!.sealImplementation(project, requireNotNull(t.workspaceId), t.workspaceBase, t.controller)
+                        } else {
+                            if (t.workspaceId != null) workspace!!.requireOperation(project, if (role == "review") "review" else "end_review", t.workspaceId)
+                            null
+                        }
                         t.workspaceLeaseOpen = false
                         t.controller.throwIfCancelled()
                         synchronized(t) {
-                            if (t.state == "running") { t.state = "completed"; t.journal.mark("completed", progress = true); diagnostic(t, "completed"); t.context.finish(t.state); changed() }
+                            t.controller.throwIfCancelled()
+                            if (t.state == "running") {
+                                if (role == "implementation") {
+                                    t.artifactEvidence = requireNotNull(implementationEvidence)
+                                    t.result = "已核验非空 Git 提交产物，等待独立审查；尚未验证业务接线、测试通过或用户目标完成。"
+                                }
+                                t.state = "completed"; t.journal.mark("completed", progress = true); diagnostic(t, "completed"); t.context.finish(t.state); changed()
+                            }
                         }
                     } catch (error: Exception) {
-                        diagnostic(t, "worker_exception", error)
                         val interrupted = Thread.interrupted()
                         releaseWorkspaceLease(t)
                         if (interrupted) Thread.currentThread().interrupt()
@@ -388,21 +417,28 @@ internal class SubAgentCoordinator(
                                 if (cancelled) { t.state = "cancelled"; t.errorCode = "" }
                                 else {
                                     val providerFailure = SubAgentProviderFailure.find(error)
+                                    val executionFailure = SubAgentExecutionFailure.find(error)
                                     t.errorCode = when {
                                         error is ImageGenerationParameterException -> "IMAGE_GENERATION_INVALID_OPTIONS"
                                         error is SubAgentContextLimitException -> "SUB_AGENT_CONTEXT_LIMIT"
                                         error is io.github.mangi.eta.agent.model.AgentOutputLimitException -> "SUB_AGENT_OUTPUT_LIMIT"
                                         error is WorkspaceOperationException -> error.code
+                                        executionFailure != null -> executionFailure.code
                                         providerFailure != null -> "SUB_AGENT_PROVIDER_UNAVAILABLE"
                                         role == "image_generation" -> "IMAGE_GENERATION_FAILED"
                                         role == "video_generation" -> "VIDEO_GENERATION_FAILED"
                                         else -> "SUB_AGENT_FAILED"
                                     }
-                                    if (t.result.isBlank()) t.result = when {
+                                    if (role == "implementation" || t.result.isBlank()) t.result = when {
+                                        role == "implementation" && t.errorCode == SubAgentDeliveryEvidence.EMPTY ->
+                                            "未交付代码改动：相对任务基线的净 diff 为空。模型原回复仅保存在 model_report_unverified 字段；工作树保留，请 inspect 核对，不自动重试。"
+                                        role == "implementation" && error is WorkspaceOperationException ->
+                                            "实现产物未通过运行时核验（${t.errorCode}）；不能认定实现完成。工作树保留，先 inspect 核对，模型原回复不是交付证据。"
                                         error is ImageGenerationParameterException -> error.message.orEmpty()
                                         error is SubAgentContextLimitException -> "子代理上下文不足，自动压缩不可用或未能释放足够空间。请拆分任务；已有工作树改动保留。"
                                         // Built from runtime-owned fields only; no provider or tool text.
                                         error is io.github.mangi.eta.agent.model.AgentOutputLimitException -> "子代理模型连续在输出上限处截断，未产出正文或工具调用（${workers[worker].providerName} / ${workers[worker].model}）。已有工作树改动保留；请拆小任务或调整该模型的推理档位。"
+                                        executionFailure != null -> executionFailure.message + "\n" + executionFailure.nextStep
                                         providerFailure != null -> "子代理供应商不可用（${providerFailure.code.replace('_', ' ')}）：${workerNames[worker]}（${workers[worker].providerName} / ${workers[worker].model}）。这不是任务结论；不要自动重试副作用或付费请求。"
                                         // The class and the first Eta frame locate the failure; the message may carry
                                         // provider bodies, paths or prompt text, so it is never echoed.
@@ -413,6 +449,9 @@ internal class SubAgentCoordinator(
                                 t.journal.mark(t.state); t.context.finish(t.state); changed()
                             }
                         }
+                        // Emit after classification so the allowlisted diagnostic includes the stable
+                        // failure code. Never inspect or log a provider/tool message for classification.
+                        diagnostic(t, "worker_exception", error)
                     } finally {
                         t.watchdog?.cancel(false); t.leaseRenewal?.cancel(false)
                         synchronized(t) { publishContext(t.context.finish(t.state)); t.executing = false; changed() }
@@ -434,7 +473,7 @@ internal class SubAgentCoordinator(
                 val backend = requireNotNull(workspace)
                 if (task.state !in ACTIVE || stopping) return snapshot(task)
                 val prepared = backend.requireOperation(task.project, "prepare")
-                synchronized(task) { task.workspaceId = prepared.getString("id"); task.workspacePath = prepared.getString("path"); task.workspaceOwnershipVerified = true; task.workspaceLeaseOpen = true }
+                synchronized(task) { task.workspaceId = prepared.getString("id"); task.workspacePath = prepared.getString("path"); task.workspaceBase = prepared.optString("base"); task.workspaceOwnershipVerified = true; task.workspaceLeaseOpen = true }
                 renewWorkspaceLease(task)
             } catch (error: Exception) {
                 val code = (error as? WorkspaceOperationException)?.code ?: "WORKSPACE_PREPARE_FAILED"
@@ -604,22 +643,45 @@ internal class SubAgentCoordinator(
     }
     private fun snapshot(task: Task, after: Long = 0, limit: Int = 16): JSONObject = synchronized(task) {
         val model = workers[task.worker]
-        val replaceReason = when { task.role in MEDIA -> "media_delivery_uncertain"; task.state == "failed" -> "failed"; task.state == "awaiting_decision" && task.errorCode == "SUB_AGENT_NO_PROGRESS" -> "blocked_no_progress"; task.errorCode == "REPLACED_AFTER_BLOCK" && !task.executing -> "blocked_stopped"; else -> "healthy_or_not_isolated" }
+        val replaceReason = when {
+            task.role in MEDIA -> "media_delivery_uncertain"
+            task.role == "implementation" || task.workspaceId != null -> "workspace_requires_manual_review"
+            SubAgentExecutionFailure.nextStep(task.errorCode) != null -> "local_tool_arguments_exhausted"
+            task.state == "failed" -> "failed"
+            task.state == "awaiting_decision" && task.errorCode == "SUB_AGENT_NO_PROGRESS" -> "blocked_no_progress"
+            task.errorCode == "REPLACED_AFTER_BLOCK" && !task.executing -> "blocked_stopped"
+            else -> "healthy_or_not_isolated"
+        }
         val paused = task.state == "awaiting_decision"
         val pendingPause = task.role !in MEDIA && task.state in setOf("queued", "running") && pendingGroupPauses.get() > 0
         JSONObject().put("ok", true).put("task_id", task.id).put("worker", task.worker + 1).put("agent_id", workerIds[task.worker]).put("agent_name", workerNames[task.worker])
             .put("model", model.model).put("model_display_name", model.modelDisplayName.ifBlank { model.model }).put("provider_id", model.providerId).put("provider_name", model.providerName)
             .put("status", task.state).put("result", task.result).put("partial_result", task.confirmedText.value()).put("partial_result_unverified", true)
+            .put("delivery_state", when {
+                task.role != "implementation" -> "not_applicable"
+                task.state == "completed" && task.artifactEvidence != null -> "artifact_ready_pending_review"
+                task.errorCode == SubAgentDeliveryEvidence.EMPTY -> "no_changes"
+                task.state in ACTIVE -> "pending"
+                else -> "unverified"
+            }).put("acceptance_verified", false)
+            .put("artifact_verified", task.role == "implementation" && task.state == "completed" && task.artifactEvidence != null)
+            .put("artifact_evidence", task.artifactEvidence?.let { JSONObject(it.toString()) } ?: JSONObject.NULL)
+            .put("model_report_unverified", task.modelReport)
             .put("execution_exited", !active(task)).put("stopping", stopping || (task.state !in ACTIVE && active(task))).put("pause_supported", task.role !in MEDIA)
             .put("pause_requested", paused || pendingPause).put("pause_confirmed", paused && task.boundaryReached && !task.preparing)
             .put("pause_source", if (pendingPause) "group" else if (!paused) "" else if (task.groupPauseEpoch != 0L) "group" else if (task.errorCode == "SUB_AGENT_MANUAL_PAUSE") "manual" else "supervision")
             .put("context_usage", task.context.value.copy(isCompacting = task.state in ACTIVE && task.context.value.isCompacting).toJson())
-            .put("role", task.role).put("project", task.project).put("error_code", task.errorCode).put("workspace_id", task.workspaceId ?: JSONObject.NULL).put("workspace_path", task.workspacePath)
-            .put("workspace_ownership_verified", task.workspaceOwnershipVerified).put("review_required", true).put("can_continue", paused && !stopping)
-            .put("can_replace", task.successorId == null && task.workspaceId == null && replaceReason in setOf("failed", "blocked_no_progress", "blocked_stopped"))
+            .put("browser_access", task.browserAccess.wire).put("role", task.role).put("project", task.project).put("error_code", task.errorCode).put("workspace_id", task.workspaceId ?: JSONObject.NULL).put("workspace_path", task.workspacePath)
+            .put("workspace_ownership_verified", task.workspaceOwnershipVerified).put("review_required", true).put("can_continue", paused && !closed && !stopping)
+            // Eligibility is not a promise that execution has stopped: a no-progress pause still
+            // needs the explicit stop/handoff path. Terminal tasks finishing cleanup are not eligible.
+            .put("can_replace", !closed && !stopping && (task.state in ACTIVE || !active(task)) &&
+                task.successorId == null && task.workspaceId == null &&
+                replaceReason in setOf("failed", "blocked_no_progress", "blocked_stopped"))
             .put("successor_task_id", task.successorId ?: JSONObject.NULL).put("replaces_task_id", task.predecessorId ?: JSONObject.NULL).put("replace_reason", replaceReason)
+            .put("allowed_actions", JSONArray(allowedActions(task))).put("next_step", nextStep(task))
             .put("continuation_count", task.continuationCount).put("parallel_limit", SubAgentModelPools.currentLimit(poolLeases[task.worker])).put("supervision", task.journal.page(after.coerceAtLeast(0), limit))
-            .put("continuation_note", if (paused) "已请求在安全边界暂停，pause_confirmed 表示已到达边界；保留同一任务、上下文与工作树。主代理可显式 continue_task 或 cancel_task，不重放正在进行的请求/工具。" else "")
+            .put("continuation_note", if (paused && !closed && !stopping) "已请求在安全边界暂停，pause_confirmed 表示已到达边界；保留同一任务、上下文与工作树。主代理可显式 continue_task 或 cancel_task，不重放正在进行的请求/工具。" else "")
     }
     @Synchronized private fun manage(args: JSONObject): JSONObject {
         if (closed || stopping) return errorResult("RUN_CLOSED")
@@ -633,14 +695,64 @@ internal class SubAgentCoordinator(
     private fun errorResult(code: String) = JSONObject().put("ok", false).put("code", code)
     private fun notRunning(task: Task) = errorResult("TASK_NOT_RUNNING_TEXT")
         .put("status", task.state).put("allowed_actions", JSONArray(allowedActions(task)))
-    /** 下一步能对这个任务做什么；只按当前状态列出，不代表一定会成功。 */
+    /** Task-local recovery only; other tasks may still hold a project/workspace lease. */
     private fun allowedActions(task: Task): List<String> = when {
-        task.state !in ACTIVE -> listOf("get_task_result")
+        closed || stopping || (task.state !in ACTIVE && active(task)) -> listOf("get_task_result")
+        task.role in MEDIA && task.state !in ACTIVE -> listOf("get_task_result")
+        task.state !in ACTIVE -> buildList {
+            add("get_task_result")
+            if (task.workspaceId != null) {
+                add("manage_agent_workspace:inspect")
+                add("manage_agent_workspace:discard")
+                add("delegate_task")
+            } else if (task.state == "failed") add("delegate_task")
+        }
         task.role in MEDIA -> listOf("get_task_result", "cancel_task")
         task.state == "awaiting_decision" -> listOf("continue_task", "cancel_task", "get_task_result")
         task.state == "queued" -> listOf("get_task_result", "supervise_task:pause", "cancel_task")
         else -> listOf("supervise_task", "get_task_result", "cancel_task")
     }
+    /** 终止状态下的准确恢复路径；不把失败工作树说成 review-ready，也不指路给被禁止的替换。 */
+    private fun nextStep(task: Task): String = when {
+        closed || stopping -> "本任务组正在收尾或已关闭：只能用 get_task_result 读取，不再继续或委派。"
+        task.state !in ACTIVE && active(task) ->
+            "任务已进入终态，但执行或工作区租约仍在收尾：只用 get_task_result 等待 execution_exited/execution_stopped=true；现在不要恢复、替换或操作工作区。"
+        task.role in MEDIA && task.state !in ACTIVE ->
+            "付费媒体任务已结束，交付是否成功以实际结果为准；不要替换或自动重放请求。"
+        SubAgentExecutionFailure.nextStep(task.errorCode) != null ->
+            requireNotNull(SubAgentExecutionFailure.nextStep(task.errorCode))
+        task.workspaceId == null && task.state == "failed" ->
+            "任务失败且执行已停止：可复核结果后用不带 replace_task_id 的新任务重新委派。"
+        task.state == "failed" && task.role == "implementation" ->
+            "实现工作树已保留，但这不是 review-ready：先用 manage_agent_workspace inspect 查看 state 与 merge_blocked_by；确认改动不需要后 discard，或作为新任务重新委派。本运行策略不允许用 replace_task_id 替换 implementation 任务。"
+        task.state == "failed" ->
+            "带工作区的任务不能用 replace_task_id 替换：先用 manage_agent_workspace inspect 查看工作区与 merge_blocked_by，再决定 discard 后重新委派，或交给 review。"
+        task.state in setOf("cancelled", "timed_out") && task.workspaceId != null ->
+            "工作树改动已保留：先用 manage_agent_workspace inspect 查看；不能用 replace_task_id 替换带工作区的任务。"
+        task.state == "completed" && task.workspaceId != null ->
+            "运行已结束；completed 不代表业务验收。先用 manage_agent_workspace inspect 核对 artifact_evidence、实际 diff 与 merge_blocked_by，独立审查逐项确认任务要求后才可 ff-only merge；未运行测试不得称测试通过。"
+        else -> ""
+    }
+    /** 某个已选 worker 能合法承担的 role；只用于解释拒绝，不做静默改派。 */
+    private fun rolesForWorker(worker: Int): List<String> = when (roles[worker]) {
+        in MEDIA -> listOf(roles[worker])
+        "review" -> listOf("research", "review", "summary")
+        else -> listOf("research", roles[worker])
+    }
+    private fun dispatchActions(): JSONArray = JSONArray(listOf("delegate_task", "get_task_result"))
+    private fun roleMismatch(worker: Int, requested: String) = errorResult("WORKER_ROLE_MISMATCH")
+        .put("requested_role", requested)
+        .put("worker", worker + 1)
+        .put("agent_id", workerIds[worker])
+        .put("worker_role", roles[worker])
+        .put("allowed_roles", JSONArray(rolesForWorker(worker)))
+        .put("allowed_actions", dispatchActions())
+        .put("next_step", "这个 worker 只能承担 ${rolesForWorker(worker).joinToString("/")}；改用其中之一作为 role，或去掉 agent_id/worker 让系统按 role 选择。不会自动换 worker/provider/model。")
+    private fun roleNotConfigured(requested: String) = errorResult("ROLE_NOT_CONFIGURED")
+        .put("requested_role", requested)
+        .put("allowed_roles", JSONArray(roles.indices.flatMap { rolesForWorker(it) }.distinct()))
+        .put("allowed_actions", dispatchActions())
+        .put("next_step", "没有配置 role=$requested 的 worker；改用 allowed_roles 里的 role，或由主代理自己完成。不会自动换 worker/provider/model。")
     private fun workspaceInUse(holders: List<Task>) = errorResult("WORKSPACE_IN_USE")
         .put("active_task_ids", JSONArray(holders.map { it.id }))
     @Synchronized private fun recentTaskIds(): List<String> = tasks.keys.toList().takeLast(10).asReversed()

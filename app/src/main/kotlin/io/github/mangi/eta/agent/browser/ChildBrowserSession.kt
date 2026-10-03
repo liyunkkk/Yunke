@@ -14,6 +14,7 @@ import java.util.UUID
 internal class ChildBrowserSession(
     context: Context,
     private val controller: AgentRunController,
+    private val access: String = controller.childBrowserAccess.wire,
     private val enabled: () -> Boolean,
 ) : AutoCloseable {
     private val app = context.applicationContext
@@ -27,7 +28,7 @@ internal class ChildBrowserSession(
     private var pool: BrowserTabPool? = null
     private var hasSlot = false
     private val cancellation = controller.register { close() }
-    val executor = ChildBrowserPolicy.guarded(enabled, AgentModelClient.ToolExecutor(::execute))
+    val executor = ChildBrowserPolicy.guarded(enabled, access, AgentModelClient.ToolExecutor(::execute))
 
     private fun execute(call: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
         controller.throwIfCancelled()
@@ -37,10 +38,10 @@ internal class ChildBrowserSession(
             if (pending?.isCompleted == false) return ChildBrowserPolicy.error("BROWSER_BUSY")
             scope.async(start = CoroutineStart.LAZY) {
                 controller.throwIfCancelled()
-                if (!enabled()) return@async ChildBrowserPolicy.error("BROWSER_TOOLS_DISABLED")
+                if (!ChildBrowserPolicy.sessionAllowed(enabled(), access)) return@async ChildBrowserPolicy.error("BROWSER_TOOLS_DISABLED")
                 if (pool == null) {
                     if (activePools >= MAX_POOLS) return@async ChildBrowserPolicy.error("SUB_AGENT_BROWSER_CAPACITY")
-                    pool = BrowserTabPool(app, researchMode = true).also { it.setSession(ownerId) }
+                    pool = BrowserTabPool(app, researchMode = true, childInteractive = ChildBrowserPolicy.interactive(access)).also { it.setSession(ownerId) }
                     activePools++
                     hasSlot = true
                 }
@@ -50,14 +51,23 @@ internal class ChildBrowserSession(
                     ?: return@async ChildBrowserPolicy.error("INVALID_ARGUMENT")
                 val result = try {
                     withTimeout(90000) { browser.execute(input, singleTab = true) }
-                } finally {
-                    if (!isActive) {
-                        browser.tabs.value.forEach { it.manager.stopLoading() }
-                        browser.releaseAllTabs()
+                } catch (error: CancellationException) {
+                    browser.cancelChildDownloads()
+                    browser.destroy() // Stops page scripts/requests, not just a reply token.
+                    if (pool === browser) {
+                        pool = null
+                        if (hasSlot) { activePools--; hasSlot = false }
                     }
+                    throw error
                 }
                 val output = AgentBrowserSession.toToolResult(args.getString("action"), args, result, browser)
-                AgentModelClient.ToolResult(output.content, images = output.images.map { image ->
+                var text = ChildBrowserPolicy.redactToolContent(args.getString("action"), args, output.content)
+                val receipts = browser.childDownloadReceipts()
+                if (receipts.length() > 0) {
+                    val body = runCatching { JSONObject(text) }.getOrNull() ?: JSONObject().put("text", text)
+                    text = body.put("downloads", receipts).toString()
+                }
+                AgentModelClient.ToolResult(text, images = output.images.map { image ->
                     AgentModelClient.ModelImage(reference = image.dataUrl, mimeType = image.mimeType,
                         bytes = image.bytes, width = image.width, height = image.height, source = "agent_browser")
                 })

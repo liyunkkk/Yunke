@@ -132,6 +132,19 @@ internal class SubAgentWorkspace(
             if (!it.optBoolean("ok")) throw WorkspaceOperationException(it.optString("code"))
         }
 
+    /** Verify sealing and then independently reread the retained tree before publishing completion. */
+    fun sealImplementation(project: String, id: String, expectedBase: String, controller: AgentRunController): JSONObject {
+        controller.throwIfCancelled()
+        val sealed = SubAgentDeliveryEvidence.verify(requireOperation(project, "seal", id), id, expectedBase)
+        controller.throwIfCancelled()
+        val inspected = SubAgentDeliveryEvidence.verify(requireOperation(project, "inspect", id), id, expectedBase)
+        controller.throwIfCancelled()
+        if (sealed.getString("artifact_commit") != inspected.getString("artifact_commit") ||
+            sealed.getLong("changed_file_count") != inspected.getLong("changed_file_count"))
+            throw WorkspaceOperationException(SubAgentDeliveryEvidence.INVALID)
+        return inspected
+    }
+
     fun childExecutor(project: String, id: String, writable: Boolean, controller: AgentRunController) =
         AgentModelClient.ToolExecutor { call ->
             controller.throwIfCancelled()

@@ -6,6 +6,11 @@ import org.json.JSONObject
 internal object ChildTaskReplacementSelection {
     data class Decision(val index: Int? = null, val error: String? = null)
 
+    /** Shared entry-point eligibility; the group still requires stopped/read evidence. */
+    fun eligibleStatus(snapshot: JSONObject): Boolean = snapshot.optString("status") == "failed" ||
+        (snapshot.optString("status") == "awaiting_decision" &&
+            snapshot.optString("error_code") == "SUB_AGENT_NO_PROGRESS")
+
     fun choose(ownerId: String, generation: String, oldWorkers: List<AgentChildTaskGroups.Worker>,
         currentWorkers: List<AgentChildTaskGroups.Worker>, snapshot: JSONObject, args: JSONObject,
         readVersion: Long?, successorClaimed: Boolean): Decision {

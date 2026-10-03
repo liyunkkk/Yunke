@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.runtime
 
+import io.github.mangi.eta.agent.browser.ChildBrowserAccess
 import io.github.mangi.eta.agent.model.AgentModelClient
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -30,6 +31,8 @@ internal class AgentRunController {
     private var pendingCompact: CompactRequest? = null
     private var boundaryObserver: (() -> Unit)? = null
     private var taskProgressReporter: ((String) -> Boolean)? = null
+    /** Set once at child dispatch. Unset reads as full. Cancel and continue do not clear or widen it. */
+    private var frozenChildBrowserAccess: ChildBrowserAccess? = null
 
     data class CompactRequest(
         val keepRecentMessages: Int? = null,
@@ -120,6 +123,17 @@ internal class AgentRunController {
 
     fun setPauseBoundaryObserver(observer: (() -> Unit)?) { lock.withLock { boundaryObserver = observer } }
     fun setTaskProgressReporter(reporter: ((String) -> Boolean)?) { lock.withLock { taskProgressReporter = reporter } }
+
+    /** First call wins. A different later mode is refused and the frozen value stays. */
+    fun freezeChildBrowserAccess(mode: ChildBrowserAccess): Boolean = lock.withLock {
+        val current = frozenChildBrowserAccess
+        if (current != null) return current == mode
+        frozenChildBrowserAccess = mode
+        true
+    }
+
+    val childBrowserAccess: ChildBrowserAccess
+        get() = lock.withLock { frozenChildBrowserAccess ?: ChildBrowserAccess.FULL }
     fun reportTaskProgress(summary: String): Boolean {
         if (summary.isBlank() || summary.length > 1000) return false
         val reporter = lock.withLock { if (cancelled) null else taskProgressReporter }
