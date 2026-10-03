@@ -52,7 +52,7 @@ internal object AgentConversationRevisionReducer {
             source = state,
             locate = { historyMessageLocation(it, anchor) },
             couldBeArchived = { candidate ->
-                val summaryIndex = candidate.history.indexOfLast(AgentContextCompactor::isCompressionSummary)
+                val summaryIndex = candidate.history.indexOfLast(AgentConversationRevisionArchive::isRevisionSummary)
                 summaryIndex >= 0 && (0 until anchor).none { earlier ->
                     if (candidate.messages[earlier] !is UserMessageUi) false else {
                         val location = historyMessageLocation(candidate, earlier)
@@ -182,7 +182,8 @@ internal object AgentConversationRevisionReducer {
         }
         val keptAnchor = (cut - 1 downTo 0).firstOrNull { isTextAnchor(state.messages[it]) }
         if (keptAnchor == null) return if (removedAnchor == null) null else {
-            val index = (historyMessageLocation(state, removedAnchor) as AgentConversationRevisionArchive.Location.Found).index
+            val location = historyMessageLocation(state, removedAnchor) as? AgentConversationRevisionArchive.Location.Found ?: return null
+            val index = location.index
             completePrefix(state.history, index)
         }
         val location = historyMessageLocation(state, keptAnchor) as? AgentConversationRevisionArchive.Location.Found ?: return null
@@ -312,8 +313,10 @@ internal object AgentConversationRevisionReducer {
         }.trim()
 
     fun outboundHistory(state: AgentChatUiState): List<AgentModelClient.ConversationMessage> {
-        val targetId = state.messageEdit?.targetMessageId ?: return state.history
-        return boundary(state, targetId)?.historyPrefix ?: state.history
+        val edit = state.messageEdit ?: return state.history
+        if (edit.preparedFromHistory != null && edit.preparedFromHistory != state.history) return state.history
+        val prepared = state.copy(history = edit.preparedHistory ?: state.history)
+        return boundary(prepared, edit.targetMessageId)?.historyPrefix ?: state.history
     }
 
     fun visibleMessagesForEdit(

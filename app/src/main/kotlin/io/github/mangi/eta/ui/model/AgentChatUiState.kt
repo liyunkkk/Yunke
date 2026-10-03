@@ -335,6 +335,10 @@ data class MessageEditUiState(
     val previousFileReferences: List<PendingFileReferenceUi>,
     val hasLaterTurns: Boolean,
     val previousConversationMentions: List<PendingConversationMentionUi> = emptyList(),
+    /** Temporary archive restoration. The conversation itself is unchanged until send. */
+    val preparedHistory: List<AgentModelClient.ConversationMessage>? = null,
+    /** Detect any intervening history rewrite before committing the prepared edit. */
+    val preparedFromHistory: List<AgentModelClient.ConversationMessage>? = null,
 )
 
 internal fun UserMessageUi.isSteerSupplement(): Boolean =

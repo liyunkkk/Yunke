@@ -68,7 +68,8 @@ internal class AgentChatImageCache(context: Context) {
         if (!source.isDirectory) return
         val target = File(root, sanitize(toId))
         if (target.exists()) target.deleteRecursively()
-        source.copyRecursively(target, overwrite = true)
+        check(source.copyRecursively(target, overwrite = true)) { "分支附件复制失败" }
+        if (Thread.currentThread().isInterrupted) throw InterruptedException("分支附件复制已取消")
     }
 
     fun rewriteCachedPath(value: String, fromId: String, toId: String): String {
