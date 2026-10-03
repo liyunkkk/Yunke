@@ -19,6 +19,7 @@ class AgentConversationRevisionArchiveTest {
     private fun reply(run: String, text: String) = ConversationMessage("assistant", text, turnId = run)
 
     private fun layeredState(): AgentChatUiState = AgentChatUiState(
+        input = "", isStreaming = false, thinkingEnabled = false,
         messages = listOf(
             UserMessageUi("user-old", "old"), AgentMessageUi("assistant-old-1", "old answer"),
             UserMessageUi("user-h", "question"), AgentMessageUi("assistant-h-1", "answer"),
@@ -111,6 +112,7 @@ class AgentConversationRevisionArchiveTest {
         val supplement = user("run", AgentContextCompactor.steeringUserContent("review changes"))
         val archive = listOf(summary(aId), main, originalReply, supplement, reply("run", "reviewed"))
         val source = AgentChatUiState(
+            input = "", isStreaming = false, thinkingEnabled = false,
             messages = listOf(UserMessageUi("conv-copy:user-run", "task"),
                 AgentMessageUi("conv-copy:assistant-run-1", "working"),
                 UserMessageUi("conv-copy:user-run-supplement-1", "review changes"),
@@ -217,7 +219,8 @@ class AgentConversationRevisionArchiveTest {
     }
 
     @Test fun repeatedMessagesInAnUncompressedRunUseCompleteOccurrenceOrder() {
-        val source = AgentChatUiState(messages = listOf(UserMessageUi("user-run", "task"),
+        val source = AgentChatUiState(input = "", isStreaming = false, thinkingEnabled = false,
+            messages = listOf(UserMessageUi("user-run", "task"),
             UserMessageUi("user-run-supplement-1", "same"), UserMessageUi("user-run-supplement-2", "same")),
             history = listOf(user("run", "task"), user("run", AgentContextCompactor.steeringUserContent("same")),
                 user("run", AgentContextCompactor.steeringUserContent("same"))))
