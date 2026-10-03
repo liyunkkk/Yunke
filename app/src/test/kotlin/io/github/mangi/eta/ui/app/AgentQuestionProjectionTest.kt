@@ -150,4 +150,128 @@ class AgentQuestionProjectionTest {
         assertFalse(result.submitting)
     }
 
+    @Test fun endedAckStillQueriesAndRecoversConsumedAnswer() {
+        for (code in listOf("QUESTION_RUN_NOT_ACTIVE", "QUESTION_NOT_PENDING", "QUESTION_LATE")) {
+            val initial = AgentQuestionMessageUi("id", request(), selectedOptionId = "b", note = "draft", submitting = true)
+            val ack = AgentQuestionProjection.acknowledged(initial, selected(), AgentQuestionReceipt(false, code))
+            assertEquals(AgentQuestionStatus.Waiting, ack.status)
+            assertFalse(ack.submitting)
+            assertNull(ack.answer)
+            assertEquals("draft", ack.note)
+            assertTrue(AgentQuestionProjection.needsAuthoritativeQuery(listOf(ack), initial.request))
+            // RunFinished can win before the bounded read. Exercise the same list helpers used
+            // by both AppState and voice, rather than a copied Waiting-only caller predicate.
+            val closed = AgentQuestionProjection.interruptWaiting("run", listOf(ack))
+            assertTrue(AgentQuestionProjection.needsAuthoritativeQuery(closed, initial.request))
+            val recovered = AgentQuestionProjection.reconcileMessages(closed, initial.request,
+                AgentQuestionSnapshot("chat", "run", "q", "call", AgentQuestionStatus.Answered, selected()))
+            assertEquals(AgentQuestionStatus.Answered, card(recovered).status)
+            assertEquals(selected(), card(recovered).answer)
+            assertFalse(AgentQuestionProjection.needsAuthoritativeQuery(recovered, initial.request))
+        }
+    }
+
+    @Test fun validAuthoritativeAnswerCorrectsEitherLocallyClosedState() {
+        for (status in listOf(AgentQuestionStatus.Interrupted, AgentQuestionStatus.Cancelled)) {
+            val initial = AgentQuestionMessageUi("id", request(), status = status,
+                selectedOptionId = "b", note = "retained draft", submitting = true, error = "local")
+            val actual = selected().copy(note = "consumed")
+            val snapshot = AgentQuestionSnapshot("chat", "run", "q", "call", AgentQuestionStatus.Answered, actual)
+            val ack = AgentQuestionProjection.acknowledged(initial, selected(), AgentQuestionReceipt(true, "QUESTION_RESERVED"))
+            assertEquals(status, ack.status)
+            assertTrue(AgentQuestionProjection.needsAuthoritativeQuery(listOf(ack), initial.request))
+            val recovered = card(AgentQuestionProjection.reconcileMessages(listOf(ack), initial.request, snapshot))
+            assertEquals(AgentQuestionStatus.Answered, recovered.status)
+            assertEquals(actual, recovered.answer)
+            assertEquals("retained draft", recovered.note)
+            assertFalse(recovered.submitting)
+            assertNull(recovered.error)
+        }
+    }
+
+    @Test fun correctiveTerminalStatesHaveExplicitAuthorityWithoutWaitingRevival() {
+        val pending = AgentQuestionSnapshot("chat", "run", "q", "call", AgentQuestionStatus.Waiting)
+        for (status in listOf(AgentQuestionStatus.Interrupted, AgentQuestionStatus.Cancelled)) {
+            val closed = AgentQuestionMessageUi("id", request(), status = status, note = "draft", submitting = true)
+            assertEquals(closed.copy(submitting = false), AgentQuestionProjection.reconcile(closed, pending))
+            val otherTerminal = if (status == AgentQuestionStatus.Interrupted) AgentQuestionStatus.Cancelled
+                else AgentQuestionStatus.Interrupted
+            assertEquals(closed.copy(status = otherTerminal, submitting = false),
+                AgentQuestionProjection.reconcile(closed, pending.copy(status = otherTerminal)))
+        }
+        val answered = AgentQuestionMessageUi("id", request(), status = AgentQuestionStatus.Answered,
+            answer = selected(), submitting = true)
+        for (status in listOf(AgentQuestionStatus.Waiting, AgentQuestionStatus.Interrupted, AgentQuestionStatus.Cancelled)) {
+            assertEquals(answered.copy(submitting = false), AgentQuestionProjection.reconcile(answered, pending.copy(status = status)))
+        }
+        assertEquals(answered.copy(submitting = false), AgentQuestionProjection.reconcile(answered, null))
+    }
+
+    @Test fun unknownReadOnlyUnlocksSubmissionForEveryStatusAndKeepsAllDraftFields() {
+        for (status in AgentQuestionStatus.values()) {
+            val initial = AgentQuestionMessageUi("id", request(), status = status,
+                answer = selected().takeIf { status == AgentQuestionStatus.Answered },
+                selectedOptionId = "b", answerKind = "other", otherText = "custom", note = "draft",
+                submitting = true, error = "existing receipt")
+            assertEquals(initial.copy(submitting = false), AgentQuestionProjection.reconcile(initial, null))
+        }
+    }
+
+    @Test fun closedCardRejectsEveryForeignOwnerAndInvalidAnswer() {
+        val initial = AgentQuestionMessageUi("id", request(), status = AgentQuestionStatus.Interrupted,
+            selectedOptionId = "b", note = "draft", submitting = true)
+        val snapshot = AgentQuestionSnapshot("chat", "run", "q", "call", AgentQuestionStatus.Answered, selected())
+        for (foreign in listOf(snapshot.copy(conversationId = "other"), snapshot.copy(runId = "other"),
+            snapshot.copy(questionId = "other"), snapshot.copy(toolCallId = "other"))) {
+            assertEquals(initial, AgentQuestionProjection.reconcile(initial, foreign))
+        }
+        for (invalid in listOf(snapshot.copy(answer = null), snapshot.copy(answer = AgentQuestionAnswer("option", "missing")),
+            snapshot.copy(status = AgentQuestionStatus.Cancelled))) {
+            assertEquals(initial.copy(submitting = false), AgentQuestionProjection.reconcile(initial, invalid))
+        }
+        assertFalse(AgentQuestionProjection.needsAuthoritativeQuery(listOf(initial), request(call = "other")))
+        assertEquals(listOf(initial), AgentQuestionProjection.reconcileMessages(listOf(initial), request(run = "other"), snapshot))
+    }
+
+    @Test fun recoveryBatchIncludesClosedExactOwnersButIsBoundedAndDoesNotCloseSkippedCards() {
+        val messages = (0 until 12).map { i -> AgentQuestionMessageUi("id-$i", request(q = "q-$i"),
+            status = if (i % 2 == 0) AgentQuestionStatus.Waiting else AgentQuestionStatus.Interrupted) }
+        val foreign = messages.first().copy(id = "foreign", request = request(conversation = "foreign"))
+        val answered = messages.first().copy(id = "answered", request = request(q = "answered"),
+            status = AgentQuestionStatus.Answered, answer = selected())
+        val all = messages + foreign + answered + messages.first()
+        val owners = AgentQuestionProjection.recoveryOwners("chat", all)
+        assertEquals(12, owners.size)
+        val first = AgentQuestionProjection.recoveryQueryBatch(owners, 0)
+        assertEquals(AgentQuestionProjection.MAX_RECOVERY_QUERIES, first.owners.size)
+        val second = AgentQuestionProjection.recoveryQueryBatch(owners, first.nextOffset)
+        assertEquals(owners.toSet(), (first.owners + second.owners).toSet())
+        var reconciled: List<AgentChatMessageUi> = all
+        first.owners.forEach { owner -> reconciled = AgentQuestionProjection.reconcileMessages(reconciled, owner, null) }
+        assertEquals(all, reconciled) // Unknown or omitted entries are never declared dead.
+        assertEquals(0, AgentQuestionProjection.recoveryQueryBatch(emptyList(), 100).nextOffset)
+    }
+
+    @Test fun branchFreezeRewritesOwnerAndPreservesDraftAndAnsweredHistory() {
+        val waiting = AgentQuestionMessageUi("id", request(), selectedOptionId = "b", answerKind = "other",
+            otherText = "custom", note = "draft", submitting = true, error = "transient")
+        val frozen = AgentQuestionProjection.freezeForBranch(waiting, "branch")
+        assertEquals(waiting.copy(request = request(conversation = "branch"),
+            status = AgentQuestionStatus.Interrupted, submitting = false, error = null), frozen)
+        assertFalse(AgentQuestionProjection.hasWaiting(listOf(frozen)))
+        val oldAnswer = AgentQuestionSnapshot("chat", "run", "q", "call", AgentQuestionStatus.Answered, selected())
+        assertEquals(frozen, AgentQuestionProjection.reconcile(frozen, oldAnswer))
+        assertEquals(frozen, AgentQuestionProjection.reconcile(frozen,
+            oldAnswer.copy(conversationId = "branch", status = AgentQuestionStatus.Waiting, answer = null)))
+        for (status in listOf(AgentQuestionStatus.Answered, AgentQuestionStatus.Interrupted, AgentQuestionStatus.Cancelled)) {
+            val historical = waiting.copy(status = status,
+                answer = selected().takeIf { status == AgentQuestionStatus.Answered })
+            val branch = AgentQuestionProjection.freezeForBranch(historical, "branch")
+            assertEquals(status, branch.status)
+            assertEquals(historical.answer, branch.answer)
+            assertEquals(historical.note, branch.note)
+            assertFalse(branch.submitting)
+        }
+    }
+
 }

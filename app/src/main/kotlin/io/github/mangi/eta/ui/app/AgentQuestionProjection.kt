@@ -53,27 +53,80 @@ internal object AgentQuestionProjection {
         m.selectedOptionId.takeIf { m.answerKind == "option" },
         if (m.answerKind == "other") m.otherText else "", if (m.request.allowNote) m.note else "")
 
-    fun reconcile(current: AgentQuestionMessageUi,
-        snapshot: io.github.mangi.eta.agent.question.AgentQuestionSnapshot?): AgentQuestionMessageUi {
-        if (current.status != AgentQuestionStatus.Waiting) return current.copy(submitting = false)
-        if (snapshot == null) return current.copy(submitting = false, error = "QUESTION_STATE_UNCONFIRMED")
+    /** A terminal event can beat the receipt. Closed, non-Answered cards still need a read. */
+    fun needsAuthoritativeQuery(messages: List<AgentChatMessageUi>, owner: AgentQuestionRequest): Boolean =
+        messages.any { it is AgentQuestionMessageUi && sameOwner(it.request, owner) &&
+            it.status != AgentQuestionStatus.Answered }
+
+    fun reconcileMessages(messages: List<AgentChatMessageUi>, owner: AgentQuestionRequest,
+        snapshot: AgentQuestionSnapshot?): List<AgentChatMessageUi> = messages.map { m ->
+        if (m is AgentQuestionMessageUi && sameOwner(m.request, owner)) reconcile(m, snapshot) else m
+    }
+
+    /** Only this conversation's exact owners may be queried, including locally closed cards. */
+    fun recoveryOwners(conversationId: String, messages: List<AgentChatMessageUi>): List<AgentQuestionRequest> =
+        messages.filterIsInstance<AgentQuestionMessageUi>()
+            .filter { it.request.conversationId == conversationId && it.status != AgentQuestionStatus.Answered }
+            .map { it.request }.distinctBy(::messageId)
+
+    data class RecoveryQueryBatch(val owners: List<AgentQuestionRequest>, val nextOffset: Int)
+
+    /** Finite work per recovery pass. Rotate on subsequent passes; omitted cards are not dead. */
+    fun recoveryQueryBatch(owners: List<AgentQuestionRequest>, offset: Int,
+        limit: Int = MAX_RECOVERY_QUERIES): RecoveryQueryBatch {
+        require(limit in 1..MAX_RECOVERY_QUERIES)
+        val unique = owners.distinctBy(::messageId)
+        if (unique.isEmpty()) return RecoveryQueryBatch(emptyList(), 0)
+        val start = offset.mod(unique.size)
+        val count = minOf(limit, unique.size)
+        return RecoveryQueryBatch(List(count) { unique[(start + it) % unique.size] },
+            (start + count) % unique.size)
+    }
+
+    const val MAX_RECOVERY_QUERIES = 8
+    const val RECOVERY_QUERY_CONCURRENCY = 4
+    const val RECOVERY_QUERY_TIMEOUT_MILLIS = 5_000L
+
+    /** Branch history cannot submit into the source run, even after ownership is rewritten. */
+    fun freezeForBranch(current: AgentQuestionMessageUi, conversationId: String): AgentQuestionMessageUi =
+        current.copy(request = current.request.copy(conversationId = conversationId),
+            status = if (current.status == AgentQuestionStatus.Waiting) AgentQuestionStatus.Interrupted else current.status,
+            submitting = false, error = null)
+
+    fun reconcile(current: AgentQuestionMessageUi, snapshot: AgentQuestionSnapshot?): AgentQuestionMessageUi {
+        // Unknown transport is not evidence of a run ending, nor of an answer being consumed.
+        if (snapshot == null) return current.copy(submitting = false)
         val r = current.request
         if (snapshot.conversationId != r.conversationId || snapshot.runId != r.runId ||
             snapshot.questionId != r.questionId || snapshot.toolCallId != r.toolCallId) return current
-        if (snapshot.status == AgentQuestionStatus.Answered &&
-            (snapshot.answer == null || !AgentQuestionCodec.validateAnswer(r, snapshot.answer).accepted)) return current.copy(submitting = false)
-        return current.copy(status = snapshot.status, answer = snapshot.answer,
-            submitting = false, error = null)
+
+        // Authority order: validated Answered corrects even local Interrupted/Cancelled;
+        // an existing Answered then dominates all non-Answered snapshots; other authoritative
+        // terminal states may correct each other. Waiting never reopens a closed card.
+        if (snapshot.status == AgentQuestionStatus.Answered) {
+            val answer = snapshot.answer
+            if (answer == null || !AgentQuestionCodec.validateAnswer(r, answer).accepted) {
+                return current.copy(submitting = false)
+            }
+            return current.copy(status = AgentQuestionStatus.Answered, answer = answer,
+                submitting = false, error = null)
+        }
+        if (snapshot.answer != null) return current.copy(submitting = false) // Malformed non-Answered snapshot.
+        if (current.status == AgentQuestionStatus.Answered) return current.copy(submitting = false)
+        if (snapshot.status == AgentQuestionStatus.Waiting) {
+            return if (current.status == AgentQuestionStatus.Waiting) current.copy(submitting = false, error = null)
+                else current.copy(submitting = false)
+        }
+        return current.copy(status = snapshot.status, answer = null, submitting = false, error = null)
     }
 
     fun acknowledged(current: AgentQuestionMessageUi, answer: AgentQuestionAnswer,
         receipt: AgentQuestionReceipt): AgentQuestionMessageUi {
         if (current.status != AgentQuestionStatus.Waiting) return current.copy(submitting = false)
         if (!receipt.accepted) {
-            val ended = receipt.code in setOf("QUESTION_RUN_NOT_ACTIVE", "QUESTION_NOT_PENDING", "QUESTION_LATE")
-            return current.copy(submitting = false,
-                status = if (ended) AgentQuestionStatus.Interrupted else current.status,
-                error = receipt.message.ifBlank { receipt.code })
+            // Even an ended/not-pending ACK may have raced an already consumed answer.
+            // Only the subsequent authoritative read may close or correct this card.
+            return current.copy(submitting = false, error = receipt.message.ifBlank { receipt.code })
         }
         // Acceptance is not publication. Never synthesize an Answered event from a receipt.
         return current.copy(submitting = true, error = null)

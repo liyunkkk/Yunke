@@ -496,14 +496,13 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             uiState = uiState.copy(messages = uiState.messages.map { m -> if (m is AgentQuestionMessageUi &&
                 AgentQuestionProjection.sameOwner(m.request, owner)) AgentQuestionProjection.acknowledged(m, answer, receipt) else m })
             if (receipt.accepted) kotlinx.coroutines.delay(1_000)
-            if (uiState.messages.filterIsInstance<AgentQuestionMessageUi>().any {
-                AgentQuestionProjection.sameOwner(it.request, owner) && it.status == AgentQuestionStatus.Waiting }) {
+            // Terminal projection can close the card before the ACK; still query its exact
+            // owner once unless already Answered. The read corrects missed answers, not liveness.
+            if (AgentQuestionProjection.needsAuthoritativeQuery(uiState.messages, owner)) {
                 val snapshot = withContext(Dispatchers.IO) { runtimeClient.queryQuestion(owner.conversationId,
                     owner.runId, owner.questionId, owner.toolCallId) }
-                uiState = uiState.copy(messages = uiState.messages.map { m ->
-                    if (m is AgentQuestionMessageUi && AgentQuestionProjection.sameOwner(m.request, owner))
-                        AgentQuestionProjection.reconcile(m, snapshot) else m
-                })
+                uiState = uiState.copy(messages = AgentQuestionProjection.reconcileMessages(
+                    uiState.messages, owner, snapshot))
             }
         }
     }

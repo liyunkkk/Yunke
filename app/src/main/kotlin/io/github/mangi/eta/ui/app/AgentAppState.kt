@@ -52,6 +52,7 @@ import io.github.mangi.eta.agent.model.AgentVideoGenerationParser
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
+import io.github.mangi.eta.agent.question.AgentQuestionRequest
 import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
@@ -170,6 +171,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -284,6 +286,8 @@ internal class AgentAppState(
     private var bindingRefreshAfterArchive = false
     private val deferredArchiveSaves = mutableListOf<Pair<kotlinx.coroutines.CompletableDeferred<Boolean>, (() -> Unit)?>>()
     private val runtimeRecoveryInProgress = AtomicBoolean(false)
+    // Main-thread cursor: bounded recovery passes rotate rather than dropping older owners.
+    private var questionRecoveryQueryOffset = 0
     private val defaultThinkingEnabled = agentBooleanForUi(Prefs.Keys.AGENT_THINKING_ENABLED)
     private var skillNoticeSequence = 0L
     private var pendingSkillZipUri: Uri? = null
@@ -1271,38 +1275,10 @@ internal class AgentAppState(
             activeRunIds = activeRunIds,
             locallyObservedRunIds = locallyObservedRunIds,
         )
-        val questionOwners = if (activeStateKnown && terminalStateKnown) withContext(Dispatchers.IO) {
+        // Room-only question recovery must run even with no checkpoint/outbox or unavailable
+        // run indexes. Run absence is not proof that a question's answer was never consumed.
+        val questionConversationIds = withContext(Dispatchers.IO) {
             AgentConversationStore.questionConversationIds(appContext)
-        } else emptyList()
-        val liveQuestionRuns = activeRunIds + completedRuns.map { it.result.runId.ifBlank { it.handoff.id } }
-        val questionChanges = withContext(Dispatchers.Main) {
-            var changed = false
-            val owners = questionOwners + conversationsById.filterValues {
-                it.conversationContentLoaded && AgentQuestionProjection.hasWaiting(it.messages)
-            }.keys
-            if (activeStateKnown && terminalStateKnown) owners.distinct().forEach { id ->
-                val state = conversationState(id) ?: return@forEach
-                var messages = state.messages
-                state.messages.filterIsInstance<AgentQuestionMessageUi>()
-                    .filter { it.status == AgentQuestionStatus.Waiting && it.request.runId !in liveQuestionRuns &&
-                        it.request.runId !in runJobs }
-                    .map { it.request.runId }.distinct().forEach { run ->
-                        messages = AgentQuestionProjection.interruptWaiting(run, messages)
-                    }
-                if (messages != state.messages) {
-                    updateConversation(id, state.copy(messages = messages), updateTimestamp = false)
-                    changed = true
-                }
-            }
-            changed
-        }
-        if (questionChanges) withContext(Dispatchers.Main) { persistConversations() }.await()
-        if (
-            plan.completed.isEmpty() &&
-            plan.interrupted.isEmpty() &&
-            plan.reattach.isEmpty()
-        ) {
-            return
         }
 
         val acknowledgeAfterSave = mutableListOf<String>()
@@ -1322,8 +1298,9 @@ internal class AgentAppState(
                     ) || stateChanged
                 }
                 val result = completedRun.result
+                val beforeRecovery = conversationState(conversationId) ?: state
                 val recovery = AgentPendingResultRecovery.apply(
-                    state = conversationState(conversationId) ?: state,
+                    state = beforeRecovery,
                     runId = runId,
                     result = result,
                     promptSupplement = payload.promptSupplement,
@@ -1332,9 +1309,10 @@ internal class AgentAppState(
                         ?.filterIsInstance<AgentEvent.RunFinished>()?.lastOrNull()?.generatedAtMillis,
                 )
                 val ordered = normalizeTerminalRunMessages(runId, recovery.state.messages)
-                if (!recovery.alreadyApplied || ordered != recovery.state.messages) {
+                val next = AgentPendingResultRecovery.stateToPublish(beforeRecovery, recovery, ordered)
+                if (next != null) {
                     updateConversation(
-                        conversationId, recovery.state.copy(messages = ordered),
+                        conversationId, next,
                         updateTimestamp = !recovery.alreadyApplied,
                     )
                     stateChanged = true
@@ -1356,7 +1334,11 @@ internal class AgentAppState(
             stateChanged || acknowledgeAfterSave.isNotEmpty() || removeAfterSave.isNotEmpty()
         }
 
-        if (changed) {
+        // Query after local terminal projection, before the durable save/ACK boundary, so a
+        // missed QuestionResolved can correct an Interrupted card even on alreadyApplied runs.
+        val questionChanges = reconcileRecoveredQuestions(client, questionConversationIds,
+            completedRuns.map { AgentUiHandoffPayload.from(it.handoff.payload).conversationId })
+        if (changed || questionChanges) {
             val saved = withContext(Dispatchers.Main) { persistConversations() }.await()
             if (saved) {
                 acknowledgeAfterSave.forEach(client::ackResult)
@@ -1368,6 +1350,76 @@ internal class AgentAppState(
 
         plan.reattach.forEach { checkpoint ->
             withContext(Dispatchers.Main) { startReattachedRun(checkpoint) }
+        }
+    }
+
+    /** One finite authoritative question pass shared by outbox and Room-only recovery. */
+    private suspend fun reconcileRecoveredQuestions(
+        client: AgentRuntimeClient,
+        storedConversationIds: List<String>,
+        completedConversationIds: List<String>,
+    ): Boolean {
+        val conversationIds = withContext(Dispatchers.Main) {
+            (completedConversationIds + storedConversationIds + conversationsById.filterValues {
+                it.conversationContentLoaded && it.messages.any { m ->
+                    m is AgentQuestionMessageUi && m.status != AgentQuestionStatus.Answered
+                }
+            }.keys).distinct()
+        }
+        val owners = mutableListOf<AgentQuestionRequest>()
+        conversationIds.forEach { id ->
+            val cached = withContext(Dispatchers.Main) { conversationsById[id] } ?: return@forEach
+            if (!cached.conversationContentLoaded) {
+                val loaded = withContext(Dispatchers.IO) {
+                    AgentConversationStore.loadConversation(appContext, id)?.let(::orderedTerminalState)
+                } ?: return@forEach
+                withContext(Dispatchers.Main) {
+                    // Do not overwrite a concurrent edit/delete while Room was being read.
+                    if (conversationsById[id] === cached) {
+                        conversationsById = conversationsById + (id to loaded)
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                conversationsById[id]?.takeIf { it.conversationContentLoaded }?.let { state ->
+                    owners += AgentQuestionProjection.recoveryOwners(id, state.messages)
+                }
+            }
+        }
+        val batch = withContext(Dispatchers.Main) {
+            AgentQuestionProjection.recoveryQueryBatch(owners, questionRecoveryQueryOffset).also {
+                questionRecoveryQueryOffset = it.nextOffset
+            }
+        }
+        // At most 8 reads, in groups of 4, each interrupted after 5s. There is no polling,
+        // and neither a truncated batch nor null/timeout is used as evidence of death.
+        val observations = batch.owners.chunked(AgentQuestionProjection.RECOVERY_QUERY_CONCURRENCY)
+            .flatMap { group ->
+                withContext(Dispatchers.IO) {
+                    group.map { owner -> async {
+                        owner to withTimeoutOrNull(AgentQuestionProjection.RECOVERY_QUERY_TIMEOUT_MILLIS) {
+                            runInterruptible {
+                                client.queryQuestion(owner.conversationId, owner.runId, owner.questionId, owner.toolCallId)
+                            }
+                        }
+                    } }.map { it.await() }
+                }
+            }
+        return withContext(Dispatchers.Main) {
+            var changed = false
+            observations.forEach { (owner, snapshot) ->
+                // Persisted content may have been evicted/deleted while IPC was pending; never
+                // reinsert a stale conversation. A subsequent bounded pass can retry it.
+                val state = conversationsById[owner.conversationId]
+                    ?.takeIf { it.conversationContentLoaded } ?: return@forEach
+                val messages = AgentQuestionProjection.reconcileMessages(state.messages, owner, snapshot)
+                if (messages != state.messages) {
+                    updateConversation(owner.conversationId, state.copy(messages = messages), updateTimestamp = false)
+                    changed = true
+                }
+            }
+            if (changed) refreshConversationSummaries()
+            changed
         }
     }
 
@@ -2442,11 +2494,10 @@ internal class AgentAppState(
     ) {
         val rewrite = { value: String -> chatImageCache.rewriteCachedPath(value, sourceId, newId) }
         val branchMessages = freezeStreamingMessages(prefix.messages).map { message ->
-                val frozen = message.withId("$newId:${message.id}").rewritePaths(rewrite)
-                if (frozen is AgentQuestionMessageUi) frozen.copy(
-                    request = frozen.request.copy(conversationId = newId), submitting = false,
-                ) else frozen
-            }
+            val frozen = message.withId("$newId:${message.id}").rewritePaths(rewrite)
+            if (frozen is AgentQuestionMessageUi) AgentQuestionProjection.freezeForBranch(frozen, newId)
+            else frozen
+        }
         val branched = snapshot.copy(
             messages = branchMessages,
             isWaitingForAnswer = AgentQuestionProjection.hasWaiting(branchMessages),
@@ -4842,20 +4893,20 @@ internal class AgentAppState(
                 AgentQuestionProjection.sameOwner(m.request, owner)) AgentQuestionProjection.acknowledged(m, answer, receipt) else m }
             updateConversation(conversationId, current.copy(messages = messages))
             persistConversations()
-            // Bounded submission-receipt reconciliation, not a timeout on waiting for the user.
+            // A receipt only acknowledges the request. Query every non-Answered local card,
+            // including Interrupted/Cancelled cards closed by a racing terminal event; an
+            // authoritative Answered snapshot may correct those, while Waiting never reopens them.
             if (receipt.accepted) delay(1_000)
-            val check = conversationState(conversationId)?.messages?.filterIsInstance<AgentQuestionMessageUi>()
-                ?.singleOrNull { AgentQuestionProjection.sameOwner(it.request, owner) }
-            if (check?.status == AgentQuestionStatus.Waiting) {
+            val checkMessages = conversationState(conversationId)?.messages.orEmpty()
+            if (AgentQuestionProjection.needsAuthoritativeQuery(checkMessages, owner)) {
                 val snapshot = withContext(Dispatchers.IO) {
                     AgentRuntimeClient(appContext, AndroidAgentLogger).queryQuestion(owner.conversationId,
                         owner.runId, owner.questionId, owner.toolCallId)
                 }
                 val latest = conversationState(conversationId) ?: return@launch
-                updateConversation(conversationId, latest.copy(messages = latest.messages.map { m ->
-                    if (m is AgentQuestionMessageUi && AgentQuestionProjection.sameOwner(m.request, owner))
-                        AgentQuestionProjection.reconcile(m, snapshot) else m
-                }))
+                updateConversation(conversationId, latest.copy(
+                    messages = AgentQuestionProjection.reconcileMessages(latest.messages, owner, snapshot)
+                ))
                 persistConversations()
             }
         }
