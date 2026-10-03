@@ -72,11 +72,23 @@ class AgentPruningUsageRegressionTest {
             assertNull(state().cloudHistoryTokens)
             assertTrue(markerCount() > beforeMarkers)
             send(AgentEvent.UsageReceived(149, AgentTokenUsage(inputTokens = 80750), projected = true))
-            assertEquals(80750, state().livePromptTokens)
+            // Runtime projection remains budget-only while a fresh summary receipt is pending.
+            assertNull(state().livePromptTokens)
+            assertNull(state().cloudHistoryTokens)
+            assertNull(state().contextBudgetReceiptTokens)
+            assertNull(state().receiptPredictionTokens)
+            assertTrue(state().contextAwaitingReceipt)
+            assertEquals("未知", io.github.mangi.eta.ui.model.formatContextUsage(
+                io.github.mangi.eta.ui.model.liveContextUsage(state().history, "", emptyList(), null,
+                    projectedContextTokens = 80750,
+                    contextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(
+                        awaitingReceipt = state().contextAwaitingReceipt))))
             send(AgentEvent.UsageReceived(149, AgentTokenUsage(inputTokens = 95095),
                 requestHistoryTokens = 70000, requestOverheadTokens = 10000))
             assertEquals(95095, state().livePromptTokens)
             assertEquals(70000, state().cloudHistoryTokens)
+            assertEquals(95095, state().contextBudgetReceiptTokens)
+            assertFalse(state().contextAwaitingReceipt)
             assertFalse(state().livePromptIsProjected)
         } finally { scope.cancel(); EtaDatabase.closeForTests() }
     }

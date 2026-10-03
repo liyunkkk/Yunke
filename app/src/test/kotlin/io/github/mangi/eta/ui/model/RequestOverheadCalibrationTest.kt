@@ -52,6 +52,22 @@ class RequestOverheadCalibrationTest {
         assertNotNull(restored.ratio)
     }
 
+    @Test fun zeroOverheadCorrectionRevokesSameRoundEvenWhenCloudInputIsUnchanged() {
+        for (correctedInput in listOf(37214, 26000)) {
+            val initial = stable()
+            val corrected = requireNotNull(RequestOverheadCalibration.recordReceipt(initial, correctedInput,
+                history = 481, overhead = 0, requestId = "request-1", routeSignature = initial.routeSignature))
+            assertEquals(initial.observations.map { it.requestId }, corrected.observations.map { it.requestId })
+            assertEquals(3, corrected.samples)
+            assertFalse(corrected.observations[1].complete)
+            assertNull(corrected.ratio)
+            assertNull(corrected.estimate(481, 25270))
+            val repaired = requireNotNull(RequestOverheadCalibration.recordReceipt(corrected, 37214,
+                history = 481, overhead = 25270, requestId = "request-1", routeSignature = initial.routeSignature))
+            assertEquals(initial, repaired)
+        }
+    }
+
     @Test fun claudeUnderestimateAndDeepSeekOverestimateAreBothCorrected() {
         for (input in listOf(37214, 19000)) {
             val sample = stable(input)
@@ -112,6 +128,25 @@ class RequestOverheadCalibrationTest {
             overheadCalibrationTokens = stable(), requestOverheadTokens = 25270)
         assertEquals(12345, actual.contextTokens)
         assertFalse(actual.estimated)
+    }
+
+    @Test fun pendingFirstTurnPolicyIgnoresVisibleMessagesButStillAllowsTrustedLearning() {
+        val pending = AgentChatUiState(messages = listOf(UserMessageUi("u", "pending")),
+            history = listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "pending")),
+            input = "", isStreaming = true, thinkingEnabled = false)
+        val policy = contextDisplayPolicy(pending)
+        assertTrue(policy.firstTurn)
+        val none = liveContextUsage(pending.history, "", emptyList(), null, contextDisplayPolicy = policy)
+        assertEquals("无", formatContextUsage(none))
+        assertNull(none.progress)
+        val learned = liveContextUsage(pending.history, "", emptyList(), null, historyTokenCount = 481,
+            requestOverheadTokens = 25270, overheadCalibrationTokens = stable(), contextDisplayPolicy = policy)
+        assertTrue(learned.estimated)
+        assertTrue(formatContextUsage(learned).startsWith("≈"))
+        val compacted = liveContextUsage(pending.history, "", emptyList(), null, historyTokenCount = 481,
+            requestOverheadTokens = 25270, overheadCalibrationTokens = stable(),
+            contextDisplayPolicy = contextDisplayPolicy(pending.copy(contextAwaitingReceipt = true)))
+        assertEquals("未知", formatContextUsage(compacted))
     }
 
     @Test fun compressionForcesUnknownEvenWithStableLearningUntilFreshReceipt() {

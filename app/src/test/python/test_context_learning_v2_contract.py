@@ -14,8 +14,18 @@ class ContextLearningV2Contract(unittest.TestCase):
         self.assertIn('CloudUsageReceiptCodec.decodeDisplayState(', store)
         for screen in ('home/AgentHomeScreen', 'chat/AgentChatScreen'):
             ui = self.source('ui/screens/' + screen + '.kt')
-            self.assertIn('awaitingReceipt = state.contextAwaitingReceipt', ui)
+            self.assertIn('contextDisplayPolicy(state)', ui)
             self.assertNotIn('filterIsInstance<ContextCompactedMessageUi>', ui)
+        policy = self.source('ui/model/RequestOverheadCalibration.kt').split('internal fun contextDisplayPolicy(', 1)[1]
+        self.assertIn('awaitingReceipt = state.contextAwaitingReceipt', policy)
+        self.assertIn('firstTurn = !state.contextHasStarted', policy)
+        self.assertNotIn('history.isEmpty()', policy)
+        self.assertNotIn('messages.isEmpty()', policy)
+        app = self.source('ui/app/AgentAppState.kt')
+        launch = app.split('private fun launchConversationRun(', 1)[1].split('private fun ', 1)[0]
+        self.assertNotIn('contextHasStarted = true', launch)
+        terminal = app.split('private fun setConversationStreaming(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('contextHasStarted = state.contextHasStarted || !isStreaming', terminal)
 
     def test_retry_preserves_provenance_and_partial_usage_cannot_mix_requests(self):
         app = self.source('ui/app/AgentAppState.kt')
@@ -25,8 +35,21 @@ class ContextLearningV2Contract(unittest.TestCase):
         self.assertIn('if (!replaying) recordContextEstimateReceipt', app)
         evidence = self.source('ui/model/ContextReceiptEvidence.kt')
         self.assertIn('it.requestId == requestId && it.input == input', evidence)
-        self.assertIn('is AgentEvent.ProviderRequestStarted ->', app)
-        self.assertIn('state.copy(contextReceiptEvidence = null, cloudReceiptRequestId = null)', app)
+        for event in ('ProviderRequestStarted', 'ModelRetryScheduled'):
+            boundary = app.split('is AgentEvent.' + event + ' ->', 1)[1].split('\n            is AgentEvent.', 1)[0]
+            self.assertIn('revokeContextActual(runId)', boundary)
+        revoke = app.split('private fun revokeContextActual(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('livePromptTokens = null', revoke)
+        self.assertIn('contextReceiptEvidence = null', revoke)
+        self.assertIn('cloudReceiptRequestId = null', revoke)
+        self.assertIn('contextBudgetReceiptTokens = cloud', revoke)
+        self.assertIn('receiptPredictionTokens = estimate', revoke)
+        self.assertIn('RequestOverheadCalibration.receiptEstimate(', revoke)
+        self.assertIn('sameRoute && !state.contextAwaitingReceipt', revoke)
+        self.assertIn('runUsageOwners[runId] != (state.providerId to state.modelId)', revoke)
+        budget = app.split('private fun budgetReceiptTokens(', 1)[1].split('private fun ', 1)[0]
+        self.assertNotIn('receiptPredictionTokens', budget)
+        self.assertNotIn('overheadCalibrationTokens', budget)
 
     def test_diagnostics_abandon_compression_or_retry_pairing(self):
         app = self.source('ui/app/AgentAppState.kt')

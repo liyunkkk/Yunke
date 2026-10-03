@@ -47,9 +47,7 @@ internal fun AgentChatScreen(
             requestOverheadTokens = requestOverheadTokens,
             previewRequestOverheadTokens = previewRequestOverheadTokens,
             overheadCalibrationTokens = overheadCalibrationTokens,
-            contextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(
-                firstTurn = !state.contextHasStarted && state.history.isEmpty() && state.messages.isEmpty(),
-                awaitingReceipt = state.contextAwaitingReceipt, receiptEstimateTokens = state.receiptPredictionTokens),
+            contextDisplayPolicy = io.github.mangi.eta.ui.model.contextDisplayPolicy(state),
             billedOverheadTokens = state.cloudRequestOverheadTokens,
             livePromptTokens = state.livePromptTokens,
             livePromptIsProjected = state.livePromptIsProjected,

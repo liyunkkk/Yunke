@@ -63,10 +63,23 @@ internal object RequestOverheadCalibration {
             kotlin.math.abs(overhead.toDouble() / total - oldOverhead.toDouble() / oldTotal) <= 0.05
     }
 
+    fun hasUsableBaseline(history: Int?, overhead: Int?): Boolean =
+        history != null && history >= 0 && overhead != null && overhead > 0
+
+    /** Corrections with missing/zero baselines revoke learning as well as changed input does. */
+    fun recordReceipt(previous: Sample?, cloudInput: Int, history: Int?, overhead: Int?,
+        requestId: String, routeSignature: String): Sample? {
+        val scoped = previous?.takeIf { it.routeSignature == routeSignature }
+        return if (hasUsableBaseline(history, overhead)) {
+            learn(scoped, cloudInput, requireNotNull(history), requireNotNull(overhead),
+                requestId = requestId, routeSignature = routeSignature)
+        } else invalidateCorrection(scoped, requestId, cloudInput)
+    }
+
     fun learn(previous: Sample?, cloudInput: Int, requestHistoryTokens: Int,
         requestOverheadTokens: Int, inflatedCache: Boolean = false,
         requestId: String, routeSignature: String = ""): Sample? {
-        if (inflatedCache || routeSignature.isBlank() || requestId.isBlank() || cloudInput <= 0 || requestHistoryTokens < 0 || requestOverheadTokens <= 0) return null
+        if (inflatedCache || routeSignature.isBlank() || requestId.isBlank() || cloudInput <= 0 || !hasUsableBaseline(requestHistoryTokens, requestOverheadTokens)) return null
         val observation = Observation(requestId, cloudInput, requestHistoryTokens, requestOverheadTokens)
         val scoped = previous?.takeIf { it.routeSignature == routeSignature }
         val existing = scoped?.observations?.indexOfFirst { it.requestId == requestId } ?: -1
@@ -83,7 +96,8 @@ internal object RequestOverheadCalibration {
     fun invalidateCorrection(previous: Sample?, requestId: String, cloudInput: Int): Sample? {
         val sample = previous ?: return null
         val index = sample.observations.indexOfFirst { it.requestId == requestId }
-        if (index < 0 || cloudInput <= 0 || sample.observations[index].cloudInput == cloudInput) return null
+        if (index < 0 || cloudInput <= 0) return null
+        if (!sample.observations[index].complete && sample.observations[index].cloudInput == cloudInput) return null
         return sample.copy(observations = sample.observations.toMutableList().also {
             it[index] = it[index].copy(cloudInput = cloudInput, complete = false)
         })
@@ -101,3 +115,9 @@ internal object RequestOverheadCalibration {
 /** Unmeasured display state is independent of the conservative internal send budget. */
 internal data class ContextDisplayPolicy(val firstTurn: Boolean = false, val awaitingReceipt: Boolean = false,
     val receiptEstimateTokens: Int? = null)
+
+internal fun contextDisplayPolicy(state: AgentChatUiState) = ContextDisplayPolicy(
+    firstTurn = !state.contextHasStarted,
+    awaitingReceipt = state.contextAwaitingReceipt,
+    receiptEstimateTokens = state.receiptPredictionTokens,
+)

@@ -88,6 +88,7 @@ internal object AgentConversationRevisionReducer {
             // A message bill belongs to an old request, not the newly truncated history.
             livePromptTokens = null,
             livePromptIsProjected = false,
+            contextBudgetReceiptTokens = null,
             contextHasStarted = true,
             receiptPredictionTokens = if (!state.contextAwaitingReceipt && state.cloudRouteSignature != null &&
                 state.livePromptTokens != null && !state.livePromptIsProjected &&
