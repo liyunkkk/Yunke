@@ -34,7 +34,11 @@ class ContextLearningV2Contract(unittest.TestCase):
         self.assertIn('contextState.copy(', launch)
         self.assertNotIn('takeUnless { historyRewritten }', launch)
         history = app.split('private fun contextStateForRequestHistory(', 1)[1].split('private fun ', 1)[0]
-        self.assertIn('if (state.history == history.take(state.history.size)) return state', history)
+        self.assertIn('prefix[index].copy(turnId = "") == history[index].copy(turnId = "")', history)
+        self.assertIn('if (matchesRequestPrefix(state.history)) return state', history)
+        self.assertIn('AgentConversationRevisionReducer.commitVisibleAssistantIntoHistory(', history)
+        self.assertIn('if (matchesRequestPrefix(committedHistory)) return state', history)
+        self.assertNotIn('startsWith(', history)
         self.assertIn('validReceiptRoute && relatedHistory && !state.contextAwaitingReceipt', app)
         self.assertIn('billedContextTokens = receiptAnchorForDelta', app)
         self.assertIn('if (!replaying) recordContextEstimateReceipt', app)
@@ -64,6 +68,30 @@ class ContextLearningV2Contract(unittest.TestCase):
         budget = app.split('private fun budgetReceiptTokens(', 1)[1].split('private fun ', 1)[0]
         self.assertNotIn('receiptPredictionTokens', budget)
         self.assertNotIn('overheadCalibrationTokens', budget)
+
+    def test_custom_actual_scope_is_separate_from_fail_closed_learning_and_budget(self):
+        app = self.source('ui/app/AgentAppState.kt')
+        actual = app.split('private fun contextRouteSignature(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('actual-local-v1:', actual)
+        for field in ('provider.baseUrl', 'provider.customHeaders', 'provider.customBody',
+                      'provider.sessionGatewayJson', 'Model.serializer()'):
+            self.assertIn(field, actual)
+        self.assertIn('SHA-256', actual)
+        record = app.split('private fun recordContextEstimateReceipt(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('val route = contextLearningRouteSignature(state) ?: return', record)
+        budget = app.split('private fun budgetReceiptTokens(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('state.cloudRouteSignature == contextLearningRouteSignature(state)', budget)
+        live = app.split('private fun updateLivePromptTokens(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('val route = runUsageRoutes[runId] ?: return', live)
+        self.assertIn('if (route != contextRouteSignature(state)) return', live)
+        updates = app.split('private fun updateSelectionProviders(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('invalidatedUsageRuns.add(runId)', updates)
+        self.assertIn('updateConversation(id, state, updateTimestamp = false)', updates)
+        observer = app.split('private fun observeRuntimeSelection(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('updateSelectionProviders(providers)', observer)
+        diagnostic_actual = app.split('val uiActual = billedPromptTokens(contextState)', 1)[1].split('val uiTokens', 1)[0]
+        self.assertIn('contextState.cloudRouteSignature == contextRouteSignature(contextState)', diagnostic_actual)
+        self.assertNotIn('validReceiptRoute', diagnostic_actual)
 
     def test_diagnostics_abandon_compression_or_retry_pairing(self):
         app = self.source('ui/app/AgentAppState.kt')

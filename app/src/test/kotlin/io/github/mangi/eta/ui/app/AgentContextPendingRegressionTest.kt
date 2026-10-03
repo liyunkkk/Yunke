@@ -140,10 +140,12 @@ class AgentContextPendingRegressionTest {
         val oldHistory = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
         f.send("old-run", receipt(1, oldHistory))
         val actual = f.state("c")
-        // The exact helper used by launchConversationRun distinguishes normal committed growth.
-        val nextHistory = actual.history + AgentModelClient.ConversationMessage("assistant", "done")
-        val next = call(f.app, "contextStateForRequestHistory", actual, nextHistory) as AgentChatHomeUiState
-        assertEquals(actual, next)
+        // Ordinary send commits the visible reply before launchConversationRun's display helper.
+        val visible = actual.copy(messages = actual.messages + AgentMessageUi("assistant-old-run-1", "done"))
+        val nextHistory = AgentConversationRevisionReducer.commitVisibleAssistantIntoHistory(
+            visible.history, visible.messages)
+        val next = call(f.app, "contextStateForRequestHistory", visible, nextHistory) as AgentChatHomeUiState
+        assertEquals(visible, next)
         f.put("c", next.copy(history = nextHistory + AgentModelClient.ConversationMessage("user", "next")))
         f.bind("next-run", "c")
         f.send("next-run", AgentEvent.ProviderRequestStarted(1))
@@ -185,6 +187,140 @@ class AgentContextPendingRegressionTest {
         assertEquals("fresh-run:1", f.state("c").cloudReceiptRequestId)
         assertNull(f.state("c").cloudHistoryTokens) // new request must not borrow restored evidence
         assertNull(f.state("c").cloudRequestOverheadTokens)
+    }
+
+    @Test fun ordinarySendMigratesRuntimeAssistantIdentityWithoutClearingActual() = fixture { f ->
+        // Runtime drain does not carry turnId: the user is tagged but its reply is not.
+        val pending = f.pending().copy(isStreaming = false,
+            history = listOf(
+                AgentModelClient.ConversationMessage("user", "question", turnId = "old-turn"),
+                AgentModelClient.ConversationMessage("assistant", "done")),
+            messages = listOf(UserMessageUi("u", "question"), AgentMessageUi("assistant-r-1", "done")))
+        f.put("c", pending)
+        f.bind("r", "c")
+        f.send("r", receipt(1, pending.history.sumOf { AgentContextBudget.countMessage(it) }))
+        val actual = f.state("c")
+        val committed = AgentConversationRevisionReducer.commitVisibleAssistantIntoHistory(actual.history, actual.messages)
+        assertEquals(listOf("old-turn", "old-turn"), committed.map { it.turnId })
+        assertEquals(actual.history.map { it.copy(turnId = "") }, committed.map { it.copy(turnId = "") })
+        val next = call(f.app, "contextStateForRequestHistory", actual, committed) as AgentChatHomeUiState
+        assertEquals(actual, next)
+        f.put("c", next.copy(history = committed + AgentModelClient.ConversationMessage("user", "next", turnId = "next-turn")))
+        f.bind("next-run", "c")
+        f.send("next-run", AgentEvent.ProviderRequestStarted(1))
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        assertEquals(actual.contextReceiptEvidence, f.state("c").contextReceiptEvidence)
+    }
+
+    @Test fun ordinarySendCompletesOnlyTheVisibleTrailingAssistantAndRejectsRealEdits() = fixture { f ->
+        val pending = f.pending().copy(isStreaming = false,
+            history = listOf(
+                AgentModelClient.ConversationMessage("user", "question", turnId = "old-turn"),
+                AgentModelClient.ConversationMessage("assistant", "done")),
+            messages = listOf(UserMessageUi("u", "question"), AgentMessageUi("assistant-r-1", "done continued")))
+        f.put("c", pending)
+        f.bind("r", "c")
+        f.send("r", receipt(1, pending.history.sumOf { AgentContextBudget.countMessage(it) }))
+        val actual = f.state("c")
+        val committed = AgentConversationRevisionReducer.commitVisibleAssistantIntoHistory(actual.history, actual.messages)
+        assertEquals(actual.history.size, committed.size)
+        assertEquals("done continued", committed.last().content)
+        assertEquals("old-turn", committed.last().turnId)
+        val next = call(f.app, "contextStateForRequestHistory", actual, committed) as AgentChatHomeUiState
+        assertEquals(actual, next)
+        f.put("c", next.copy(history = committed + AgentModelClient.ConversationMessage("user", "next")))
+        f.bind("next-run", "c")
+        f.send("next-run", AgentEvent.ProviderRequestStarted(1))
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        // A prefix-looking edit is not the exact visible commit. All other request fields matter too.
+        val rewrites = listOf(
+            emptyList(), actual.history.take(1),
+            committed.dropLast(1) + committed.last().copy(content = "done arbitrary edit"),
+            committed.dropLast(1) + committed.last().copy(content = "replacement"),
+            listOf(committed.first().copy(content = "question edited"), committed.last()),
+            listOf(committed.first().copy(contentJson = "[{\"type\":\"text\",\"text\":\"edited\"}]"), committed.last()),
+            committed.dropLast(1) + committed.last().copy(toolCallsJson = "[{\"id\":\"changed\"}]"),
+        )
+        for (rewritten in rewrites) {
+            val revised = call(f.app, "contextStateForRequestHistory", actual, rewritten) as AgentChatHomeUiState
+            assertNull(revised.livePromptTokens)
+            assertNull(revised.contextReceiptEvidence)
+            assertTrue(revised.contextAwaitingReceipt)
+            assertEquals("未知", formatContextUsage(liveContextUsage(rewritten, "", emptyList(), null,
+                billedContextTokens = revised.livePromptTokens, contextDisplayPolicy = contextDisplayPolicy(revised))))
+        }
+    }
+
+    @Test fun customRouteKeepsActualAcrossRequestsAndReloadButCannotLearnRatios() = fixture { f ->
+        val custom = f.provider.copy(customHeaders = listOf(io.github.mangi.eta.data.model.CustomHeader("X-Route", "custom")))
+        f.providers(custom)
+        assertEquals("", RequestOverheadCalibration.routeSignature(custom, custom.models.first()))
+        f.put("c", f.pending())
+        f.bind("r", "c")
+        val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
+        for (round in 1..3) {
+            f.send("r", AgentEvent.ProviderRequestStarted(round))
+            f.send("r", receipt(round, history), replaying = false)
+        }
+        val actual = f.state("c")
+        assertTrue(requireNotNull(actual.cloudRouteSignature).startsWith("actual-local-v1:"))
+        assertNull(RequestOverheadCalibrationStore.read(custom.id, "m"))
+        assertNull(call(f.app, "budgetReceiptTokens", actual)) // local scope cannot unlock receipt-delta budget reuse
+        f.bind("next-run", "c")
+        f.send("next-run", AgentEvent.ProviderRequestStarted(1))
+        f.send("next-run", AgentEvent.ModelRetryScheduled(1, 1, 3, 1000, "NETWORK"))
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        val context = RuntimeEnvironment.getApplication() as Context
+        kotlinx.coroutines.runBlocking {
+            AgentConversationStore.save(context, "c", mapOf("c" to f.state("c")), mapOf("c" to "test"), mapOf("c" to 1L))
+        }
+        EtaDatabase.closeForTests()
+        val restored = AgentConversationStore.load(context).conversationsById.getValue("c")
+        assertEquals(actual.cloudRouteSignature, restored.cloudRouteSignature)
+        f.put("c", restored)
+        f.bind("fresh-run", "c")
+        f.send("fresh-run", AgentEvent.ProviderRequestStarted(1))
+        assertEquals(15000, f.usage("c").contextTokens)
+    }
+
+    @Test fun changingSameIdCustomConfigurationRevokesActualAndOldRunEligibility() = fixture { f ->
+        val header = io.github.mangi.eta.data.model.CustomHeader("X-Route", "custom")
+        val custom = f.provider.copy(customHeaders = listOf(header))
+        val changedConfigurations = listOf(
+            custom.copy(baseUrl = "https://other.example/v1"),
+            custom.copy(customHeaders = listOf(header.copy(value = "changed"))),
+            custom.copy(customBody = listOf(io.github.mangi.eta.data.model.CustomBody("route",
+                kotlinx.serialization.json.JsonPrimitive("changed")))),
+            custom.copy(models = custom.models.map { it.copy(customHeaders = listOf(header.copy(value = "model"))) }),
+            custom.copy(baseUrl = "https://example.org/v1?route=changed"),
+            custom.copy(baseUrl = "https://user@example.org/v1"),
+            custom.copy(sessionGatewayJson = "{\"route\":\"changed\"}"),
+        )
+        for ((index, changed) in changedConfigurations.withIndex()) {
+            f.providers(custom)
+            val id = "custom-$index"
+            val run = "old-$index"
+            f.put(id, f.pending())
+            f.bind(run, id)
+            f.send(run, receipt(1, f.state(id).history.sumOf { AgentContextBudget.countMessage(it) }))
+            assertEquals(15000, f.usage(id).contextTokens)
+            f.providers(changed) // exact provider-flow invalidation, before a new request boundary
+            assertEquals("未知", formatContextUsage(f.usage(id)))
+            assertNull(f.state(id).contextReceiptEvidence)
+            f.send(run, receipt(1, 10, input = 99000), replaying = false)
+            assertNull(f.state(id).livePromptTokens)
+            f.providers(custom) // reverting settings must not re-authorize the old run
+            f.send(run, receipt(2, 10, input = 99000), replaying = false)
+            assertNull(f.state(id).livePromptTokens)
+            f.bind("new-$index", id)
+            f.send("new-$index", receipt(1, 10, input = 16000))
+            assertEquals(16000, f.usage(id).contextTokens)
+            assertFalse(f.usage(id).estimated)
+        }
+        assertNull(RequestOverheadCalibrationStore.read(custom.id, "m"))
     }
 
     @Test fun historyRevisionAndTrueCompressionOpenUnknownEpochUntilFreshReceipt() = fixture { f ->
@@ -250,7 +386,7 @@ class AgentContextPendingRegressionTest {
             models = listOf(Model("m", "model", "Model", contextWindow = 100000), Model("other", "other", "Other")))
         init { providers(provider) }
         fun providers(provider: OpenAiCompatibleProviderSetting) {
-            app.javaClass.getDeclaredField("selectionProviders").apply { isAccessible = true }.set(app, listOf(provider))
+            call(app, "updateSelectionProviders", listOf(provider))
         }
         fun pending() = AgentChatHomeUiState(messages = listOf(UserMessageUi("u", "question")),
             history = listOf(AgentModelClient.ConversationMessage("user", "question")),

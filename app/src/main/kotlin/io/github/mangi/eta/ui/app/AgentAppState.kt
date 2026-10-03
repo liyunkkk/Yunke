@@ -538,10 +538,33 @@ internal class AgentAppState(
             return RequestOverheadCalibrationStore.read(provider.id, model.id)?.takeIf { it.routeSignature == signature }
         }
 
-    private fun contextRouteSignature(state: AgentChatHomeUiState): String? {
-        val provider = selectionProviders.firstOrNull { it.id == state.providerId } ?: return null
-        val model = provider.models.firstOrNull { it.id == state.modelId } ?: return null
+    private fun contextLearningRouteSignature(state: AgentChatHomeUiState): String? {
+        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
         return RequestOverheadCalibration.routeSignature(provider, model).takeIf { it.isNotBlank() }
+    }
+
+    /** Actual receipts need a verifiable local scope even when custom routing forbids learning.
+     * Only a digest is checkpointed; custom configuration is never a calibration scope. */
+    private fun contextRouteSignature(state: AgentChatHomeUiState): String? {
+        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
+        contextLearningRouteSignature(state)?.let { return it }
+        val endpoint = when (provider) {
+            is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.AnthropicProviderSetting -> provider.anthropicVersion
+        }
+        val fields = org.json.JSONArray().put(provider.id).put(provider.baseUrl).put(provider.sourceType)
+            .put(endpoint).put(provider.systemPrompt).put(provider.authMode).put(provider.apiKey)
+            .put(provider.responsesStripReasoningStatus).put(provider.hostedWebSearchEnabled)
+            .put(provider.sessionGatewayJson)
+            .put(org.json.JSONArray(provider.customHeaders.map { listOf(it.name, it.value) }))
+            .put(org.json.JSONArray(provider.customBody.map { listOf(it.key, it.value.toString()) }))
+            .put(kotlinx.serialization.json.Json.encodeToString(io.github.mangi.eta.data.model.Model.serializer(),
+                model.copy(createdAt = 0, displayName = "", sortOrder = 0)))
+        return "actual-local-v1:" + java.security.MessageDigest.getInstance("SHA-256")
+            .digest(fields.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 
     var billedOverheadTokens by mutableStateOf<Int?>(null)
@@ -826,13 +849,29 @@ internal class AgentAppState(
         }
     }
 
+    private fun updateSelectionProviders(providers: List<io.github.mangi.eta.data.model.ProviderSetting>) {
+        if (selectionProviders != providers) modelBindingGeneration++
+        selectionProviders = providers
+        // Invalidate the old run permanently, including if settings are later changed back.
+        runUsageRoutes.forEach { (runId, route) ->
+            val state = conversationIdForRun(runId)?.let(::conversationState)
+            if (state != null && route != contextRouteSignature(state)) invalidatedUsageRuns.add(runId)
+        }
+        // Also revoke background conversations; the model picker refresh only visits the foreground.
+        conversationsById.toList().forEach { (id, state) ->
+            if (state.conversationContentLoaded && state.cloudRouteSignature != null &&
+                state.cloudRouteSignature != contextRouteSignature(state)) {
+                updateConversation(id, state, updateTimestamp = false)
+            }
+        }
+    }
+
     private fun observeRuntimeSelection() {
         scope.launch {
             combine(SettingsDataStore.settingsFlow(), ProviderRepository.providersFlow()) { settings, providers ->
                 Triple(settings.selectedProviderId, settings.selectedModelId, providers)
             }.collectLatest { (providerId, modelId, providers) ->
-                if (selectionProviders != providers) modelBindingGeneration++
-                selectionProviders = providers
+                updateSelectionProviders(providers)
                 defaultProviderId = providerId
                 defaultModelId = modelId
                 refreshBoundModelPicker()
@@ -2433,12 +2472,22 @@ internal class AgentAppState(
     private fun billedPromptTokens(state: AgentChatHomeUiState): Int? =
         state.livePromptTokens.takeUnless { state.livePromptIsProjected }
 
-    /** Ordinary prefix growth keeps the latest cloud actual; revisions open a new receipt epoch. */
+    /** Ordinary commits keep the latest actual; edits/truncation open a new receipt epoch. */
     private fun contextStateForRequestHistory(
         state: AgentChatHomeUiState,
         history: List<AgentModelClient.ConversationMessage>,
     ): AgentChatHomeUiState {
-        if (state.history == history.take(state.history.size)) return state
+        // turnId is local metadata (runtime drain can omit it), not provider request content.
+        fun matchesRequestPrefix(prefix: List<AgentModelClient.ConversationMessage>): Boolean =
+            prefix.size <= history.size && prefix.indices.all { index ->
+                prefix[index].copy(turnId = "") == history[index].copy(turnId = "")
+            }
+        if (matchesRequestPrefix(state.history)) return state
+        // Only the real send reducer's exact visible-assistant commit may complete old text.
+        // Arbitrary content startsWith matches would incorrectly accept genuine history edits.
+        val committedHistory = AgentConversationRevisionReducer.commitVisibleAssistantIntoHistory(
+            state.history, state.messages)
+        if (matchesRequestPrefix(committedHistory)) return state
         return state.copy(
             livePromptTokens = null, livePromptIsProjected = false,
             cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
@@ -2452,7 +2501,7 @@ internal class AgentAppState(
     private fun budgetReceiptTokens(state: AgentChatHomeUiState): Int? =
         (billedPromptTokens(state) ?: state.contextBudgetReceiptTokens).takeIf {
             !state.contextAwaitingReceipt && state.cloudRouteSignature != null &&
-                state.cloudRouteSignature == contextRouteSignature(state)
+                state.cloudRouteSignature == contextLearningRouteSignature(state)
         }
 
     private fun compressionContextWindow(fallback: Int? = null): Int? =
@@ -2659,7 +2708,7 @@ internal class AgentAppState(
         )
         val historyRewritten = history != state.history
         val relatedHistory = history == state.history.take(history.size) || state.history == history.take(state.history.size)
-        val validReceiptRoute = state.cloudRouteSignature != null && state.cloudRouteSignature == contextRouteSignature(state)
+        val validReceiptRoute = state.cloudRouteSignature != null && state.cloudRouteSignature == contextLearningRouteSignature(state)
         val contextState = contextStateForRequestHistory(state, history)
         val runMessages = if (generateImage || generateVideo) {
             messages + AgentMessageUi(
@@ -2851,7 +2900,10 @@ internal class AgentAppState(
                     val learnedEstimate = calibration?.estimate(rawHistory, snapshotOverhead).takeUnless { shouldCompress || state.contextAwaitingReceipt }
                     val estimate = if (hasReceiptDelta) estimatedTokens ?: 0 else learnedEstimate ?:
                         (rawHistory.toLong() + snapshotOverhead).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                    val uiActual = billedPromptTokens(contextState).takeIf { validReceiptRoute && !shouldCompress }
+                    val uiActual = billedPromptTokens(contextState).takeIf {
+                        !shouldCompress && contextState.cloudRouteSignature != null &&
+                            contextState.cloudRouteSignature == contextRouteSignature(contextState)
+                    }
                     val uiTokens = if (shouldCompress || contextState.contextAwaitingReceipt) null else
                         uiActual ?: learnedEstimate
                     contextEstimateDiagnostics.capture(runId, ContextEstimateDiagnostics.Snapshot(
@@ -5077,7 +5129,7 @@ internal class AgentAppState(
         val state = conversationState(id) ?: return
         if (usageRunByConversation[id] != runId || runId in invalidatedUsageRuns) return
         val route = contextRouteSignature(state)
-        if (runUsageOwners[runId] == (state.providerId to state.modelId) &&
+        if (route != null && runUsageOwners[runId] == (state.providerId to state.modelId) &&
             runUsageRoutes[runId] == route &&
             (state.cloudRouteSignature == null || state.cloudRouteSignature == route)) return
         invalidatedUsageRuns.add(runId)
@@ -5096,7 +5148,8 @@ internal class AgentAppState(
         val state = conversationState(conversationId) ?: return
         if (runId in invalidatedUsageRuns || usageRunByConversation[conversationId] != runId ||
             owner != (state.providerId to state.modelId)) return
-        val route = runUsageRoutes[runId]?.takeIf { it == contextRouteSignature(state) } ?: return
+        if (runUsageRoutes[runId] != contextRouteSignature(state)) return
+        val route = contextLearningRouteSignature(state) ?: return
         val previous = RequestOverheadCalibrationStore.read(owner.first, owner.second)?.takeIf { it.routeSignature == route }
         val evidence = io.github.mangi.eta.ui.model.ContextReceiptEvidence.merge(state.contextReceiptEvidence,
             "$runId:${event.round}", measured, event.requestHistoryTokens, event.requestOverheadTokens)
@@ -5135,7 +5188,7 @@ internal class AgentAppState(
         val state = conversationState(conversationId) ?: return
         val owner = runUsageOwners[runId] ?: return
         if (owner != (state.providerId to state.modelId) || usageRunByConversation[conversationId] != runId) return
-        val route = runUsageRoutes[runId]
+        val route = runUsageRoutes[runId] ?: return
         if (route != contextRouteSignature(state)) return
         // Runtime projections are budget evidence only, not learned display estimates.
         if (projected) return
