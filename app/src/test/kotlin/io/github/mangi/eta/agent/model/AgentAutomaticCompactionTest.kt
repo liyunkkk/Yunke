@@ -120,8 +120,8 @@ class AgentAutomaticCompactionTest {
     }
 
     @Test fun firstReceiptJumpingFarAboveTheSeedStillSchedulesCompaction() {
-        // Seed below 80%, then a cache-miss receipt 40k higher with no local growth. The
-        // step exceeds the growth slack, but a seed is not a receipt and must not veto it.
+        // Seed below 80%, then a cache-miss receipt 40k higher with no local growth.
+        // A seed is not a receipt and must not veto the current request's measurement.
         val seed = AUTO_PRESSURE - 40_000
         val events = mutableListOf<AgentEvent>()
         var summaries = 0
@@ -131,6 +131,165 @@ class AgentAutomaticCompactionTest {
         assertEquals(1, provider.requests.size)
         assertEquals(1, summaries)
         assertTrue(events.any { it is AgentEvent.AutoCompactWaiting })
+    }
+
+    @Test fun observedReceiptJumpWaitsInItsCallbackAndCompactsAtFinalWithoutAnotherRequest() {
+        val events = mutableListOf<AgentEvent>()
+        val order = mutableListOf<String>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { _, _ ->
+                order += "provider-1"
+                toolReply("warmup").put("usage", JSONObject().put("prompt_tokens", 193_223))
+            },
+            { _, _ ->
+                order += "provider-2"
+                assertEquals(0, summaries)
+                assertTrue(events.none { it is AgentEvent.AutoCompactWaiting })
+                assistant(promptTokens = 230_402)
+            },
+        ), afterUsage = { requestCount ->
+            if (requestCount == 2) {
+                // Runs before provider.complete returns: no next request can confirm this receipt.
+                assertEquals(listOf(2), events.filterIsInstance<AgentEvent.AutoCompactWaiting>().map { it.round })
+                assertEquals(0, summaries)
+                assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+                order += "pressure"
+            }
+        })
+        assertEquals("done", runLoop(smallHistory(), provider, events,
+            config = modelConfig().copy(contextWindow = 272_000),
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                assertEquals("warmup", call.id)
+                order += "tool-warmup"
+                AgentModelClient.ToolResult("ok")
+            },
+            compactHistory = { source, policy ->
+                assertTrue(events.any { it is AgentEvent.AssistantReceived && it.round == 2 })
+                assertEquals(230_402, events.filterIsInstance<AgentEvent.UsageReceived>().last { !it.projected }.usage.inputTokens)
+                summaries++
+                order += "summarize"
+                summarize(source, policy)
+            }).content)
+        assertEquals(listOf("provider-1", "tool-warmup", "provider-2", "pressure", "summarize"), order)
+        assertEquals(2, provider.requests.size)
+        assertEquals(1, summaries)
+        assertEquals(2, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        val compacted = events.indexOfFirst { it is AgentEvent.ContextCompacted && it.applied }
+        val finished = events.indexOfFirst { it is AgentEvent.RunFinished }
+        assertTrue(compacted in 0 until finished)
+    }
+
+    @Test fun observedReceiptJumpQueuesBeforeToolsAndCompactsOnlyAfterWholeBatchBeforeNextRequest() {
+        val events = mutableListOf<AgentEvent>()
+        val order = mutableListOf<String>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { _, _ ->
+                order += "provider-1"
+                toolReply("warmup").put("usage", JSONObject().put("prompt_tokens", 193_223))
+            },
+            { _, _ ->
+                order += "provider-2"
+                assertEquals(0, summaries)
+                toolReply("hot-a").also { reply ->
+                    reply.getJSONArray("tool_calls").put(toolReply("hot-b").getJSONArray("tool_calls").getJSONObject(0))
+                    reply.put("usage", JSONObject().put("prompt_tokens", 230_402))
+                }
+            },
+            { request, _ ->
+                order += "provider-3"
+                assertEquals(1, summaries)
+                assertTrue(events.any { it is AgentEvent.ContextCompacted && it.applied })
+                assertEquals(2, AgentConversationCodec.transcript(request.messages, 0)
+                    .count { it.role == "tool" && it.toolCallId in setOf("hot-a", "hot-b") })
+                // The next request has no usage: it must not inherit 230402 and recompact.
+                assistant()
+            },
+        ), afterUsage = { requestCount ->
+            if (requestCount == 2) {
+                assertEquals(listOf(2), events.filterIsInstance<AgentEvent.AutoCompactWaiting>().map { it.round })
+                assertEquals(0, summaries)
+                assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+                order += "pressure"
+            }
+        })
+        assertEquals("done", runLoop(smallHistory(), provider, events,
+            config = modelConfig().copy(contextWindow = 272_000),
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                if (call.id != "warmup") {
+                    assertEquals(0, summaries)
+                    assertTrue(events.any { it is AgentEvent.AutoCompactWaiting && it.round == 2 })
+                    assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+                }
+                order += "tool-${call.id}"
+                AgentModelClient.ToolResult("ok")
+            },
+            compactHistory = { source, policy ->
+                assertEquals(listOf("warmup", "hot-a", "hot-b"),
+                    events.filterIsInstance<AgentEvent.ToolFinished>().map { it.toolCallId })
+                assertEquals(2, source.count { it.role == "tool" && it.toolCallId in setOf("hot-a", "hot-b") })
+                summaries++
+                order += "summarize"
+                summarize(source, policy)
+            }).content)
+        assertEquals(listOf("provider-1", "tool-warmup", "provider-2", "pressure", "tool-hot-a", "tool-hot-b",
+            "summarize", "provider-3"), order)
+        assertEquals(3, provider.requests.size)
+        assertEquals(1, summaries)
+        val waiting = events.indexOfFirst { it is AgentEvent.AutoCompactWaiting }
+        val lastTool = events.indexOfLast { it is AgentEvent.ToolFinished }
+        val started = events.indexOfFirst { it is AgentEvent.ContextCompactionStarted }
+        val nextRequest = events.indexOfFirst { it is AgentEvent.RoundStarted && it.round == 3 }
+        assertTrue(waiting in 0 until lastTool)
+        assertTrue(lastTool in 0 until started)
+        assertTrue(started in 0 until nextRequest)
+        assertEquals(3, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        assertEquals(listOf(193_223, 230_402), events.filterIsInstance<AgentEvent.UsageReceived>()
+            .filterNot { it.projected }.map { it.usage.inputTokens })
+    }
+
+    @Test fun usageLessNextRequestDoesNotInheritInputFromThePreviousReceipt() {
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> toolReply("warmup").put("usage", JSONObject().put("prompt_tokens", 193_223)) },
+            { _, _ -> assistant() },
+        ), usageFrames = listOf(AgentTokenUsage(outputTokens = 20)))
+        assertEquals("done", runLoop(smallHistory(), provider, events,
+            config = modelConfig().copy(contextWindow = 272_000),
+            toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("ok") },
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(2, provider.requests.size)
+        assertEquals(0, summaries)
+        val receipts = events.filterIsInstance<AgentEvent.UsageReceived>().filterNot { it.projected }
+        assertEquals(listOf(193_223, 193_223, null), receipts.map { it.usage.inputTokens })
+        assertTrue(events.none { it is AgentEvent.AutoCompactWaiting || it is AgentEvent.ContextCompactionStarted })
+    }
+
+    @Test fun invalidCurrentRequestReceiptsNeverQueuePressure() {
+        val invalidFrames = listOf(
+            AgentTokenUsage(outputTokens = 20),
+            AgentTokenUsage(inputTokens = 0),
+            AgentTokenUsage(inputTokens = -1),
+            AgentTokenUsage(inputTokens = 784_267),
+            AgentTokenUsage(inputTokens = 230_402, cachedTokens = 230_403),
+            AgentTokenUsage(inputTokens = 300_000, cachedTokens = 272_001),
+        )
+        for (frame in invalidFrames) {
+            val events = mutableListOf<AgentEvent>()
+            var summaries = 0
+            val provider = ScriptedProvider(listOf({ _, _ -> assistant() }), listOf(frame),
+                afterUsage = {
+                    assertTrue(events.none { it is AgentEvent.AutoCompactWaiting || it is AgentEvent.ContextCompactionStarted })
+                })
+            assertEquals("done", runLoop(smallHistory(), provider, events,
+                config = modelConfig().copy(contextWindow = 272_000),
+                compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+            assertEquals(1, provider.requests.size)
+            assertEquals(0, summaries)
+            assertTrue(events.none { it is AgentEvent.AutoCompactWaiting || it is AgentEvent.ContextCompactionStarted })
+        }
     }
 
     @Test fun relayCacheReadLargerThanTheWindowNeverSchedulesCompaction() {
@@ -1012,6 +1171,7 @@ class AgentAutomaticCompactionTest {
     private class ScriptedProvider(
         private val responses: List<(ProviderRequest, AgentRunController) -> JSONObject>,
         private val usageFrames: List<AgentTokenUsage> = emptyList(),
+        private val afterUsage: (Int) -> Unit = {},
     ) : AgentProviderClient {
         override val id = "automatic-compaction-test"
         override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, false, false, false, false)
@@ -1030,6 +1190,7 @@ class AgentAutomaticCompactionTest {
                 onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = it.getInt("prompt_tokens"))))
             }
             usageFrames.forEach { onEvent(ProviderEvent.Usage(it)) }
+            afterUsage(requests.size)
             return ProviderResponse(reply)
         }
     }

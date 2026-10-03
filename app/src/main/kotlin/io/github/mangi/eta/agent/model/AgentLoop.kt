@@ -264,8 +264,10 @@ internal class AgentLoop(
                                 cacheCreationTokens = incoming.cacheCreationTokens ?: previous?.cacheCreationTokens,
                             )
                             if ((lastUsage?.inputTokens ?: 0) > 0) hasDisplayCloudReceipt = true
-                            // Partial fields merge only within this request. The separate
-                            // silent anchor survives a later usage-less request.
+                            // Partial fields merge only within this request. A plausible input
+                            // immediately replaces the cloud anchor; queue pressure in this callback,
+                            // never send a confirmation request or compact an open output/tool batch.
+                            // The separate silent anchor survives a later usage-less request.
                             silentBudget.measured(lastUsage?.inputTokens,
                                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
                                 cachedTokens = lastUsage?.cachedTokens)

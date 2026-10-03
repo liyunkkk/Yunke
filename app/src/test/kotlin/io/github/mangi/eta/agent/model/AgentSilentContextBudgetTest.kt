@@ -95,14 +95,15 @@ class AgentSilentContextBudgetTest {
         assertEquals(34185, budget.tokens(34185))
     }
 
-    @Test fun aStepFarBeyondTheLocalGrowthIsRejected() {
+    @Test fun overWindowTotalIsRejectedEvenAfterAValidReceipt() {
         val budget = AgentSilentContextBudget()
         budget.requestStarted(21079)
         budget.measured(38880, 200000)
-        // round 14 -> 15: +229037 billed while the local request grew by ~1100.
+        // 267917 exceeds 130% of this 200000 window, independently of local growth.
         budget.requestStarted(22194)
         budget.measured(267917, 200000)
-        // The previous valid anchor survives, so the decision stays realistic.
+        assertEquals(SilentReceiptDecision.REJECTED_OVER_WINDOW, budget.lastReceiptDecision)
+        assertEquals(38880, budget.cloudTokens())
         assertEquals(39995, budget.tokens(22194))
     }
 
@@ -193,7 +194,7 @@ class AgentSilentContextBudgetTest {
         assertEquals(240_017, budget.cloudTokens())
     }
 
-    @Test fun afterTheFirstRealReceiptTheGrowthCheckStillApplies() {
+    @Test fun firstAndLaterReceiptsStillRespectTheWindowBound() {
         val budget = AgentSilentContextBudget()
         budget.seed(20_000, 38_000, contextWindow = 200_000)
         budget.requestStarted(21_079)
@@ -220,9 +221,9 @@ class AgentSilentContextBudgetTest {
         // Cache read above the window: dropped by the cache-read rule.
         budget.measured(546_739, 500_000, cachedTokens = 520_658)
         assertEquals(199_206, budget.cloudTokens())
-        // Cache read inside the window: kept by that rule, refused by the growth check.
-        budget.measured(469_990, 500_000, cachedTokens = 469_662)
-        // No anchor move, no scaling: compaction still sees 199206.
+        // A cache prefix larger than its own total is also explicitly invalid.
+        budget.measured(199_300, 500_000, cachedTokens = 199_301)
+        assertEquals(SilentReceiptDecision.REJECTED_INFLATED_CACHE, budget.lastReceiptDecision)
         assertEquals(199_206, budget.cloudTokens())
         assertEquals(199_206 + 798, budget.tokens(156_434))
         budget.contextReplaced()
@@ -248,77 +249,64 @@ class AgentSilentContextBudgetTest {
         assertEquals(200_000, budget.cloudTokens())
     }
 
-    @Test fun consistentReceiptsOnLaterRequestsReanchorAfterOneIsolatedRefusal() {
-        val window = 272_000
+    @Test fun observed272kJumpUpdatesCloudOnTheSameRequestWithoutConfirmation() {
         val budget = AgentSilentContextBudget()
-        val inputs = intArrayOf(210_333, 177_354, 217_510, 238_366, 251_000, 264_000, 66_335)
-        inputs.forEachIndexed { index, input ->
-            budget.requestStarted(150_000)
-            budget.measured(input, window)
-            if (index == 2) {
-                assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
-                assertEquals(177_354, budget.cloudTokens())
-            }
-            if (index == 3) {
-                assertEquals(SilentReceiptDecision.REANCHORED, budget.lastReceiptDecision)
-                assertEquals(238_366, budget.cloudTokens())
-                assertTrue(requireNotNull(budget.cloudTokens()) >= AgentContextCompactor.autoPressureTokens(window))
-            }
-        }
+        budget.requestStarted(150_000)
+        budget.measured(193_223, 272_000)
+        assertTrue(requireNotNull(budget.cloudTokens()) < AgentContextCompactor.autoPressureTokens(272_000))
+        budget.requestStarted(150_100)
+        budget.measured(230_402, 272_000)
         assertEquals(SilentReceiptDecision.ACCEPTED, budget.lastReceiptDecision)
-        assertEquals(66_335, budget.cloudTokens())
-        assertTrue(238_366 >= AgentContextCompactor.autoPressureTokens(window))
+        assertEquals(230_402, budget.cloudTokens())
+        assertEquals(230_402, budget.tokens(150_100))
+        assertTrue(requireNotNull(budget.cloudTokens()) >= AgentContextCompactor.autoPressureTokens(272_000))
+        // Another field update in this stream is a correction, not a confirmation request.
+        budget.measured(230_849, 272_000)
+        assertEquals(SilentReceiptDecision.ACCEPTED, budget.lastReceiptDecision)
+        assertEquals(230_849, budget.cloudTokens())
     }
 
-    @Test fun sameRequestUsageCannotConfirmItsOwnOutlier() {
+    @Test fun plausibleCacheAndTotalJumpsAreNotJudgedByLocalGrowth() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(155_636)
+        budget.measured(199_206, 500_000)
+        budget.requestStarted(156_434)
+        budget.measured(469_990, 500_000, cachedTokens = 469_662)
+        assertEquals(SilentReceiptDecision.ACCEPTED, budget.lastReceiptDecision)
+        assertEquals(469_990, budget.cloudTokens())
+    }
+
+    @Test fun nonPositiveAndMissingInputsNeverReplaceTheAnchor() {
+        val budget = AgentSilentContextBudget()
+        budget.requestStarted(10_000)
+        for (invalid in listOf<Int?>(null, 0, -1)) {
+            budget.measured(invalid, 272_000)
+            assertEquals(SilentReceiptDecision.REJECTED_NON_POSITIVE, budget.lastReceiptDecision)
+            assertNull(budget.cloudTokens())
+            assertFalse(budget.hasTargetReceipt())
+        }
+        budget.measured(193_223, 272_000)
+        for (invalid in listOf<Int?>(null, 0, -1)) {
+            budget.measured(invalid, 272_000)
+            assertEquals(193_223, budget.cloudTokens())
+        }
+    }
+
+    @Test fun pruningWaitsForANewReceiptButDoesNotRequireConfirmation() {
         val budget = AgentSilentContextBudget()
         budget.requestStarted(10_000)
         budget.measured(20_000, 200_000)
-        budget.requestStarted(11_000)
-        budget.measured(180_000, 200_000)
-        budget.measured(181_000, 200_000)
-        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
-        assertEquals(20_000, budget.cloudTokens())
-        budget.requestStarted(12_000)
-        budget.measured(182_000, 200_000)
-        assertEquals(SilentReceiptDecision.REANCHORED, budget.lastReceiptDecision)
-        assertEquals(182_000, budget.cloudTokens())
-    }
-
-    @Test fun twoInconsistentRefusalsDoNotBecomeTheAnchor() {
-        val budget = AgentSilentContextBudget()
-        budget.requestStarted(10_000)
-        budget.measured(20_000, 200_000)
-        budget.requestStarted(10_100)
-        budget.measured(100_000, 200_000)
-        budget.requestStarted(10_200)
-        budget.measured(250_000, 200_000)
-        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
-        assertEquals(20_000, budget.cloudTokens())
-    }
-
-    @Test fun overWindowAndPruneClearTheReanchorCandidate() {
-        val budget = AgentSilentContextBudget()
-        budget.requestStarted(10_000)
-        budget.measured(20_000, 200_000)
-        budget.requestStarted(10_100)
-        budget.measured(784_267, 500_000)
-        assertEquals(SilentReceiptDecision.REJECTED_OVER_WINDOW, budget.lastReceiptDecision)
-        assertEquals(20_000, budget.cloudTokens())
-        budget.requestStarted(10_200)
-        budget.measured(180_000, 200_000)
-        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
         budget.cloudStale()
-        budget.requestStarted(10_300)
-        budget.measured(181_000, 200_000)
         assertNull(budget.cloudTokens())
-        assertEquals(SilentReceiptDecision.CANDIDATE, budget.lastReceiptDecision)
+        budget.requestStarted(10_300)
+        budget.measured(null, 200_000)
+        assertNull(budget.cloudTokens())
+        budget.measured(181_000, 200_000)
+        assertEquals(SilentReceiptDecision.ACCEPTED, budget.lastReceiptDecision)
+        assertEquals(181_000, budget.cloudTokens())
         budget.contextReplaced()
         assertFalse(budget.hasTargetReceipt())
-        budget.requestStarted(10_000)
-        budget.measured(30_000, 200_000)
-        assertTrue(budget.hasTargetReceipt())
-        assertEquals(30_000, budget.cloudTokens())
+        assertNull(budget.cloudTokens())
     }
 
     @Test fun seedIsNotATargetReceipt() {
