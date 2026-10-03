@@ -2433,6 +2433,21 @@ internal class AgentAppState(
     private fun billedPromptTokens(state: AgentChatHomeUiState): Int? =
         state.livePromptTokens.takeUnless { state.livePromptIsProjected }
 
+    /** Ordinary prefix growth keeps the latest cloud actual; revisions open a new receipt epoch. */
+    private fun contextStateForRequestHistory(
+        state: AgentChatHomeUiState,
+        history: List<AgentModelClient.ConversationMessage>,
+    ): AgentChatHomeUiState {
+        if (state.history == history.take(state.history.size)) return state
+        return state.copy(
+            livePromptTokens = null, livePromptIsProjected = false,
+            cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+            contextAwaitingReceipt = true, contextHasStarted = true,
+            cloudReceiptRequestId = null, cloudRouteSignature = null,
+            contextReceiptEvidence = null, receiptPredictionTokens = null,
+        )
+    }
+
     /** Budget deltas retain real evidence across request boundaries, never display-learning ratios. */
     private fun budgetReceiptTokens(state: AgentChatHomeUiState): Int? =
         (billedPromptTokens(state) ?: state.contextBudgetReceiptTokens).takeIf {
@@ -2645,15 +2660,7 @@ internal class AgentAppState(
         val historyRewritten = history != state.history
         val relatedHistory = history == state.history.take(history.size) || state.history == history.take(state.history.size)
         val validReceiptRoute = state.cloudRouteSignature != null && state.cloudRouteSignature == contextRouteSignature(state)
-        val revisedEstimate = if (historyRewritten && relatedHistory && validReceiptRoute && !state.contextAwaitingReceipt) {
-            val cloud = budgetReceiptTokens(state)
-            val oldHistory = state.cloudHistoryTokens
-            val oldOverhead = state.cloudRequestOverheadTokens
-            if (cloud != null && oldHistory != null && oldOverhead != null) RequestOverheadCalibration.receiptEstimate(
-                cloud, oldHistory, oldOverhead,
-                (history + taggedUserHistoryMessage).sumOf { AgentContextBudget.countMessage(it) }, requestOverheadTokens)
-            else null
-        } else null
+        val contextState = contextStateForRequestHistory(state, history)
         val runMessages = if (generateImage || generateVideo) {
             messages + AgentMessageUi(
                 id = "assistant-$runId-1",
@@ -2665,19 +2672,12 @@ internal class AgentAppState(
         }
         updateConversation(
             conversationId,
-            state.copy(
+            contextState.copy(
                 isStreaming = true,
                 isPaused = false,
-                // 估算只属于还没有云端账单的第一轮，以及压缩清掉账单后的第一轮。
-                // 普通发消息会把可见回复写进 history，不能因此丢掉上一轮实测。
-                livePromptTokens = state.livePromptTokens.takeUnless { historyRewritten },
-                livePromptIsProjected = state.livePromptIsProjected && !historyRewritten,
-                // Pending first turns stay NONE until a receipt or terminal run result.
-                receiptPredictionTokens = revisedEstimate,
-                cloudReceiptRequestId = state.cloudReceiptRequestId.takeUnless { historyRewritten },
-                contextReceiptEvidence = state.contextReceiptEvidence.takeUnless { historyRewritten },
-                cloudHistoryTokens = state.cloudHistoryTokens.takeUnless { historyRewritten },
-                cloudRequestOverheadTokens = state.cloudRequestOverheadTokens.takeUnless { historyRewritten },
+                // Keep the latest actual until a new valid usage replaces it. Estimates are only
+                // for contexts without a cloud receipt, never a delta replacement for an actual.
+                receiptPredictionTokens = null,
                 isCompressingContext = willCompress,
                 history = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(history) + taggedUserHistoryMessage,
                 messages = runMessages,
@@ -2851,8 +2851,9 @@ internal class AgentAppState(
                     val learnedEstimate = calibration?.estimate(rawHistory, snapshotOverhead).takeUnless { shouldCompress || state.contextAwaitingReceipt }
                     val estimate = if (hasReceiptDelta) estimatedTokens ?: 0 else learnedEstimate ?:
                         (rawHistory.toLong() + snapshotOverhead).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                    val uiTokens = if (shouldCompress || state.contextAwaitingReceipt) null else
-                        if (historyRewritten) revisedEstimate ?: learnedEstimate else billedPromptTokens(state) ?: learnedEstimate
+                    val uiActual = billedPromptTokens(contextState).takeIf { validReceiptRoute && !shouldCompress }
+                    val uiTokens = if (shouldCompress || contextState.contextAwaitingReceipt) null else
+                        uiActual ?: learnedEstimate
                     contextEstimateDiagnostics.capture(runId, ContextEstimateDiagnostics.Snapshot(
                         basis = if (hasReceiptDelta) ContextEstimateDiagnostics.Basis.RECEIPT_DELTA
                             else if (learnedEstimate != null) ContextEstimateDiagnostics.Basis.LEARNED_RATIO
@@ -2861,7 +2862,7 @@ internal class AgentAppState(
                         calibrationSamples = calibration?.samples ?: 0, ratio = calibration?.ratio,
                         uiTokens = uiTokens,
                         uiState = when {
-                            uiTokens != null && !historyRewritten && billedPromptTokens(state) != null -> ContextEstimateDiagnostics.UiState.ACTUAL
+                            uiActual != null -> ContextEstimateDiagnostics.UiState.ACTUAL
                             uiTokens != null -> ContextEstimateDiagnostics.UiState.ESTIMATE
                             !state.contextHasStarted -> ContextEstimateDiagnostics.UiState.NONE
                             else -> ContextEstimateDiagnostics.UiState.UNKNOWN
@@ -4990,15 +4991,9 @@ internal class AgentAppState(
                 Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
             }
         }
-        // Every terminal path consumes the first-turn NONE state, even before any provider request.
-        val lastRound = runRequestRounds[runId]
-        conversationIdForRun(runId)?.let { id -> conversationState(id)?.let { current ->
-            if (usageRunByConversation[id] == runId) {
-                if (lastRound == null || current.cloudReceiptRequestId != "$runId:$lastRound") {
-                    revokeContextActual(runId)
-                }
-            }
-        } }
+        // A stop/failure without this round's receipt still keeps the latest actual from this epoch.
+        // setConversationStreaming consumes first-turn NONE without fabricating a cloud receipt.
+        revokeContextActual(runId)
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
         conversationId?.let(pendingInRunCompactConversationIds::remove)
@@ -5074,27 +5069,25 @@ internal class AgentAppState(
         billedOverheadTokens = overhead
     }
 
-    /** A request/retry boundary revokes actual display, not the conservative receipt delta anchor. */
+    /** Request/retry/terminal boundaries only revoke a receipt if its model or route became invalid.
+     * Same-route requests keep actual and evidence, including same-request usage corrections.
+     * A new request's evidence is separated by ContextReceiptEvidence.merge(requestId), not here. */
     private fun revokeContextActual(runId: String) {
         val id = conversationIdForRun(runId) ?: return
         val state = conversationState(id) ?: return
-        if (usageRunByConversation[id] != runId || runId in invalidatedUsageRuns ||
-            runUsageOwners[runId] != (state.providerId to state.modelId)) return
-        val sameRoute = state.cloudRouteSignature != null &&
-            state.cloudRouteSignature == runUsageRoutes[runId] &&
-            state.cloudRouteSignature == contextRouteSignature(state)
-        val cloud = (billedPromptTokens(state) ?: state.contextBudgetReceiptTokens)
-            .takeIf { sameRoute && !state.contextAwaitingReceipt }
-        val oldHistory = state.cloudHistoryTokens
-        val oldOverhead = state.cloudRequestOverheadTokens
-        val estimate = if (cloud != null && oldHistory != null && oldOverhead != null) {
-            RequestOverheadCalibration.receiptEstimate(cloud, oldHistory, oldOverhead,
-                state.history.sumOf { AgentContextBudget.countMessage(it) },
-                runOverheadTokens[runId] ?: oldOverhead)
-        } else null
-        updateConversation(id, state.copy(livePromptTokens = null, livePromptIsProjected = false,
-            contextBudgetReceiptTokens = cloud, contextReceiptEvidence = null,
-            cloudReceiptRequestId = null, receiptPredictionTokens = estimate), updateTimestamp = false)
+        if (usageRunByConversation[id] != runId || runId in invalidatedUsageRuns) return
+        val route = contextRouteSignature(state)
+        if (runUsageOwners[runId] == (state.providerId to state.modelId) &&
+            runUsageRoutes[runId] == route &&
+            (state.cloudRouteSignature == null || state.cloudRouteSignature == route)) return
+        invalidatedUsageRuns.add(runId)
+        updateConversation(id, state.copy(
+            livePromptTokens = null, livePromptIsProjected = false,
+            cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+            contextAwaitingReceipt = state.contextAwaitingReceipt || state.contextHasStarted,
+            cloudReceiptRequestId = null, cloudRouteSignature = null,
+            contextReceiptEvidence = null, receiptPredictionTokens = null,
+        ), updateTimestamp = false)
     }
 
     private fun recordContextEstimateReceipt(runId: String, event: AgentEvent.UsageReceived, measured: Int) {

@@ -161,10 +161,21 @@ class RequestOverheadCalibrationTest {
         assertFalse(fresh.estimated)
     }
 
-    @Test fun sameSessionReceiptDegradesOnlyWithinApplicableComposition() {
+    @Test fun latestActualNeverDegradesToReceiptDeltaOrLearningWhenDraftOrCompositionChanges() {
         val estimate = RequestOverheadCalibration.receiptEstimate(37214, 481, 25270, 300, 25237)
         assertNotNull(estimate)
-        assertTrue(liveContextUsage(emptyList(), "", emptyList(), null, receiptEstimateTokens = estimate).estimated)
-        assertNull(RequestOverheadCalibration.receiptEstimate(37214, 481, 25270, 120000, 25237))
+        for (history in listOf(300, 120000)) {
+            val actual = liveContextUsage(emptyList(), "large draft".repeat(1000), emptyList(), null,
+                historyTokenCount = history, billedContextTokens = 37214, requestOverheadTokens = 25237,
+                receiptEstimateTokens = estimate, overheadCalibrationTokens = stable(), projectedContextTokens = 999999,
+                contextDisplayPolicy = ContextDisplayPolicy(firstTurn = false))
+            assertEquals(37214, actual.contextTokens)
+            assertFalse(actual.estimated)
+        }
+        // Local composition has no bearing on whether a positive provider receipt is actual.
+        val unpaired = liveContextUsage(emptyList(), "draft", emptyList(), null,
+            billedContextTokens = 43687, requestOverheadTokens = 0, projectedContextTokens = 999999)
+        assertEquals(43687, unpaired.contextTokens)
+        assertFalse(unpaired.estimated)
     }
 }

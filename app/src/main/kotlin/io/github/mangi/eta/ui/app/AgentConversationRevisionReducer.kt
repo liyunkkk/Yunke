@@ -90,13 +90,9 @@ internal object AgentConversationRevisionReducer {
             livePromptIsProjected = false,
             contextBudgetReceiptTokens = null,
             contextHasStarted = true,
-            receiptPredictionTokens = if (!state.contextAwaitingReceipt && state.cloudRouteSignature != null &&
-                state.livePromptTokens != null && !state.livePromptIsProjected &&
-                state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null)
-                io.github.mangi.eta.ui.model.RequestOverheadCalibration.receiptEstimate(
-                    state.livePromptTokens, state.cloudHistoryTokens, state.cloudRequestOverheadTokens,
-                    history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) },
-                    state.cloudRequestOverheadTokens) else null,
+            contextAwaitingReceipt = true,
+            receiptPredictionTokens = null,
+            cloudRouteSignature = null,
             cloudReceiptRequestId = null, contextReceiptEvidence = null,
             cloudHistoryTokens = null,
             cloudRequestOverheadTokens = null,

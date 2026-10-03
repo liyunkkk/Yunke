@@ -16,7 +16,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], qualifiers = "en-rUS")
 class AgentCloudUsageRegressionTest {
-    @Test fun requestStartRevokesActualButKeepsHistoryAndAcceptsCurrentStoppedTail() {
+    @Test fun requestStartAndRetryKeepLatestActualAndAcceptCurrentStoppedTail() {
         val context = RuntimeEnvironment.getApplication() as Context
         EtaDatabase.closeForTests()
         context.deleteDatabase("eta.db")
@@ -33,21 +33,27 @@ class AgentCloudUsageRegressionTest {
             send(AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 152885)))
             assertEquals(152885, current().livePromptTokens)
             send(AgentEvent.ProviderRequestStarted(2))
-            // The old bill remains historical usage, not an actual for the new request.
-            assertNull(current().livePromptTokens)
-            assertNull(current().cloudReceiptRequestId)
-            assertNull(current().contextBudgetReceiptTokens) // no paired baseline was supplied
+            // Missing local baselines affect the independent budget, never the actual ring.
+            assertEquals(152885, current().livePromptTokens)
+            assertEquals("new-run:1", current().cloudReceiptRequestId)
+            assertNotNull(current().contextReceiptEvidence)
+            assertNull(current().contextBudgetReceiptTokens)
             assertNull(current().receiptPredictionTokens)
             send(AgentEvent.UsageReceived(2, AgentTokenUsage(outputTokens = 30)))
-            assertNull(current().livePromptTokens)
+            assertEquals(152885, current().livePromptTokens)
             send(AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 999999), projected = true))
-            assertNull(current().livePromptTokens)
+            assertEquals(152885, current().livePromptTokens)
             assertFalse(current().livePromptIsProjected)
-            // A late real receipt from the preceding request cannot resurrect its actual label.
+            send(AgentEvent.ModelRetryScheduled(2, 1, 3, 1000, "NETWORK"))
+            send(AgentEvent.ProviderRequestStarted(2))
+            assertEquals(152885, current().livePromptTokens)
+            // Late usage cannot replace the latest accepted actual after advancing the round.
             send(AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 160000)))
-            assertNull(current().livePromptTokens)
-            assertEquals("未知", formatContextUsage(liveContextUsage(current().history, "", emptyList(), null,
-                contextDisplayPolicy = contextDisplayPolicy(current()))))
+            assertEquals(152885, current().livePromptTokens)
+            val ring = liveContextUsage(current().history, "draft", emptyList(), null,
+                billedContextTokens = current().livePromptTokens, contextDisplayPolicy = contextDisplayPolicy(current()))
+            assertEquals(152885, ring.contextTokens)
+            assertFalse(ring.estimated)
             assertEquals(152885, latestBilledContextTokens(current().messages))
             val field = app.javaClass.getDeclaredField("stoppingRuns").apply { isAccessible = true }
             @Suppress("UNCHECKED_CAST")

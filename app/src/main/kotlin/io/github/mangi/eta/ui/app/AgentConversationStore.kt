@@ -149,6 +149,7 @@ internal object AgentConversationStore {
                                 state.livePromptTokens.takeUnless { state.livePromptIsProjected },
                                 state.cloudHistoryTokens, state.cloudRequestOverheadTokens,
                                 state.contextHasStarted, state.contextAwaitingReceipt, state.cloudRouteSignature,
+                                state.cloudReceiptRequestId,
                             ),
                         )))
                     }
@@ -316,6 +317,15 @@ internal object AgentConversationStore {
             modelId = if (conversation.providerId.isBlank() && conversation.modelId.isBlank()) fallbackModelId else conversation.modelId,
             assistantId = conversation.assistantId,
             livePromptTokens = receipt?.inputTokens,
+            contextBudgetReceiptTokens = receipt?.takeIf {
+                io.github.mangi.eta.ui.model.RequestOverheadCalibration.hasUsableBaseline(
+                    it.historyTokens, it.overheadTokens)
+            }?.inputTokens,
+            cloudReceiptRequestId = receipt?.requestId,
+            contextReceiptEvidence = receipt?.let { actual -> actual.requestId?.let { requestId ->
+                io.github.mangi.eta.ui.model.ContextReceiptEvidence(requestId, actual.inputTokens,
+                    actual.historyTokens, actual.overheadTokens)
+            } },
             cloudHistoryTokens = receipt?.historyTokens,
             cloudRequestOverheadTokens = receipt?.overheadTokens,
         )

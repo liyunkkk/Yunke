@@ -29,7 +29,12 @@ class ContextLearningV2Contract(unittest.TestCase):
 
     def test_retry_preserves_provenance_and_partial_usage_cannot_mix_requests(self):
         app = self.source('ui/app/AgentAppState.kt')
-        self.assertIn('livePromptTokens = state.livePromptTokens.takeUnless { historyRewritten }', app)
+        launch = app.split('private fun launchConversationRun(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('contextStateForRequestHistory(state, history)', launch)
+        self.assertIn('contextState.copy(', launch)
+        self.assertNotIn('takeUnless { historyRewritten }', launch)
+        history = app.split('private fun contextStateForRequestHistory(', 1)[1].split('private fun ', 1)[0]
+        self.assertIn('if (state.history == history.take(state.history.size)) return state', history)
         self.assertIn('validReceiptRoute && relatedHistory && !state.contextAwaitingReceipt', app)
         self.assertIn('billedContextTokens = receiptAnchorForDelta', app)
         self.assertIn('if (!replaying) recordContextEstimateReceipt', app)
@@ -42,11 +47,20 @@ class ContextLearningV2Contract(unittest.TestCase):
         self.assertIn('livePromptTokens = null', revoke)
         self.assertIn('contextReceiptEvidence = null', revoke)
         self.assertIn('cloudReceiptRequestId = null', revoke)
-        self.assertIn('contextBudgetReceiptTokens = cloud', revoke)
-        self.assertIn('receiptPredictionTokens = estimate', revoke)
-        self.assertIn('RequestOverheadCalibration.receiptEstimate(', revoke)
-        self.assertIn('sameRoute && !state.contextAwaitingReceipt', revoke)
-        self.assertIn('runUsageOwners[runId] != (state.providerId to state.modelId)', revoke)
+        # Boundaries keep the latest actual/evidence on the same model and route. Only an
+        # invalidated route may reach the clearing branch; no boundary generates display deltas.
+        self.assertIn('runUsageOwners[runId] == (state.providerId to state.modelId)', revoke)
+        self.assertIn('runUsageRoutes[runId] == route', revoke)
+        guard = '(state.cloudRouteSignature == null || state.cloudRouteSignature == route)) return'
+        self.assertIn(guard, revoke)
+        self.assertLess(revoke.index(guard), revoke.index('livePromptTokens = null'))
+        self.assertIn('invalidatedUsageRuns.add(runId)', revoke)
+        self.assertNotIn('receiptPredictionTokens = estimate', revoke)
+        self.assertNotIn('RequestOverheadCalibration.receiptEstimate(', revoke)
+        self.assertNotIn('RequestOverheadCalibration.receiptEstimate(', launch)
+        terminal = app.split('private fun applyRunResult(', 1)[1].split('private fun ', 1)[0]
+        self.assertNotIn('current.cloudReceiptRequestId !=', terminal)
+        self.assertIn('revokeContextActual(runId)', terminal)
         budget = app.split('private fun budgetReceiptTokens(', 1)[1].split('private fun ', 1)[0]
         self.assertNotIn('receiptPredictionTokens', budget)
         self.assertNotIn('overheadCalibrationTokens', budget)

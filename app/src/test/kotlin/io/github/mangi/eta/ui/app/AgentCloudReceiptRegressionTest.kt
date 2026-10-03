@@ -94,12 +94,13 @@ class AgentCloudReceiptRegressionTest {
             assertEquals(40000, state(app).livePromptTokens)
             assertNull(state(app).cloudHistoryTokens)
             assertNull(state(app).cloudRequestOverheadTokens)
-            // A same-round retry is also a new actual request boundary, even when input agrees.
+            // A repeated start is not new evidence and must not break same-request corrections.
             send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000),
                 requestHistoryTokens = 1000, requestOverheadTokens = 25270))
             send(app, AgentEvent.ProviderRequestStarted(2))
             send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000)))
-            assertNull(state(app).cloudHistoryTokens)
+            assertEquals(1000, state(app).cloudHistoryTokens)
+            assertEquals(25270, state(app).cloudRequestOverheadTokens)
         }
     }
 

@@ -62,7 +62,7 @@ class AgentContextPendingRegressionTest {
         assertEquals("无", formatContextUsage(f.usage("empty")))
     }
 
-    @Test fun providerAndRetryBoundariesRevokeActualButKeepIndependentBudgetAnchor() = fixture { f ->
+    @Test fun providerAndRetryBoundariesKeepActualAndSameRequestEvidence() = fixture { f ->
         f.put("c", f.pending())
         f.bind("r", "c")
         f.send("r", AgentEvent.ProviderRequestStarted(1))
@@ -74,46 +74,57 @@ class AgentContextPendingRegressionTest {
             AgentModelClient.ConversationMessage("assistant", "more history")))
         f.send("r", AgentEvent.ProviderRequestStarted(2))
         val pending = f.state("c")
-        assertNull(pending.livePromptTokens)
-        assertNull(pending.contextReceiptEvidence)
-        assertNull(pending.cloudReceiptRequestId)
+        assertEquals(15000, pending.livePromptTokens)
+        assertEquals("r:1", pending.contextReceiptEvidence?.requestId)
+        assertEquals("r:1", pending.cloudReceiptRequestId)
         assertEquals(15000, pending.contextBudgetReceiptTokens)
         assertEquals(oldHistory, pending.cloudHistoryTokens)
         assertEquals(10000, pending.cloudRequestOverheadTokens)
-        assertTrue(f.usage("c").estimated)
-        assertTrue(formatContextUsage(f.usage("c")).startsWith("≈"))
-        assertEquals(RequestOverheadCalibration.receiptEstimate(15000, oldHistory, 10000,
-            pending.history.sumOf { AgentContextBudget.countMessage(it) }, 10000), f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertNull(pending.receiptPredictionTokens)
         assertEquals(15000, call(f.app, "budgetReceiptTokens", pending))
         assertEquals(15000, call(f.app, "budgetReceiptTokens", pending.copy(receiptPredictionTokens = 99999)))
-        assertNull(call(f.app, "billedPromptTokens", pending))
+        assertEquals(15000, call(f.app, "billedPromptTokens", pending))
         f.send("r", AgentEvent.ModelRetryScheduled(2, 1, 3, 1000, "NETWORK"))
-        assertNull(f.state("c").livePromptTokens)
-        assertTrue(f.usage("c").estimated)
+        assertEquals(15000, f.state("c").livePromptTokens)
+        assertFalse(f.usage("c").estimated)
         assertEquals(15000, f.state("c").contextBudgetReceiptTokens)
         f.send("r", AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 90000), projected = true))
-        assertNull(f.state("c").livePromptTokens)
-        assertEquals(pending.receiptPredictionTokens, f.state("c").receiptPredictionTokens)
+        assertEquals(15000, f.state("c").livePromptTokens)
+        assertNull(f.state("c").receiptPredictionTokens)
         f.send("r", receipt(2, oldHistory, input = 16000))
         assertEquals(16000, f.state("c").contextBudgetReceiptTokens)
         assertEquals(16000, f.usage("c").contextTokens)
         assertNull(f.state("c").receiptPredictionTokens)
         assertFalse(f.usage("c").estimated)
-        // Same-round retry must not merge an old request's partial local basis.
+        // Retry/start are not evidence: a same-request partial usage correction retains its pair.
         f.send("r", AgentEvent.ModelRetryScheduled(2, 2, 3, 1000, "NETWORK"))
+        f.send("r", AgentEvent.ProviderRequestStarted(2))
         f.send("r", AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 16000), requestHistoryTokens = oldHistory))
+        assertEquals(10000, f.state("c").cloudRequestOverheadTokens)
+        assertEquals(16000, f.state("c").contextBudgetReceiptTokens)
+        // A genuinely new requestId replaces evidence, without borrowing the preceding basis.
+        f.send("r", AgentEvent.ProviderRequestStarted(3))
+        assertEquals(16000, f.state("c").livePromptTokens)
+        f.send("r", AgentEvent.UsageReceived(3, AgentTokenUsage(inputTokens = 17000)))
+        assertEquals(17000, f.state("c").livePromptTokens)
+        assertEquals("r:3", f.state("c").contextReceiptEvidence?.requestId)
         assertNull(f.state("c").cloudRequestOverheadTokens)
         assertNull(f.state("c").contextBudgetReceiptTokens)
+        assertFalse(f.usage("c").estimated)
     }
 
-    @Test fun routeChangeAndIncompatibleHistoryCannotReuseOldReceiptEstimate() = fixture { f ->
+    @Test fun largeNormalGrowthKeepsActualButRouteChangeInvalidatesIt() = fixture { f ->
         f.put("c", f.pending())
         f.bind("r", "c")
         val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
         f.send("r", receipt(1, history))
-        f.put("c", f.state("c").copy(history = listOf(AgentModelClient.ConversationMessage("user", "x".repeat(100000)))))
+        f.put("c", f.state("c").copy(history = f.state("c").history +
+            AgentModelClient.ConversationMessage("assistant", "x".repeat(100000))))
         f.send("r", AgentEvent.ProviderRequestStarted(2))
-        assertEquals("未知", formatContextUsage(f.usage("c")))
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
         assertEquals(15000, f.state("c").contextBudgetReceiptTokens)
         f.providers(f.provider.copy(baseUrl = "https://other.example/v1"))
         f.send("r", AgentEvent.ProviderRequestStarted(3))
@@ -121,6 +132,90 @@ class AgentContextPendingRegressionTest {
         assertNull(f.state("c").contextBudgetReceiptTokens)
         assertNull(f.state("c").receiptPredictionTokens)
         assertEquals("未知", formatContextUsage(f.usage("c")))
+    }
+
+    @Test fun nextMessageThenToolsRetryStopAndDatabaseRestoreKeepLatestActual() = fixture { f ->
+        f.put("c", f.pending())
+        f.bind("old-run", "c")
+        val oldHistory = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
+        f.send("old-run", receipt(1, oldHistory))
+        val actual = f.state("c")
+        // The exact helper used by launchConversationRun distinguishes normal committed growth.
+        val nextHistory = actual.history + AgentModelClient.ConversationMessage("assistant", "done")
+        val next = call(f.app, "contextStateForRequestHistory", actual, nextHistory) as AgentChatHomeUiState
+        assertEquals(actual, next)
+        f.put("c", next.copy(history = nextHistory + AgentModelClient.ConversationMessage("user", "next")))
+        f.bind("next-run", "c")
+        f.send("next-run", AgentEvent.ProviderRequestStarted(1))
+        f.send("next-run", AgentEvent.ProviderRequestStarted(2)) // tool continuation
+        f.send("next-run", AgentEvent.ModelRetryScheduled(2, 1, 3, 1000, "NETWORK"))
+        f.send("next-run", AgentEvent.ProviderRequestStarted(2))
+        assertEquals(15000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        assertEquals(actual.contextReceiptEvidence, f.state("c").contextReceiptEvidence)
+        call(f.app, "applyRunResult", "next-run",
+            AgentRuntimeWire.RunResult("next-run", false, "", "已停止"), false)
+        val stopped = f.state("c")
+        assertFalse(stopped.isStreaming)
+        assertEquals(15000, stopped.livePromptTokens)
+        assertEquals("old-run:1", stopped.cloudReceiptRequestId)
+        val context = RuntimeEnvironment.getApplication() as Context
+        kotlinx.coroutines.runBlocking {
+            AgentConversationStore.save(context, "c", mapOf("c" to stopped), mapOf("c" to "test"), mapOf("c" to 1L))
+        }
+        EtaDatabase.closeForTests()
+        val restored = AgentConversationStore.load(context).conversationsById.getValue("c")
+        assertEquals(15000, restored.livePromptTokens)
+        assertEquals(stopped.contextReceiptEvidence, restored.contextReceiptEvidence)
+        assertEquals(stopped.cloudReceiptRequestId, restored.cloudReceiptRequestId)
+        assertEquals(15000, restored.contextBudgetReceiptTokens)
+        assertFalse(restored.contextAwaitingReceipt)
+        f.put("c", restored)
+        f.bind("old-run", "c") // resumed/replayed request correction after process recovery
+        f.send("old-run", AgentEvent.ProviderRequestStarted(1))
+        f.send("old-run", AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 15000, outputTokens = 20)))
+        assertEquals(oldHistory, f.state("c").cloudHistoryTokens)
+        assertEquals(10000, f.state("c").cloudRequestOverheadTokens)
+        f.bind("fresh-run", "c")
+        f.send("fresh-run", AgentEvent.ProviderRequestStarted(1))
+        assertEquals(15000, f.usage("c").contextTokens)
+        f.send("fresh-run", AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 16000)))
+        assertEquals(16000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
+        assertEquals("fresh-run:1", f.state("c").cloudReceiptRequestId)
+        assertNull(f.state("c").cloudHistoryTokens) // new request must not borrow restored evidence
+        assertNull(f.state("c").cloudRequestOverheadTokens)
+    }
+
+    @Test fun historyRevisionAndTrueCompressionOpenUnknownEpochUntilFreshReceipt() = fixture { f ->
+        f.put("c", f.pending())
+        f.bind("r", "c")
+        val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
+        f.send("r", receipt(1, history))
+        val actual = f.state("c")
+        for (rewritten in listOf(emptyList(), listOf(AgentModelClient.ConversationMessage("user", "edited")))) {
+            val revised = call(f.app, "contextStateForRequestHistory", actual, rewritten) as AgentChatHomeUiState
+            assertNull(revised.livePromptTokens)
+            assertNull(revised.contextReceiptEvidence)
+            assertNull(revised.receiptPredictionTokens)
+            assertTrue(revised.contextAwaitingReceipt)
+            assertTrue(revised.contextHasStarted)
+        }
+        f.send("r", AgentEvent.ContextCompacted(2, false, 10, 10, history = actual.history))
+        assertEquals(15000, f.usage("c").contextTokens) // unsuccessful compression cannot invalidate
+        f.send("r", AgentEvent.ContextCompacted(2, true, 10, 2,
+            history = listOf(AgentModelClient.ConversationMessage("system", "summary")), compressorLabel = "摘要压缩"))
+        assertEquals("未知", formatContextUsage(f.usage("c")))
+        assertNull(f.usage("c").progress)
+        f.send("r", AgentEvent.ProviderRequestStarted(2))
+        f.send("r", AgentEvent.ModelRetryScheduled(2, 1, 3, 1000, "NETWORK"))
+        f.send("r", AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 99000)))
+        f.send("r", AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 99000), projected = true))
+        assertNull(f.state("c").livePromptTokens)
+        assertEquals("未知", formatContextUsage(f.usage("c")))
+        f.send("r", receipt(2, history, input = 8000))
+        assertEquals(8000, f.usage("c").contextTokens)
+        assertFalse(f.usage("c").estimated)
     }
 
     @Test fun sameRoundZeroOverheadCorrectionRevokesPersistedLearningAndFreshBasisRepairsIt() = fixture { f ->

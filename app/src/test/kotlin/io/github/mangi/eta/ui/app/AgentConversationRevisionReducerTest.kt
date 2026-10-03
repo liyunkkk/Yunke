@@ -302,7 +302,7 @@ class AgentConversationRevisionReducerTest {
     }
 
     @Test
-    fun deleteKeepsRetainedCloudBillInsteadOfOpeningAnEstimate() {
+    fun deleteInvalidatesOldCloudBillInsteadOfOpeningAnEstimate() {
         val state = conversationState().copy(
             messages = conversationState().messages.map { message ->
                 if (message.id == "assistant-1") {
@@ -317,6 +317,9 @@ class AgentConversationRevisionReducerTest {
         )
         val revised = AgentConversationRevisionReducer.deleteFromTurn(state, "assistant-2")!!
         assertNull(revised.livePromptTokens) // The old message bill is not an actual for truncated history.
+        assertTrue(revised.contextAwaitingReceipt)
+        assertNull(revised.receiptPredictionTokens)
+        assertNull(revised.cloudRouteSignature)
         assertTrue(revised.contextHasStarted)
         assertFalse(revised.livePromptIsProjected)
         assertNull(revised.cloudHistoryTokens)

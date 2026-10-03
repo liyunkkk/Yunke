@@ -5,12 +5,14 @@ import org.json.JSONObject
 
 /** Checkpoint context state exists even without a receipt (not derived from paginated messages). */
 internal object CloudUsageReceiptCodec {
-    data class Receipt(val inputTokens: Int, val historyTokens: Int?, val overheadTokens: Int?, val routeSignature: String? = null)
+    data class Receipt(val inputTokens: Int, val historyTokens: Int?, val overheadTokens: Int?,
+        val routeSignature: String? = null, val requestId: String? = null)
     data class DisplayState(val hasStarted: Boolean, val awaitingReceipt: Boolean)
 
     fun encode(conversationId: String, providerId: String, modelId: String, history: String, inputTokens: Int?,
         historyTokens: Int? = null, overheadTokens: Int? = null,
-        hasStarted: Boolean = false, awaitingReceipt: Boolean = false, routeSignature: String? = null): String {
+        hasStarted: Boolean = false, awaitingReceipt: Boolean = false, routeSignature: String? = null,
+        requestId: String? = null): String {
         val actual = inputTokens != null && inputTokens > 0 && !awaitingReceipt
         return JSONObject().put("version", 1).put("source", if (actual) "cloud_actual" else "context_state")
             .put("conversation", conversationId).put("provider", providerId).put("model", modelId)
@@ -22,6 +24,7 @@ internal object CloudUsageReceiptCodec {
                     historyTokens?.takeIf { it >= 0 }?.let { put("request_history_tokens", it) }
                     overheadTokens?.takeIf { it >= 0 }?.let { put("request_overhead_tokens", it) }
                     routeSignature?.let { put("route_signature", it) }
+                    requestId?.takeIf { it.isNotBlank() }?.let { put("request_id", it) }
                 }
             }.toString()
     }
@@ -46,7 +49,8 @@ internal object CloudUsageReceiptCodec {
             else receipt.optInt("input").takeIf { it > 0 }?.let {
                 Receipt(it, receipt.optInt("request_history_tokens", -1).takeIf { n -> n >= 0 },
                     receipt.optInt("request_overhead_tokens", -1).takeIf { n -> n >= 0 },
-                    receipt.optString("route_signature").takeIf { value -> value.isNotBlank() })
+                    receipt.optString("route_signature").takeIf { value -> value.isNotBlank() },
+                    receipt.optString("request_id").takeIf { value -> value.isNotBlank() })
             }
         }.getOrNull()
 

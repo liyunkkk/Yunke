@@ -19,6 +19,26 @@ class CloudUsageReceiptCodecTest {
             CloudUsageReceiptCodec.decodeDisplayState(unknown, "c", "history"))
     }
 
+    @Test fun unpairedLatestActualAndRequestEvidenceSurviveCheckpointWhileCompressionFailsClosed() {
+        val actual = CloudUsageReceiptCodec.encode("c", "p", "m", "grown history", 43687,
+            routeSignature = "route", requestId = "old-run:16")
+        val restored = requireNotNull(CloudUsageReceiptCodec.decodeReceipt(actual, "c", "p", "m", "grown history"))
+        assertEquals(43687, restored.inputTokens)
+        assertEquals("old-run:16", restored.requestId)
+        assertEquals("route", restored.routeSignature)
+        assertNull(restored.historyTokens)
+        assertNull(restored.overheadTokens)
+        // A real compression boundary suppresses even an accidentally retained input.
+        val compacted = CloudUsageReceiptCodec.encode("c", "p", "m", "summary", 43687,
+            hasStarted = true, awaitingReceipt = true, requestId = "old-run:16")
+        assertNull(CloudUsageReceiptCodec.decodeReceipt(compacted, "c", "p", "m", "summary"))
+        assertEquals(CloudUsageReceiptCodec.DisplayState(true, true),
+            CloudUsageReceiptCodec.decodeDisplayState(compacted, "c", "summary"))
+        // Legacy receipts have no request identity; never manufacture one on recovery.
+        val legacy = CloudUsageReceiptCodec.encode("c", "p", "m", "history", 12345)
+        assertNull(CloudUsageReceiptCodec.decodeReceipt(legacy, "c", "p", "m", "history")?.requestId)
+    }
+
     @Test fun unknownCloudUsageStaysUnknownAndDoesNotBecomeMeasuredUsage() {
         val usage = AgentContextUsageUi(null, 260000)
         // Unknown must read as unknown; only a real measurement may show 0K / 0.0%.
