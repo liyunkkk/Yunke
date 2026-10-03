@@ -328,7 +328,7 @@ data class PendingConversationMentionUi(
 )
 
 @Immutable
-data class MessageEditUiState(
+internal data class MessageEditUiState(
     val targetMessageId: String,
     val previousInput: String,
     val previousImages: List<PendingImageUi>,

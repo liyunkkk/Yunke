@@ -44,6 +44,15 @@ class RevisionEntryWiringContract(unittest.TestCase):
         self.assertIn("conversationRevisionBusy = false", body)
         self.assertIn("NonCancellable + Dispatchers.Main.immediate", body)
 
+    def test_prepared_edit_history_stays_within_internal_ui_state(self):
+        ui = (SRC / "ui/model/AgentChatUiState.kt").read_text()
+        client = (SRC / "agent/model/AgentModelClient.kt").read_text()
+        self.assertRegex(ui, r"(?m)^internal data class MessageEditUiState\(")
+        self.assertRegex(client, r"(?m)^internal object AgentModelClient\s*\{")
+        edit = ui.split("internal data class MessageEditUiState(", 1)[1].split("\n)", 1)[0]
+        for field in ("preparedHistory", "preparedFromHistory"):
+            self.assertIn(f"val {field}: List<AgentModelClient.ConversationMessage>? = null", edit)
+
     def test_edit_stages_history_instead_of_mutating_original_context(self):
         body = method(self.app, "applyPreparedMessageEdit")
         self.assertIn("snapshot.copy(", body)
