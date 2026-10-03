@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import java.io.File
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Rule
@@ -142,5 +143,181 @@ context-checkpoint:22222222-2222-2222-2222-222222222222
         assertEquals("failed", state.readText())
         assertTrue(runCatching { archive.record(id, "unknown") }.isFailure)
         assertTrue(JSONObject(archive.read(JSONObject().put("checkpoint", id).toString()).content).getString("content").contains("original"))
+    }
+
+    private fun marker(toolId: String) =
+        "[Eta tool output pruned; original: context-checkpoint:$toolId; read_compacted_history]"
+
+    private fun prunedTool(
+        original: String,
+        toolId: String,
+        callId: String,
+        turnId: String = "",
+    ): AgentModelClient.ConversationMessage {
+        val head = original.substring(0, original.length / 3)
+        val tail = original.substring(original.length - original.length / 3)
+        return AgentModelClient.ConversationMessage(
+            "tool", "$head\n${marker(toolId)}\n$tail", toolCallId = callId, turnId = turnId)
+    }
+
+    @Test fun restoreHistoryReturnsTypedMessagesExpandsToolsAndKeepsSummaryA() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-typed")
+        val priorId = archive.save(listOf(AgentModelClient.ConversationMessage("user", "prior original")))
+        val summaryA = AgentModelClient.ConversationMessage(
+            "user", "[Conversation summary]\n## Current Work\n- keep this fact\ncontext-checkpoint:$priorId",
+            turnId = "turn-summary")
+        val originalTool = "tool-original-body-" + "x".repeat(160)
+        val toolId = archive.save(listOf(AgentModelClient.ConversationMessage(
+            "tool", originalTool, toolCallId = "call-1", turnId = "turn-tool")))
+        val pruned = prunedTool(originalTool, toolId, "call-1", "turn-tool")
+        val assistant = AgentModelClient.ConversationMessage(
+            "assistant", "", contentJson = "[{\"type\":\"text\",\"text\":\"hi\"}]",
+            toolCallsJson = "[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]",
+            turnId = "turn-assistant")
+        val userTail = AgentModelClient.ConversationMessage("user", "hello 🙂 H", turnId = "turn-user")
+        val checkpoint = archive.save(listOf(summaryA, userTail, assistant, pruned))
+
+        val restored = archive.restoreHistory(checkpoint)
+        assertEquals(4, restored.size)
+        // 摘要 A 的脚注原样保留：既不展开，也不被当作工具原文递归。
+        assertEquals(summaryA.content, restored[0].content)
+        assertTrue(restored[0].content.contains("context-checkpoint:$priorId"))
+        assertEquals("turn-summary", restored[0].turnId)
+        assertEquals("hello 🙂 H", restored[1].content)
+        assertEquals("turn-user", restored[1].turnId)
+        assertTrue(restored[2].contentJson.isNotBlank())
+        assertTrue(restored[2].toolCallsJson.isNotBlank())
+        assertEquals("hi", JSONArray(restored[2].contentJson).getJSONObject(0).getString("text"))
+        assertEquals("call-1", JSONArray(restored[2].toolCallsJson).getJSONObject(0).getString("id"))
+        assertEquals("turn-assistant", restored[2].turnId)
+        // 二级工具归档按 prefix+suffix 身份展开，并保留 role/toolCallId/turnId。
+        assertEquals("tool", restored[3].role)
+        assertEquals(originalTool, restored[3].content)
+        assertEquals("call-1", restored[3].toolCallId)
+        assertEquals("turn-tool", restored[3].turnId)
+        // 分页接口接受的 context-checkpoint: 前缀同样可用。
+        assertEquals(4, archive.restoreHistory("context-checkpoint:$checkpoint").size)
+    }
+
+    @Test fun restoreHistoryRejectsInvalidMissingCrossScopeAndCorruptArchives() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-reject-a")
+        val id = archive.save(listOf(AgentModelClient.ConversationMessage("user", "hello")))
+        val sibling = AgentCompactionArchive(temporary.root, "restore-reject-b")
+        assertTrue(runCatching { sibling.restoreHistory(id) }.isFailure)
+        assertTrue(runCatching { archive.restoreHistory("../../private") }.isFailure)
+        assertTrue(runCatching { archive.restoreHistory("not-a-uuid") }.isFailure)
+        assertTrue(runCatching { archive.restoreHistory("") }.isFailure)
+        assertTrue(runCatching { archive.restoreHistory("00000000-0000-0000-0000-000000000000") }.isFailure)
+        val json = File(temporary.root, "context-history").walkTopDown().single { it.name == "$id.json" }
+        File(json.parentFile, "$id.sha256").writeText("0".repeat(64))
+        assertTrue(runCatching { archive.restoreHistory(id) }.isFailure)
+    }
+
+    @Test fun restoreHistoryRejectsDeletedSessionTombstone() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-tomb")
+        val id = archive.save(listOf(AgentModelClient.ConversationMessage("user", "hello")))
+        archive.delete()
+        assertTrue(runCatching { archive.restoreHistory(id) }.isFailure)
+    }
+
+    @Test fun restoreHistoryRejectsMalformedJsonEvenWithValidChecksum() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-json")
+        val id = archive.save(listOf(AgentModelClient.ConversationMessage("user", "hello")))
+        val json = File(temporary.root, "context-history").walkTopDown().single { it.name == "$id.json" }
+        json.writeText("this-is-not-json")
+        File(json.parentFile, "$id.sha256").writeText(
+            io.github.mangi.eta.data.repository.BackupDurability.digest(json))
+        assertTrue(runCatching { archive.restoreHistory(id) }.isFailure)
+    }
+
+    @Test fun restoreHistoryDoesNotTreatPlainUuidOrUserFootnoteAsToolOriginal() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-plain")
+        val toolId = archive.save(listOf(AgentModelClient.ConversationMessage(
+            "tool", "real tool body", toolCallId = "c")))
+        val summary = AgentModelClient.ConversationMessage("user", "summary context-checkpoint:$toolId")
+        val mention = AgentModelClient.ConversationMessage(
+            "tool", "see context-checkpoint:$toolId for details", toolCallId = "c")
+        val checkpoint = archive.save(listOf(summary, mention))
+        val restored = archive.restoreHistory(checkpoint)
+        assertEquals("summary context-checkpoint:$toolId", restored[0].content)
+        assertEquals("see context-checkpoint:$toolId for details", restored[1].content)
+    }
+
+    @Test fun restoreHistoryRejectsMarkersThatFailIdentityOrPosition() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-identity")
+        val original = "body-" + "y".repeat(160)
+        val toolId = archive.save(listOf(AgentModelClient.ConversationMessage(
+            "tool", original, toolCallId = "call-9", turnId = "turn-9")))
+        val head = original.substring(0, original.length / 3)
+        val tail = original.substring(original.length - original.length / 3)
+        val wrongCall = AgentModelClient.ConversationMessage(
+            "tool", "$head\n${marker(toolId)}\n$tail", toolCallId = "other-call", turnId = "turn-9")
+        assertTrue(runCatching { archive.restoreHistory(archive.save(listOf(wrongCall))) }.isFailure)
+        val wrongTurn = AgentModelClient.ConversationMessage(
+            "tool", "$head\n${marker(toolId)}\n$tail", toolCallId = "call-9", turnId = "other-turn")
+        assertTrue(runCatching { archive.restoreHistory(archive.save(listOf(wrongTurn))) }.isFailure)
+        // 裸标记没有 head/tail 结构，认不出来，必须失败而不是把标记当原文返回。
+        val bare = AgentModelClient.ConversationMessage("tool", marker(toolId),
+            toolCallId = "call-9", turnId = "turn-9")
+        assertTrue(runCatching { archive.restoreHistory(archive.save(listOf(bare))) }.isFailure)
+    }
+
+    @Test fun restoreHistoryStopsAfterOneLevelOfToolExpansion() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-depth")
+        val innerId = archive.save(listOf(AgentModelClient.ConversationMessage(
+            "tool", "inner body", toolCallId = "inner")))
+        val outerBody = "o".repeat(40) + "\n${marker(innerId)}\n" + "p".repeat(40)
+        val outerId = archive.save(listOf(AgentModelClient.ConversationMessage(
+            "tool", outerBody, toolCallId = "outer")))
+        val head = "o".repeat(40)
+        val tail = "p".repeat(40)
+        val pruned = AgentModelClient.ConversationMessage(
+            "tool", "$head\n${marker(outerId)}\n$tail", toolCallId = "outer")
+        val restored = archive.restoreHistory(archive.save(listOf(pruned)))
+        assertEquals(outerBody, restored.single().content)
+        assertTrue(restored.single().content.contains("context-checkpoint:$innerId"))
+    }
+
+    @Test fun restoreHistoryRejectsRepeatedToolArchiveReference() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-loop")
+        val original = "L".repeat(150)
+        val toolId = archive.save(listOf(AgentModelClient.ConversationMessage(
+            "tool", original, toolCallId = "c")))
+        val first = prunedTool(original, toolId, "c")
+        val second = prunedTool(original, toolId, "c")
+        assertTrue(runCatching { archive.restoreHistory(archive.save(listOf(first, second))) }.isFailure)
+    }
+
+    @Test fun restoreHistoryHonoursArchiveCountAndByteBudgets() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-budget")
+        val bodies = listOf("A".repeat(60), "B".repeat(60), "C".repeat(60))
+        val markers = bodies.mapIndexed { index, body ->
+            val toolId = archive.save(listOf(AgentModelClient.ConversationMessage(
+                "tool", body, toolCallId = "c$index")))
+            prunedTool(body, toolId, "c$index")
+        }
+        val checkpoint = archive.save(markers)
+        val restored = archive.restoreHistory(checkpoint, archiveLimit = 4, byteLimit = 64L * 1024 * 1024)
+        assertEquals(3, restored.size)
+        assertEquals(bodies, restored.map { it.content })
+        // root 归档本身也算一件：root + 3 条工具归档需要四件预算。
+        assertTrue(runCatching {
+            archive.restoreHistory(checkpoint, archiveLimit = 3, byteLimit = 64L * 1024 * 1024)
+        }.isFailure)
+        // 字节预算覆盖整次恢复，root 也算在内。
+        assertTrue(runCatching {
+            archive.restoreHistory(checkpoint, archiveLimit = 64, byteLimit = 8L)
+        }.isFailure)
+    }
+
+    @Test fun restoreHistoryLeavesRedactedSensitiveToolBodyUnchanged() {
+        val archive = AgentCompactionArchive(temporary.root, "restore-sensitive")
+        val redacted = "[敏感工具参数与原始结果仅供当前回合使用，未写入持久会话]"
+        val checkpoint = archive.save(listOf(AgentModelClient.ConversationMessage(
+            "tool", redacted, toolCallId = "sens", turnId = "turn-sens")))
+        val restored = archive.restoreHistory(checkpoint)
+        assertEquals(1, restored.size)
+        assertEquals("tool", restored.single().role)
+        assertEquals(redacted, restored.single().content)
     }
 }

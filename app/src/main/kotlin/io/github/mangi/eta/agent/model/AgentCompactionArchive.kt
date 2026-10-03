@@ -165,11 +165,168 @@ internal class AgentCompactionArchive(filesDir: File, sessionId: String) {
         io.github.mangi.eta.data.repository.BackupDurability.syncDirectory(root.parentFile!!)
     }
 
+    /**
+     * 精确恢复一个检查点的原始消息（只读，不改动任何归档文件）。
+     *
+     * 与 [read] 的分页接口并行存在：异步调用方在 IO 线程一次性拿到类型化消息。
+     * 非法、缺失、墓碑、SHA-256 校验失败、JSON 异常或超过读取限额都会抛出
+     * [CompactionArchiveRestoreException]，绝不静默返回空列表。
+     *
+     * 同一个恢复会话内会展开正文里由本归档写入的工具裁剪标记：只认 [PRUNE_MARKER]
+     * 这种专用整行标记，逐条读取它指向的单条工具归档，校验 role/toolCallId/turnId
+     * 以及 prefix+suffix 身份（去掉标记块后的 head/tail 必须分别是归档原文的前缀与
+     * 后缀）。摘要 A 的 `context-checkpoint` 脚注属于 user 消息，永不展开，也不会被
+     * 当作工具原文递归；正文里任意出现的裸 UUID 或裸 `context-checkpoint:` 同样不认。
+     */
+    fun restoreHistory(checkpoint: String): List<AgentModelClient.ConversationMessage> =
+        restoreHistory(checkpoint, MAX_RESTORE_ARCHIVES, MAX_RESTORE_BYTES)
+
+    /** 测试与审计用入口：契约同 [restoreHistory]，只是显式给出读取件数与字节预算。 */
+    internal fun restoreHistory(
+        checkpoint: String,
+        archiveLimit: Int,
+        byteLimit: Long,
+    ): List<AgentModelClient.ConversationMessage> {
+        if (archiveLimit < 1 || byteLimit < 1L) throw CompactionArchiveRestoreException("恢复读取预算无效")
+        if (File(root.parentFile, "$scope.deleted").exists()) {
+            throw CompactionArchiveRestoreException("会话已删除，原文不再可读")
+        }
+        val id = checkpoint.trim().removePrefix(POINTER_PREFIX).trim()
+        if (!ID.matches(id)) throw CompactionArchiveRestoreException("检查点 ID 无效")
+        val budget = RestoreBudget(archiveLimit, byteLimit)
+        val messages = decodeArchive(readVerifiedArchive(id, budget), id)
+        return expandPrunedToolOutputs(messages, budget, 0)
+    }
+
+    /** 只按 ID 读取本会话根目录内的单个归档，复用 16 MiB 与 SHA-256 防护，不遍历目录。 */
+    private fun readVerifiedArchive(id: String, budget: RestoreBudget): String {
+        if (!ID.matches(id)) throw CompactionArchiveRestoreException("检查点 ID 无效")
+        if (!budget.visited.add(id)) throw CompactionArchiveRestoreException("恢复路径出现重复或循环的检查点")
+        if (budget.archives >= budget.archiveLimit) {
+            throw CompactionArchiveRestoreException("单次恢复读取的归档数量超过上限")
+        }
+        budget.archives++
+        val file = File(root, "$id.json")
+        if (!file.isFile || Files.isSymbolicLink(file.toPath()) || file.length() > MAX_BYTES) {
+            throw CompactionArchiveRestoreException(
+                "本会话找不到该检查点原文。请使用当前摘要脚注里这一次替换的 context-checkpoint ID，不要用其他会话或编造的引用。",
+            )
+        }
+        if (file.length() > budget.byteLimit - budget.bytes) {
+            throw CompactionArchiveRestoreException("单次恢复读取的原文总量超过上限")
+        }
+        budget.bytes += file.length()
+        val checksum = File(root, "$id.sha256")
+        if (!checksum.isFile || Files.isSymbolicLink(checksum.toPath()) || checksum.length() != 64L ||
+            checksum.readText() != io.github.mangi.eta.data.repository.BackupDurability.digest(file)) {
+            throw CompactionArchiveRestoreException("历史原文校验失败，拒绝返回可能被替换或损坏的内容")
+        }
+        return file.readText(Charsets.UTF_8)
+    }
+
+    /** 逐字段走 AgentConversationCodec.fromJsonObject，完整保留 turnId/tool_calls/contentJson。 */
+    private fun decodeArchive(raw: String, id: String): List<AgentModelClient.ConversationMessage> {
+        val array = try {
+            JSONArray(raw)
+        } catch (failure: Exception) {
+            throw CompactionArchiveRestoreException("检查点 $id 的原文不是有效 JSON", failure)
+        }
+        return (0 until array.length()).map { index ->
+            val item = array.optJSONObject(index)
+                ?: throw CompactionArchiveRestoreException("检查点 $id 的原文第 ${index + 1} 条不是消息对象")
+            try {
+                AgentConversationCodec.fromJsonObject(item)
+            } catch (failure: Exception) {
+                throw CompactionArchiveRestoreException("检查点 $id 的原文无法还原为消息", failure)
+            }
+        }
+    }
+
+    private fun expandPrunedToolOutputs(
+        messages: List<AgentModelClient.ConversationMessage>,
+        budget: RestoreBudget,
+        depth: Int,
+    ): List<AgentModelClient.ConversationMessage> {
+        if (depth >= MAX_TOOL_EXPANSION_DEPTH) return messages
+        var changed = false
+        val expanded = messages.map { message ->
+            val original = expandPrunedToolOutput(message, budget, depth)
+            if (original == null) message else { changed = true; original }
+        }
+        return if (changed) expanded else messages
+    }
+
+    /**
+     * 返回展开后的工具消息；没有可验证标记时返回 null（原样保留）。
+     * 标记必须是本归档写入的专用整行标记，且去掉标记块后的 head/tail 必须分别是
+     * 单条工具归档内容的前缀与后缀，role/toolCallId/turnId 也必须一致。
+     */
+    private fun expandPrunedToolOutput(
+        message: AgentModelClient.ConversationMessage,
+        budget: RestoreBudget,
+        depth: Int,
+    ): AgentModelClient.ConversationMessage? {
+        if (!message.role.equals("tool", ignoreCase = true)) return null
+        if (message.contentJson.isNotBlank() || message.content.isEmpty()) return null
+        val markers = PRUNE_MARKER.findAll(message.content).toList()
+        if (markers.isEmpty()) return null
+        if (markers.size != 1) throw CompactionArchiveRestoreException("工具原文标记不唯一，拒绝恢复被替换的内容")
+        val marker = markers.single()
+        val block = "\n${marker.value}\n"
+        if (!message.content.contains(block) || countOccurrences(message.content, block) != 1) {
+            throw CompactionArchiveRestoreException("工具原文标记位置无效，拒绝恢复被替换的内容")
+        }
+        val split = message.content.indexOf(block)
+        val head = message.content.substring(0, split)
+        val tail = message.content.substring(split + block.length)
+        val toolId = marker.groupValues[1]
+        val archivedMessages = decodeArchive(readVerifiedArchive(toolId, budget), toolId)
+        if (archivedMessages.size != 1) {
+            throw CompactionArchiveRestoreException("工具原文归档不是单条消息，拒绝恢复")
+        }
+        val archived = archivedMessages.single()
+        val matches = archived.role.equals("tool", ignoreCase = true) &&
+            archived.contentJson.isBlank() &&
+            archived.toolCallId == message.toolCallId &&
+            archived.turnId == message.turnId &&
+            archived.content.length >= head.length + tail.length &&
+            archived.content.startsWith(head) &&
+            archived.content.endsWith(tail) &&
+            archived.content != message.content
+        if (!matches) throw CompactionArchiveRestoreException("工具原文与修剪标记的身份不一致，拒绝恢复")
+        val restored = message.copy(content = archived.content, contentJson = archived.contentJson)
+        // 深度上限：恢复出来的原文里若还出现标记，那是真实归档文本，绝不再递归读取。
+        return expandPrunedToolOutputs(listOf(restored), budget, depth + 1).single()
+    }
+
+    private fun countOccurrences(haystack: String, needle: String): Int {
+        var count = 0
+        var index = haystack.indexOf(needle)
+        while (index >= 0) {
+            count++
+            index = haystack.indexOf(needle, index + needle.length)
+        }
+        return count
+    }
+
+    private class RestoreBudget(val archiveLimit: Int, val byteLimit: Long) {
+        var archives = 0
+        var bytes = 0L
+        val visited = mutableSetOf<String>()
+    }
+
     companion object {
         const val TOOL = "read_compacted_history"
         private const val MAX_BYTES = 16 * 1024 * 1024
         private const val PAGE_CHARS = 4000
         private val ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+        private const val POINTER_PREFIX = "context-checkpoint:"
+        internal const val MAX_RESTORE_ARCHIVES = 128
+        internal const val MAX_RESTORE_BYTES = 64L * 1024 * 1024
+        private const val MAX_TOOL_EXPANSION_DEPTH = 1
+        private val PRUNE_MARKER = Regex(
+            "\\[Eta tool output pruned; original: context-checkpoint:(${ID.pattern}); read_compacted_history\\]",
+        )
         fun tool(): JSONObject = JSONObject().put("type", "function").put("function", JSONObject()
             .put("name", TOOL).put("description", "分页读取当前会话压缩检查点的原始消息和工具记录。检查点 ID 来自当前摘要脚注里这一次替换；更早原文在该检查点的归档 JSON 里，不接受文件路径。")
             .put("parameters", JSONObject().put("type", "object").put("properties", JSONObject()
@@ -178,3 +335,11 @@ internal class AgentCompactionArchive(filesDir: File, sessionId: String) {
                 .put("required", JSONArray().put("checkpoint")).put("additionalProperties", false)))
     }
 }
+
+/**
+ * [AgentCompactionArchive.restoreHistory] 的失败契约。
+ * 非法/缺失检查点、墓碑、SHA-256 校验失败、JSON 异常或超过单次读取限额时抛出，
+ * 绝不静默返回空列表或部分结果。
+ */
+internal class CompactionArchiveRestoreException(message: String, cause: Throwable? = null) :
+    IllegalStateException(message, cause)
