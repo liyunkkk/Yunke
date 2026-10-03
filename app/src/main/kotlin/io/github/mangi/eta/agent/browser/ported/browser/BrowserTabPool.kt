@@ -401,8 +401,18 @@ class BrowserTabPool(
         io.github.mangi.eta.agent.terminal.LinuxGuestPathResolver.resolveForApp(context, sessionDownloadPath())
     ).apply { mkdirs() }
 
+    /**
+     * The single bounded download budget for this research child pool, shared by
+     * every tab's blob reader and by [childDownloads], so HTTP fetches, page
+     * downloads and blob read→decode→save all draw from the same three slots.
+     */
+    private val childDownloadBudget: ChildDownloadBudget = ChildDownloadBudget()
     private val childDownloads by lazy {
-        ChildBrowserDownloads(::sessionWorkspaceDir) { url -> android.webkit.CookieManager.getInstance().getCookie(url) }
+        ChildBrowserDownloads(
+            ::sessionWorkspaceDir,
+            { url -> android.webkit.CookieManager.getInstance().getCookie(url) },
+            childDownloadBudget,
+        )
     }
     private val childReceipts = java.util.concurrent.ConcurrentLinkedDeque<JSONObject>()
     private fun childReceipt(saved: ChildBrowserDownloads.Saved): JSONObject = JSONObject()
@@ -461,6 +471,27 @@ class BrowserTabPool(
         }
         downloadJobs[id] = job
         job.start()
+    }
+
+    /**
+     * Persist a child blob whose shared download-budget slot [lease] is already
+     * held by the tab's blob reader. Runs inline (awaited by the reader) so the
+     * slot spans the native write and is released only after it finishes; the
+     * release is idempotent, so an early return or a duplicate release cannot
+     * grow the budget.
+     */
+    private suspend fun saveChildBlobNow(data: ByteArray, lease: ChildDownloadBudget.Lease) {
+        try {
+            if (readOnlyChild || data.size > 32 * 1024 * 1024) return
+            rememberChildReceipt(childReceipt(childDownloads.blob(data, lease)))
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            rememberChildReceipt(JSONObject().put("ok", false)
+                .put("code", (error as? ChildBrowserDownloads.Refused)?.code ?: "CHILD_DOWNLOAD_FAILED"))
+        } finally {
+            lease.release()
+        }
     }
 
     /** name.ext → name-1.ext → name-2.ext … until unused. */
@@ -616,7 +647,14 @@ class BrowserTabPool(
     /** Route a manager's download callbacks into this pool's workspace saver. */
     private fun wireDownloadHandlers(manager: BrowserUseManager) {
         manager.onDownloadStart = { url, ua, cd, mime, len -> startUrlDownload(url, ua, cd, mime, len) }
-        manager.onBlobDownloadData = { data, name, mime -> saveBlobDownload(data, name, mime) }
+        manager.onBlobDownloadData = if (researchMode) null else
+            { data, name, mime -> saveBlobDownload(data, name, mime) }
+        if (researchMode) {
+            // Share this pool's one bounded budget with the tab's blob reader and
+            // route its decoded bytes into the slot-holding suspend saver.
+            manager.childDownloadBudget = childDownloadBudget
+            manager.onChildBlobDownload = { data, _name, _mime, lease -> saveChildBlobNow(data, lease) }
+        }
     }
 
     // -- Agent Execution --

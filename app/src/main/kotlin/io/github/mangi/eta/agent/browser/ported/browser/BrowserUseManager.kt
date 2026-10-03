@@ -214,6 +214,22 @@ class BrowserUseManager(
      */
     var onBlobDownloadData: ((data: ByteArray, filename: String, mimeType: String?) -> Unit)? = null
 
+    /**
+     * [T-child-browser-interactive] The bounded download budget owned by the
+     * research child pool and shared with its [ChildBrowserDownloads] saver.
+     * Set by [BrowserTabPool] for a research child; a parent tab leaves it null
+     * (its blob path uses the legacy `__minis__` bridge).
+     */
+    internal var childDownloadBudget: ChildDownloadBudget? = null
+
+    /**
+     * [T-child-browser-interactive] Suspend saver for a research child blob whose
+     * budget slot is already held. The manager awaits it so the held slot spans
+     * the whole read→decode→native-save chain and is released only after the
+     * write completes. Set by [BrowserTabPool].
+     */
+    internal var onChildBlobDownload: (suspend (data: ByteArray, filename: String, mimeType: String?, lease: ChildDownloadBudget.Lease) -> Unit)? = null
+
     /** Deferred for awaiting navigation completion. */
     private var navigationDeferred: CompletableDeferred<Unit>? = null
 
@@ -261,17 +277,18 @@ class BrowserUseManager(
     }
 
     /**
-     * [T-child-browser-interactive] Decode a `data:`/blob FileReader data URL
-     * and hand the bytes to the pool's workspace saver. Shared by the parent
-     * bridge callback and the child-interactive reply channel so both keep the
-     * same 44 MiB cap; the decoded bytes are never returned to the page.
+     * [T-child-browser-interactive] Decode a `data:`/blob FileReader data URL into
+     * raw bytes plus its MIME type, or null when it is malformed, oversize or
+     * undecodable. Shared by the parent bridge callback and the child-interactive
+     * reply channel so both keep the same 44 MiB cap; the decoded bytes are never
+     * returned to the page.
      */
-    private fun ingestBlobDataUrl(dataUrl: String, filename: String) {
-        if (dataUrl.length > 44 * 1024 * 1024) return
+    private fun decodeBlobDataUrl(dataUrl: String): Pair<ByteArray, String?>? {
+        if (dataUrl.length > 44 * 1024 * 1024) return null
         val comma = dataUrl.indexOf(',')
         if (comma < 0 || !dataUrl.startsWith("data:")) {
             Log.w(TAG, "blob download: malformed data URL (len=${dataUrl.length})")
-            return
+            return null
         }
         val header = dataUrl.substring(5, comma)
         val mime = header.substringBefore(';').ifEmpty { null }
@@ -287,8 +304,30 @@ class BrowserUseManager(
             // A research child's payload/message is page-controlled; don't echo it.
             if (researchMode) Log.w(TAG, "blob download: payload decode failed")
             else Log.w(TAG, "blob_download_decode_failed")
+            return null
+        }
+        return bytes to mime
+    }
+
+    private fun ingestBlobDataUrl(dataUrl: String, filename: String) {
+        if (researchMode) {
+            // data: is another real download entry point. Refuse before decoding,
+            // and await the same native saver instead of launching a byte queue.
+            val budget = childDownloadBudget ?: return
+            val saver = onChildBlobDownload ?: return
+            val lease = budget.tryAcquire() ?: return
+            val job = asyncScope.launch {
+                try {
+                    val decoded = decodeBlobDataUrl(dataUrl)
+                    if (decoded != null) saver.invoke(decoded.first, filename, decoded.second, lease)
+                } finally { lease.release() }
+            }
+            // DEFAULT launch on a cancelled scope may never enter its body.
+            job.invokeOnCompletion { lease.release() }
             return
         }
+        val decoded = decodeBlobDataUrl(dataUrl) ?: return
+        val (bytes, mime) = decoded
         // The filename is page-controlled too: log it for the parent only.
         if (researchMode) Log.i(TAG, "child_blob_decoded: bytes=${bytes.size}")
         else Log.i(TAG, "blob download decoded: $filename (${bytes.size} bytes, mime=$mime)")
@@ -387,17 +426,20 @@ class BrowserUseManager(
 
     /**
      * [T-child-browser-interactive] Research-child blob read through the
-     * reply-only channel. The data URL is capped by [ingestBlobDataUrl] and is
-     * only persisted through the pool's download saver; nothing is handed back
+     * reply-only channel. The page fetch, streamed read, base64 encode and the
+     * native save all run under ONE slot of the pool's shared download budget:
+     * the slot is claimed non-blockingly before the injected fetch and released
+     * only after the pool's suspend saver has written the bytes, so a full
+     * budget refuses the read instead of queueing it. Nothing is handed back
      * into the page.
      */
     private fun fetchChildBlobDownload(blobUrl: String, guessedName: String) {
+        val budget = childDownloadBudget ?: return
         val deferred = CompletableDeferred<String>()
         val token = childReplyBridge.begin(deferred) ?: return
         val replyKey = JSONObject.quote(token)
         val abortKey = "__eta_abort_${java.util.UUID.randomUUID().toString().replace("-", "")}"
         val quotedAbortKey = JSONObject.quote(abortKey)
-        childAbortKeys.add(abortKey)
         val js = """
             (async function() {
                 const controller = new AbortController();
@@ -434,16 +476,35 @@ class BrowserUseManager(
             })();
         """.trimIndent()
         asyncScope.launch {
-            try {
-                webView.evaluateJavascript(js, null)
-                val payload = withTimeoutOrNull(JS_EVALUATION_TIMEOUT_MS * 4) { deferred.await() }
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (payload != null && payload.startsWith("data:")) ingestBlobDataUrl(payload, guessedName)
-            } finally {
-                childAbortKeys.remove(abortKey)
-                runCatching { webView.evaluateJavascript(
-                    "(function(){var h=window[$quotedAbortKey];if(h)h.abort();delete window[$quotedAbortKey];})()", null) }
+            // Claim the shared download slot BEFORE the injected page fetch; a full
+            // budget refuses this read rather than building an unbounded queue.
+            val lease = budget.tryAcquire()
+            if (lease == null) {
                 childReplyBridge.end(token)
+                return@launch
+            }
+            try {
+                try {
+                    childAbortKeys.add(abortKey)
+                    webView.evaluateJavascript(js, null)
+                    val payload = withTimeoutOrNull(JS_EVALUATION_TIMEOUT_MS * 4) { deferred.await() }
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    val saver = onChildBlobDownload
+                    if (saver != null && payload != null && payload.startsWith("data:")) {
+                        val decoded = decodeBlobDataUrl(payload)
+                        // Pass the still-held slot through; the saver releases it only
+                        // after the native write completes (never before the decode or
+                        // the queued save).
+                        if (decoded != null) saver.invoke(decoded.first, guessedName, decoded.second, lease)
+                    }
+                } finally {
+                    childAbortKeys.remove(abortKey)
+                    runCatching { webView.evaluateJavascript(
+                        "(function(){var h=window[$quotedAbortKey];if(h)h.abort();delete window[$quotedAbortKey];})()", null) }
+                    childReplyBridge.end(token)
+                }
+            } finally {
+                lease.release()
             }
         }
     }
@@ -1728,14 +1789,14 @@ class BrowserUseManager(
      * bridge. Returns null when the child bridge is at capacity — the caller
      * must refuse the new request rather than cancel an in-flight one.
      */
-    private fun openAsyncDelivery(deferred: CompletableDeferred<String>): AsyncDelivery? =
+    private fun openAsyncDelivery(deferred: CompletableDeferred<String>): AsyncDelivery? {
         if (researchMode) {
             val token = childReplyBridge.begin(deferred) ?: return null
-            AsyncDelivery("__eta_child__", JSONObject.quote(token)) { childReplyBridge.end(token) }
-        } else {
-            val requestId = installAsyncJsRequest(deferred)
-            AsyncDelivery("__minis__", requestId.toString()) { clearAsyncJsRequest(requestId) }
+            return AsyncDelivery("__eta_child__", JSONObject.quote(token)) { childReplyBridge.end(token) }
         }
+        val requestId = installAsyncJsRequest(deferred)
+        return AsyncDelivery("__minis__", requestId.toString()) { clearAsyncJsRequest(requestId) }
+    }
 
     /** A JS-visible bridge name + request key, with its per-request cleanup. */
     private class AsyncDelivery(

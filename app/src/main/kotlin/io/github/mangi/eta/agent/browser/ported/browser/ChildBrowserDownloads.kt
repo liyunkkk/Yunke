@@ -6,20 +6,51 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
+/**
+ * One bounded, non-blocking download budget shared by a research child pool's
+ * [ChildBrowserDownloads] saver and every tab that reads a page blob.
+ *
+ * At most three permits exist. A permit is acquired BEFORE the work starts (for
+ * a blob: before the injected page fetch/read/decode; for an HTTP download
+ * before the connection opens) and held until the native save has finished, so
+ * the HTTP fetch, the page-triggered HTTP download and the whole blob
+ * read→decode→save chain all draw from the SAME three slots. A full budget
+ * refuses the new request ([ChildBrowserDownloads.Refused] "CHILD_DOWNLOAD_BUSY")
+ * instead of queueing unbounded work, and [Lease.release] is idempotent so a
+ * duplicate release can never grow the capacity.
+ */
+internal class ChildDownloadBudget {
+    private val slots = Semaphore(3)
+
+    /** A held slot; [release] returns it exactly once even when called again. */
+    class Lease internal constructor(private val owner: ChildDownloadBudget, private val slots: Semaphore) {
+        private val released = AtomicBoolean(false)
+        private val saveClaimed = AtomicBoolean(false)
+        // A held permit is valid for exactly one save in its own task budget.
+        fun claimForSave(budget: ChildDownloadBudget): Boolean =
+            owner === budget && !released.get() && saveClaimed.compareAndSet(false, true)
+        fun release() { if (released.compareAndSet(false, true)) slots.release() }
+    }
+
+    /** Claim a slot without blocking, or null when all three are held. */
+    fun tryAcquire(): Lease? = if (slots.tryAcquire()) Lease(this, slots) else null
+}
+
 /** Bounded task-owned IO. No URL, headers or exception body are returned as diagnostics. */
 internal class ChildBrowserDownloads(
     private val directory: () -> File,
     private val cookies: (String) -> String?,
+    private val budget: ChildDownloadBudget = ChildDownloadBudget(),
 ) {
     data class Saved(val file: File, val size: Long)
     class Refused(val code: String) : IllegalStateException(code)
-    private val slots = Semaphore(3)
     private val generation = AtomicLong()
     private val connections = ConcurrentHashMap<String, HttpURLConnection>()
     @Volatile private var closed = false
@@ -45,7 +76,7 @@ internal class ChildBrowserDownloads(
     suspend fun fetch(raw: String, userAgent: String? = null, declaredLength: Long = -1): Saved {
         if (declaredLength > MAX_BYTES) throw Refused("CHILD_DOWNLOAD_TOO_LARGE")
         val initial = checked(raw)
-        return save { file, epoch ->
+        return save(budget.tryAcquire() ?: throw Refused("CHILD_DOWNLOAD_BUSY")) { file, epoch ->
             var target = initial
             for (redirect in 0..5) {
                 checkActive(epoch)
@@ -99,9 +130,18 @@ internal class ChildBrowserDownloads(
         }
     }
 
-    suspend fun blob(bytes: ByteArray): Saved {
-        if (bytes.size.toLong() > MAX_BYTES) throw Refused("CHILD_DOWNLOAD_TOO_LARGE")
-        return save { file, epoch ->
+    /**
+     * Persist decoded blob bytes. When [lease] is supplied the caller already
+     * holds one budget slot for the page fetch/read/decode that produced these
+     * bytes, so no second slot is acquired; the held slot is released only after
+     * the native save below finishes. When [lease] is null the slot is claimed
+     * here (the data: URL path, whose payload is already inline).
+     */
+    suspend fun blob(bytes: ByteArray, lease: ChildDownloadBudget.Lease? = null): Saved {
+        if (lease == null && bytes.size.toLong() > MAX_BYTES) throw Refused("CHILD_DOWNLOAD_TOO_LARGE")
+        val held = lease ?: (budget.tryAcquire() ?: throw Refused("CHILD_DOWNLOAD_BUSY"))
+        return save(held) { file, epoch ->
+            if (bytes.size.toLong() > MAX_BYTES) throw Refused("CHILD_DOWNLOAD_TOO_LARGE")
             file.outputStream().use { output ->
                 var offset = 0
                 while (offset < bytes.size) {
@@ -114,8 +154,10 @@ internal class ChildBrowserDownloads(
         }
     }
 
-    private suspend fun save(write: suspend (File, Long) -> Unit): Saved {
-        if (!slots.tryAcquire()) throw Refused("CHILD_DOWNLOAD_BUSY")
+    private suspend fun save(lease: ChildDownloadBudget.Lease, write: suspend (File, Long) -> Unit): Saved {
+        // Never consume/release a foreign, already released or already used permit.
+        // A duplicate concurrent invocation must not release the first save's slot.
+        if (!lease.claimForSave(budget)) throw Refused("CHILD_DOWNLOAD_LEASE_INVALID")
         val epoch = generation.get()
         try {
             return withContext(Dispatchers.IO) {
@@ -141,7 +183,7 @@ internal class ChildBrowserDownloads(
                     if (!published) destination?.delete()
                 }
             }
-        } finally { slots.release() }
+        } finally { lease.release() }
     }
 
     companion object { const val MAX_BYTES = 32L * 1024 * 1024 }

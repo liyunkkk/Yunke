@@ -118,6 +118,43 @@ class ChildBrowserFullAccessContractTest(unittest.TestCase):
         for expected in ('AbortController', 'getReader()', 'TOO_LARGE', '32 * 1024 * 1024', 'JS_EVALUATION_TIMEOUT_MS * 4', 'ensureActive()'):
             self.assertIn(expected, block)
 
+    def test_open_async_delivery_is_a_block_body(self):
+        # An expression body cannot contain `return null`; the child at-capacity
+        # refusal must stay inside a block body or the file will not compile.
+        manager = source("browser/ported/browser/BrowserUseManager.kt")
+        self.assertIn('private fun openAsyncDelivery(deferred: CompletableDeferred<String>): AsyncDelivery? {', manager)
+        self.assertNotIn('): AsyncDelivery? =', manager)
+        self.assertIn('childReplyBridge.begin(deferred) ?: return null', manager)
+        # Child keeps its random string token; parent keeps its numeric sequence.
+        self.assertIn('AsyncDelivery("__eta_child__", JSONObject.quote(token)) { childReplyBridge.end(token) }', manager)
+        self.assertIn('AsyncDelivery("__minis__", requestId.toString()) { clearAsyncJsRequest(requestId) }', manager)
+
+    def test_child_blob_read_holds_one_shared_download_budget_slot(self):
+        manager = source("browser/ported/browser/BrowserUseManager.kt")
+        blob = manager.split('fun fetchChildBlobDownload(', 1)[1].split('\n    private fun ', 1)[0]
+        # The slot is claimed before the injected page fetch starts...
+        self.assertLess(blob.index('budget.tryAcquire()'), blob.index('webView.evaluateJavascript(js, null)'))
+        # ...handed to the pool saver, and the manager releases only what it kept.
+        self.assertIn('onChildBlobDownload', blob)
+        self.assertIn('lease.release()', blob)
+        self.assertIn('childDownloadBudget', manager)
+        downloads = source("browser/ported/browser/ChildBrowserDownloads.kt")
+        self.assertIn('class ChildDownloadBudget', downloads)
+        self.assertIn('fun tryAcquire(): Lease?', downloads)
+        self.assertIn('Semaphore(3)', downloads)
+        self.assertIn('released.compareAndSet(false, true)', downloads)
+        # blob() reuses a pre-held slot (no nested acquire) and its save releases it.
+        self.assertIn('suspend fun blob(bytes: ByteArray, lease: ChildDownloadBudget.Lease? = null): Saved', downloads)
+        self.assertIn('private suspend fun save(lease: ChildDownloadBudget.Lease, write:', downloads)
+        self.assertIn('finally { lease.release() }', downloads)
+        self.assertIn('budget.tryAcquire() ?: throw Refused("CHILD_DOWNLOAD_BUSY")', downloads)
+        pool = source("browser/ported/browser/BrowserTabPool.kt")
+        self.assertIn('manager.childDownloadBudget = childDownloadBudget', pool)
+        self.assertIn('manager.onChildBlobDownload = ', pool)
+        self.assertIn('suspend fun saveChildBlobNow(data: ByteArray, lease: ChildDownloadBudget.Lease)', pool)
+        self.assertIn('childDownloads.blob(data, lease)', pool)
+        self.assertIn('lease.release()', pool)
+
     def test_first_explicit_tab_zero_only_bootstraps_child_navigate(self):
         helper = source("browser/ported/browser/ChildBrowserSupport.kt")
         self.assertIn('researchMode && !hasTabs && tabId == 0 && action == BrowserAction.NAVIGATE', helper)
@@ -153,6 +190,29 @@ class ChildBrowserFullAccessContractTest(unittest.TestCase):
         start = dispatch.split('private fun start(', 1)[1] if 'private fun start(' in dispatch else dispatch
         self.assertLess(start.index('ChildBrowserAccess.fromArgs(args)'), start.index('val t = Task('))
         self.assertIn('?: return invalidArguments("browser_access', start)
+
+    def test_blob_refusal_does_not_register_an_unbounded_abort_key(self):
+        manager = source("browser/ported/browser/BrowserUseManager.kt")
+        block = manager.split('private fun fetchChildBlobDownload(', 1)[1].split('private var lastKnownContainerWidthPx', 1)[0]
+        self.assertLess(block.index('val lease = budget.tryAcquire()'), block.index('childAbortKeys.add(abortKey)'))
+        self.assertLess(block.index('if (lease == null)'), block.index('childAbortKeys.add(abortKey)'))
+        self.assertLess(block.index('childAbortKeys.add(abortKey)'), block.index('webView.evaluateJavascript(js, null)'))
+
+    def test_download_permits_are_owner_bound_and_claimed_only_once(self):
+        downloads = source("browser/ported/browser/ChildBrowserDownloads.kt")
+        self.assertIn('owner === budget && !released.get() && saveClaimed.compareAndSet(false, true)', downloads)
+        self.assertIn('Lease(this, slots)', downloads)
+        self.assertIn('if (!lease.claimForSave(budget)) throw Refused("CHILD_DOWNLOAD_LEASE_INVALID")', downloads)
+        self.assertIn('released.compareAndSet(false, true)', downloads)
+
+    def test_data_url_decode_and_save_hold_the_same_download_budget(self):
+        manager = source("browser/ported/browser/BrowserUseManager.kt")
+        method = manager.split('private fun ingestBlobDataUrl(', 1)[1].split('private val childReplyInterface', 1)[0]
+        self.assertLess(method.index('val lease = budget.tryAcquire()'), method.index('decodeBlobDataUrl(dataUrl)'))
+        self.assertIn('saver.invoke(decoded.first, filename, decoded.second, lease)', method)
+        self.assertIn('job.invokeOnCompletion { lease.release() }', method)
+        self.assertIn('finally { lease.release() }', method)
+        self.assertIn('manager.onBlobDownloadData = if (researchMode) null else', source("browser/ported/browser/BrowserTabPool.kt"))
 
     def test_new_kotlin_runtime_regressions_are_present_not_claimed_executed(self):
         tests = ROOT / 'app/src/test/kotlin/io/github/mangi/eta/agent/browser'
