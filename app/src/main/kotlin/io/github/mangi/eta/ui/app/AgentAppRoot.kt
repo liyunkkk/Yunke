@@ -57,6 +57,7 @@ import io.github.mangi.eta.ui.AgentTaskPreferenceScreen
 import io.github.mangi.eta.ui.AgentTaskSurfacePrompt
 import io.github.mangi.eta.ui.AppearanceSettingsScreen
 import io.github.mangi.eta.ui.HapticsSettingsScreen
+import io.github.mangi.eta.ui.ErrorReconnectSettingsScreen
 import io.github.mangi.eta.ui.ContextCompressionSettingsScreen
 import io.github.mangi.eta.ui.SettingsScreen
 import io.github.mangi.eta.ui.components.AppUpdateDialog
@@ -850,6 +851,9 @@ fun AgentAppRoot(
             entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
                     feature = io.github.mangi.eta.agent.model.ModelFeature.TITLE, onBack = ::popRoute)
+            }
+            entry<AppRoute.ErrorReconnectSettings>(swipeDismiss = swipeDismiss) {
+                ErrorReconnectSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.TtsSettings>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.TtsSettingsScreen(onBack = ::popRoute)
