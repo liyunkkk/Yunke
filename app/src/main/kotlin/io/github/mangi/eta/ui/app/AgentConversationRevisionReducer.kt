@@ -25,6 +25,8 @@ internal object AgentConversationRevisionReducer {
         val historyPrefix: List<AgentModelClient.ConversationMessage>,
         val laterTurnCount: Int,
         val contextWasCompacted: Boolean,
+        /** Proven history identity, independent of the next execution's runId and the UI id. */
+        val logicalTurnId: String,
     )
 
     data class BranchPrefix(
@@ -53,12 +55,17 @@ internal object AgentConversationRevisionReducer {
             locate = { historyMessageLocation(it, anchor) },
             couldBeArchived = { candidate ->
                 val summaryIndex = candidate.history.indexOfLast(AgentConversationRevisionArchive::isRevisionSummary)
-                summaryIndex >= 0 && (0 until anchor).none { earlier ->
+                val targetUser = (anchor downTo 0).firstOrNull { candidate.messages[it] is UserMessageUi }
+                val targetPayload = targetUser?.let { payload(candidate.messages[it] as UserMessageUi) }
+                val matchingTail = targetPayload != null && (summaryIndex + 1 until candidate.history.size).any {
+                    payload(candidate.history[it]) == targetPayload
+                }
+                summaryIndex >= 0 && (matchingTail || (0 until anchor).none { earlier ->
                     if (candidate.messages[earlier] !is UserMessageUi) false else {
                         val location = historyMessageLocation(candidate, earlier)
                         location is AgentConversationRevisionArchive.Location.Found && location.index > summaryIndex
                     }
-                }
+                })
             },
             loadCheckpoint = loadCheckpoint,
         )
@@ -84,19 +91,22 @@ internal object AgentConversationRevisionReducer {
                 historyPrefix = completePrefix(state.history, state.history.size) ?: return null,
                 laterTurnCount = 0,
                 contextWasCompacted = false,
+                logicalTurnId = owner,
             )
         }
         val laterTurnCount = state.messages.drop(userMessageIndex + 1).count {
             it is UserMessageUi && !it.isSteerSupplement()
         }
         // A summary/visible marker is not original history. Restore before calling this reducer.
-        val prefix = historyIndex?.let { completePrefix(state.history, it) } ?: return null
+        val verifiedIndex = historyIndex ?: return null
+        val prefix = completePrefix(state.history, verifiedIndex) ?: return null
         return Boundary(
             userMessage = userMessage,
             userMessageIndex = userMessageIndex,
             historyPrefix = prefix,
             laterTurnCount = laterTurnCount,
             contextWasCompacted = false,
+            logicalTurnId = state.history[verifiedIndex].turnId.ifBlank { ownerRunId(userMessage.id) },
         )
     }
 
@@ -240,8 +250,15 @@ internal object AgentConversationRevisionReducer {
     private fun historyUserIndex(state: AgentChatUiState, uiIndex: Int): Int? =
         (historyMessageLocation(state, uiIndex) as? AgentConversationRevisionArchive.Location.Found)?.index
 
-    /** turnId scopes a run, not a message. Exact payload + complete occurrence alignment is required. */
+    /** Compatibility is considered only after the existing owner/legacy lookup is Missing. */
     private fun historyMessageLocation(state: AgentChatUiState, uiIndex: Int): AgentConversationRevisionArchive.Location {
+        val owned = ownedHistoryMessageLocation(state, uiIndex)
+        if (owned != AgentConversationRevisionArchive.Location.Missing || state.messages.getOrNull(uiIndex) !is UserMessageUi) return owned
+        return mismatchedOwnerLocation(state, uiIndex)
+    }
+
+    /** turnId scopes a turn, not a message. Exact payload + complete occurrence alignment is required. */
+    private fun ownedHistoryMessageLocation(state: AgentChatUiState, uiIndex: Int): AgentConversationRevisionArchive.Location {
         val missing = AgentConversationRevisionArchive.Location.Missing
         val ambiguous = AgentConversationRevisionArchive.Location.Ambiguous
         val message = state.messages.getOrNull(uiIndex) ?: return missing
@@ -296,6 +313,114 @@ internal object AgentConversationRevisionReducer {
         }
         if (scoped.size != peers.size || uiIndex !in peers) return ambiguous
         return AgentConversationRevisionArchive.Location.Found(scoped[peers.indexOf(uiIndex)])
+    }
+
+    private data class RevisionPayload(val text: String, val media: List<Pair<String, String>>)
+
+    // Compare real payload slots, not visibleRequest()/display text. Unknown multimodal parts
+    // and incomplete attachment metadata are not evidence. Cross-owner aliases require exact
+    // paths: a cache basename is not identity across conversations, even on an old branch.
+    private fun payloadText(text: String): String = text.trim()
+
+    private fun payload(user: UserMessageUi): RevisionPayload? {
+        if (user.isSteerSupplement()) return null
+        if (user.imageSources.isNotEmpty() && user.imageSources.size != user.images.size) return null
+        val sources = user.imageSources.ifEmpty { user.images }
+        val media = sources.mapIndexed { index, source ->
+            if (source.isBlank()) return null
+            val type = if (user.imageIsVideo.getOrNull(index) == true) "video" else "image"
+            type to source.removePrefix("file://")
+        }
+        return RevisionPayload(payloadText(user.content), media).takeIf { it.text.isNotBlank() || it.media.isNotEmpty() }
+    }
+
+    private fun payload(message: AgentModelClient.ConversationMessage): RevisionPayload? {
+        if (message.role != "user" || AgentContextCompactor.isCompressionSummary(message) ||
+            AgentContextCompactor.isSteeringUserMessage(message) || message.toolCallsJson.isNotBlank() ||
+            message.toolCallId.isNotBlank()) return null
+        if (message.contentJson.isBlank()) return RevisionPayload(payloadText(message.content), emptyList())
+            .takeIf { it.text.isNotBlank() }
+        // Two competing content representations or extra unrecognized parts are ambiguous.
+        if (message.content.isNotBlank()) return null
+        return try {
+            val parts = org.json.JSONArray(message.contentJson)
+            var text: String? = null
+            val media = mutableListOf<Pair<String, String>>()
+            for (index in 0 until parts.length()) {
+                val part = parts.getJSONObject(index)
+                when (val type = part.getString("type")) {
+                    "text" -> {
+                        if (text != null) return null
+                        text = part.getString("text")
+                    }
+                    "image_file", "video_file", "image_url", "video_url" -> {
+                        val source = if (type.endsWith("_file")) part.getString("path")
+                            else part.getJSONObject(type).getString("url")
+                        if (source.isBlank()) return null
+                        media += type.substringBefore('_') to source.removePrefix("file://")
+                    }
+                    else -> return null
+                }
+            }
+            val textMessage = message.copy(content = text.orEmpty(), contentJson = "")
+            if (AgentContextCompactor.isCompressionSummary(textMessage) || AgentContextCompactor.isSteeringUserMessage(textMessage)) return null
+            RevisionPayload(payloadText(text.orEmpty()), media).takeIf { it.text.isNotBlank() || it.media.isNotEmpty() }
+        } catch (_: Exception) { null }
+    }
+
+    /** Old releases retained a UI owner but minted a new history turn on edit/regenerate.
+     * Never repair history from UI: locate one existing payload, reject competing ownership
+     * and crossed anchors, and let Boundary expose that history's logical identity.
+     */
+    private fun mismatchedOwnerLocation(state: AgentChatUiState, uiIndex: Int): AgentConversationRevisionArchive.Location {
+        val missing = AgentConversationRevisionArchive.Location.Missing
+        val ambiguous = AgentConversationRevisionArchive.Location.Ambiguous
+        val user = state.messages[uiIndex] as UserMessageUi
+        if (state.messages.map { it.id }.distinct().size != state.messages.size) return ambiguous
+        val expected = payload(user) ?: return missing
+        val owner = ownerRunId(user.id)
+        val candidates = state.history.indices.filter { payload(state.history[it]) == expected }
+        if (candidates.isEmpty()) return missing
+        if (candidates.size != 1) return ambiguous
+        val index = candidates.single()
+        val turn = state.history[index].turnId
+        if (turn.isBlank() || turn == owner) return missing
+        if (state.history.any { it.turnId == owner }) return ambiguous
+        // The archive can contain an identical earlier request. Verify the full history first.
+        val summaryIndex = state.history.indexOfLast(AgentConversationRevisionArchive::isRevisionSummary)
+        if (summaryIndex >= 0) return missing
+        val users = state.messages.indices.filter { state.messages[it] is UserMessageUi }
+        // Even different attachments cannot disambiguate repeated request bodies in this migration.
+        val request = AgentFileReferencePromptCodec.parse(expected.text).request.trim()
+        if (users.count {
+                AgentFileReferencePromptCodec.parse(payloadText((state.messages[it] as UserMessageUi).content)).request.trim() == request
+            } != 1) return ambiguous
+        if (state.history.count { it.role == "user" &&
+                AgentFileReferencePromptCodec.parse(payloadText(historyText(it))).request.trim() == request } != 1) return ambiguous
+        if (users.any { it != uiIndex && ownerRunId(state.messages[it].id) in listOf(owner, turn) }) return ambiguous
+        // A logical turn must be a contiguous block with exactly one ordinary user anchor.
+        val turnIndices = state.history.indices.filter { state.history[it].turnId == turn }
+        val ordinaryUsers = turnIndices.filter {
+            val entry = state.history[it]
+            entry.role == "user" &&
+                !AgentContextCompactor.isSteeringUserMessage(
+                    entry.copy(content = historyText(entry), contentJson = ""),
+                )
+        }
+        if (turnIndices.last() - turnIndices.first() + 1 != turnIndices.size ||
+            ordinaryUsers != listOf(index)) return ambiguous
+        for (peerIndex in users) {
+            if (peerIndex == uiIndex) continue
+            val direct = ownedHistoryMessageLocation(state, peerIndex)
+            if (direct == ambiguous) return ambiguous
+            val peerHistoryIndex = (direct as? AgentConversationRevisionArchive.Location.Found)?.index ?: run {
+                val peerPayload = payload(state.messages[peerIndex] as UserMessageUi)
+                if (peerPayload == null) null else state.history.indices.filter { payload(state.history[it]) == peerPayload }.singleOrNull()
+            }
+            if (peerHistoryIndex == null && !(state.messages[peerIndex] as UserMessageUi).isSteerSupplement()) return ambiguous
+            if (peerHistoryIndex != null && ((peerIndex < uiIndex) != (peerHistoryIndex < index) || peerHistoryIndex == index)) return ambiguous
+        }
+        return AgentConversationRevisionArchive.Location.Found(index)
     }
 
     private fun isHiddenContinuePrompt(message: AgentModelClient.ConversationMessage): Boolean =

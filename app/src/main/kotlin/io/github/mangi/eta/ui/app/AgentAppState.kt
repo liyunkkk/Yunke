@@ -2167,6 +2167,7 @@ internal class AgentAppState(
             ),
             reasoningEffort = homeState.reasoningEffort,
             consumeDraft = true,
+            logicalTurnId = editBoundary?.logicalTurnId ?: runId,
         )
     }
 
@@ -2554,6 +2555,7 @@ internal class AgentAppState(
                         state = homeState,
                         reasoningEffort = homeState.reasoningEffort,
                         skipAutoCompress = ignoreCompression,
+                        logicalTurnId = boundary.logicalTurnId,
                     )
                 }
             }
@@ -2575,6 +2577,7 @@ internal class AgentAppState(
             state = homeState,
             reasoningEffort = homeState.reasoningEffort,
             skipAutoCompress = ignoreCompression,
+            logicalTurnId = boundary.logicalTurnId,
         )
     }
 
