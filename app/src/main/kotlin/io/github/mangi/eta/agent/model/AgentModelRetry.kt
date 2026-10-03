@@ -119,8 +119,11 @@ internal class AgentModelRetry(
                     }
                     callbackFailure?.let { throw it }
                     reconnect?.check()
-                    controller.throwIfCancelled()
-                    textFilter.finish().forEach(::deliver)
+                    // Let AgentLoop inspect a provider response that raced with manual stop.
+                    // It records sensitive tool-call ids before its own cancellation gate, so
+                    // durable history can redact the unexecuted delegation without publishing
+                    // generated output or running a tool.
+                    if (!controller.isCancelled) textFilter.finish().forEach(::deliver)
                     if (prefix.isNotEmpty()) {
                         val tail = textFilter.normalize(response.assistantMessage.optString("content").takeUnless { it == "null" }.orEmpty())
                         response.assistantMessage.put("content", prefix.toString() + tail)

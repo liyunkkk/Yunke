@@ -175,7 +175,18 @@ class AgentPendingResultRecoveryTest {
                 supplements = emptyList(),
             )
             assertEquals(listOf(partial, notice), recovered.state.messages.take(2))
-            assertEquals("assistant-retry-run-2-result", recovered.state.messages.last().id)
+            if (ok) {
+                assertEquals("assistant-retry-run-2-result", recovered.state.messages.last().id)
+            } else {
+                assertEquals(
+                    io.github.mangi.eta.ui.model.errorReconnectMessageId("retry-run", "terminal-failure"),
+                    recovered.state.messages.last().id,
+                )
+                assertEquals(
+                    io.github.mangi.eta.ui.model.ErrorReconnectStatus.Failed,
+                    (recovered.state.messages.last() as io.github.mangi.eta.ui.model.ErrorReconnectMessageUi).status,
+                )
+            }
             assertEquals(3, recovered.state.messages.size)
         }
     }

@@ -140,7 +140,7 @@ class AgentOversizedSummaryTest {
         val source = listOf(AgentModelClient.ConversationMessage("user", "中".repeat(10_000)), tail())
         val before = source.toList()
         var calls = 0
-        assertThrows(java.io.IOException::class.java) {
+        assertThrows(AgentModelFailure::class.java) {
             AgentContextCompactor.compress(source, AgentContextCompactor.Config(1, model(8192), provider {
                 if (++calls == 2) throw java.io.IOException("network failed")
                 response()
@@ -321,7 +321,7 @@ class AgentOversizedSummaryTest {
         val before = source.toList()
         var pieces = 0
         var merges = 0
-        assertThrows(java.io.IOException::class.java) {
+        assertThrows(AgentModelFailure::class.java) {
             AgentContextCompactor.compress(source, AgentContextCompactor.Config(1, model(8192), provider {
                 if (fragment(it) != null) {
                     pieces++
