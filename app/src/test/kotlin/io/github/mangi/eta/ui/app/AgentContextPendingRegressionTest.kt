@@ -126,21 +126,23 @@ class AgentContextPendingRegressionTest {
     @Test fun sameRoundZeroOverheadCorrectionRevokesPersistedLearningAndFreshBasisRepairsIt() = fixture { f ->
         f.put("c", f.pending())
         f.bind("zero-run", "c")
+        // Calibration intentionally ignores replay: this regression must deliver live usage.
+        fun sendLive(event: AgentEvent) = f.send("zero-run", event, replaying = false)
         val history = f.state("c").history.sumOf { AgentContextBudget.countMessage(it) }
         for (round in 1..3) {
-            f.send("zero-run", AgentEvent.ProviderRequestStarted(round))
-            f.send("zero-run", receipt(round, history))
+            sendLive(AgentEvent.ProviderRequestStarted(round))
+            sendLive(receipt(round, history))
         }
         val stable = requireNotNull(RequestOverheadCalibrationStore.read(f.provider.id, "m"))
         assertNotNull(stable.ratio)
-        f.send("zero-run", receipt(3, history, overhead = 0))
+        sendLive(receipt(3, history, overhead = 0))
         val revoked = requireNotNull(RequestOverheadCalibrationStore.read(f.provider.id, "m"))
         assertEquals(stable.observations.map { it.requestId }, revoked.observations.map { it.requestId })
         assertEquals(3, revoked.samples)
         assertFalse(revoked.observations.last().complete)
         assertNull(revoked.ratio)
         assertEquals(15000, f.usage("c").contextTokens) // still a genuine cloud receipt
-        f.send("zero-run", receipt(3, history))
+        sendLive(receipt(3, history))
         assertEquals(stable, RequestOverheadCalibrationStore.read(f.provider.id, "m"))
     }
 
@@ -161,7 +163,9 @@ class AgentContextPendingRegressionTest {
         fun put(id: String, state: AgentChatHomeUiState) { call(app, "updateConversation", id, state, false) }
         fun bind(run: String, id: String) { call(app, "bindUsageRun", run, id) }
         fun state(id: String) = call(app, "conversationState", id) as AgentChatHomeUiState
-        fun send(run: String, event: AgentEvent) { call(app, "applyRunEvent", run, event, false, true) }
+        fun send(run: String, event: AgentEvent, replaying: Boolean = true) {
+            call(app, "applyRunEvent", run, event, false, replaying)
+        }
         fun usage(id: String): AgentContextUsageUi {
             val state = state(id)
             return liveContextUsage(state.history, "", emptyList(), null,
