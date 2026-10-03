@@ -174,7 +174,9 @@ internal object AgentConversationRevisionReducer {
     private fun historyBefore(state: AgentChatUiState, cut: Int, validateRemoved: Boolean = true): List<AgentModelClient.ConversationMessage>? {
         val removedAnchor = (cut until state.messages.size).firstOrNull { isTextAnchor(state.messages[it]) }
         if (validateRemoved && removedAnchor != null && historyMessageLocation(state, removedAnchor) !is AgentConversationRevisionArchive.Location.Found) return null
-        if (cut < state.messages.size && state.messages[cut] is UserMessageUi) {
+        // A branch must locate its retained anchor; a later user's history is not evidence
+        // that the assistant bubble retained before that user exists in model history.
+        if (validateRemoved && cut < state.messages.size && state.messages[cut] is UserMessageUi) {
             val index = historyUserIndex(state, cut) ?: return null
             return completePrefix(state.history, index)
         }
