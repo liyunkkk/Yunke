@@ -5170,10 +5170,12 @@ internal class AgentAppState(
     }
 
     private fun bindUsageRun(runId: String, conversationId: String) {
+        // Reattachment cannot revive an invalidated run or steal a newer run's receipt ownership.
+        if (runId in invalidatedUsageRuns) return
         runConversationIds[runId] = conversationId
-        runUsageResumeRounds.remove(runId)
-        invalidatedUsageRuns.remove(runId)
         usageRunByConversation[conversationId] = runId
+        // A run's owner, route and compression resume floor are frozen at its first binding.
+        if (runId in runUsageOwners) return
         conversationState(conversationId)?.let {
             runUsageOwners[runId] = it.providerId to it.modelId
             contextRouteSignature(it)?.let { signature -> runUsageRoutes[runId] = signature }
