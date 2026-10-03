@@ -73,7 +73,7 @@ import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
-import io.github.mangi.eta.data.model.GptSpeedMode
+import io.github.mangi.eta.data.model.supportsGptSpeedBinding
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.EtaBackupExportOptions
 import io.github.mangi.eta.data.repository.EtaBackupRepository
@@ -859,14 +859,21 @@ internal class AgentAppState(
             val state = conversationIdForRun(runId)?.let(::conversationState)
             if (state != null && route != contextRouteSignature(state)) invalidatedUsageRuns.add(runId)
         }
-        // Also revoke background conversations; the model picker refresh only visits the foreground.
+        // Reset every loaded binding, including background conversations without a usage receipt.
+        // Once a binding becomes ineligible, changing settings back must not resurrect its old tier.
         conversationsById.toList().forEach { (id, state) ->
-            if (state.conversationContentLoaded && state.cloudRouteSignature != null &&
-                state.cloudRouteSignature != contextRouteSignature(state)) {
-                updateConversation(id, state, updateTimestamp = false)
+            val next = state.withCurrentGptSpeedBinding()
+            if (state.conversationContentLoaded && (next != state ||
+                (state.cloudRouteSignature != null && state.cloudRouteSignature != contextRouteSignature(state)))) {
+                updateConversation(id, next, updateTimestamp = false)
             }
         }
+        if (selectedConversationId == null) homeState = homeState.withCurrentGptSpeedBinding()
     }
+
+    private fun AgentChatHomeUiState.withCurrentGptSpeedBinding(): AgentChatHomeUiState = copy(
+        gptSpeedMode = GptSpeedModePolicy.forSelection(gptSpeedMode, providerId, modelId, selectionProviders),
+    )
 
     private fun observeRuntimeSelection() {
         scope.launch {
@@ -915,9 +922,7 @@ internal class AgentAppState(
         // A missing/deleted/non-GPT model clears the transient choice; returning to GPT stays normal.
         val speedNext = scopedNext.copy(gptSpeedMode = GptSpeedModePolicy.forBinding(
             scopedNext.gptSpeedMode, model?.modelId.orEmpty(),
-            provider is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting &&
-                model != null && !model.supportsImageGeneration && !model.supportsVideoGeneration &&
-                !model.supportsSpeechSynthesis,
+            supportsGptSpeedBinding(provider, model),
         ))
         if (speedNext != homeState) {
             val conversationId = selectedConversationId
@@ -1541,8 +1546,7 @@ internal class AgentAppState(
         if (selected.id != homeState.modelId || selected.providerId != homeState.providerId) return
         val provider = selectionProviders.firstOrNull { it.id == selected.providerId && it.isEnabled } ?: return
         val model = provider.models.firstOrNull { it.id == selected.id && it.isEnabled } ?: return
-        val eligible = provider is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting &&
-            !model.supportsImageGeneration && !model.supportsVideoGeneration && !model.supportsSpeechSynthesis
+        val eligible = supportsGptSpeedBinding(provider, model)
         val next = GptSpeedModePolicy.cycle(homeState.gptSpeedMode, model.modelId, eligible)
         if (next == homeState.gptSpeedMode) return
         val replacedRun = activeRunIdForSelectedConversation().takeIf { homeState.isPaused }
@@ -1564,8 +1568,7 @@ internal class AgentAppState(
         val nextEffort = ConversationReasoningPolicy.resolve(requestedEffort, config.reasoningCapabilities)
         updateCurrentConversation(homeState.copy(providerId = provider.id, modelId = model.id,
             gptSpeedMode = GptSpeedModePolicy.forBinding(homeState.gptSpeedMode, model.modelId,
-                provider is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting &&
-                    !model.supportsImageGeneration && !model.supportsVideoGeneration && !model.supportsSpeechSynthesis),
+                supportsGptSpeedBinding(provider, model)),
             reasoningEffort = nextEffort, thinkingEnabled = nextEffort.enablesReasoning,
             livePromptTokens = null, livePromptIsProjected = false))
         billedOverheadTokens = null
@@ -1673,7 +1676,7 @@ internal class AgentAppState(
         selectedConversationId = conversationId
         val owner = ownerContext(conversationId)
         val view = owner.projection()
-        val ordered = orderedTerminalState(state).copy(
+        val ordered = orderedTerminalState(state.withCurrentGptSpeedBinding()).copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
             childStatusRoster = owner.roster(),
         )
@@ -2728,7 +2731,7 @@ internal class AgentAppState(
         val runConfig = GptSpeedModePolicy.snapshot(
             RuntimeConfigRepository.buildRuntimeConfig(runProvider, runModel, runAssistant),
             state.gptSpeedMode,
-            !runModel.supportsImageGeneration && !runModel.supportsVideoGeneration && !runModel.supportsSpeechSynthesis,
+            supportsGptSpeedBinding(runProvider, runModel),
         )
         val runModelOption = AgentModelPickerProjector.project(listOf(runProvider), runProvider.id, runModel.id).selectedModel
         val runProviders = selectionProviders.toList()

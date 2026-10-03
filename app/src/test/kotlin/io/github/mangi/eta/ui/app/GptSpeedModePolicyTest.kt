@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.GptSpeedMode
+import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import org.junit.Assert.*
@@ -45,6 +47,26 @@ class GptSpeedModePolicyTest {
         assertNull(GptSpeedModePolicy.snapshot(fast.copy(providerType = ProviderTypes.ANTHROPIC), GptSpeedMode.FAST).gptSpeedMode)
         assertNull(GptSpeedModePolicy.snapshot(fast, GptSpeedMode.FAST, false).gptSpeedMode)
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.snapshot(config(), GptSpeedMode.NORMAL).gptSpeedMode)
+    }
+
+    @Test fun backgroundBindingCannotRecoverItsOldModeAfterSettingsReturn() {
+        val model = Model(id = "m", modelId = "gpt-6-astra", displayName = "GPT")
+        val provider = OpenAiCompatibleProviderSetting(id = "p", name = "relay",
+            baseUrl = "https://example.invalid", models = listOf(model))
+        val states = mutableMapOf("foreground" to GptSpeedMode.FAST, "background" to GptSpeedMode.ULTRA_FAST)
+        val away = provider.copy(models = listOf(model.copy(modelId = "deepseek-chat")))
+        states.keys.toList().forEach { id ->
+            states[id] = GptSpeedModePolicy.forSelection(states.getValue(id), "p", "m", listOf(away))
+        }
+        states.keys.toList().forEach { id ->
+            assertEquals(GptSpeedMode.NORMAL,
+                GptSpeedModePolicy.forSelection(states.getValue(id), "p", "m", listOf(provider)))
+        }
+        assertEquals(GptSpeedMode.NORMAL,
+            GptSpeedModePolicy.forSelection(GptSpeedMode.FAST, "p", "m", emptyList()))
+        assertEquals(GptSpeedMode.NORMAL,
+            GptSpeedModePolicy.forSelection(GptSpeedMode.FAST, "p", "m", listOf(provider.copy(models = emptyList()))))
+        assertNull(GptSpeedModePolicy.snapshot(config().copy(openAiEndpointMode = "unknown"), GptSpeedMode.FAST).gptSpeedMode)
     }
 
     private fun config() = AgentModelClient.ModelConfig(

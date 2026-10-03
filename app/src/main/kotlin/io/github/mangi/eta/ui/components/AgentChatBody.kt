@@ -213,6 +213,8 @@ internal fun AgentChatBody(
     onOpenBrowser: () -> Unit,
     onEditAssistant: (String) -> Unit,
     onAssistantSelected: (String) -> Unit = {},
+    gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
+    onCycleGptSpeedMode: () -> Unit = {},
     isDrawerOpen: Boolean = false,
     scrollToMessageId: String? = null,
     onScrollToMessageConsumed: () -> Unit = {},
@@ -406,6 +408,8 @@ internal fun AgentChatBody(
                 onOpenBrowser = onOpenBrowser,
                 onEditAssistant = onEditAssistant,
                 onAssistantSelected = onAssistantSelected,
+                gptSpeedMode = gptSpeedMode,
+                onCycleGptSpeedMode = onCycleGptSpeedMode,
                 currentBrowserMessageId = currentBrowserMessageId,
                 scrollToMessageId = scrollToMessageId,
                 onScrollToMessageConsumed = onScrollToMessageConsumed,
@@ -478,6 +482,8 @@ private fun AgentChatScaffold(
     currentBrowserMessageId: String?,
     scrollToMessageId: String? = null,
     onScrollToMessageConsumed: () -> Unit = {},
+    gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
+    onCycleGptSpeedMode: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val appearance = LocalAppearanceSettings.current
@@ -547,6 +553,8 @@ private fun AgentChatScaffold(
                 onCancelMessageEdit = onCancelMessageEdit,
                 onEditAssistant = onEditAssistant,
                 onAssistantSelected = onAssistantSelected,
+                gptSpeedMode = gptSpeedMode,
+                onCycleGptSpeedMode = onCycleGptSpeedMode,
             )
         },
     ) { innerPadding ->
@@ -1679,6 +1687,8 @@ private fun AgentChatBottomBar(
     onCancelMessageEdit: () -> Unit,
     onEditAssistant: (String) -> Unit,
     onAssistantSelected: (String) -> Unit = {},
+    gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
+    onCycleGptSpeedMode: () -> Unit = {},
 ) {
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
     Column(
@@ -1741,6 +1751,8 @@ private fun AgentChatBottomBar(
                 onCancelMessageEdit = onCancelMessageEdit,
                 onEditAssistant = onEditAssistant,
                 onAssistantSelected = onAssistantSelected,
+                gptSpeedMode = gptSpeedMode,
+                onCycleGptSpeedMode = onCycleGptSpeedMode,
                 modifier = Modifier.fillMaxWidth(),
             )
         }

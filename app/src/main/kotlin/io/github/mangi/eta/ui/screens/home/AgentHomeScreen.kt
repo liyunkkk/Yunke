@@ -96,6 +96,8 @@ internal fun AgentHomeScreen(
             onOpenBrowser = { onAction(AgentHomeAction.OpenBrowser) },
             onEditAssistant = { id -> onAction(AgentHomeAction.EditAssistant(id)) },
             onAssistantSelected = { id -> onAction(AgentHomeAction.AssistantSelected(id)) },
+            gptSpeedMode = state.gptSpeedMode,
+            onCycleGptSpeedMode = { onAction(AgentHomeAction.CycleGptSpeedMode) },
             isDrawerOpen = isDrawerOpen,
             scrollToMessageId = scrollToMessageId,
             onScrollToMessageConsumed = onScrollToMessageConsumed,

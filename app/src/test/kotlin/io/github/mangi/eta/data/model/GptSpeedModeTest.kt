@@ -28,4 +28,22 @@ class GptSpeedModeTest {
             assertFalse(it, isGptSpeedModel(it))
         }
     }
+
+    @Test fun bindingRejectsUnknownProtocolsAndMediaEvenWithGptIds() {
+        val model = Model(id = "m", modelId = "gpt-6-astra", displayName = "Other display name")
+        val provider = OpenAiCompatibleProviderSetting(id = "p", name = "relay", baseUrl = "https://example.invalid")
+        assertTrue(supportsGptSpeedBinding(provider, model))
+        assertTrue(supportsGptSpeedBinding(provider.copy(endpointMode = OpenAiEndpointMode.RESPONSES), model))
+        assertFalse(supportsGptSpeedBinding(provider.copy(endpointMode = "unknown"), model))
+        assertFalse(supportsGptSpeedBinding(provider.copy(isEnabled = false), model))
+        assertFalse(supportsGptSpeedBinding(provider, model.copy(isEnabled = false)))
+        assertFalse(supportsGptSpeedBinding(null, model))
+        assertFalse(supportsGptSpeedBinding(provider, null))
+        assertFalse(supportsGptSpeedBinding(provider, model.copy(modelId = "deepseek-chat", displayName = "gpt-6-astra")))
+        for (output in listOf(Model.IMAGE_MODALITY, Model.VIDEO_MODALITY, Model.AUDIO_MODALITY)) {
+            assertFalse(output, supportsGptSpeedBinding(provider, model.copy(outputModalities = listOf(output))))
+        }
+        assertFalse(supportsGptSpeedProtocol(ProviderTypes.CUSTOM, OpenAiEndpointMode.RESPONSES))
+        assertFalse(supportsGptSpeedProtocol(ProviderTypes.ANTHROPIC, OpenAiEndpointMode.CHAT_COMPLETIONS))
+    }
 }

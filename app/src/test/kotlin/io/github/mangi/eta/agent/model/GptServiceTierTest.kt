@@ -91,6 +91,12 @@ class GptServiceTierTest {
         assertFalse(build(toGpt, true).has("service_tier"))
     }
 
+    @Test fun unknownEndpointNeverInjectsATier() {
+        val request = JSONObject().put("model", "gpt-6-astra")
+        GptServiceTier.apply(request, config(GptSpeedMode.FAST).copy(openAiEndpointMode = "unknown"))
+        assertFalse(request.has("service_tier"))
+    }
+
     @Test fun helperChangesOnlyServiceTierAndDoesNotMutateSnapshots() {
         val original = config(GptSpeedMode.NORMAL)
         val request = JSONObject("{\"model\":\"gpt-5\",\"reasoning\":{\"effort\":\"high\"},\"reasoning_effort\":\"high\"}")

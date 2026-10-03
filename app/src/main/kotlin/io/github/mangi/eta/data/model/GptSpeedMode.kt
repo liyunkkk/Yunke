@@ -32,3 +32,15 @@ fun isGptSpeedModel(modelId: String): Boolean {
     return GPT_SPEED_MODEL_ID.matches(id) &&
         !NON_TEXT_MODEL_VARIANT.containsMatchIn(id.substringAfterLast('/'))
 }
+
+/** Shared eligibility for UI binding and run snapshots; unknown protocols fail closed. */
+internal fun supportsGptSpeedProtocol(providerType: String, endpointMode: String): Boolean =
+    providerType == ProviderTypes.OPENAI_COMPATIBLE &&
+        (endpointMode == OpenAiEndpointMode.CHAT_COMPLETIONS || endpointMode == OpenAiEndpointMode.RESPONSES)
+
+internal fun supportsGptSpeedBinding(provider: ProviderSetting?, model: Model?): Boolean =
+    provider is OpenAiCompatibleProviderSetting && provider.isEnabled && model != null && model.isEnabled &&
+        supportsGptSpeedProtocol(ProviderTypes.OPENAI_COMPATIBLE, provider.endpointMode) &&
+        isGptSpeedModel(model.modelId) && !model.supportsImageGeneration &&
+        !model.supportsVideoGeneration && !model.supportsSpeechSynthesis &&
+        (model.outputModalities.isEmpty() || model.outputModalities.any { it.equals(Model.TEXT_MODALITY, ignoreCase = true) })

@@ -6,6 +6,12 @@ sealed interface AgentHomeAction {
     data class ContextTaskSelected(val taskId: String?) : AgentHomeAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentHomeAction
     data class ModelSelected(val modelId: String, val providerId: String = "") : AgentHomeAction
+
+    /**
+     * 循环切换 GPT 速度档位（NORMAL → FAST → ULTRA_FAST → NORMAL）。
+     * 临时真值由 AppState 路持有，不持久化，UI 只负责派发，不本地假切状态。
+     */
+    data object CycleGptSpeedMode : AgentHomeAction
     data class SubmitMessage(val text: String) : AgentHomeAction
     data object StopRun : AgentHomeAction
     data object ContinueRun : AgentHomeAction
@@ -43,6 +49,9 @@ sealed interface AgentChatAction {
     data object NavigateBack : AgentChatAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentChatAction
     data class ModelSelected(val modelId: String, val providerId: String = "") : AgentChatAction
+
+    /** 循环切换 GPT 速度档位；真值由 AppState 路持有，UI 仅派发。 */
+    data object CycleGptSpeedMode : AgentChatAction
     data class SubmitMessage(val text: String) : AgentChatAction
     data object StopRun : AgentChatAction
     data object ContinueRun : AgentChatAction
