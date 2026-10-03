@@ -39,9 +39,9 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
@@ -77,11 +77,11 @@ class BottomFollowDrawPhaseTest {
 
     private val bodyHeight = mutableIntStateOf(600)
     private val following = mutableStateOf(false)
-    @Volatile private var appliedFollowing = false
     private val measurableTail = mutableStateOf(true)
     private val markerColor = mutableStateOf(Color.Green)
     private val heldLift = intArrayOf(0)
     private var overflowReads = 0
+    @Volatile private var committedFollow: Boolean? = null
     private var taps = 0
     private lateinit var state: LazyListState
     private lateinit var scope: CoroutineScope
@@ -140,23 +140,19 @@ class BottomFollowDrawPhaseTest {
         advanceFrame()
         assertBottomMatches(known, capture())
         assertEquals(32, heldLift[0])
+        val anchoredBounds = compose.onNodeWithTag(MARKER).fetchSemanticsNode().boundsInRoot
         val readsBeforeRelease = overflowReads
 
         // The production caller removes the composer clip when a user starts scrolling.
-        assertTrue("Fixture must have committed follow mode", appliedFollowing)
-        compose.runOnIdle { following.value = false }
-        // Unlike measure-only growth, follow mode is read in composition. With autoAdvance off,
-        // wait for that composition to commit before waiting for placement/draw; one clock frame
-        // can merely deliver the snapshot change and schedule recomposition for the next frame.
-        compose.mainClock.advanceTimeUntil { !appliedFollowing }
-        advanceFrame()
+        commitFollow(false) { following.value = false }
         capture()
         assertEquals(0, heldLift[0])
         assertEquals(readsBeforeRelease, overflowReads)
+        val releasedBounds = compose.onNodeWithTag(MARKER).fetchSemanticsNode().boundsInRoot
+        assertEquals(anchoredBounds.top + 32f, releasedBounds.top, 0.5f)
+        assertEquals(anchoredBounds.bottom + 32f, releasedBounds.bottom, 0.5f)
 
-        compose.runOnIdle { measurableTail.value = true; following.value = true }
-        compose.mainClock.advanceTimeUntil { appliedFollowing }
-        advanceFrame()
+        commitFollow(true) { measurableTail.value = true; following.value = true }
         val resumed = capture()
         assertEquals(32, heldLift[0])
         assertBottomMatches(known, resumed)
@@ -196,7 +192,7 @@ class BottomFollowDrawPhaseTest {
                     state = rememberLazyListState()
                     scope = rememberCoroutineScope()
                     val follow = following.value
-                    SideEffect { appliedFollowing = follow }
+                    SideEffect { committedFollow = follow }
                     Box(Modifier.size(WIDTH.dp, HEIGHT.dp).testTag(VIEWPORT).drawBehind {
                         drawRect(BACKGROUND)
                         drawRect(INPUT, topLeft = Offset(0f, REST.toFloat()),
@@ -273,6 +269,22 @@ class BottomFollowDrawPhaseTest {
     private fun advanceFrame() {
         compose.mainClock.advanceTimeByFrame()
         compose.waitForIdle()
+    }
+
+    /** Only composition-driven follow transitions use this barrier; growth stays single-frame. */
+    private fun commitFollow(follow: Boolean, update: () -> Unit) {
+        val previousAutoAdvance = compose.mainClock.autoAdvance
+        try {
+            // Let Compose synchronize this composition-driven toggle, including snapshot changes.
+            compose.mainClock.autoAdvance = true
+            compose.runOnIdle { update() }
+            compose.waitForIdle()
+            assertEquals("Follow transition must be committed before checking placement", follow,
+                committedFollow)
+        } finally {
+            // Geometry-only growth tests continue to own their exact single-frame clock.
+            compose.mainClock.autoAdvance = previousAutoAdvance
+        }
     }
 
     private fun capture(): Bitmap = compose.onNodeWithTag(VIEWPORT).captureToImage().asAndroidBitmap()
