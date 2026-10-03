@@ -38,6 +38,7 @@ class AgentOrphanSummaryPipelineTest {
             requests++
             assertEquals(0, request.tools.length())
             assertTrue(request.messages.toString().contains("Historical orphan tool result"))
+            assertTrue(request.messages.toString().contains("[historical_tool]"))
             assertTrue(request.messages.toString().contains("ORPHAN_RESULT_CONTENT"))
             for (i in 0 until request.messages.length()) {
                 val message = request.messages.getJSONObject(i)
@@ -58,6 +59,7 @@ class AgentOrphanSummaryPipelineTest {
             requests++
             assertEquals(0, request.tools.length())
             assertTrue(request.messages.toString().contains("Historical orphan tool result"))
+            assertTrue(request.messages.toString().contains("[historical_tool]"))
             assertTrue(request.messages.toString().contains("ORPHAN_RESULT_CONTENT"))
             assertFalse(request.messages.toString().contains("must-not-run"))
         }), keepStartOverride = 2, replay = replay(history))
@@ -118,6 +120,19 @@ class AgentOrphanSummaryPipelineTest {
             assertTrue(text.contains("ORPHAN_RESULT_CONTENT"))
         }), keepStartOverride = 2)
         assertSame(history.last(), result.last())
+    }
+
+    @Test fun malformedToolEnvelopeFailsWithoutProviderRequestOrSourceMutation() {
+        val history = source().toMutableList()
+        history[1] = history[1].copy(toolCallsJson = "not json")
+        var requests = 0
+        assertThrows(IllegalArgumentException::class.java) {
+            AgentContextCompactor.compress(history, AgentContextCompactor.Config(1, model(), provider { requests++ }),
+                keepStartOverride = 2)
+        }
+        assertEquals(0, requests)
+        assertEquals("not json", history[1].toolCallsJson)
+        assertEquals("ORPHAN_RESULT_CONTENT", history[1].content)
     }
 
 }

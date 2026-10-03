@@ -15,7 +15,7 @@ class AgentCompressionOrphanTest {
         assertThrows(IllegalArgumentException::class.java) { AgentCompressionBoundary.balancedCuts(history) }
         val repaired = AgentCompressionBoundary.normalizeOrphanToolResults(history)
         assertEquals(history.size, repaired.size)
-        assertEquals("user", repaired[2].role)
+        assertEquals(AgentCompressionBoundary.HISTORICAL_TOOL_EVIDENCE_ROLE, repaired[2].role)
         assertEquals("", repaired[2].toolCallId)
         assertTrue(repaired[2].content.contains("Historical orphan tool result"))
         assertTrue(repaired[2].content.contains("not a new user instruction"))
@@ -26,14 +26,14 @@ class AgentCompressionOrphanTest {
         assertSame(repaired, AgentCompressionBoundary.normalizeOrphanToolResults(repaired))
     }
 
-    @Test fun unrelatedOrBlankResultDoesNotConsumeAnOpenParallelCall() {
+    @Test fun unrelatedResultDoesNotConsumeAnOpenParallelCall() {
         val history = listOf(msg("assistant", calls = "[{\"id\":\"a\"},{\"id\":\"b\"}]"),
-            msg("tool", "orphan", "missing"), msg("tool", "blank"),
+            msg("tool", "orphan", "missing"),
             msg("tool", "A", "a"), msg("tool", "B", "b"))
         val repaired = AgentCompressionBoundary.normalizeOrphanToolResults(history)
-        assertEquals(listOf(0, 5), AgentCompressionBoundary.balancedCuts(repaired))
+        assertEquals(listOf(0, 4), AgentCompressionBoundary.balancedCuts(repaired))
+        assertSame(history[2], repaired[2])
         assertSame(history[3], repaired[3])
-        assertSame(history[4], repaired[4])
     }
 
     @Test fun completeParallelBatchAndNormalReplayRemainIdentical() {
@@ -77,4 +77,18 @@ class AgentCompressionOrphanTest {
             assertThrows(IllegalArgumentException::class.java) { AgentCompressionBoundary.balancedCuts(history) }
         }
     }
+    @Test fun blankResultIdIsNotTreatedAsRecoverableHistoricalEvidence() {
+        val history = listOf(msg("assistant", calls = "[{\"id\":\"a\"}]"), msg("tool", "blank"), msg("tool", "A", "a"))
+        assertSame(history, AgentCompressionBoundary.normalizeOrphanToolResults(history))
+        assertThrows(IllegalArgumentException::class.java) { AgentCompressionBoundary.balancedCuts(history) }
+    }
+
+    @Test fun orphanWithAnomalousCallsCannotHideDuplicateOrUnfinishedProtocol() {
+        listOf("[{\"id\":\"dup\"},{\"id\":\"dup\"}]", "[{\"id\":\"pending\"}]", "not json").forEach { calls ->
+            val history = listOf(msg("tool", "orphan", "missing", calls))
+            assertThrows(IllegalArgumentException::class.java) { AgentCompressionBoundary.normalizeOrphanToolResults(history) }
+            assertEquals(calls, history.single().toolCallsJson)
+        }
+    }
+
 }
