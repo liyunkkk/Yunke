@@ -17,9 +17,9 @@ class ChildGptSpeedContractTest(unittest.TestCase):
         settings = source('ui/components/SubAgentSettingRow.kt')
         self.assertLess(settings.index('trailing?.invoke()'), settings.index('Icon(if (dropdown)'))
 
-    def test_button_filters_actual_binding_and_media(self):
+    def test_button_filters_actual_binding(self):
         button = source('ui/components/SubAgentGptSpeedButton.kt')
-        for check in ('profile.isMedia', 'it.id == profile.providerId', 'it.id == profile.modelId',
+        for check in ('it.id == profile.providerId', 'it.id == profile.modelId',
                       'supportsGptSpeedBinding(provider, model)', 'if (!eligible) return'):
             self.assertIn(check, button)
 
@@ -61,7 +61,7 @@ class ChildGptSpeedContractTest(unittest.TestCase):
         editor = source('ui/components/ConversationSubAgentEditor.kt')
         body = editor.split('fun cycleGptSpeed(', 1)[1].split('fun saveModel(', 1)[0]
         for check in ('updateProfile(id)', 'old.providerId != providerId', 'old.modelId != modelId',
-                      'old.isMedia', 'supportsGptSpeedBinding(provider, model)', 'gptSpeedByModel'):
+                      'supportsGptSpeedBinding(provider, model)', 'gptSpeedByModel'):
             self.assertIn(check, body)
         self.assertNotIn('SubAgentPreferences.update(', body)
         self.assertNotIn('reasoning =', body)
@@ -69,7 +69,7 @@ class ChildGptSpeedContractTest(unittest.TestCase):
     def test_runtime_applies_own_speed_and_checks_eligibility(self):
         resolver = source('agent/runtime/ChildWorkerConfigResolver.kt')
         for check in ('supportsGptSpeedBinding(provider, model)', 'supportsGptSpeedBinding(currentProvider, currentModel)',
-                      'gptSpeedForModel(', 'gptSpeedMode =', 'supportsGptSpeedProtocol(', 'isGptSpeedModel('):
+                      'gptSpeedForModel(', 'gptSpeedMode =', 'isGptSpeedModel('):
             self.assertIn(check, resolver)
         self.assertNotIn('request.config.gptSpeedMode', resolver)
 

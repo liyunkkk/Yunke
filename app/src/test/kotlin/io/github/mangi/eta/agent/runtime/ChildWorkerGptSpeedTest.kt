@@ -60,16 +60,39 @@ class ChildWorkerGptSpeedTest {
         assertFalse(off.thinkingEnabled)
     }
 
-    @Test fun nonGptNonOpenAiAndMediaBindingsClearIncomingSpeedAndIgnoreStoredMemory() = runBlocking {
+    @Test fun customProviderChildTiersReachBothWireFormats() = runBlocking {
+        for (endpoint in listOf(OpenAiEndpointMode.RESPONSES, OpenAiEndpointMode.CHAT_COMPLETIONS)) {
+            val source = CustomProviderSetting("p", "GPT", "https://example.invalid", apiKey = "test",
+                endpointMode = endpoint, models = listOf(model.copy(modelId = "gpt-6-astra")))
+            for ((mode, tier) in listOf(GptSpeedMode.NORMAL to "default", GptSpeedMode.FAST to "fast", GptSpeedMode.ULTRA_FAST to "ultrafast")) {
+                val result = resolve(speed(mode), source)
+                assertEquals(Policy.Availability.AVAILABLE, result.availability)
+                val config = requireNotNull(result.configuration).model
+                assertEquals(mode, config.gptSpeedMode)
+                val body = if (endpoint == OpenAiEndpointMode.RESPONSES)
+                    ResponsesRequestBuilder.build(config, JSONArray(), JSONArray())
+                else OpenAiChatCompletionsProvider.buildRequestJson(config, JSONArray(), JSONArray())
+                assertEquals(tier, body.getString("service_tier"))
+                assertEquals("gpt-6-astra", body.getString("model"))
+            }
+        }
+    }
+
+    @Test fun onlyNonGptBindingClearsIncomingSpeedAndIgnoresStoredMemory() = runBlocking {
         val nonGpt = provider.copy(models = listOf(model.copy(modelId = "claude-sonnet")))
         val anthropic = AnthropicProviderSetting("p", "Anthropic", "https://example.invalid", apiKey = "test", models = listOf(model))
         val image = provider.copy(models = listOf(model.copy(outputModalities = listOf(Model.IMAGE_MODALITY))))
         val media = speed(GptSpeedMode.FAST).copy(role = "image_generation", reasoning = null)
-        for ((selected, source) in listOf(speed(GptSpeedMode.FAST) to nonGpt, speed(GptSpeedMode.FAST) to anthropic, media to image)) {
+        for ((selected, source) in listOf(speed(GptSpeedMode.FAST) to nonGpt)) {
             val candidate = resolve(selected, source)
             assertEquals(Policy.Availability.AVAILABLE, candidate.availability)
             assertNull(requireNotNull(candidate.configuration).model.gptSpeedMode)
             assertEquals(resolve(selected.copy(gptSpeedByModel = emptyMap()), source).configurationRevision, candidate.configurationRevision)
+        }
+        for ((selected, source) in listOf(speed(GptSpeedMode.FAST) to anthropic, media to image)) {
+            val candidate = resolve(selected, source)
+            assertEquals(Policy.Availability.AVAILABLE, candidate.availability)
+            assertEquals(GptSpeedMode.FAST, requireNotNull(candidate.configuration).model.gptSpeedMode)
         }
         val returned = resolve(speed(GptSpeedMode.FAST))
         assertEquals(GptSpeedMode.FAST, returned.configuration?.model?.gptSpeedMode)

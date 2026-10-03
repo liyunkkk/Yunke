@@ -28,6 +28,20 @@ class ConversationSubAgentGptSpeedEditorTest {
     private fun repository() = ConversationSubAgentPreferences(RuntimeEnvironment.getApplication()
         .getSharedPreferences("speed-editor-${UUID.randomUUID()}", Context.MODE_PRIVATE))
 
+    @Test fun customResponsesProviderCanPersistSpeed() = runBlocking {
+        val repo = repository()
+        val owner = repo.createDraft()
+        repo.update(owner) { it.copy(profiles = listOf(profile)) }
+        val custom = CustomProviderSetting("p", "GPT", "https://example.invalid",
+            endpointMode = OpenAiEndpointMode.RESPONSES, models = listOf(Model("m", "gpt-6-astra", "GPT")))
+        val editor = ConversationSubAgentEditor(owner, repo, { custom }) { true }
+        for (mode in listOf(GptSpeedMode.FAST, GptSpeedMode.ULTRA_FAST, GptSpeedMode.NORMAL)) {
+            val result = editor.cycleGptSpeed(profile.id, "p", "m")
+            assertTrue(result is ConversationSubAgentPreferences.WriteResult.Saved)
+            assertEquals(mode, repo.snapshot(owner).profiles.single().gptSpeedForModel())
+        }
+    }
+
     @Test fun cyclesAreIndependentAcrossModelsProvidersWorkersAndConversations() = runBlocking {
         val repo = repository()
         val owner = SubAgentConfigKey.Conversation("a")
@@ -121,11 +135,8 @@ class ConversationSubAgentGptSpeedEditorTest {
         repo.update(owner) { it.copy(profiles = listOf(profile)) }
         var source: ProviderSetting? = provider
         val editor = ConversationSubAgentEditor(owner, repo, { source }) { true }
-        val invalid = listOf(null, provider.copy(isEnabled = false), provider.copy(endpointMode = "unknown"),
-            AnthropicProviderSetting("p", "Anthropic", "https://example.invalid", models = provider.models),
-            provider.copy(models = listOf(provider.models.first().copy(isEnabled = false))),
-            provider.copy(models = listOf(provider.models.first().copy(modelId = "claude-sonnet", displayName = "gpt-5"))),
-            provider.copy(models = listOf(provider.models.first().copy(outputModalities = listOf(Model.IMAGE_MODALITY)))))
+        val invalid = listOf(null, provider.copy(isEnabled = false), provider.copy(models = listOf(provider.models.first().copy(isEnabled = false))),
+            provider.copy(models = listOf(provider.models.first().copy(modelId = "claude-sonnet", displayName = "gpt-5"))))
         invalid.forEach {
             source = it
             val before = repo.export(owner)
@@ -134,6 +145,6 @@ class ConversationSubAgentGptSpeedEditorTest {
         }
         source = provider
         repo.update(owner) { it.copy(profiles = listOf(profile.copy(role = "image_generation"))) }
-        assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected, editor.cycleGptSpeed(profile.id, "p", "m"))
+        assertTrue(editor.cycleGptSpeed(profile.id, "p", "m") is ConversationSubAgentPreferences.WriteResult.Saved)
     }
 }

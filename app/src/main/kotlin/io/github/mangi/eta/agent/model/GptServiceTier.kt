@@ -1,7 +1,6 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.data.model.GptSpeedMode
-import io.github.mangi.eta.data.model.supportsGptSpeedProtocol
 import io.github.mangi.eta.data.model.isGptSpeedModel
 import org.json.JSONObject
 
@@ -9,7 +8,6 @@ import org.json.JSONObject
 internal object GptServiceTier {
     fun apply(request: JSONObject, config: AgentModelClient.ModelConfig) {
         val mode = config.gptSpeedMode ?: return // Preserve legacy/manual service_tier settings.
-        if (!supportsGptSpeedProtocol(config.providerType, config.openAiEndpointMode)) return
         val actualModel = request.opt("model") as? String ?: return
         if (!isGptSpeedModel(actualModel)) return
         request.put("service_tier", when (mode) {

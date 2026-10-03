@@ -63,7 +63,7 @@ class SubAgentGptSpeedButtonTest {
     private val mediaProfile = SubAgentProfile(
         "speed-media", "图片代理", role = "image_generation", providerId = providerId, modelId = gptRecord.id,
     )
-    private val foreignProtocolProfile = gptProfile.copy(id = "speed-foreign", providerId = anthropicProvider.id)
+    private val foreignProtocolProfile = gptProfile.copy(id = "speed-foreign", name = "其他协议代理", providerId = anthropicProvider.id)
     private val implProfile = SubAgentProfile(
         "speed-impl", "执行代理", providerId = providerId, modelId = gptRecord.id, tier = SubAgentTaskTier.COMPLEX,
     )
@@ -84,6 +84,22 @@ class SubAgentGptSpeedButtonTest {
     private fun liveProfile(fixture: SubAgentUiFixture, id: String): SubAgentProfile {
         val config = (fixture.editor.observe() as SubAgentEditorState.Loaded).config
         return config.profiles.first { it.id == id }
+    }
+
+    @Test
+    fun customResponsesProviderShowsAndCyclesSpeedControl() {
+        val custom = io.github.mangi.eta.data.model.CustomProviderSetting(
+            id = providerId, name = "GPT", baseUrl = "https://example.invalid",
+            endpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES,
+            models = listOf(gptRecord.copy(modelId = "gpt-6-astra")),
+        )
+        val fixture = SubAgentUiFixture(providers = listOf(custom), profiles = listOf(gptProfile))
+        compose.setSubAgentContent(fixture) {
+            MaterialTheme { SubAgentProfileRow(liveProfile(fixture, gptProfile.id), listOf(custom), enabled = true, settings = true) }
+        }
+        speedNode("测试代理").assertExists().performTouchInput { click() }
+        compose.waitForIdle()
+        compose.runOnIdle { assertEquals(GptSpeedMode.FAST, modeOf(fixture, gptProfile.id)) }
     }
 
     @Test
@@ -137,7 +153,7 @@ class SubAgentGptSpeedButtonTest {
     }
 
     @Test
-    fun nonGptMediaAndUnknownProtocolProfilesHideTheButton() {
+    fun onlyNonGptProfilesHideTheButton() {
         val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(nonGptProfile, mediaProfile, foreignProtocolProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme {
@@ -149,7 +165,8 @@ class SubAgentGptSpeedButtonTest {
             }
         }
         speedNode("测试代理").assertDoesNotExist()
-        speedNode("图片代理").assertDoesNotExist()
+        speedNode("图片代理").assertExists()
+        speedNode("其他协议代理").assertExists()
     }
 
     @Test

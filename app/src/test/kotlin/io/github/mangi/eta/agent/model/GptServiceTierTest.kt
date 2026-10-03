@@ -64,17 +64,16 @@ class GptServiceTierTest {
         }
     }
 
-    @Test fun nonGptAndNonTextModelsNeverGetAnInjectedTier() {
+    @Test fun nonGptModelsNeverGetAnInjectedTier() {
         listOf(false, true).forEach { responses ->
-            listOf("o3", "codex", "foo-gpt-5", "claude-sonnet", "gpt-image-1",
-                "gpt-4o-audio-preview", "gpt-realtime").forEach { model ->
+            listOf("o3", "codex", "foo-gpt-5", "claude-sonnet", "deepseek-chat").forEach { model ->
                 assertFalse(model, build(config(GptSpeedMode.FAST).copy(model = model), responses)
                     .has("service_tier"))
             }
         }
         val request = JSONObject().put("model", "gpt-5")
         GptServiceTier.apply(request, config(GptSpeedMode.FAST).copy(providerType = ProviderTypes.ANTHROPIC))
-        assertFalse(request.has("service_tier"))
+        assertEquals("fast", request.getString("service_tier"))
     }
 
     @Test fun finalActualModelRatherThanConfiguredLabelControlsInjection() {
@@ -91,10 +90,10 @@ class GptServiceTierTest {
         assertFalse(build(toGpt, true).has("service_tier"))
     }
 
-    @Test fun unknownEndpointNeverInjectsATier() {
+    @Test fun endpointDoesNotRestrictGptTier() {
         val request = JSONObject().put("model", "gpt-6-astra")
         GptServiceTier.apply(request, config(GptSpeedMode.FAST).copy(openAiEndpointMode = "unknown"))
-        assertFalse(request.has("service_tier"))
+        assertEquals("fast", request.getString("service_tier"))
     }
 
     @Test fun helperChangesOnlyServiceTierAndDoesNotMutateSnapshots() {

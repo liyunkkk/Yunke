@@ -123,7 +123,7 @@ internal class ConversationSubAgentEditor(
         return try {
             // Capture before suspension, even when the caller has no expected UI snapshot.
             val captured = repository.snapshot(owner).profiles.singleOrNull { it.id == id } ?: throw LostOwner()
-            if (captured.providerId != providerId || captured.modelId != modelId || captured.isMedia ||
+            if (captured.providerId != providerId || captured.modelId != modelId ||
                 (expected != null && captured != expected)) throw LostOwner()
             // Room lookup is suspendable and must never run inside the owner transaction/lock.
             val resolvedProvider = providerLookup(providerId)
@@ -134,7 +134,7 @@ internal class ConversationSubAgentEditor(
             updateProfile(id) { old ->
                 // updateProfile also rechecks canEdit/state under the owner transaction.
                 if (old != (expected ?: captured) || old.providerId != providerId || old.modelId != modelId ||
-                    old.isMedia || !supportsGptSpeedBinding(provider, model)) throw LostOwner()
+                    !supportsGptSpeedBinding(provider, model)) throw LostOwner()
                 old.copy(gptSpeedByModel = old.gptSpeedByModel +
                     (SubAgentProfile.modelReasoningKey(providerId, modelId) to old.gptSpeedForModel().next()))
             }

@@ -72,6 +72,26 @@ class AgentChatSpeedChipGestureTest {
         context.getString(R.string.reasoning_picker_title)
 
     @Test
+    fun customResponsesProjectionEnablesActualLongPress() {
+        val model = io.github.mangi.eta.data.model.Model("m", "gpt-6-astra", "GPT")
+        val provider = io.github.mangi.eta.data.model.CustomProviderSetting(
+            "p", "GPT", "https://example.invalid",
+            endpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES,
+            models = listOf(model),
+        )
+        val selected = io.github.mangi.eta.ui.model.AgentModelPickerProjector
+            .project(listOf(provider), "p", "m").selectedModel
+        gptSupported.value = requireNotNull(selected).gptSpeedSupported
+        render()
+        assertTrue(chip().fetchSemanticsNode().config.contains(SemanticsActions.OnLongClick))
+        chip().performTouchInput { longClick() }
+        compose.runOnIdle {
+            assertEquals(1, cycles)
+            assertEquals(GptSpeedMode.FAST, mode.value)
+        }
+    }
+
+    @Test
     fun gptLongPressCyclesSpeedWhileSingleClickDoesNot() {
         gptSupported.value = true
         options.value = emptyList()

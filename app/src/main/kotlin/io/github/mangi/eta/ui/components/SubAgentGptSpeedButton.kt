@@ -52,7 +52,7 @@ internal fun subAgentGptSpeedDescription(name: String, mode: GptSpeedMode): Stri
     "$name GPT 速度：${gptSpeedDisplayName(mode)}，点击切换速度"
 
 /**
- * 子代理 GPT 速度按钮：仅合资格文本子代理显示，单击在原位循环速度档位。
+ * 子代理 GPT 速度按钮：仅 GPT 模型显示，单击在原位循环速度档位。
  *
  * 动画与主会话 [ThinkingEffortChip] 完全一致，直接复用 ThinkingSpeedAnimation.kt 的策略：
  * 450ms、旋转一整圈、缩放 1→1.12→1、[GptSpeedAnimationGate] 闸门与淡粉/酒红渐变。
@@ -71,14 +71,12 @@ internal fun SubAgentGptSpeedButton(
 ) {
     val editor = LocalConversationSubAgentEditor.current
     val usable = enabled && editor?.enabled == true
-    val eligible = remember(profile.isMedia, profile.providerId, profile.modelId, providers) {
-        if (profile.isMedia) false else {
-            val provider = providers.firstOrNull { it.id == profile.providerId && it.isEnabled }
-            val model = provider?.models?.firstOrNull { it.id == profile.modelId && it.isEnabled }
-            supportsGptSpeedBinding(provider, model)
-        }
+    val eligible = remember(profile.providerId, profile.modelId, providers) {
+        val provider = providers.firstOrNull { it.id == profile.providerId && it.isEnabled }
+        val model = provider?.models?.firstOrNull { it.id == profile.modelId && it.isEnabled }
+        supportsGptSpeedBinding(provider, model)
     }
-    // 非合资格（媒体子代理 / 非 GPT 模型 / 未知协议 / 缺模型）两个入口都不渲染速度按钮。
+    // 非 GPT 或不可用的模型两个入口都不渲染速度按钮。
     if (!eligible) return
 
     // Bind the scope too: owner/model changes cancel pending lookups and old feedback/animation.

@@ -7,7 +7,6 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.isGptSpeedModel
 import io.github.mangi.eta.data.model.supportsGptSpeedBinding
-import io.github.mangi.eta.data.model.supportsGptSpeedProtocol
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import java.security.MessageDigest
@@ -144,12 +143,12 @@ internal object ChildWorkerConfigResolver {
     }
 
     private fun runtimeSupportsGptSpeed(model: AgentModelClient.ModelConfig): Boolean =
-        supportsGptSpeedProtocol(model.providerType, model.openAiEndpointMode) && isGptSpeedModel(model.model)
+        isGptSpeedModel(model.model)
 
     private fun applyProfile(profile: SubAgentProfile, model: AgentModelClient.ModelConfig, speedEligible: Boolean) =
         SubAgentPreferences.applyImageResolution(profile, SubAgentPreferences.applyReasoning(profile, model)).copy(
             // Always replace the incoming value: a child never inherits the parent's speed selection.
-            gptSpeedMode = if (!profile.isMedia && speedEligible && runtimeSupportsGptSpeed(model))
+            gptSpeedMode = if (speedEligible && runtimeSupportsGptSpeed(model))
                 profile.gptSpeedForModel() else null,
         )
 }

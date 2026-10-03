@@ -16,31 +16,11 @@ enum class GptSpeedMode {
     }
 }
 
-// Match the model ID, optionally qualified by provider namespaces, not a display-name substring.
-// No version allowlist: support for a requested tier is determined by the provider's response.
-private val GPT_SPEED_MODEL_ID = Regex(
-    "^(?:[a-z0-9][a-z0-9._-]*/)*gpt-[0-9][a-z0-9._:-]*$",
-    RegexOption.IGNORE_CASE,
-)
-private val NON_TEXT_MODEL_VARIANT = Regex(
-    "(?:^|[-._:])(image|audio|realtime|tts|transcribe|transcription)(?:$|[-._:])",
-    RegexOption.IGNORE_CASE,
-)
+// Match actual model IDs (including optional namespaces), never provider/display names.
+fun isGptSpeedModel(modelId: String): Boolean =
+    modelId.trim().substringAfterLast('/').startsWith("gpt-", ignoreCase = true)
 
-fun isGptSpeedModel(modelId: String): Boolean {
-    val id = modelId.trim()
-    return GPT_SPEED_MODEL_ID.matches(id) &&
-        !NON_TEXT_MODEL_VARIANT.containsMatchIn(id.substringAfterLast('/'))
-}
-
-/** Shared eligibility for UI binding and run snapshots; unknown protocols fail closed. */
-internal fun supportsGptSpeedProtocol(providerType: String, endpointMode: String): Boolean =
-    providerType == ProviderTypes.OPENAI_COMPATIBLE &&
-        (endpointMode == OpenAiEndpointMode.CHAT_COMPLETIONS || endpointMode == OpenAiEndpointMode.RESPONSES)
-
+/** Only the selected model decides speed eligibility; availability is still checked. */
 internal fun supportsGptSpeedBinding(provider: ProviderSetting?, model: Model?): Boolean =
-    provider is OpenAiCompatibleProviderSetting && provider.isEnabled && model != null && model.isEnabled &&
-        supportsGptSpeedProtocol(ProviderTypes.OPENAI_COMPATIBLE, provider.endpointMode) &&
-        isGptSpeedModel(model.modelId) && !model.supportsImageGeneration &&
-        !model.supportsVideoGeneration && !model.supportsSpeechSynthesis &&
-        (model.outputModalities.isEmpty() || model.outputModalities.any { it.equals(Model.TEXT_MODALITY, ignoreCase = true) })
+    provider != null && provider.isEnabled && model != null && model.isEnabled &&
+        isGptSpeedModel(model.modelId)

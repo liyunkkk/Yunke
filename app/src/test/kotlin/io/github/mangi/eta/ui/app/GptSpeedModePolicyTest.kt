@@ -22,7 +22,7 @@ class GptSpeedModePolicyTest {
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, ""))
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, "claude-opus"))
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, "gpt-6-astra", false))
-        assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, "gpt-image-1"))
+        assertEquals(GptSpeedMode.FAST, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, "gpt-image-1"))
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.cycle(GptSpeedMode.NORMAL, "grok-4"))
     }
 
@@ -44,7 +44,7 @@ class GptSpeedModePolicyTest {
     @Test fun snapshotNeverCarriesTheOldTierIntoAnotherModelOrMedia() {
         val fast = GptSpeedModePolicy.snapshot(config(), GptSpeedMode.FAST)
         assertNull(GptSpeedModePolicy.snapshot(fast.copy(model = "deepseek-chat"), GptSpeedMode.FAST).gptSpeedMode)
-        assertNull(GptSpeedModePolicy.snapshot(fast.copy(providerType = ProviderTypes.ANTHROPIC), GptSpeedMode.FAST).gptSpeedMode)
+        assertEquals(GptSpeedMode.FAST, GptSpeedModePolicy.snapshot(fast.copy(providerType = ProviderTypes.ANTHROPIC), GptSpeedMode.FAST).gptSpeedMode)
         assertNull(GptSpeedModePolicy.snapshot(fast, GptSpeedMode.FAST, false).gptSpeedMode)
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.snapshot(config(), GptSpeedMode.NORMAL).gptSpeedMode)
     }
@@ -66,7 +66,21 @@ class GptSpeedModePolicyTest {
             GptSpeedModePolicy.forSelection(GptSpeedMode.FAST, "p", "m", emptyList()))
         assertEquals(GptSpeedMode.NORMAL,
             GptSpeedModePolicy.forSelection(GptSpeedMode.FAST, "p", "m", listOf(provider.copy(models = emptyList()))))
-        assertNull(GptSpeedModePolicy.snapshot(config().copy(openAiEndpointMode = "unknown"), GptSpeedMode.FAST).gptSpeedMode)
+        assertEquals(GptSpeedMode.FAST, GptSpeedModePolicy.snapshot(config().copy(openAiEndpointMode = "unknown"), GptSpeedMode.FAST).gptSpeedMode)
+    }
+
+    @Test fun customResponsesBindingProjectsAndFreezesChatSpeed() {
+        val model = Model("m", "gpt-6-astra", "GPT")
+        val provider = io.github.mangi.eta.data.model.CustomProviderSetting("p", "GPT", "https://example.invalid",
+            endpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES, models = listOf(model))
+        val picker = io.github.mangi.eta.ui.model.AgentModelPickerProjector.project(listOf(provider), "p", "m")
+        assertTrue(requireNotNull(picker.selectedModel).gptSpeedSupported)
+        val mode = GptSpeedModePolicy.cycle(GptSpeedMode.NORMAL, model.modelId,
+            io.github.mangi.eta.data.model.supportsGptSpeedBinding(provider, model))
+        assertEquals(GptSpeedMode.FAST, mode)
+        assertEquals(mode, GptSpeedModePolicy.forSelection(mode, "p", "m", listOf(provider)))
+        val runtime = io.github.mangi.eta.data.repository.RuntimeConfigRepository.buildRuntimeConfig(provider, model)
+        assertEquals(mode, GptSpeedModePolicy.snapshot(runtime, mode).gptSpeedMode)
     }
 
     private fun config() = AgentModelClient.ModelConfig(

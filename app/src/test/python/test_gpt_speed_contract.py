@@ -32,15 +32,12 @@ class GptSpeedContractTest(unittest.TestCase):
         self.assertIn("supportsGptSpeedBinding(provider, model)", state)
         self.assertIn("supportsGptSpeedBinding(runProvider, runModel)", state)
 
-    def test_eligibility_is_fail_closed_for_protocol_and_media(self):
+    def test_only_model_id_decides_speed_eligibility(self):
         policy = source("data/model/GptSpeedMode.kt")
-        for check in ("provider is OpenAiCompatibleProviderSetting", "provider.isEnabled", "model.isEnabled",
-                      "isGptSpeedModel(model.modelId)", "!model.supportsImageGeneration",
-                      "!model.supportsVideoGeneration", "!model.supportsSpeechSynthesis", "Model.TEXT_MODALITY",
-                      "providerType == ProviderTypes.OPENAI_COMPATIBLE",
-                      "endpointMode == OpenAiEndpointMode.CHAT_COMPLETIONS",
-                      "endpointMode == OpenAiEndpointMode.RESPONSES"):
-            self.assertIn(check, policy)
+        self.assertIn("isGptSpeedModel(model.modelId)", policy)
+        self.assertIn('startsWith("gpt-", ignoreCase = true)', policy)
+        for gate in ("providerType", "endpointMode", "supportsImageGeneration", "outputModalities"):
+            self.assertNotIn(gate, policy)
 
     def test_provider_updates_reset_background_and_draft_before_picker(self):
         body = between(source("ui/app/AgentAppState.kt"), "private fun updateSelectionProviders(",
@@ -58,7 +55,8 @@ class GptSpeedContractTest(unittest.TestCase):
         self.assertLess(tail.index("state.gptSpeedMode"), tail.index("scope.launch"))
         policy = source("ui/app/GptSpeedModePolicy.kt")
         self.assertIn("config.copy(", policy)
-        self.assertIn("supportsGptSpeedProtocol(config.providerType, config.openAiEndpointMode)", policy)
+        self.assertIn("isGptSpeedModel(config.model)", policy)
+        self.assertNotIn("supportsGptSpeedProtocol", policy)
 
     def test_tier_applies_after_custom_body_merge_in_both_builders(self):
         for path in ("agent/model/OpenAiChatCompletionsProvider.kt", "agent/model/ResponsesRequestBuilder.kt"):
