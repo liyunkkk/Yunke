@@ -55,9 +55,9 @@ internal fun validQuestionResolution(status: AgentQuestionStatus, answer: AgentQ
         answer.otherText.length > AgentQuestionCodec.MAX_OTHER_TEXT_CHARS) return false
     return when (answer.kind) {
         AgentQuestionAnswer.KIND_OPTION -> !answer.optionId.isNullOrBlank() &&
-            answer.optionId.length <= AgentQuestionCodec.MAX_OPTION_ID_CHARS && answer.otherText.isEmpty()
-        AgentQuestionAnswer.KIND_OTHER -> answer.optionId == null && answer.otherText.isNotBlank()
-        AgentQuestionAnswer.KIND_DELEGATE -> answer.optionId == null && answer.otherText.isEmpty()
+            answer.optionId.length <= AgentQuestionCodec.MAX_OPTION_ID_CHARS && answer.otherText.isBlank()
+        AgentQuestionAnswer.KIND_OTHER -> answer.optionId.isNullOrBlank() && answer.otherText.isNotBlank()
+        AgentQuestionAnswer.KIND_DELEGATE -> answer.optionId.isNullOrBlank() && answer.otherText.isBlank()
         else -> false
     }
 }

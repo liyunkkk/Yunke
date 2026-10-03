@@ -353,6 +353,21 @@ class AgentQuestionDurableAuthorityTest {
         assertEquals(AgentQuestionStatus.Interrupted, ledger.query("chat", "run", "q", "call")!!.status)
     }
 
+    @Test fun durableShapeMatchesCanonicalUnusedBlankFields() {
+        assertTrue(validQuestionResolution(
+            AgentQuestionStatus.Answered,
+            AgentQuestionAnswer("option", "a", otherText = "   "),
+        ))
+        assertTrue(validQuestionResolution(
+            AgentQuestionStatus.Answered,
+            AgentQuestionAnswer("other", optionId = "   ", otherText = "custom"),
+        ))
+        assertTrue(validQuestionResolution(
+            AgentQuestionStatus.Answered,
+            AgentQuestionAnswer("delegate", optionId = "   ", otherText = "   "),
+        ))
+    }
+
     @Test fun ledgerIsBoundedWithoutEvictingLiveWaiting() {
         val storage = Storage()
         val ledger = AgentQuestionLedger(storage)
