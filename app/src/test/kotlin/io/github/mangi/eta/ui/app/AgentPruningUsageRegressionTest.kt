@@ -5,6 +5,8 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
@@ -29,6 +31,9 @@ class AgentPruningUsageRegressionTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         try {
             val app = AgentAppState(context, scope)
+            call(app, "updateSelectionProviders", listOf(
+                OpenAiCompatibleProviderSetting("p", "Test", "https://example.org/v1",
+                    models = listOf(Model("m", "model", "Model")))))
             val oldHistory = listOf(AgentModelClient.ConversationMessage("user", "original"))
             call(app, "updateConversation", "prune-c", AgentChatHomeUiState(
                 messages = listOf(UserMessageUi("old-user", "original")), history = oldHistory,
