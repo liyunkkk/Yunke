@@ -5,7 +5,6 @@ import io.github.mangi.eta.agent.model.AgentContextCompactor
 import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentChatUiState
-import io.github.mangi.eta.ui.model.latestBilledContextTokens
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
 import io.github.mangi.eta.ui.model.RunTraceMessageUi
@@ -33,16 +32,48 @@ internal object AgentConversationRevisionReducer {
         val history: List<AgentModelClient.ConversationMessage>,
     )
 
+    /** Restore on a temporary copy first; null means the source must not be revised. */
+    fun prepareForRevision(
+        state: AgentChatUiState,
+        targetMessageId: String,
+        loadCheckpoint: (String) -> List<AgentModelClient.ConversationMessage>,
+    ): AgentChatUiState? {
+        val targetIndex = state.messages.indices.singleOrNull { state.messages[it].id == targetMessageId } ?: return null
+        val anchor = (targetIndex downTo 0).firstOrNull {
+            state.messages[it] is UserMessageUi ||
+                (state.messages[it] is AgentMessageUi && (state.messages[it] as AgentMessageUi).content.isNotBlank())
+        } ?: return null
+        // Preserve the existing safe edit of a final supplement that was never sent to the model.
+        val anchorMessage = state.messages[anchor]
+        if (anchorMessage is UserMessageUi && anchorMessage.isSteerSupplement() &&
+            historyMessageLocation(state, anchor) == AgentConversationRevisionArchive.Location.Missing &&
+            boundary(state, anchorMessage.id) != null) return state
+        return AgentConversationRevisionArchive.prepare(
+            source = state,
+            locate = { historyMessageLocation(it, anchor) },
+            couldBeArchived = { candidate ->
+                val summaryIndex = candidate.history.indexOfLast(AgentContextCompactor::isCompressionSummary)
+                summaryIndex >= 0 && (0 until anchor).none { earlier ->
+                    if (candidate.messages[earlier] !is UserMessageUi) false else {
+                        val location = historyMessageLocation(candidate, earlier)
+                        location is AgentConversationRevisionArchive.Location.Found && location.index > summaryIndex
+                    }
+                }
+            },
+            loadCheckpoint = loadCheckpoint,
+        )
+    }
+
     fun boundary(state: AgentChatUiState, targetMessageId: String): Boundary? {
-        val targetIndex = state.messages.indexOfFirst { it.id == targetMessageId }
-        if (targetIndex < 0) return null
+        val targetIndex = state.messages.indices.singleOrNull { state.messages[it].id == targetMessageId } ?: return null
         val userMessageIndex = (targetIndex downTo 0).firstOrNull { index ->
             state.messages[index] is UserMessageUi
         } ?: return null
         val userMessage = state.messages[userMessageIndex] as UserMessageUi
         val historyIndex = historyUserIndex(state, userMessageIndex)
         val laterUsers = state.messages.drop(userMessageIndex + 1).any { it is UserMessageUi }
-        if (historyIndex == null && userMessage.isSteerSupplement()) {
+        if (historyIndex == null && userMessage.isSteerSupplement() &&
+            historyMessageLocation(state, userMessageIndex) == AgentConversationRevisionArchive.Location.Missing) {
             // 停止时尚未写进历史的最后一条追加：它之后没有任何内容可被抹掉，
             // 以完整历史为前缀替换它是安全的；其它缺失的追加仍拒绝，避免误认成原问题。
             val owner = ownerRunId(userMessage.id)
@@ -50,7 +81,7 @@ internal object AgentConversationRevisionReducer {
             return Boundary(
                 userMessage = userMessage,
                 userMessageIndex = userMessageIndex,
-                historyPrefix = state.history,
+                historyPrefix = completePrefix(state.history, state.history.size) ?: return null,
                 laterTurnCount = 0,
                 contextWasCompacted = false,
             )
@@ -58,45 +89,33 @@ internal object AgentConversationRevisionReducer {
         val laterTurnCount = state.messages.drop(userMessageIndex + 1).count {
             it is UserMessageUi && !it.isSteerSupplement()
         }
-        val compacted = historyIndex == null && wasRemovedByCompaction(state, userMessageIndex)
-        // A missing match is not proof of compaction. Fail closed instead of erasing history.
-        if (historyIndex == null && !compacted) return null
-
+        // A summary/visible marker is not original history. Restore before calling this reducer.
+        val prefix = historyIndex?.let { completePrefix(state.history, it) } ?: return null
         return Boundary(
             userMessage = userMessage,
             userMessageIndex = userMessageIndex,
-            historyPrefix = historyIndex?.let(state.history::take).orEmpty(),
+            historyPrefix = prefix,
             laterTurnCount = laterTurnCount,
-            contextWasCompacted = compacted,
+            contextWasCompacted = false,
         )
     }
 
     /**
      * 按操作栏分段删除：删掉目标所在的一段以及它下面的所有段，上面的段原样保留。
-     * 删最后一段时只去掉这一段。模型上下文在同一位置截断；该位置已被压缩时，
-     * 保留压缩摘要，或用时间线标记上的摘要加之后的可见消息重建，而不是拒绝删除。
+     * 删最后一段时只去掉这一段。模型上下文必须精确截断；已压缩的目标必须先
+     * 在临时副本上 prepareForRevision，缺档时保持源会话不动。
      */
     fun deleteFromTurn(state: AgentChatUiState, targetMessageId: String): AgentChatUiState? {
         val segments = actionBarSegments(state.messages)
-        val segment = segments.firstOrNull { it.ownerId == targetMessageId } ?: return null
+        if (state.messages.count { it.id == targetMessageId } != 1) return null
+        val segment = segments.singleOrNull { it.ownerId == targetMessageId } ?: return null
         val messages = state.messages.take(segment.start)
-        val history = if (messages.isEmpty()) emptyList() else historyBefore(state, segment.start) ?: return null
-        return state.copy(
+        val history = historyBefore(state, segment.start) ?: return null
+        return AgentConversationRevisionArchive.invalidateReceipt(state.copy(
             messages = messages,
             history = history,
             messageEdit = null,
-            // A message bill belongs to an old request, not the newly truncated history.
-            livePromptTokens = null,
-            livePromptIsProjected = false,
-            contextBudgetReceiptTokens = null,
-            contextHasStarted = true,
-            contextAwaitingReceipt = true,
-            receiptPredictionTokens = null,
-            cloudRouteSignature = null,
-            cloudReceiptRequestId = null, contextReceiptEvidence = null,
-            cloudHistoryTokens = null,
-            cloudRequestOverheadTokens = null,
-        )
+        ))
     }
 
     /** 删除确认框用：目标段下面还会被一起删掉的段数。 */
@@ -151,137 +170,59 @@ internal object AgentConversationRevisionReducer {
         return segments
     }
 
-    /** 与展示消息 [0, cut) 对应的模型上下文。 */
-    private fun historyBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? =
-        tailHistoryBefore(state, cut) ?: exactHistoryBefore(state, cut) ?: compactedHistoryBefore(state, cut)
-
-    /**
-     * 从上下文末尾往回去掉被删的部分：被删的提问逐条对上，被删的回复按正文对上，
-     * 中间的工具调用随之去掉。被删区域里有压缩标记或对不上时返回 null。
-     * 当前轮次的提问已被压缩时也能用，且保留未删部分的工具记录。
-     */
-    private fun tailHistoryBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? {
-        val deleted = state.messages.subList(cut, state.messages.size)
-        if (deleted.any { it is ContextCompactedMessageUi }) return null
-        var usersLeft = deleted.count { it is UserMessageUi }
-        val replies = deleted.filterIsInstance<AgentMessageUi>()
-            .map { it.content.trim() }.filter { it.isNotEmpty() }.toSet()
-        // 被删的段里没有提问也没有正文（例如只有一条停止提示），上下文不用动。
-        if (usersLeft == 0 && replies.isEmpty()) return state.history
-        var removedReplies = 0
-        var end = state.history.size
-        while (end > 0) {
-            val message = state.history[end - 1]
-            if (AgentContextCompactor.isCompressionSummary(message)) break
-            if (message.role == "user" && isHiddenContinuePrompt(message)) {
-                // 暂停后自动续写的隐藏提示，界面上没有对应气泡，跟着被删区域一起去掉。
-            } else if (message.role == "user") {
-                if (usersLeft == 0) break
-                usersLeft--
-            } else if (message.role == "assistant" && message.content.isNotBlank()) {
-                if (message.content.trim() !in replies) break
-                removedReplies++
-            }
-            end--
-        }
-        if (usersLeft != 0 || (replies.isNotEmpty() && removedReplies == 0)) return null
-        // 保留的提问一条都不在上下文里、又没有摘要：不是压缩，不能当成可删。
-        if (end == 0 && state.messages.take(cut).any { it is UserMessageUi }) return null
-        // 保留下来的回复若发起过工具调用，结果一并保留，避免孤立的 tool_call。
-        if (end > 0 && state.history[end - 1].role == "assistant" && state.history[end - 1].toolCallsJson.isNotBlank()) {
-            while (end < state.history.size && state.history[end].role == "tool") end++
-        }
-        return state.history.take(end)
-    }
-
-    private fun isHiddenContinuePrompt(message: AgentModelClient.ConversationMessage): Boolean =
-        AgentContextCompactor.isSteeringUserMessage(message) &&
-            !message.content.trimStart().startsWith(AgentContextCompactor.STEERING_USER_PREFIX)
-
-    private fun exactHistoryBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? {
+    /** No UI reconstruction and no summary fallback: both sides of the cut need exact anchors. */
+    private fun historyBefore(state: AgentChatUiState, cut: Int, validateRemoved: Boolean = true): List<AgentModelClient.ConversationMessage>? {
+        val removedAnchor = (cut until state.messages.size).firstOrNull { isTextAnchor(state.messages[it]) }
+        if (validateRemoved && removedAnchor != null && historyMessageLocation(state, removedAnchor) !is AgentConversationRevisionArchive.Location.Found) return null
         if (cut < state.messages.size && state.messages[cut] is UserMessageUi) {
-            return historyUserIndex(state, cut)?.let(state.history::take)
+            val index = historyUserIndex(state, cut) ?: return null
+            return completePrefix(state.history, index)
         }
-        val anchor = (cut - 1 downTo 0).firstOrNull { state.messages[it] is UserMessageUi } ?: return null
-        val anchorIndex = historyUserIndex(state, anchor) ?: return null
-        val between = state.messages.subList(anchor + 1, cut)
-        // 中途压缩过时，历史里这一段已不是逐条对应，交给摘要重建。
-        if (between.any { it is ContextCompactedMessageUi }) return null
-        val keepReplies = between.count { it is AgentMessageUi && it.content.isNotBlank() }
-        var end = anchorIndex + 1
-        var seen = 0
-        while (seen < keepReplies && end < state.history.size) {
-            val message = state.history[end]
-            if (message.role == "user") return null
-            end++
-            if (message.role == "assistant" && message.content.isNotBlank()) seen++
+        val keptAnchor = (cut - 1 downTo 0).firstOrNull { isTextAnchor(state.messages[it]) }
+        if (keptAnchor == null) return if (removedAnchor == null) null else {
+            val index = (historyMessageLocation(state, removedAnchor) as AgentConversationRevisionArchive.Location.Found).index
+            completePrefix(state.history, index)
         }
-        if (seen < keepReplies) return null
-        // 已保留回复发起的工具调用要带上结果，避免留下孤立的 tool_call。
-        while (end < state.history.size && state.history[end].role == "tool") end++
-        return state.history.take(end)
+        val location = historyMessageLocation(state, keptAnchor) as? AgentConversationRevisionArchive.Location.Found ?: return null
+        return completePrefix(state.history, location.index + 1)
     }
 
-    /**
-     * 截断点已被压缩：取截断点之前最近一次压缩的摘要，再接上摘要之后到截断点的可见消息。
-     * 该摘要就是当前上下文里的那份时，直接用原摘要；否则用时间线标记上保存的摘要正文。
-     */
-    private fun compactedHistoryBefore(state: AgentChatUiState, cut: Int): List<AgentModelClient.ConversationMessage>? {
-        val markerIndex = (cut - 1 downTo 0).firstOrNull { index ->
-            val message = state.messages[index]
-            message is ContextCompactedMessageUi && message.compactedCount > 0 && message.summary.isNotBlank()
+    private fun isTextAnchor(message: AgentChatMessageUi): Boolean = message is UserMessageUi ||
+        (message is AgentMessageUi && message.content.isNotBlank())
+
+    /** Extend only the retained assistant's contiguous tool batch, and reject incomplete known batches. */
+    private fun completePrefix(
+        history: List<AgentModelClient.ConversationMessage>, requestedEnd: Int,
+    ): List<AgentModelClient.ConversationMessage>? {
+        var end = requestedEnd
+        if (end > 0 && history[end - 1].role == "assistant" && history[end - 1].toolCallsJson.isNotBlank()) {
+            while (end < history.size && history[end].role == "tool") end++
         }
-        val currentSummaries = state.history.filter(AgentContextCompactor::isCompressionSummary)
-        if (markerIndex == null) {
-            // 没有时间线标记的旧会话：只有上下文里确有摘要时才视为压缩过，否则保持拒绝。
-            if (currentSummaries.isEmpty()) return null
-            return reconstructHistory(state.messages.take(cut))
+        var index = 0
+        while (index < end) {
+            val message = history[index]
+            if (message.role == "assistant" && message.toolCallsJson.isNotBlank()) {
+                val ids = try {
+                    val calls = org.json.JSONArray(message.toolCallsJson)
+                    (0 until calls.length()).map { calls.getJSONObject(it).getString("id").also { id ->
+                        if (id.isBlank()) return null
+                    } }
+                } catch (_: Exception) { return null }
+                var next = index + 1
+                val results = mutableListOf<String>()
+                while (next < end && history[next].role == "tool") results += history[next++].toolCallId
+                if (ids.isNotEmpty() && (ids.size != ids.distinct().size || results.size != ids.size || results.toSet() != ids.toSet())) return null
+                index = next
+            } else index++
         }
-        val laterMarker = (markerIndex + 1 until state.messages.size).any { index ->
-            val message = state.messages[index]
-            message is ContextCompactedMessageUi && message.compactedCount > 0 && message.summary.isNotBlank()
-        }
-        val summary = if (!laterMarker && currentSummaries.isNotEmpty()) {
-            currentSummaries
-        } else {
-            val marker = state.messages[markerIndex] as ContextCompactedMessageUi
-            listOf(
-                AgentModelClient.ConversationMessage(
-                    role = "user",
-                    content = "${AgentContextCompactor.SUMMARY_PREFIX_ZH}\n${marker.summary.trim()}",
-                ),
-            )
-        }
-        return summary + reconstructHistory(state.messages.subList(markerIndex + 1, cut))
+        return history.take(end)
     }
 
-    /**
-     * 从目标消息分出一条独立会话：保留该消息及之前的展示内容，
-     * 模型上下文截到同一轮结束（助手消息含本轮回复；用户消息只含该条提问）。
-     */
+    /** Branch includes precisely the target, not all later replies in the same run. */
     fun branchPrefix(state: AgentChatUiState, targetMessageId: String): BranchPrefix? {
-        val targetIndex = state.messages.indexOfFirst { it.id == targetMessageId }
-        if (targetIndex < 0) return null
-        val userMessageIndex = (targetIndex downTo 0).firstOrNull { index ->
-            state.messages[index] is UserMessageUi
-        } ?: return null
-        val historyUserIndex = historyUserIndex(state, userMessageIndex)
-        if (historyUserIndex == null &&
-            ((state.messages[userMessageIndex] as UserMessageUi).isSteerSupplement() ||
-                !wasRemovedByCompaction(state, userMessageIndex))) return null
-        val messages = state.messages.take(targetIndex + 1)
-        val history = if (historyUserIndex == null) {
-            reconstructHistory(messages)
-        } else if (state.messages[targetIndex] is UserMessageUi) {
-            state.history.take(historyUserIndex + 1)
-        } else {
-            // A branch must not include later supplements that are not visible in its prefix.
-            val nextUser = (historyUserIndex + 1 until state.history.size).firstOrNull {
-                state.history[it].role == "user"
-            }
-            if (nextUser != null) state.history.take(nextUser) else state.history
-        }
-        return BranchPrefix(messages = messages, history = history)
+        val targetIndex = state.messages.indices.singleOrNull { state.messages[it].id == targetMessageId } ?: return null
+        val history = historyBefore(state, targetIndex + 1, validateRemoved = false) ?: return null
+        return BranchPrefix(messages = state.messages.take(targetIndex + 1), history = history)
     }
 
 
@@ -293,36 +234,70 @@ internal object AgentConversationRevisionReducer {
     private fun revisionComparableText(text: String): String =
         text.replace(Regex("/eta-chat-images/conv-[^/]+/"), "/eta-chat-images/conv/")
 
-    /** Stable owner + exact user payload; list length is never evidence of message identity. */
-    private fun historyUserIndex(state: AgentChatUiState, uiIndex: Int): Int? {
-        val user = state.messages[uiIndex] as UserMessageUi
+    private fun historyUserIndex(state: AgentChatUiState, uiIndex: Int): Int? =
+        (historyMessageLocation(state, uiIndex) as? AgentConversationRevisionArchive.Location.Found)?.index
+
+    /** turnId scopes a run, not a message. Exact payload + complete occurrence alignment is required. */
+    private fun historyMessageLocation(state: AgentChatUiState, uiIndex: Int): AgentConversationRevisionArchive.Location {
+        val missing = AgentConversationRevisionArchive.Location.Missing
+        val ambiguous = AgentConversationRevisionArchive.Location.Ambiguous
+        val message = state.messages.getOrNull(uiIndex) ?: return missing
+        if (message is AgentMessageUi && message.content.isNotBlank()) {
+            val userIndex = (uiIndex - 1 downTo 0).firstOrNull { state.messages[it] is UserMessageUi } ?: return missing
+            val userLocation = historyMessageLocation(state, userIndex)
+            if (userLocation !is AgentConversationRevisionArchive.Location.Found) return userLocation
+            val nextUser = (userLocation.index + 1 until state.history.size).firstOrNull {
+                state.history[it].role == "user" && !isHiddenContinuePrompt(state.history[it])
+            } ?: state.history.size
+            val expected = revisionComparableText(message.content.trim())
+            val candidates = (userLocation.index + 1 until nextUser).filter {
+                state.history[it].role == "assistant" && revisionComparableText(historyText(state.history[it])) == expected
+            }
+            if (candidates.isEmpty()) return missing
+            val nextUiUser = (userIndex + 1 until state.messages.size).firstOrNull { state.messages[it] is UserMessageUi } ?: state.messages.size
+            val peers = (userIndex + 1 until nextUiUser).filter {
+                val reply = state.messages[it]
+                reply is AgentMessageUi && revisionComparableText(reply.content.trim()) == expected
+            }
+            if (candidates.size != peers.size) return ambiguous
+            return AgentConversationRevisionArchive.Location.Found(candidates[peers.indexOf(uiIndex)])
+        }
+        val user = message as? UserMessageUi ?: return missing
         val runId = ownerRunId(user.id)
         val expected = revisionComparableText(user.content.trim())
-        val steering = revisionComparableText(
-            io.github.mangi.eta.agent.model.AgentContextCompactor.steeringUserContent(user.content).trim(),
-        )
-        fun matches(message: AgentModelClient.ConversationMessage): Boolean {
-            if (message.role != "user" || AgentContextCompactor.isCompressionSummary(message)) return false
-            val text = revisionComparableText(historyText(message))
-            if (text == expected || text == steering) return true
-            // Attachment envelopes differ between UI/persisted/vision requests. Only normalize
-            // inside the same proven owner turn, never across repeated questions or supplements.
-            if (message.turnId != runId || user.isSteerSupplement()) return false
+        val steering = revisionComparableText(AgentContextCompactor.steeringUserContent(user.content).trim())
+        val hasSteering = state.history.any {
+            it.role == "user" && (it.turnId == runId || it.turnId.isBlank()) &&
+                revisionComparableText(historyText(it)) == steering
+        }
+        val preferSteering = user.isSteerSupplement() && hasSteering
+        fun matches(history: AgentModelClient.ConversationMessage): Boolean {
+            if (history.role != "user" || AgentContextCompactor.isCompressionSummary(history)) return false
+            val text = revisionComparableText(historyText(history))
+            if (text == (if (preferSteering) steering else expected)) return true
+            // Only normalize attachment envelopes within a proven owner, never across turns.
+            if (history.turnId != runId || user.isSteerSupplement()) return false
             val parsed = AgentFileReferencePromptCodec.parse(text)
             val ui = AgentFileReferencePromptCodec.parse(expected)
-            return ui.request.isNotBlank() && parsed.request.trim() == ui.request.trim() &&
-                parsed.conversations == ui.conversations
+            return ui.request.isNotBlank() && parsed.request.trim() == ui.request.trim() && parsed.conversations == ui.conversations
         }
         val candidates = state.history.indices.filter { matches(state.history[it]) }
-        val inTurn = candidates.filter { state.history[it].turnId == runId }
-        val scoped = inTurn.ifEmpty { candidates }
-        // Disambiguate only identical payloads, not every user bubble including supplements.
-        val laterDuplicates = state.messages.drop(uiIndex + 1).filterIsInstance<UserMessageUi>().count {
-            revisionComparableText(it.content.trim()) == expected &&
-                (inTurn.isEmpty() || ownerRunId(it.id) == runId)
+        val owned = candidates.filter { state.history[it].turnId == runId }
+        val scoped = owned.ifEmpty { candidates.filter { state.history[it].turnId.isBlank() } }
+        if (scoped.isEmpty()) return missing
+        val peers = state.messages.indices.filter {
+            val peer = state.messages[it]
+            peer is UserMessageUi && revisionComparableText(peer.content.trim()) == expected &&
+                (owned.isEmpty() || ownerRunId(peer.id) == runId) &&
+                (if (preferSteering) peer.isSteerSupplement() else !peer.isSteerSupplement() || !hasSteering)
         }
-        return scoped.getOrNull(scoped.size - 1 - laterDuplicates)
+        if (scoped.size != peers.size || uiIndex !in peers) return ambiguous
+        return AgentConversationRevisionArchive.Location.Found(scoped[peers.indexOf(uiIndex)])
     }
+
+    private fun isHiddenContinuePrompt(message: AgentModelClient.ConversationMessage): Boolean =
+        AgentContextCompactor.isSteeringUserMessage(message) &&
+            !message.content.trimStart().startsWith(AgentContextCompactor.STEERING_USER_PREFIX)
 
     private fun historyText(message: AgentModelClient.ConversationMessage): String =
         message.content.ifBlank {
@@ -333,26 +308,6 @@ internal object AgentConversationRevisionReducer {
                 }.filter { it.isNotBlank() }.joinToString("\n")
             }.getOrDefault("")
         }.trim()
-
-    /** Evidence must place this specific missing message before a real summary boundary.
-     * A tool-pruning marker or a summary elsewhere in the conversation is insufficient. */
-    private fun wasRemovedByCompaction(state: AgentChatUiState, uiIndex: Int): Boolean {
-        val user = state.messages[uiIndex] as UserMessageUi
-        val owner = ownerRunId(user.id)
-        if (state.history.any { it.role == "user" && it.turnId == owner }) return false
-        val markers = state.messages.withIndex().filter { (_, message) ->
-            message is ContextCompactedMessageUi && message.compactedCount > 0 && message.summary.isNotBlank()
-        }
-        if (markers.isNotEmpty()) return markers.any { it.index > uiIndex }
-        // Legacy conversations may lack UI markers. Require a real summary plus a retained,
-        // exactly matched later user turn; do not infer from a smaller history list alone.
-        val summaryIndex = state.history.indexOfLast(AgentContextCompactor::isCompressionSummary)
-        if (summaryIndex < 0) return false
-        return (uiIndex + 1 until state.messages.size).any { later ->
-            state.messages[later] is UserMessageUi &&
-                historyUserIndex(state, later)?.let { it > summaryIndex } == true
-        }
-    }
 
     fun outboundHistory(state: AgentChatUiState): List<AgentModelClient.ConversationMessage> {
         val targetId = state.messageEdit?.targetMessageId ?: return state.history
@@ -366,21 +321,6 @@ internal object AgentConversationRevisionReducer {
         if (targetMessageId == null) return messages
         val targetIndex = messages.indexOfFirst { it.id == targetMessageId }
         return if (targetIndex < 0) messages else messages.take(targetIndex + 1)
-    }
-
-    private fun reconstructHistory(
-        messages: List<AgentChatMessageUi>,
-    ): List<AgentModelClient.ConversationMessage> = messages.mapNotNull { message ->
-        when (message) {
-            is UserMessageUi -> AgentModelClient.ConversationMessage(
-                role = "user",
-                content = message.content,
-            )
-            is AgentMessageUi -> message.content.takeIf { it.isNotBlank() }?.let { content ->
-                AgentModelClient.ConversationMessage(role = "assistant", content = content)
-            }
-            else -> null
-        }
     }
 
     /**
