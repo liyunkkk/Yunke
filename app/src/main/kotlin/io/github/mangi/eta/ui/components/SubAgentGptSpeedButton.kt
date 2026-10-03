@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -38,6 +39,7 @@ import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.supportsGptSpeedBinding
 import io.github.mangi.eta.ui.haptics.TouchHaptics
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 
 private val SubAgentGptSpeedIconSize = 18.dp
@@ -79,11 +81,23 @@ internal fun SubAgentGptSpeedButton(
     // 非合资格（媒体子代理 / 非 GPT 模型 / 未知协议 / 缺模型）两个入口都不渲染速度按钮。
     if (!eligible) return
 
-    // reset key 用 profileId + providerId + modelId：模型一旦切换就换一套闸门与进度，防串动画。
-    val bindingKey = profile.id + "\u0000" + profile.providerId + "\u0000" + profile.modelId
+    // Bind the scope too: owner/model changes cancel pending lookups and old feedback/animation.
+    key(editor, profile.id, profile.providerId, profile.modelId) {
+        BoundSubAgentGptSpeedButton(profile, editor, usable, modifier)
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BoundSubAgentGptSpeedButton(
+    profile: SubAgentProfile,
+    editor: ConversationSubAgentEditor?,
+    usable: Boolean,
+    modifier: Modifier,
+) {
     val mode = profile.gptSpeedForModel(providerId = profile.providerId, modelId = profile.modelId)
-    val gate = remember(bindingKey) { GptSpeedAnimationGate() }
-    val progress = remember(bindingKey) { Animatable(0f) }
+    val gate = remember { GptSpeedAnimationGate() }
+    val progress = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val view = LocalView.current
@@ -114,34 +128,32 @@ internal fun SubAgentGptSpeedButton(
                     // 动画中拒绝新的单击：不排队、不累计，避免截断当前一圈。
                     val token = gate.request()
                     if (token != 0) {
-                        val result = editor?.cycleGptSpeed(
-                            profile.id, profile.providerId, profile.modelId, expected = profile,
-                        )
-                        if (result is ConversationSubAgentPreferences.WriteResult.Saved) {
-                            TouchHaptics.click(view)
-                            // 档位从 Saved 快照读，避免用旧状态算出错误 Toast。
-                            val savedMode = result.config.profiles.firstOrNull { it.id == profile.id }
-                                ?.gptSpeedForModel(profile.providerId, profile.modelId)
-                                ?: mode.next()
-                            Toast.makeText(context, gptSpeedToastMessage(savedMode), Toast.LENGTH_SHORT).show()
-                            scope.launch {
-                                try {
-                                    progress.snapTo(0f)
-                                    progress.animateTo(
-                                        targetValue = 1f,
-                                        animationSpec = tween(
-                                            durationMillis = GptSpeedAnimationDurationMillis,
-                                            easing = LinearEasing,
-                                        ),
-                                    )
-                                } finally {
-                                    // 携带自己的 token：被取消的旧动画不会关掉随后新动画的闸门。
-                                    gate.finish(token)
-                                }
+                        scope.launch {
+                            try {
+                                val result = editor?.cycleGptSpeed(
+                                    profile.id, profile.providerId, profile.modelId, expected = profile,
+                                )
+                                coroutineContext.ensureActive()
+                                if (result !is ConversationSubAgentPreferences.WriteResult.Saved) return@launch
+                                // Only the actual saved binding may produce success feedback.
+                                val savedProfile = result.config.profiles.singleOrNull {
+                                    it.id == profile.id && it.providerId == profile.providerId && it.modelId == profile.modelId
+                                } ?: return@launch
+                                val savedMode = savedProfile.gptSpeedForModel(profile.providerId, profile.modelId)
+                                TouchHaptics.click(view)
+                                Toast.makeText(context, gptSpeedToastMessage(savedMode), Toast.LENGTH_SHORT).show()
+                                progress.snapTo(0f)
+                                progress.animateTo(
+                                    targetValue = 1f,
+                                    animationSpec = tween(
+                                        durationMillis = GptSpeedAnimationDurationMillis,
+                                        easing = LinearEasing,
+                                    ),
+                                )
+                            } finally {
+                                // Query, write, feedback and animation share one cancellation-safe gate.
+                                gate.finish(token)
                             }
-                        } else {
-                            // 被拒绝：立刻释放闸门，不播放任何动画，也不留“成功”痕迹。
-                            gate.finish(token)
                         }
                     }
                 },

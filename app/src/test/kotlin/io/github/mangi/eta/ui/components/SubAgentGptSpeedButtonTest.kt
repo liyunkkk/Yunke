@@ -18,6 +18,8 @@ import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderSetting
+import kotlinx.coroutines.CompletableDeferred
+import org.robolectric.shadows.ShadowToast
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -86,7 +88,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun singleClickCyclesThroughAllTiersAndShowsTierText() {
-        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme { SubAgentGptSpeedButton(liveProfile(fixture, gptProfile.id), providers, enabled = true) }
         }
@@ -113,7 +115,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun clickingSpeedButtonIsIsolatedFromTheEnclosingRow() {
-        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile))
         var rowClicks = 0
         compose.setSubAgentContent(fixture) {
             MaterialTheme {
@@ -136,7 +138,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun nonGptMediaAndUnknownProtocolProfilesHideTheButton() {
-        val fixture = SubAgentUiFixture(profiles = listOf(nonGptProfile, mediaProfile, foreignProtocolProfile))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(nonGptProfile, mediaProfile, foreignProtocolProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme {
                 Column {
@@ -152,7 +154,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun speedButtonHasNoLongPressSpeedSemantics() {
-        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme { SubAgentGptSpeedButton(liveProfile(fixture, gptProfile.id), providers, enabled = true) }
         }
@@ -162,7 +164,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun gateRejectsReentryDuringAnimationAndKeyChangeResetsIt() {
-        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile, gptProfileAlt))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile, gptProfileAlt))
         val shown = mutableStateOf(gptProfile)
         compose.setSubAgentContent(fixture) {
             MaterialTheme {
@@ -199,8 +201,78 @@ class SubAgentGptSpeedButtonTest {
     }
 
     @Test
+    fun staleSnapshotAfterSuspendedLookupHasNoToastAndReleasesGate() {
+        val lookup = CompletableDeferred<ProviderSetting?>()
+        var lookups = 0
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile), providerLookup = {
+            lookups++
+            lookup.await()
+        })
+        compose.setSubAgentContent(fixture) {
+            // Deliberately keep the stale UI snapshot to exercise editor rejection, not key disposal.
+            MaterialTheme { SubAgentGptSpeedButton(gptProfile, providers, enabled = true) }
+        }
+        compose.runOnIdle { ShadowToast.reset() }
+        speedNode("测试代理").performClick()
+        compose.waitForIdle()
+        repeat(2) { speedNode("测试代理").performClick() }
+        compose.runOnIdle {
+            assertEquals(1, lookups)
+            fixture.editor.updateProfile(gptProfile.id) { it.copy(modelId = gptRecord2.id) }
+            lookup.complete(openAiProvider)
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(0, ShadowToast.shownToastCount())
+            assertEquals(GptSpeedMode.NORMAL, modeOf(fixture, gptProfile.id))
+            fixture.editor.updateProfile(gptProfile.id) { gptProfile }
+        }
+        speedNode("测试代理").performClick()
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(2, lookups)
+            assertEquals(GptSpeedMode.FAST, modeOf(fixture, gptProfile.id))
+            assertEquals(1, ShadowToast.shownToastCount())
+        }
+    }
+
+    @Test
+    fun cancellingSuspendedLookupReleasesGateWithoutSuccessFeedback() {
+        val lookup = CompletableDeferred<ProviderSetting?>()
+        var lookups = 0
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile), providerLookup = {
+            lookups++
+            if (lookups == 1) lookup.await() else openAiProvider
+        })
+        compose.setSubAgentContent(fixture) {
+            MaterialTheme { SubAgentGptSpeedButton(liveProfile(fixture, gptProfile.id), providers, enabled = true) }
+        }
+        compose.runOnIdle { ShadowToast.reset() }
+        speedNode("测试代理").performClick()
+        compose.waitForIdle()
+        speedNode("测试代理").performClick()
+        compose.runOnIdle {
+            assertEquals(1, lookups)
+            lookup.cancel()
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(0, ShadowToast.shownToastCount())
+            assertEquals(GptSpeedMode.NORMAL, modeOf(fixture, gptProfile.id))
+            assertTrue(fixture.editor.enabled)
+        }
+        speedNode("测试代理").performClick()
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(2, lookups)
+            assertEquals(GptSpeedMode.FAST, modeOf(fixture, gptProfile.id))
+            assertEquals(1, ShadowToast.shownToastCount())
+        }
+    }
+
+    @Test
     fun settingsRowPlacesSpeedButtonInModelRowBeforeArrow() {
-        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme { SubAgentProfileRow(gptProfile, providers, enabled = true, settings = true) }
         }
@@ -216,7 +288,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun sessionCardPlacesSpeedButtonBetweenModelInfoAndTierOrArrow() {
-        val fixture = SubAgentUiFixture(profiles = listOf(implProfile, reviewProfile))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(implProfile, reviewProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme {
                 Column {
@@ -240,7 +312,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun disabledButtonIsNotEnabledAndDoesNotWrite() {
-        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile))
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme { SubAgentGptSpeedButton(liveProfile(fixture, gptProfile.id), providers, enabled = false) }
         }
@@ -253,7 +325,7 @@ class SubAgentGptSpeedButtonTest {
 
     @Test
     fun runningEditorDisablesButtonWithoutWriting() {
-        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile), canEdit = { false })
+        val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile), canEdit = { false })
         compose.setSubAgentContent(fixture) {
             MaterialTheme { SubAgentGptSpeedButton(liveProfile(fixture, gptProfile.id), providers, enabled = true) }
         }
