@@ -4,6 +4,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[4]
 AGENT = ROOT / "app/src/main/kotlin/io/github/mangi/eta/agent"
+POLICY = AGENT / "browser/ChildBrowserPolicy.kt"
 
 
 class ChildBrowserContractTest(unittest.TestCase):
@@ -50,6 +51,37 @@ class ChildBrowserContractTest(unittest.TestCase):
         self.assertNotIn("不能执行 shell、GUI 或浏览器", source)
         self.assertIn("文本子代理（包括工作树代理）", source)
         self.assertIn("登录状态可能共享", source)
+
+    def test_refusals_stay_structured_and_never_echo_unknown_input(self):
+        source = POLICY.read_text()
+        for field in ('"code"', '"reason"', '"allowed_actions"', '"recovery_hint"', '"blocked_action"'):
+            self.assertIn(field, source)
+        # An action name may only be echoed from the child whitelist or the disabled standard set.
+        self.assertIn("action.takeIf { it in disabledActions }", source)
+        self.assertIn('if (decision.reason == "BROWSER_DISABLED") emptySet() else actions', source)
+        self.assertIn("JSONArray(allowed.sorted().toList())", source)
+        # prepare still refuses with null; the guard only forwards the re-validated object.
+        self.assertIn("fun prepare(args: JSONObject): JSONObject? = decide(args).prepared", source)
+        self.assertIn("call.copy(argumentsJson = prepared.toString())", source)
+
+    def test_colon_search_terms_are_queries_but_schemes_and_http_targets_are_refused(self):
+        source = POLICY.read_text()
+        self.assertIn('lower.startsWith("http://") || lower.startsWith("https://")', source)
+        self.assertIn("value.none(Char::isWhitespace)", source)
+        self.assertIn("https://www.bing.com/search?q=", source)
+        # The original web URL boundary is untouched: http/https, a host, and no userinfo.
+        self.assertIn('uri.scheme?.lowercase() in setOf("https", "http")', source)
+        self.assertIn("uri.rawUserInfo == null", source)
+
+    def test_note_documents_navigate_only_url_without_network_guarantees(self):
+        source = POLICY.read_text()
+        note = source.split("const val NOTE =", 1)[1].split("fun schema()", 1)[0]
+        for expected in ("唯一接受 url", "先 navigate 再不带 url", "不代表浏览器工具不存在",
+                         "不承诺公网可达性", "登录状态可能共享", "标签页"):
+            self.assertIn(expected, note)
+        self.assertNotIn("保证公网", note)
+        url_block = source.split('properties.getJSONObject("url").put("description"', 1)[1]
+        self.assertIn("只有 navigate 接受 url", url_block)
 
 
 if __name__ == "__main__":

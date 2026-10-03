@@ -68,6 +68,40 @@ class ChildGroupReplacementTest {
         assertTrue(handoffs.matchesRead("old-task", stopped.getLong("handoff_version")))
     }
 
+    @Test fun errorDetailsAreAddedToJsonBeforeWrappingToolResult() {
+        val method = AgentChildTaskGroups.javaClass.declaredMethods.single {
+            it.name == "error" && it.parameterCount == 2
+        }.apply { isAccessible = true }
+        val details: JSONObject.() -> Unit = {
+            put("workspace_id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            put("can_replace", false)
+            put("allowed_actions", org.json.JSONArray(listOf("get_task_result")))
+            put("next_step", "wait for cleanup")
+        }
+        val result = method.invoke(AgentChildTaskGroups, "WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW", details)
+            as AgentModelClient.ToolResult
+        val json = JSONObject(result.content)
+        assertFalse(json.getBoolean("ok"))
+        assertEquals("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW", json.getString("code"))
+        assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", json.getString("workspace_id"))
+        assertFalse(json.getBoolean("can_replace"))
+        assertEquals("get_task_result", json.getJSONArray("allowed_actions").getString(0))
+        assertEquals("wait for cleanup", json.getString("next_step"))
+        assertTrue(json.getString("message").isNotBlank())
+    }
+
+    @Test fun archiveKeepsRecoveryMetadataButDoesNotAdvertiseContinuation() {
+        val method = AgentChildTaskGroups.javaClass.declaredMethods.single { it.name == "archiveSnapshot" }
+            .apply { isAccessible = true }
+        val input = snapshot().put("allowed_actions", org.json.JSONArray(listOf("get_task_result")))
+            .put("next_step", "inspect retained worktree").put("can_continue", true)
+        val archived = JSONObject(method.invoke(AgentChildTaskGroups, input) as String)
+        assertTrue(archived.getBoolean("archived"))
+        assertFalse(archived.getBoolean("can_continue"))
+        assertEquals("get_task_result", archived.getJSONArray("allowed_actions").getString(0))
+        assertEquals("inspect retained worktree", archived.getString("next_step"))
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun groups() = AgentChildTaskGroups.javaClass.getDeclaredField("groups").apply { isAccessible = true }
         .get(AgentChildTaskGroups) as MutableMap<String, Any>

@@ -294,13 +294,120 @@ def clean(root):
     return not git(root, 'status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).agent')
 
 
+def valid_commit(root, value):
+    """Only runtime-recorded full object IDs may authorize integration, never ref expressions."""
+    if not isinstance(value, str) or re.fullmatch(r'(?:[a-f0-9]{40}|[a-f0-9]{64})', value) is None:
+        return False
+    try:
+        return git(root, 'rev-parse', '--verify', value + '^{commit}') == value
+    except ValueError:
+        return False
+
+
+def workspace_tree_exists(root, record):
+    tree = tree_path(root, record)
+    if not tree.is_dir() or not (tree / '.git').is_file() or (tree / '.git').is_symlink():
+        return False
+    try:
+        # A missing .git must not make Git silently walk up to the parent project.
+        return git(tree, 'rev-parse', '--show-toplevel') == str(tree)
+    except ValueError:
+        return False
+
+
+def merge_blockers(root, record):
+    """Complete, read-only merge preconditions; never touch uncommitted work."""
+    tree = tree_path(root, record)
+    exists = workspace_tree_exists(root, record)
+    blockers = []
+    if record['state'] != 'ready':
+        blockers.append('WORKSPACE_NOT_READY')
+    elif not record.get('reviewed'):
+        blockers.append('REVIEW_REQUIRED')
+    if record['state'] not in ('merged', 'discarded') and not exists:
+        blockers.append('WORKSPACE_TREE_MISSING' if not tree.exists() else 'WORKSPACE_TREE_INVALID')
+    base_valid = valid_commit(root, record.get('base'))
+    if record['state'] not in ('merged', 'discarded') and not base_valid:
+        blockers.append('WORKSPACE_BASE_INVALID')
+    # Editing/failed worktrees need not have been sealed. A ready/reviewing record must.
+    commit_required = record['state'] in ('ready', 'reviewing')
+    commit_valid = valid_commit(root, record.get('commit'))
+    if commit_required and not commit_valid:
+        blockers.append('WORKSPACE_COMMIT_INVALID')
+    if (exists and not clean(tree)) or not clean(root):
+        blockers.append('UNCOMMITTED_CHANGES')
+    if base_valid and git(root, 'rev-parse', 'HEAD') != record['base']:
+        blockers.append('PROJECT_MOVED_REVIEW_AGAIN')
+    if exists and commit_valid and git(tree, 'rev-parse', 'HEAD') != record['commit']:
+        blockers.append('WORKSPACE_CHANGED')
+    return blockers
+
+
+def allowed_actions(record, blockers):
+    """Task-local recovery choices; merge is offered only when all checks pass."""
+    state = record['state']
+    if state not in ('ready', 'failed', 'merged', 'discarded'):
+        return ['inspect']
+    if state in ('merged', 'discarded'):
+        return ['inspect']
+    actions = ['inspect']
+    if not blockers:
+        actions.append('merge')
+    actions.append('discard')
+    return actions
+
+
+def next_step(record, blockers):
+    """One accurate recovery sentence; never promises an action that would be refused."""
+    state = record['state']
+    if state == 'editing':
+        return '实现子任务仍在编辑：只能 inspect 读取；等子任务结束后再由主代理决定。'
+    if state == 'reviewing':
+        return 'review 子任务正在该工作区上运行：只能 inspect 读取；等它结束后再决定。'
+    if state == 'failed':
+        return '工作树改动已保留，且不是 review-ready：先 inspect 查看 diff 和 merge_blocked_by，' \
+               '确认不需要后 discard，或作为新任务重新委派。'
+    if state == 'merged':
+        return '已合并：工作树已删除，记录只读。'
+    if state == 'discarded':
+        return '工作树已丢弃：记录只读。'
+    if 'REVIEW_REQUIRED' in blockers:
+        return '尚未 review：需要 review 子任务在该 workspace_id 上完成审查后才能 merge。'
+    if blockers:
+        return '暂时不能 merge（' + '、'.join(blockers) + '）：先按阻塞原因处理，再重新 inspect。'
+    return '已通过 review：确认主项目干净且未移动后可 ff-only merge；merge 会删除该工作树。'
+
+
+def recovery(root, record):
+    """Read-only main-agent view: what is preserved, what blocks merge, what is still legal."""
+    tree = tree_path(root, record)
+    exists = workspace_tree_exists(root, record)
+    head = git(tree, 'rev-parse', 'HEAD') if exists else None
+    blockers = merge_blockers(root, record)
+    return {
+        'state': record['state'],
+        'reviewed': bool(record.get('reviewed')),
+        'tree_exists': exists,
+        'uncommitted_changes': bool(exists and not clean(tree)),
+        'project_uncommitted_changes': not clean(root),
+        'committed_head': head,
+        'recorded_commit': record.get('commit'),
+        'head_matches_commit': bool(head is not None and record.get('commit') and head == record['commit']),
+        'merge_ready': not blockers,
+        'merge_blocked_by': blockers,
+        'allowed_actions': allowed_actions(record, blockers),
+        'next_step': next_step(record, blockers),
+    }
+
+
 def summary(root, record):
     out = dict(record)
     tree = tree_path(root, record)
     out['path'] = str(tree)
-    if tree.exists():
+    if workspace_tree_exists(root, record) and valid_commit(root, record.get('base')):
         diff = git(tree, 'diff', '--no-ext-diff', '--no-textconv', '--stat', record['base'])
         out['diff_stat'] = diff[:2000]
+    out.update(recovery(root, record))
     return out
 
 
@@ -460,10 +567,13 @@ def locked(root, args):
         record.update(state='ready', reviewed=True)
         save(root, record)
     elif action == 'merge':
-        require(record['state'] == 'ready' and record['reviewed'], 'REVIEW_REQUIRED')
-        require(clean(root) and clean(tree), 'UNCOMMITTED_CHANGES')
-        require(git(root, 'rev-parse', 'HEAD') == record['base'], 'PROJECT_MOVED_REVIEW_AGAIN')
-        require(git(tree, 'rev-parse', 'HEAD') == record['commit'], 'WORKSPACE_CHANGED')
+        view = recovery(root, record)
+        blockers = view['merge_blocked_by']
+        if blockers:
+            # Name the exact state/clean/head/commit reason; uncommitted work is never touched here.
+            raise Refused(blockers[0], **{key: view[key] for key in (
+                'state', 'reviewed', 'tree_exists', 'uncommitted_changes', 'project_uncommitted_changes', 'committed_head',
+                'recorded_commit', 'head_matches_commit', 'merge_blocked_by', 'allowed_actions', 'next_step')})
         git(root, '-c', 'merge.autostash=false', 'merge', '--ff-only', record['commit'])
         record['state'] = 'merged'
         save(root, record)

@@ -34,6 +34,13 @@ class WorkspaceTest(unittest.TestCase):
             args['workspace_id'] = record['id']
         return w.locked(self.root, args)
 
+    def refusal(self, action, record=None, **kwargs):
+        try:
+            self.op(action, record, **kwargs)
+        except w.Refused as error:
+            return error
+        self.fail(f'{action} should have been refused')
+
     def put_record(self, task, **fields):
         record = {'id': task, 'state': 'editing'}
         record.update(fields)
@@ -137,10 +144,165 @@ class WorkspaceTest(unittest.TestCase):
         self.op('write', record, path='main.txt', content='partial')
         self.op('fail', record)
         self.assertEqual('partial', self.op('read', record, path='main.txt')['content'])
-        with self.assertRaisesRegex(ValueError, 'REVIEW_REQUIRED'):
-            self.op('merge', record)
+        # A failed worktree is not review-ready: name the real blocker instead of REVIEW_REQUIRED.
+        refused = self.refusal('merge', record)
+        self.assertEqual('WORKSPACE_NOT_READY', str(refused))
+        self.assertEqual('failed', refused.details['state'])
+        self.assertIn('UNCOMMITTED_CHANGES', refused.details['merge_blocked_by'])
+        self.assertEqual(['inspect', 'discard'], refused.details['allowed_actions'])
         self.op('discard', record)
         self.assertFalse(Path(record['path']).exists())
+
+    def test_inspect_reports_merge_blockers_and_preserves_uncommitted_changes(self):
+        record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='partial')
+        view = self.op('inspect', record)
+        self.assertEqual('editing', view['state'])
+        self.assertTrue(view['tree_exists'])
+        self.assertTrue(view['uncommitted_changes'])
+        self.assertFalse(view['project_uncommitted_changes'])
+        self.assertFalse(view['merge_ready'])
+        self.assertEqual(['WORKSPACE_NOT_READY', 'UNCOMMITTED_CHANGES'], view['merge_blocked_by'])
+        self.assertEqual(['inspect'], view['allowed_actions'])
+        self.assertEqual('partial', self.op('read', record, path='main.txt')['content'])
+        self.assertEqual('partial', (Path(record['path']) / 'main.txt').read_text())
+
+    def test_failed_worktree_offers_inspect_discard_or_a_new_task(self):
+        record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='partial')
+        self.op('fail', record)
+        view = self.op('inspect', record)
+        self.assertEqual('failed', view['state'])
+        self.assertFalse(view['merge_ready'])
+        self.assertIn('WORKSPACE_NOT_READY', view['merge_blocked_by'])
+        self.assertEqual(['inspect', 'discard'], view['allowed_actions'])
+        self.assertIn('discard', view['next_step'])
+        self.assertIn('重新委派', view['next_step'])
+        self.assertNotIn('replace_task_id', view['allowed_actions'])
+        # Uncommitted work survives the refused merge/inspect and is only removed by discard.
+        self.assertEqual('partial', (Path(record['path']) / 'main.txt').read_text())
+        self.op('discard', record)
+
+    def test_ready_workspace_becomes_merge_ready_only_after_review(self):
+        record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='new')
+        sealed = self.op('seal', record)
+        self.assertEqual('ready', sealed['state'])
+        self.assertFalse(sealed['merge_ready'])
+        self.assertEqual(['REVIEW_REQUIRED'], sealed['merge_blocked_by'])
+        self.assertEqual(['inspect', 'discard'], sealed['allowed_actions'])
+        self.op('begin_review', record)
+        self.assertEqual(['WORKSPACE_NOT_READY'], self.op('inspect', record)['merge_blocked_by'])
+        self.op('review', record)
+        reviewed = self.op('inspect', record)
+        self.assertEqual([], reviewed['merge_blocked_by'])
+        self.assertTrue(reviewed['merge_ready'])
+        self.assertEqual(['inspect', 'merge', 'discard'], reviewed['allowed_actions'])
+        self.assertTrue(reviewed['head_matches_commit'])
+        merged = self.op('merge', record)
+        self.assertEqual('merged', merged['state'])
+        self.assertFalse(merged['tree_exists'])
+        self.assertIsNone(merged['committed_head'])
+
+    def test_merge_refusal_names_the_blocker_and_keeps_both_sides(self):
+        record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='new')
+        self.op('seal', record)
+        self.op('begin_review', record)
+        self.op('review', record)
+        (self.root / 'main.txt').write_text('parent edit')
+        refused = self.refusal('merge', record)
+        self.assertEqual('UNCOMMITTED_CHANGES', str(refused))
+        self.assertTrue(refused.details['project_uncommitted_changes'])
+        self.assertFalse(refused.details['uncommitted_changes'])
+        self.assertEqual(['UNCOMMITTED_CHANGES'], refused.details['merge_blocked_by'])
+        self.assertNotIn('merge', refused.details['allowed_actions'])
+        self.assertEqual('parent edit', (self.root / 'main.txt').read_text())
+        self.assertEqual('new', (Path(record['path']) / 'main.txt').read_text())
+
+    def reviewed_workspace(self):
+        record = self.op('prepare')
+        self.op('write', record, path='main.txt', content='child commit')
+        self.op('seal', record)
+        self.op('begin_review', record)
+        self.op('review', record)
+        return record
+
+    def assert_merge_refused_without_parent_mutation(self, record, code):
+        parent_head = w.git(self.root, 'rev-parse', 'HEAD')
+        parent_file = (self.root / 'main.txt').read_bytes()
+        parent_status = w.git(self.root, 'status', '--porcelain', '--', '.', ':(exclude).agent')
+        view = self.op('inspect', record)
+        self.assertFalse(view['merge_ready'])
+        self.assertIn(code, view['merge_blocked_by'])
+        self.assertNotIn('merge', view['allowed_actions'])
+        refused = self.refusal('merge', record)
+        self.assertEqual(code, str(refused))
+        self.assertIn(code, refused.details['merge_blocked_by'])
+        self.assertEqual(parent_head, w.git(self.root, 'rev-parse', 'HEAD'))
+        self.assertEqual(parent_file, (self.root / 'main.txt').read_bytes())
+        self.assertEqual(parent_status, w.git(self.root, 'status', '--porcelain', '--', '.', ':(exclude).agent'))
+        self.assertEqual('ready', w.load(self.root, record['id'])['state'])
+        return view
+
+    def test_missing_tree_blocks_merge_before_any_parent_update(self):
+        record = self.reviewed_workspace()
+        tree = Path(record['path'])
+        w.git(self.root, 'worktree', 'remove', str(tree))
+        view = self.assert_merge_refused_without_parent_mutation(record, 'WORKSPACE_TREE_MISSING')
+        self.assertFalse(view['tree_exists'])
+        self.assertFalse(view['head_matches_commit'])
+
+    def test_missing_git_marker_does_not_inherit_parent_repository(self):
+        record = self.reviewed_workspace()
+        tree = Path(record['path'])
+        marker = (tree / '.git').read_bytes()
+        try:
+            (tree / '.git').unlink()
+            view = self.assert_merge_refused_without_parent_mutation(record, 'WORKSPACE_TREE_INVALID')
+            self.assertFalse(view['tree_exists'])
+            self.assertIsNone(view['committed_head'])
+            self.assertEqual('child commit', (tree / 'main.txt').read_text())
+        finally:
+            (tree / '.git').write_bytes(marker)
+
+    def test_missing_or_invalid_commit_is_an_explicit_safe_refusal(self):
+        record = self.reviewed_workspace()
+        saved = w.load(self.root, record['id'])
+        for value in (None, '', 'HEAD', 'bad-commit', '0' * 40):
+            with self.subTest(value=value):
+                corrupt = dict(saved)
+                if value is None:
+                    corrupt.pop('commit')
+                else:
+                    corrupt['commit'] = value
+                w.save(self.root, corrupt)
+                self.assert_merge_refused_without_parent_mutation(record, 'WORKSPACE_COMMIT_INVALID')
+                self.assertEqual('child commit', (Path(record['path']) / 'main.txt').read_text())
+        w.save(self.root, saved)
+
+    def test_missing_or_invalid_base_is_an_explicit_safe_refusal(self):
+        record = self.reviewed_workspace()
+        saved = w.load(self.root, record['id'])
+        for value in (None, '', 'HEAD', 'bad-base', '0' * 40):
+            with self.subTest(value=value):
+                corrupt = dict(saved)
+                if value is None:
+                    corrupt.pop('base')
+                else:
+                    corrupt['base'] = value
+                w.save(self.root, corrupt)
+                self.assert_merge_refused_without_parent_mutation(record, 'WORKSPACE_BASE_INVALID')
+                self.assertEqual('child commit', (Path(record['path']) / 'main.txt').read_text())
+        w.save(self.root, saved)
+
+    def test_terminal_workspace_records_only_offer_read_only_inspection(self):
+        record = self.reviewed_workspace()
+        merged = self.op('merge', record)
+        self.assertEqual(['inspect'], merged['allowed_actions'])
+        record = self.reviewed_workspace()
+        discarded = self.op('discard', record)
+        self.assertEqual(['inspect'], discarded['allowed_actions'])
 
     def test_expired_task_is_recoverable_without_deleting_changes(self):
         record = self.op('prepare')
