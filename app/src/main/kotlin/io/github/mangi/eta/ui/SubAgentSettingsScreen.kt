@@ -26,6 +26,7 @@ import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.delegation.SubAgentPreset
 import io.github.mangi.eta.ui.components.ConversationSubAgentEditor
 import io.github.mangi.eta.ui.components.SubAgentPresetCard
+import io.github.mangi.eta.ui.components.SubAgentPresetNameDialog
 import io.github.mangi.eta.ui.components.SubAgentPresetDirectoryStatus
 import io.github.mangi.eta.ui.components.rememberSubAgentPresetDirectory
 import io.github.mangi.eta.data.repository.ProviderRepository
@@ -123,16 +124,19 @@ internal fun SubAgentSettingsScreen(
                     }
                 }
             }
-            if (add || rename != null) AlertDialog(onDismissRequest = { add = false; rename = null },
-                title = { Text(if (add) "添加子代理组" else "重命名子代理组") },
-                text = { io.github.mangi.eta.ui.components.EtaFormTextField(name, { name = it.take(80) }, hint = "组名称", singleLine = true) },
-                dismissButton = { TextButton(onClick = { add = false; rename = null }) { Text("取消") } },
-                confirmButton = { TextButton(enabled = editable && name.trim().isNotBlank(), onClick = {
+            if (add || rename != null) SubAgentPresetNameDialog(
+                title = if (add) "添加子代理组" else "重命名子代理组",
+                name = name,
+                onNameChange = { name = it },
+                saveEnabled = editable && name.trim().isNotBlank(),
+                onDismiss = { add = false; rename = null },
+                onSave = {
                     if (directory.change {
                         if (add) repository.addPreset(name.trim())
                         else check(repository.renamePreset(requireNotNull(rename).id, name.trim())) { "子代理组不存在，请重试" }
                     }) { add = false; rename = null }
-                }) { Text("保存") } })
+                },
+            )
             delete?.let { preset ->
                 AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除子代理组？") },
                     text = { Text("删除“${preset.name}”不会改变已应用此组的会话配置。") },

@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.components
 
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
@@ -59,25 +61,72 @@ class SubAgentPresetSettingsTest {
         compose.setSubAgentContent(fixture) {
             MiuixTheme(colors = lightColorScheme()) { MaterialTheme { SubAgentSettingsScreen({}, { fixture.repository }) } }
         }
+        assertTrue("The real form must settle with the standard Compose clock", compose.mainClock.autoAdvance)
+        val nameField = compose.onNodeWithContentDescription("组名称")
+
         compose.onNodeWithText("添加子代理组").performClick()
-        compose.onNode(hasSetTextAction()).performTextInput("新组")
-        compose.onNodeWithText("保存").performClick()
+        // CI used to time out fetching this node, before performTextInput requested focus.
+        // Assert layout and semantics have settled separately from the subsequent focus/input action.
+        nameField.assertIsDisplayed().assertIsNotFocused().assert(hasSetTextAction())
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        compose.onNodeWithText("保存").assertIsNotEnabled()
+        nameField.performTextInput("未保存的新组")
+        compose.onNodeWithText("保存").assertIsEnabled()
+        compose.onNodeWithText("取消").performClick()
+        nameField.assertDoesNotExist()
+        compose.runOnIdle {
+            assertFalse(fixture.repository.presets().any { it.name == "未保存的新组" })
+            assertEquals(before, fixture.snapshot())
+        }
+
+        compose.onNodeWithText("添加子代理组").performClick()
+        nameField.assertIsDisplayed().assertIsNotFocused()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
+        nameField.performTextInput(" 新组 ")
+        compose.onNodeWithText("保存").assertIsEnabled().performClick()
+        nameField.assertDoesNotExist()
         compose.onNodeWithContentDescription("编辑子代理组新组").performScrollTo().performClick()
         compose.onNodeWithText("添加子代理", substring = false).assertExists()
+        var createdId = ""
         compose.runOnIdle {
-            assertTrue(fixture.repository.presets().single { it.name == "新组" }.config.profiles.isEmpty())
+            val created = fixture.repository.presets().single { it.name == "新组" }
+            createdId = created.id
+            assertTrue(created.config.profiles.isEmpty())
+            assertEquals(before, fixture.snapshot())
         }
         compose.onNodeWithContentDescription("返回").performClick()
         compose.onNodeWithContentDescription("新组组更多操作").performScrollTo().performClick()
         compose.onNodeWithText("重命名组").performClick()
-        compose.onNode(hasSetTextAction()).performTextReplacement("改名组")
-        compose.onNodeWithText("保存").performClick()
+        nameField.assertIsDisplayed().assertIsNotFocused()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("新组")))
+        nameField.performTextReplacement("未保存的改名")
+        compose.onNodeWithText("取消").performClick()
+        nameField.assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals("新组", fixture.repository.presets().single { it.id == createdId }.name)
+            assertEquals(before, fixture.snapshot())
+        }
+
+        compose.onNodeWithContentDescription("新组组更多操作").performScrollTo().performClick()
+        compose.onNodeWithText("重命名组").performClick()
+        nameField.assertIsDisplayed()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("新组")))
+        nameField.performTextReplacement(" 改名组 ")
+        compose.onNodeWithText("保存").assertIsEnabled().performClick()
+        nameField.assertDoesNotExist()
+        compose.runOnIdle {
+            val renamed = fixture.repository.presets().single { it.id == createdId }
+            assertEquals("改名组", renamed.name)
+            assertTrue(renamed.config.profiles.isEmpty())
+            assertEquals(before, fixture.snapshot())
+        }
         compose.onNodeWithContentDescription("改名组组更多操作").performScrollTo().performClick()
         compose.onNodeWithText("删除组").performClick()
         compose.onNodeWithText("删除", substring = false).performClick()
         compose.onNodeWithContentDescription("编辑子代理组改名组").assertDoesNotExist()
         compose.runOnIdle {
             assertFalse(fixture.repository.presets().any { it.name == "改名组" })
+            assertFalse(fixture.repository.presets().any { it.id == createdId })
             assertEquals(before, fixture.snapshot())
         }
     }
