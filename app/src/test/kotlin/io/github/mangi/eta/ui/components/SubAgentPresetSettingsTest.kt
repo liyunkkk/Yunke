@@ -13,6 +13,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = io.github.mangi.eta.EtaApp::class, sdk = [36], qualifiers = "w411dp-h891dp")
@@ -26,7 +28,7 @@ class SubAgentPresetSettingsTest {
         val before = fixture.snapshot()
         var exits = 0
         compose.setSubAgentContent(fixture) {
-            MaterialTheme { SubAgentSettingsScreen({ exits++ }, { fixture.repository }) }
+            MiuixTheme(colors = lightColorScheme()) { MaterialTheme { SubAgentSettingsScreen({ exits++ }, { fixture.repository }) } }
         }
         compose.onNodeWithText("添加子代理组").assertIsDisplayed()
         compose.onNodeWithText("添加子代理", substring = false).assertDoesNotExist()
@@ -51,7 +53,7 @@ class SubAgentPresetSettingsTest {
         val fixture = SubAgentUiFixture()
         val before = fixture.snapshot()
         compose.setSubAgentContent(fixture) {
-            MaterialTheme { SubAgentSettingsScreen({}, { fixture.repository }) }
+            MiuixTheme(colors = lightColorScheme()) { MaterialTheme { SubAgentSettingsScreen({}, { fixture.repository }) } }
         }
         compose.onNodeWithText("添加子代理组").performClick()
         compose.onNode(hasSetTextAction()).performTextInput("新组")
