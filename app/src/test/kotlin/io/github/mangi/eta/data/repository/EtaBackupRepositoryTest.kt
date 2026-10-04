@@ -202,7 +202,7 @@ class EtaBackupRepositoryTest {
         val revision = store.revision(owner).value
         val document = EtaBackupDocument(
             exportedAt = 0,
-            conversations = listOf(ConversationEntity(id = "old-chat", title = "旧聊天", createdAt = 1, updatedAt = 2)),
+            conversations = listOf(ConversationEntity(id = "old-chat", title = "旧聊天", thinkingEnabled = false, createdAt = 1, updatedAt = 2)),
             messages = listOf(ConversationMessageEntity(
                 id = "old-message", conversationId = "old-chat", sortIndex = 0, type = "user", content = "保留聊天",
             )),
@@ -245,7 +245,7 @@ class EtaBackupRepositoryTest {
 
     private fun conversationDocument(archive: String? = null, generation: String? = null) = EtaConversationExport(
         exportedAt = 1,
-        conversation = ConversationEntity(id = "generation-source", title = "generation chat", createdAt = 1, updatedAt = 2),
+        conversation = ConversationEntity(id = "generation-source", title = "generation chat", thinkingEnabled = false, createdAt = 1, updatedAt = 2),
         messages = listOf(ConversationMessageEntity(id = "generation-message", conversationId = "generation-source",
             sortIndex = 0, type = "user", content = "chat still imports")),
         subAgentConfigJson = archive,
