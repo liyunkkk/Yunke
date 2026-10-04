@@ -33,7 +33,12 @@ internal fun List<AgentTimelineEntry>.toLazyTimelineRows(
     isStreaming: Boolean,
     retainedSteps: Map<String, Set<String>> = emptyMap(),
 ): List<AgentTimelineRow> = buildList {
-    val trailingWorkKey = (this@toLazyTimelineRows.lastOrNull() as? AgentTimelineEntry.WorkProcess)?.key
+    val trailingWorkKey = (this@toLazyTimelineRows.lastOrNull() as? AgentTimelineEntry.WorkProcess)
+        ?.takeIf { group -> group.messages.any { message ->
+            (message is ThinkingMessageUi && message.isStreaming) ||
+                (message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running)
+        } }
+        ?.key
     this@toLazyTimelineRows.forEach { entry ->
         when (entry) {
             is AgentTimelineEntry.Message -> add(AgentTimelineRow.Message(entry.message))

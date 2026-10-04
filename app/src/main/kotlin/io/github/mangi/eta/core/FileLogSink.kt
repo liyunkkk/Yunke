@@ -126,6 +126,7 @@ internal class FileLogSink(
 
     private fun moveFile(source: File, target: File) {
         if (!source.exists()) return
+        if (source.renameTo(target)) return
         source.copyTo(target, overwrite = true)
         check(source.delete()) { "无法轮转日志文件：" }
     }

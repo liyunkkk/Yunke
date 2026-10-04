@@ -1606,7 +1606,7 @@ internal fun AgentConversationMessages(
                     val revealPending = footerRevealMessages[entry.key].orEmpty().any { answer ->
                         val retained = streamingMarkdownStates[answer.id]
                         answer.isStreaming ||
-                            (retained != null && retained.revealedContent != answer.content) ||
+                            (retained != null && retained.revealedContent != answer.content && (isStreaming || isPaused)) ||
                             (retained == null && (isStreaming || isPaused) && answer.id !in settledMessageIds)
                     }
                     AgentTurnFooter(
