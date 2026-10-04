@@ -174,6 +174,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -2370,6 +2371,7 @@ internal class AgentAppState(
         // UNDISPATCHED installs finally even if the owner scope is cancelled before IO starts.
         scope.launch(Dispatchers.Main.immediate, start = CoroutineStart.UNDISPATCHED) {
             try {
+                yield()
                 val prepared = runInterruptible(Dispatchers.IO) {
                     val archive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, conversationId)
                     val ordinary = AgentConversationRevisionReducer.prepareForRevision(snapshot, messageId, archive::restoreHistory)

@@ -154,10 +154,12 @@ internal fun SubAgentSettingsScreen(
 @Composable
 private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: String, onBack: () -> Unit, isCurrentRoute: Boolean) {
     val state = editor.observe()
-    var lastLoadedConfig by remember(editor) { mutableStateOf<io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig?>(null) }
+    val lastLoadedConfig = remember(editor) {
+        arrayOfNulls<io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig>(1)
+    }
     val loadedConfig = (state as? SubAgentEditorState.Loaded)?.config
-    LaunchedEffect(loadedConfig) { if (loadedConfig != null) lastLoadedConfig = loadedConfig }
-    val config = loadedConfig ?: lastLoadedConfig
+    if (loadedConfig != null) lastLoadedConfig[0] = loadedConfig
+    val config = loadedConfig ?: lastLoadedConfig[0]
     val profiles = config?.profiles.orEmpty()
     val editable = editor?.enabled == true
     val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())

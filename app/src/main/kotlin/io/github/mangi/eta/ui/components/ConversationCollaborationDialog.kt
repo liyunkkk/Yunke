@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -210,7 +211,14 @@ internal fun ConversationCollaborationDialog(
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (choosing && current != null && editor != null && chooserPopup != null) {
                                 val (popup, ticket) = chooserPopup
-                                TextButton(enabled = canChange, onClick = {
+                                TextButton(enabled = canChange, modifier = Modifier.semantics { onClick {
+                                    if (popup.isCurrent(ticket, popup) && latestOwnerMatches() && !latestTaskRunning &&
+                                        latestCanChange && latestChoosing && editor.enabled) {
+                                        TouchHaptics.click(view)
+                                        chooserOverride = false
+                                    }
+                                    true
+                                } }, onClick = {
                                     if (popup.isCurrent(ticket, popup) && latestOwnerMatches() && !latestTaskRunning &&
                                         latestCanChange && latestChoosing && editor.enabled) {
                                         TouchHaptics.click(view)
@@ -218,7 +226,13 @@ internal fun ConversationCollaborationDialog(
                                     }
                                 }) { Text("使用当前配置") }
                             } else if (!choosing && panelEditor != null) {
-                                TextButton(enabled = panelEnabled, onClick = {
+                                TextButton(enabled = panelEnabled, modifier = Modifier.semantics { onClick {
+                                    if (panelEnabled && panelEditor.enabled && latestOwnerMatches() && !latestTaskRunning && !latestChoosing) {
+                                        TouchHaptics.click(view)
+                                        chooserOverride = true
+                                    }
+                                    true
+                                } }, onClick = {
                                     if (panelEnabled && panelEditor.enabled && latestOwnerMatches() && !latestTaskRunning && !latestChoosing) {
                                         TouchHaptics.click(view)
                                         chooserOverride = true

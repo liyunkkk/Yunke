@@ -33,7 +33,7 @@ internal fun List<AgentTimelineRow>.turnFooters(
     fun flush(includeOpenTurn: Boolean) {
         val owner = actionMessage
         val anchor = afterRowKey
-        if (owner != null && anchor != null && (terminal != null || includeOpenTurn)) {
+        if (owner != null && anchor != null && (terminal != null || (includeOpenTurn && owner !is AgentMessageUi || owner is AgentMessageUi && !owner.isStreaming))) {
             put(anchor, owner)
         }
         actionMessage = null
