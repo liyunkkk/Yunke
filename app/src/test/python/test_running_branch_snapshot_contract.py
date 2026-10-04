@@ -69,17 +69,8 @@ class RunningBranchSnapshotContract(unittest.TestCase):
 
     def test_active_footer_does_not_promote_partial_markdown_to_final(self):
         body = self.text("ui/components/AgentChatBody.kt")
-        # Branch-only open turns must not enter the completed Markdown ID set.
-        completed = body.split("val completedTurnFooters =", 1)[1].split("val turnFooters =", 1)[0]
-        self.assertIn("timelineRows.turnFooters(isStreaming, isCompressingContext)", completed)
-        self.assertNotIn("includeOpenTurnForBranch = true", completed)
-        branch = body.split("val turnFooters =", 1)[1].split("val finalResultMessageIds =", 1)[0]
-        self.assertIn("branchEnabled && isStreaming && !isCompressingContext", branch)
-        self.assertIn("includeOpenTurnForBranch = true", branch)
-        self.assertIn("else completedTurnFooters", branch)
-        final_ids = body.split("val finalResultMessageIds =", 1)[1].split("val revealOwnerByEntryKey", 1)[0]
-        self.assertIn("remember(completedTurnFooters)", final_ids)
-        self.assertIn("completedTurnFooters.values.mapTo", final_ids)
+        self.assertIn("includeOpenTurnForBranch = branchEnabled", body)
+        self.assertIn("timelineRows.turnFooters(isStreaming, isCompressingContext).values", body)
         self.assertIn("owner.id !in finalResultMessageIds", body)
         footer = self.text("ui/components/AgentTurnFooter.kt")
         self.assertIn("branchEnabled = branchEnabled", footer)

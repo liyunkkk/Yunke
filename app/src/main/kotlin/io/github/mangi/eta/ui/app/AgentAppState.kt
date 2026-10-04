@@ -69,6 +69,7 @@ import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.ui.model.RequestOverheadCalibration
 import io.github.mangi.eta.ui.model.ContextEstimateDiagnostics
 import io.github.mangi.eta.config.AutoCompressPreference
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -194,9 +195,6 @@ internal class AgentAppState(
     private val runUsageRoutes = mutableMapOf<String, String>()
     private val usageRunByConversation = mutableMapOf<String, String>()
     private val contextEstimateDiagnostics = ContextEstimateDiagnostics()
-    private val routeSignatureCache = RouteSignatureCache(onMiss = {
-        StreamPerformanceDiagnostics.record("ui.route.signature.miss", value = 1)
-    })
     private val invalidatedUsageRuns = mutableSetOf<String>()
     private val runGeneratedAtMillis = mutableMapOf<String, Long>()
     // A stopped worker still owns its transcript until its terminal result is committed.
@@ -556,33 +554,34 @@ internal class AgentAppState(
 
     /** 严格路由签名：customHeaders/customBody/sessionGatewayJson 一律 fail closed，
      * 凭据内容从不参与任何持久化比较。 */
-    private fun strictRouteSignature(state: AgentChatHomeUiState): String? =
-        StreamPerformanceDiagnostics.measure("ui.route.signature") {
-            routeSignatureCache.strict(state.providerId, state.modelId)
-        }
+    private fun strictRouteSignature(state: AgentChatHomeUiState): String? {
+        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
+        return RequestOverheadCalibration.routeSignature(provider, model).takeIf { it.isNotBlank() }
+    }
 
     /** Actual receipts need a verifiable local scope even when custom routing forbids learning.
      * Only a digest is checkpointed; custom configuration is never a calibration scope. */
-    private fun contextRouteSignature(state: AgentChatHomeUiState): String? =
-        StreamPerformanceDiagnostics.measure("ui.route.signature") {
-            routeSignatureCache.context(state.providerId, state.modelId) { provider, model ->
-                val endpoint = when (provider) {
-                    is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
-                    is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
-                    is io.github.mangi.eta.data.model.AnthropicProviderSetting -> provider.anthropicVersion
-                }
-                val fields = org.json.JSONArray().put(provider.id).put(provider.baseUrl).put(provider.sourceType)
-                    .put(endpoint).put(provider.systemPrompt).put(provider.authMode).put(provider.apiKey)
-                    .put(provider.responsesStripReasoningStatus).put(provider.hostedWebSearchEnabled)
-                    .put(provider.sessionGatewayJson)
-                    .put(org.json.JSONArray(provider.customHeaders.map { listOf(it.name, it.value) }))
-                    .put(org.json.JSONArray(provider.customBody.map { listOf(it.key, it.value.toString()) }))
-                    .put(kotlinx.serialization.json.Json.encodeToString(io.github.mangi.eta.data.model.Model.serializer(),
-                        model.copy(createdAt = 0, displayName = "", sortOrder = 0)))
-                "actual-local-v1:" + java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(fields.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
-            }
+    private fun contextRouteSignature(state: AgentChatHomeUiState): String? {
+        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
+        strictRouteSignature(state)?.let { return it }
+        val endpoint = when (provider) {
+            is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.AnthropicProviderSetting -> provider.anthropicVersion
         }
+        val fields = org.json.JSONArray().put(provider.id).put(provider.baseUrl).put(provider.sourceType)
+            .put(endpoint).put(provider.systemPrompt).put(provider.authMode).put(provider.apiKey)
+            .put(provider.responsesStripReasoningStatus).put(provider.hostedWebSearchEnabled)
+            .put(provider.sessionGatewayJson)
+            .put(org.json.JSONArray(provider.customHeaders.map { listOf(it.name, it.value) }))
+            .put(org.json.JSONArray(provider.customBody.map { listOf(it.key, it.value.toString()) }))
+            .put(kotlinx.serialization.json.Json.encodeToString(io.github.mangi.eta.data.model.Model.serializer(),
+                model.copy(createdAt = 0, displayName = "", sortOrder = 0)))
+        return "actual-local-v1:" + java.security.MessageDigest.getInstance("SHA-256")
+            .digest(fields.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
 
     /** UI 侧同一个“有效实测”：InputBar 只有在它为 null（真未知）时才因为本地估算解除发送禁用，
      * 已有实测的 known 状态保持原有 99% 拦截与 autoCompress 短路。 */
@@ -683,14 +682,12 @@ internal class AgentAppState(
         if (ownerId !in conversationsById) return
         val reducer = ownerContext(ownerId)
         val previous = reducer.projection().children.associateBy { it.taskId }
-        StreamPerformanceDiagnostics.measure("ui.owner.reduce", snapshot.second.size.toLong()) {
-            reducer.refresh(ownerId, snapshot.second.map { stats ->
-                AgentOwnerContextState.TaskSnapshot(
-                    stats, snapshot.first, stats.statusVersion,
-                    stats.statusChangedAtMs?.takeIf { it > 0L },
-                )
-            })
-        }
+        reducer.refresh(ownerId, snapshot.second.map { stats ->
+            AgentOwnerContextState.TaskSnapshot(
+                stats, snapshot.first, stats.statusVersion,
+                stats.statusChangedAtMs?.takeIf { it > 0L },
+            )
+        })
         if (ownerId == selectedConversationId && snapshot.second.any {
             it.manualCompactionState == "ended" && previous[it.taskId]?.manualCompactionState == "pending"
         }) Toast.makeText(appContext, "子任务已结束，压缩请求已收束；结果保留，不会重启任务或压缩主代理。", Toast.LENGTH_LONG).show()
@@ -699,23 +696,10 @@ internal class AgentAppState(
     }
 
     private fun publishOwnerContext(ownerId: String) {
-        StreamPerformanceDiagnostics.measure("ui.owner.publish") {
-            val reducer = ownerContexts[ownerId] ?: return@measure
-            val view = reducer.projection()
-            val roster = reducer.roster()
-            val current = conversationsById[ownerId]?.takeIf { it.conversationContentLoaded } ?: return@measure
-            // Revisions may only update reducer bookkeeping, or a hidden task's roster.
-            // Compare all three public fields; never skip reducer refresh or hide timers.
-            if (current.childContexts == view.children && current.selectedContextTaskId == view.selectedTaskId &&
-                current.childStatusRoster == roster) {
-                StreamPerformanceDiagnostics.record("ui.owner.publish.noop", value = 1)
-                return@measure
-            }
-            StreamPerformanceDiagnostics.record("ui.owner.publish.changed", value = 1)
-            updateConversationProjected(ownerId, current.copy(childContexts = view.children,
-                selectedContextTaskId = view.selectedTaskId, childStatusRoster = roster),
-                updateTimestamp = false, recomputeWaitingQuestion = false)
-        }
+        val view = ownerContexts[ownerId]?.projection() ?: return
+        val current = conversationsById[ownerId]?.takeIf { it.conversationContentLoaded } ?: return
+        updateConversation(ownerId, current.copy(childContexts = view.children,
+            selectedContextTaskId = view.selectedTaskId), updateTimestamp = false)
     }
 
     private fun scheduleOwnerContextHides(ownerId: String) {
@@ -881,9 +865,7 @@ internal class AgentAppState(
     }
 
     private fun updateSelectionProviders(providers: List<io.github.mangi.eta.data.model.ProviderSetting>) {
-        // Install the complete signature snapshot first. A late IO digest cannot write
-        // into this generation, and even null/deleted/disabled routes are invalidated.
-        if (routeSignatureCache.updateProviders(providers)) modelBindingGeneration++
+        if (selectionProviders != providers) modelBindingGeneration++
         selectionProviders = providers
         // Invalidate the old run permanently, including if settings are later changed back.
         runUsageRoutes.forEach { (runId, route) ->
