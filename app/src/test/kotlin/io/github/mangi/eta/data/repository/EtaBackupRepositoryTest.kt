@@ -1,8 +1,15 @@
 package io.github.mangi.eta.data.repository
 
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
+import android.content.Context
+import android.content.SharedPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
+import io.github.mangi.eta.agent.delegation.SubAgentModelDefaults
+import io.github.mangi.eta.agent.delegation.SubAgentParallelModel
+import io.github.mangi.eta.agent.delegation.SubAgentPreferences
+import io.github.mangi.eta.agent.delegation.SubAgentPresetCatalog
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.terminal.TerminalPrivateStorage
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.db.ConversationContextCheckpointEntity
@@ -10,6 +17,7 @@ import io.github.mangi.eta.data.db.ConversationEntity
 import io.github.mangi.eta.data.db.ConversationMessageEntity
 import io.github.mangi.eta.data.db.ConversationStateEntity
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.db.toEntity
 import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.withApiKey
 import java.io.ByteArrayInputStream
@@ -34,6 +42,18 @@ import org.robolectric.annotation.Config
 @Config(application = android.app.Application::class, sdk = [36])
 class EtaBackupRepositoryTest {
     private val context = RuntimeEnvironment.getApplication()
+
+    private inline fun <T> withRemotePreferences(block: (SharedPreferences) -> T): T {
+        val field = Prefs::class.java.getDeclaredField("remote").apply { isAccessible = true }
+        val previous = field.get(Prefs)
+        val remote = context.getSharedPreferences("backup-remote-${UUID.randomUUID()}", Context.MODE_PRIVATE)
+        Prefs.attachRemote(remote)
+        try {
+            return block(remote)
+        } finally {
+            field.set(Prefs, previous)
+        }
+    }
 
     @Before
     fun setUp() {
@@ -198,10 +218,25 @@ class EtaBackupRepositoryTest {
         store.applyPreset(owner, preset.id)
         val config = store.snapshot(owner)
         val directory = store.presets()
-        val pointer = prefs.getString(io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences.UI_DRAFT_KEY, null)
+        val draft = store.createDraft(owner)
+        store.bindDraft(draft, SubAgentConfigKey.Conversation("bound-current"))
+        val profile = SubAgentProfile(id = "confirmed-current", name = "当前模型默认值",
+            providerId = "current-provider", modelId = "current-selection")
+        val model = SubAgentParallelModel(profile.providerId, "current-api-model")
+        assertTrue(store.updateConfirmedProfile(draft, profile.id, model) {
+            it.copy(profiles = listOf(profile), parallelLimits = mapOf(model to 3))
+        } is ConversationSubAgentPreferences.WriteResult.Saved)
+        prefs.edit().putString(ConversationSubAgentPreferences.UI_DRAFT_KEY, draft.value).commit()
+        val current = Prefs.exportAgentPreferences()
+        val pointer = prefs.getString(ConversationSubAgentPreferences.UI_DRAFT_KEY, null)
+        val draftConfig = store.snapshot(draft)
+        val defaults = prefs.getString(SubAgentModelDefaults.KEY, null)
         val revision = store.revision(owner).value
         val document = EtaBackupDocument(
             exportedAt = 0,
+            providers = listOf(EtaBackupProvider(io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting(
+                id = "old-backup-provider", name = "旧备份供应商", baseUrl = "https://api.example.com/v1",
+            ).withApiKey("restored-backup-key").toEntity())),
             conversations = listOf(ConversationEntity(id = "old-chat", title = "旧聊天", thinkingEnabled = false, createdAt = 1, updatedAt = 2)),
             messages = listOf(ConversationMessageEntity(
                 id = "old-message", conversationId = "old-chat", sortIndex = 0, type = "user", content = "保留聊天",
@@ -212,11 +247,34 @@ class EtaBackupRepositoryTest {
                 io.github.mangi.eta.agent.delegation.SubAgentPresetCatalog.KEY to "s:{obsolete",
                 io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences.UI_DRAFT_KEY to "s:obsolete-draft",
                 "agent_child_profiles_v1" to "s:{obsolete",
+                "agent_child_0_image_resolution" to "s:obsolete",
+                "agent_child_0_enabled" to "b:true",
             ),
         )
         val raw = kotlinx.serialization.json.Json.encodeToString(EtaBackupDocument.serializer(), document)
-        EtaBackupRepository.import(context, ByteArrayInputStream(raw.toByteArray()))
+        withRemotePreferences { remote ->
+            val remoteBefore = mapOf(
+                SubAgentPreferences.PROFILES_KEY to "obsolete-remote-profiles",
+                ConversationSubAgentPreferences.UI_DRAFT_KEY to "obsolete-remote-draft",
+                ConversationSubAgentPreferences.SEED_KEY to "obsolete-remote-seed",
+            )
+            val edit = remote.edit()
+            remoteBefore.forEach { (key, value) -> edit.putString(key, value) }
+            check(edit.commit())
+            EtaBackupRepository.import(context, ByteArrayInputStream(raw.toByteArray()))
+            current.forEach { (key, value) -> assertEquals("Current preference lost: $key", value, Prefs.exportAgentPreferences()[key]) }
+            assertEquals(current.getValue(SubAgentPreferences.PROFILES_KEY).substring(2), Prefs.getString(SubAgentPreferences.PROFILES_KEY))
+            assertEquals(pointer, Prefs.getString(ConversationSubAgentPreferences.UI_DRAFT_KEY))
+            assertEquals(current.getValue(ConversationSubAgentPreferences.SEED_KEY).substring(2), Prefs.getString(ConversationSubAgentPreferences.SEED_KEY))
+            assertEquals(remoteBefore, remote.all)
+        }
         assertEquals("保留聊天", EtaDatabase.get(context).conversationDao().messages().single().content)
+        assertEquals("restored-backup-key", ProviderRepository.providerById("old-backup-provider")?.apiKey)
+        assertEquals("旧备份供应商", ProviderRepository.providerById("old-backup-provider")?.name)
+        assertEquals(draftConfig, store.snapshot(draft))
+        assertEquals(defaults, prefs.getString(SubAgentModelDefaults.KEY, null))
+        assertFalse(prefs.contains("agent_child_0_image_resolution"))
+        assertFalse(prefs.contains("agent_child_0_enabled"))
         assertEquals("restored", prefs.getString("unrelated-setting", null))
         assertEquals(config, store.snapshot(owner))
         assertEquals(directory, store.presets())
@@ -226,6 +284,49 @@ class EtaBackupRepositoryTest {
         val after = prefs.all.toMap()
         check(store.resetLegacyConfigurationOnce())
         assertEquals(after, prefs.all)
+    }
+
+    @Test
+    fun markedBackupWithoutPointerBlocksRemoteProfilesAndDraftWithoutOverlayingLiveConfig() = runBlocking {
+        val prefs = requireNotNull(Prefs.localAgentPreferences())
+        val store = ConversationSubAgentPreferences(prefs)
+        val livePreset = store.addPreset("不应覆叠的本地预设")
+        val liveDraft = store.createDraft()
+        val live = SubAgentConfigKey.Conversation("live-before-restore")
+        store.applyPreset(live, livePreset.id)
+        prefs.edit().putString(ConversationSubAgentPreferences.UI_DRAFT_KEY, liveDraft.value).commit()
+        withRemotePreferences { remote ->
+            val obsoleteProfiles = org.json.JSONObject().put("version", 1).put("agents", org.json.JSONArray()
+                .put(SubAgentProfile(id = "remote-old", name = "旧远端配置").toJson())).toString()
+            check(remote.edit().putString(SubAgentPreferences.PROFILES_KEY, obsoleteProfiles)
+                .putString(ConversationSubAgentPreferences.UI_DRAFT_KEY, "obsolete-remote-draft").commit())
+            val remoteBefore = remote.all.toMap()
+            val document = EtaBackupDocument(exportedAt = 0, agentPreferences = mapOf(
+                ConversationSubAgentPreferences.RESET_MARKER_KEY to "s:1",
+                SubAgentPreferences.PROFILES_KEY to "s:{obsolete legacy payload",
+                "agent_child_0_enabled" to "b:true",
+                "other-restored" to "i:2",
+            ))
+            val raw = kotlinx.serialization.json.Json.encodeToString(EtaBackupDocument.serializer(), document)
+            EtaBackupRepository.import(context, ByteArrayInputStream(raw.toByteArray()))
+            assertEquals(2, prefs.getInt("other-restored", 0))
+            assertTrue(prefs.contains(SubAgentPreferences.PROFILES_KEY))
+            assertEquals(0, org.json.JSONObject(Prefs.getString(SubAgentPreferences.PROFILES_KEY)).getJSONArray("agents").length())
+            assertTrue(prefs.contains(ConversationSubAgentPreferences.UI_DRAFT_KEY))
+            assertEquals("", Prefs.getString(ConversationSubAgentPreferences.UI_DRAFT_KEY))
+            assertTrue(SubAgentPreferences.profiles().isEmpty())
+            assertTrue(store.isConfigurationResetComplete())
+            assertFalse(prefs.contains(SubAgentModelDefaults.KEY))
+            assertFalse(prefs.contains(ConversationSubAgentPreferences.SEED_KEY))
+            assertFalse(prefs.contains(SubAgentPresetCatalog.KEY))
+            assertFalse(prefs.contains("agent_child_0_enabled"))
+            assertFalse(BackupSubAgentConfig.hasOwner(prefs, live.value))
+            assertNull(store.existingDraftOrNull(liveDraft))
+            assertTrue(store.presets().isEmpty())
+            assertFalse(store.snapshot(live).enabled)
+            assertTrue(store.snapshot(live).profiles.isEmpty())
+            assertEquals(remoteBefore, remote.all)
+        }
     }
 
     @Test

@@ -16,7 +16,7 @@ internal object BackupSubAgentConfig {
     private const val PREFIX = ConversationSubAgentPreferences.OWNER_PREFIX
     private const val MARKER = ConversationSubAgentPreferences.RESET_MARKER_KEY
     private const val COMPLETED_MARKER = "s:1"
-    private val legacySlot = Regex("agent_child_[0-3]_(provider|model|reasoning|task_tier)")
+    private val legacySlot = Regex("agent_child_[0-3]_(provider|model|reasoning|task_tier|image_resolution|enabled)")
     private val legacyParallelLimit = Regex("agent_model_parallel_[0-9a-f]{64}")
 
     /** Full backup values use Prefs' type prefix. Validate BEFORE clearing local preferences. */
@@ -30,6 +30,15 @@ internal object BackupSubAgentConfig {
     /** Exact historical namespaces only; never filter provider, chat or general model settings. */
     private fun isLegacyPreference(key: String): Boolean = key == SubAgentPreferences.PROFILES_KEY ||
         legacySlot.matches(key) || legacyParallelLimit.matches(key) || key.startsWith("agent_collaboration_")
+
+    /**
+     * The completed local reset, not the spelling of a key, establishes its generation. It writes
+     * a profiles tombstone in the historical namespace, and explicit compatibility writes may
+     * still use that namespace afterwards. Keep these local values; never copy them from an old
+     * archive. Dropping the tombstone during Prefs' clear would expose obsolete remote fallback.
+     */
+    private fun isCurrentGenerationPreference(key: String): Boolean =
+        isSubAgentPreference(key) || isLegacyPreference(key)
 
     fun validatePreferences(values: Map<String, String>, store: ConversationSubAgentPreferences) {
         val payloads = values.filterKeys(::isSubAgentPreference).mapValues { (key, encoded) ->
@@ -52,6 +61,8 @@ internal object BackupSubAgentConfig {
      * Startup has already completed reset. Old backups replace unrelated prefs normally, but keep
      * the ENTIRE device-local new-generation subset. New backups replace it after strict validation.
      * The marker is included in the same preferences commit, never re-added after a destructive clear.
+     * Marked archives also receive empty local legacy profiles and a missing UI-pointer tombstone:
+     * neither may fall through to obsolete remote values after Prefs clears local storage.
      * Missing model defaults in a marked archive are a valid empty defaults map.
      */
     fun preferencesForRestore(
@@ -64,10 +75,15 @@ internal object BackupSubAgentConfig {
         }
         validateExternalPreferences(incoming, store)
         return if (incoming[MARKER] == COMPLETED_MARKER) {
-            incoming.filterKeys { !isLegacyPreference(it) } + (MARKER to COMPLETED_MARKER)
+            incoming.filterKeys { !isLegacyPreference(it) } + mapOf(
+                MARKER to COMPLETED_MARKER,
+                SubAgentPreferences.PROFILES_KEY to "s:${JSONObject().put("version", 1).put("agents", JSONArray())}",
+                ConversationSubAgentPreferences.UI_DRAFT_KEY to
+                    (incoming[ConversationSubAgentPreferences.UI_DRAFT_KEY] ?: "s:"),
+            )
         } else {
             incoming.filterKeys { !isSubAgentPreference(it) && !isLegacyPreference(it) } +
-                current.filterKeys(::isSubAgentPreference)
+                current.filterKeys(::isCurrentGenerationPreference)
         }
     }
 

@@ -52,13 +52,41 @@ class SubAgentResetLifecycleContractTest(unittest.TestCase):
         self.assertIn('store.isConfigurationResetComplete()', policy)
         self.assertIn('validateExternalPreferences(incoming, store)', policy)
         self.assertIn('incoming[MARKER] == COMPLETED_MARKER', policy)
-        self.assertIn('current.filterKeys(::isSubAgentPreference)', policy)
-        self.assertIn('(MARKER to COMPLETED_MARKER)', policy)
+        self.assertIn('current.filterKeys(::isCurrentGenerationPreference)', policy)
+        self.assertIn('MARKER to COMPLETED_MARKER', policy)
         self.assertIn('private const val COMPLETED_MARKER = "s:1"', boundary)
         for key in ['ConversationSubAgentPreferences.RESET_MARKER_KEY',
                     'ConversationSubAgentPreferences.UI_DRAFT_KEY', 'SubAgentModelDefaults.KEY']:
             self.assertIn(key, boundary)
         self.assertIn('store.validatePreferenceArchives(payloads)', boundary)
+
+    def test_restore_preserves_local_reset_tombstones_but_never_imports_legacy_payloads(self):
+        boundary = self.read('data/repository/BackupSubAgentConfig.kt')
+        retained = boundary.split('private fun isCurrentGenerationPreference(', 1)[1].split(
+            'fun validatePreferences(', 1)[0]
+        self.assertIn('isSubAgentPreference(key) || isLegacyPreference(key)', retained)
+        legacy = boundary.split('private fun isLegacyPreference(', 1)[1].split(
+            'private fun isCurrentGenerationPreference(', 1)[0]
+        self.assertIn('key == SubAgentPreferences.PROFILES_KEY', legacy)
+        self.assertIn('legacySlot.matches(key)', legacy)
+        self.assertIn('legacyParallelLimit.matches(key)', legacy)
+        self.assertIn('key.startsWith("agent_collaboration_")', legacy)
+        # Match reset's exact slot whitelist, including the two fields formerly left unfiltered.
+        self.assertIn('Regex("agent_child_[0-3]_(provider|model|reasoning|task_tier|image_resolution|enabled)")', boundary)
+        policy = boundary.split('fun preferencesForRestore(', 1)[1].split(
+            'fun restoreExactPreferences(', 1)[0]
+        marked, old = policy.split('} else {', 1)
+        self.assertIn('incoming.filterKeys { !isLegacyPreference(it) }', marked)
+        self.assertIn('SubAgentPreferences.PROFILES_KEY to "s:${JSONObject().put("version", 1).put("agents", JSONArray())}"', marked)
+        self.assertIn('(incoming[ConversationSubAgentPreferences.UI_DRAFT_KEY] ?: "s:")', marked)
+        # Incoming current owners/defaults are not overlaid with device-local ones or frozen seed.
+        self.assertNotIn('current.filterKeys', marked)
+        self.assertNotIn('SEED to', marked)
+        self.assertNotIn('SubAgentModelDefaults.KEY to', marked)
+        self.assertIn('!isSubAgentPreference(it) && !isLegacyPreference(it)', old)
+        self.assertIn('current.filterKeys(::isCurrentGenerationPreference)', old)
+        self.assertNotIn('Prefs.getString(', policy)
+        self.assertNotIn('store.snapshot(', policy)
 
     def test_exact_undo_does_not_run_migration_or_marker_policy(self):
         boundary = self.read('data/repository/BackupSubAgentConfig.kt')

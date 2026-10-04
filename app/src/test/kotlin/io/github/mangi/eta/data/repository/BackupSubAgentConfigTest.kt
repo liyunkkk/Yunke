@@ -3,7 +3,10 @@ package io.github.mangi.eta.data.repository
 import android.content.SharedPreferences
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
+import io.github.mangi.eta.agent.delegation.SubAgentModelDefaults
 import io.github.mangi.eta.agent.delegation.SubAgentParallelModel
+import io.github.mangi.eta.agent.delegation.SubAgentPreferences
+import io.github.mangi.eta.agent.delegation.SubAgentPresetCatalog
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import java.lang.reflect.Proxy
 import org.json.JSONObject
@@ -84,28 +87,107 @@ class BackupSubAgentConfigTest {
         val store = ConversationSubAgentPreferences(prefs)
         store.resetLegacyConfigurationOnce()
         val preset = store.addPreset("当前预设")
-        store.applyPreset(SubAgentConfigKey.Conversation("current"), preset.id)
+        val presetOwner = SubAgentConfigKey.Preset(preset.id)
+        val model = SubAgentParallelModel("current-provider", "current-api-model")
+        val profile = SubAgentProfile(id = "current-agent", name = "当前配置",
+            providerId = model.providerId, modelId = "current-selection")
+        assertTrue(store.updateConfirmedProfile(presetOwner, profile.id, model) {
+            it.copy(profiles = listOf(profile), diagnosticsEnabled = true, parallelLimits = mapOf(model to 4))
+        } is ConversationSubAgentPreferences.WriteResult.Saved)
+        val owner = SubAgentConfigKey.Conversation("current")
+        store.applyPreset(owner, preset.id)
+        val draft = store.createDraft(owner)
+        val bound = SubAgentConfigKey.Conversation("bound")
+        store.bindDraft(draft, bound)
+        prefs.edit().putString(ConversationSubAgentPreferences.UI_DRAFT_KEY, draft.value).commit()
         val current = encoded(prefs)
+        assertTrue(current.containsKey(SubAgentModelDefaults.KEY))
+        assertTrue(current.keys.any { it.startsWith(ConversationSubAgentPreferences.OWNER_PREFIX + "d_") })
+        assertTrue(current.keys.any { it.startsWith(ConversationSubAgentPreferences.BIND_PREFIX) })
         val obsolete = mapOf(
             ConversationSubAgentPreferences.SEED_KEY to "s:{obsolete and malformed",
             ConversationSubAgentPreferences.OWNER_PREFIX + "c_b2xk" to "s:{obsolete",
-            io.github.mangi.eta.agent.delegation.SubAgentPresetCatalog.KEY to "s:{obsolete",
-            "agent_child_profiles_v1" to "s:{obsolete",
+            ConversationSubAgentPreferences.OWNER_PREFIX + "d_b2xk" to "s:{obsolete",
+            ConversationSubAgentPreferences.OWNER_PREFIX + "p_b2xk" to "s:{obsolete",
+            ConversationSubAgentPreferences.BIND_PREFIX + "c_b2xk" to "s:obsolete",
+            SubAgentPresetCatalog.KEY to "s:{obsolete",
+            SubAgentModelDefaults.KEY to "s:{obsolete",
+            SubAgentPreferences.PROFILES_KEY to "s:{obsolete",
             "agent_collaboration_draft" to "s:true",
             "agent_child_0_provider" to "s:obsolete-provider",
+            "agent_child_0_image_resolution" to "s:obsolete-resolution",
+            "agent_child_0_enabled" to "b:true",
+            model.legacyKey() to "i:99",
             ConversationSubAgentPreferences.UI_DRAFT_KEY to "s:obsolete-draft",
             "provider-token" to "s:restored-token",
             "chat-setting" to "b:true",
         )
+        val revision = store.revision.value
         val restored = BackupSubAgentConfig.preferencesForRestore(obsolete, current, store)
-        current.forEach { (key, value) -> assertEquals(value, restored[key]) }
+        current.forEach { (key, value) -> assertEquals("Current preference lost: $key", value, restored[key]) }
         assertEquals("s:restored-token", restored["provider-token"])
         assertEquals("b:true", restored["chat-setting"])
-        assertFalse(restored.containsKey("agent_child_profiles_v1"))
-        assertFalse(restored.containsKey("agent_collaboration_draft"))
-        assertFalse(restored.containsKey("agent_child_0_provider"))
-        assertFalse(restored.containsKey(ConversationSubAgentPreferences.OWNER_PREFIX + "c_b2xk"))
+        // This key is historical in the incoming archive, but a new-generation local tombstone.
+        assertEquals(current.getValue(SubAgentPreferences.PROFILES_KEY), restored[SubAgentPreferences.PROFILES_KEY])
+        assertEquals(0, JSONObject(restored.getValue(SubAgentPreferences.PROFILES_KEY).substring(2)).getJSONArray("agents").length())
+        (obsolete.keys - current.keys - setOf("provider-token", "chat-setting")).forEach { key ->
+            assertFalse("Obsolete preference imported: $key", restored.containsKey(key))
+        }
         assertEquals("s:1", restored[ConversationSubAgentPreferences.RESET_MARKER_KEY])
+        assertEquals(current, encoded(prefs))
+        assertEquals(revision, store.revision.value)
+    }
+
+    @Test fun oldBackupKeepsExplicitPostResetCompatibilityWritesWithTheirTypes() {
+        val prefs = preferences()
+        val store = ConversationSubAgentPreferences(prefs)
+        assertTrue(store.resetLegacyConfigurationOnce())
+        val profile = SubAgentProfile(id = "confirmed-after-reset", name = "当前兼容配置")
+        val model = SubAgentParallelModel("current-provider", "current-model")
+        store.saveLegacyConfiguration(profiles = listOf(profile), binding = model, parallelLimit = 3)
+        prefs.edit().putBoolean("agent_collaboration_current", false)
+            .putInt("agent_child_1_enabled", 0).commit()
+        val current = encoded(prefs)
+        val incoming = mapOf(
+            SubAgentPreferences.PROFILES_KEY to "s:{obsolete",
+            model.legacyKey() to "i:99",
+            "agent_collaboration_current" to "b:true",
+            "agent_child_1_enabled" to "b:true",
+        )
+        assertEquals(current, BackupSubAgentConfig.preferencesForRestore(incoming, current, store))
+        assertEquals("b:false", current["agent_collaboration_current"])
+        assertEquals("i:0", current["agent_child_1_enabled"])
+    }
+
+    @Test fun oldBackupFiltersOnlyExactHistoricalNamespacesWithoutImportingASeed() {
+        val prefs = preferences()
+        val store = ConversationSubAgentPreferences(prefs)
+        assertTrue(store.resetLegacyConfigurationOnce())
+        val obsolete = buildMap {
+            for (slot in 0..3) {
+                for (field in listOf("provider", "model", "reasoning", "task_tier", "image_resolution", "enabled")) {
+                    put("agent_child_${slot}_$field", "b:true")
+                }
+            }
+            put(SubAgentParallelModel("old-provider", "old-model").legacyKey(), "i:99")
+            put("agent_collaboration_old", "b:true")
+            put(ConversationSubAgentPreferences.SEED_KEY, "s:{obsolete")
+            put(SubAgentPresetCatalog.KEY, "s:{obsolete")
+        }
+        val unrelated = mapOf(
+            "agent_child_4_provider" to "s:unrelated",
+            "agent_child_0_provider_token" to "s:secret",
+            "agent_model_parallel_not_a_hash" to "i:2",
+            "agent_collaboration" to "b:true",
+            "agent_parent_model" to "s:parent",
+        )
+        val current = encoded(prefs)
+        val restored = BackupSubAgentConfig.preferencesForRestore(obsolete + unrelated, current, store)
+        assertEquals(current + unrelated, restored)
+        assertTrue(store.presets().isEmpty())
+        assertFalse(store.snapshot(SubAgentConfigKey.Conversation("missing")).enabled)
+        assertTrue(store.snapshot(SubAgentConfigKey.Conversation("missing")).profiles.isEmpty())
+        assertEquals(current, encoded(prefs))
     }
 
     @Test fun markedBackupWithoutDefaultsIsValidAndNotOverlaidWithLiveOwners() {
@@ -115,7 +197,36 @@ class BackupSubAgentConfigTest {
         val owner = SubAgentConfigKey.Conversation("live")
         store.update(owner) { it.copy(diagnosticsEnabled = true) }
         val incoming = mapOf(ConversationSubAgentPreferences.RESET_MARKER_KEY to "s:1", "other" to "i:2")
-        assertEquals(incoming, BackupSubAgentConfig.preferencesForRestore(incoming, encoded(prefs), store))
+        val restored = BackupSubAgentConfig.preferencesForRestore(incoming, encoded(prefs), store)
+        assertEquals("i:2", restored["other"])
+        assertEquals("s:1", restored[ConversationSubAgentPreferences.RESET_MARKER_KEY])
+        assertEquals("s:", restored[ConversationSubAgentPreferences.UI_DRAFT_KEY])
+        assertEquals(0, JSONObject(restored.getValue(SubAgentPreferences.PROFILES_KEY).substring(2)).getJSONArray("agents").length())
+        assertFalse(restored.containsKey(SubAgentModelDefaults.KEY))
+        assertFalse(restored.containsKey(ConversationSubAgentPreferences.SEED_KEY))
+        assertFalse(restored.containsKey(SubAgentPresetCatalog.KEY))
+        assertFalse(restored.keys.any { it.startsWith(ConversationSubAgentPreferences.OWNER_PREFIX) })
+    }
+
+    @Test fun markedBackupIgnoresLegacyProfilesButKeepsItsCurrentOwnersAndPointer() {
+        val prefs = preferences()
+        val store = ConversationSubAgentPreferences(prefs)
+        assertTrue(store.resetLegacyConfigurationOnce())
+        val preset = store.addPreset("归档预设")
+        val draft = store.createDraft()
+        store.applyPreset(draft, preset.id)
+        prefs.edit().putString(ConversationSubAgentPreferences.UI_DRAFT_KEY, draft.value).commit()
+        val current = encoded(prefs)
+        val incoming = current + mapOf(
+            SubAgentPreferences.PROFILES_KEY to "s:{obsolete",
+            "agent_child_0_enabled" to "b:true",
+            "agent_child_0_image_resolution" to "s:obsolete",
+        )
+        val restored = BackupSubAgentConfig.preferencesForRestore(incoming, current, store)
+        assertEquals(current, restored)
+        assertEquals("s:${draft.value}", restored[ConversationSubAgentPreferences.UI_DRAFT_KEY])
+        assertFalse(restored.containsKey("agent_child_0_enabled"))
+        assertFalse(restored.containsKey("agent_child_0_image_resolution"))
     }
 
     @Test fun malformedMarkerAndModelDefaultsRejectBeforeReplacement() {
@@ -134,10 +245,15 @@ class BackupSubAgentConfigTest {
     @Test fun exactUndoRestoresScalarTypesAndNeverAddsGenerationMarker() {
         val prefs = preferences()
         prefs.edit().putString(ConversationSubAgentPreferences.RESET_MARKER_KEY, "1").commit()
-        val originals = mapOf("string" to "s:old", "boolean" to "b:false", "int" to "i:7", "long" to "l:8")
+        val originals = mapOf("string" to "s:old", "boolean" to "b:false", "int" to "i:7", "long" to "l:8",
+            SubAgentPreferences.PROFILES_KEY to "s:{original legacy data",
+            "agent_child_0_enabled" to "b:false", "agent_collaboration_original" to "i:1")
         BackupSubAgentConfig.restoreExactPreferences(originals, prefs)
-        assertEquals(mapOf("string" to "old", "boolean" to false, "int" to 7, "long" to 8L), prefs.all)
+        assertEquals(mapOf("string" to "old", "boolean" to false, "int" to 7, "long" to 8L,
+            SubAgentPreferences.PROFILES_KEY to "{original legacy data",
+            "agent_child_0_enabled" to false, "agent_collaboration_original" to 1), prefs.all)
         assertFalse(prefs.contains(ConversationSubAgentPreferences.RESET_MARKER_KEY))
+        assertFalse(prefs.contains(ConversationSubAgentPreferences.UI_DRAFT_KEY))
         val before = prefs.all.toMap()
         assertTrue(runCatching { BackupSubAgentConfig.restoreExactPreferences(mapOf("bad" to "i:no"), prefs) }.isFailure)
         assertEquals(before, prefs.all)
