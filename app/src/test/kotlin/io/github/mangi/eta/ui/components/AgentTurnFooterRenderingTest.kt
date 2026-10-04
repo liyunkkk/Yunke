@@ -156,8 +156,10 @@ class AgentTurnFooterRenderingTest {
         showConversation(messages, streaming = streaming)
         footer("answer").assertIsDisplayed()
         footerAction("answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
-        footerAction("answer", R.string.ui_regenerate_reply_84a7d9).assertIsNotEnabled()
-        footerAction("answer", R.string.ui_delete_this_conversation_3f351b).assertIsNotEnabled()
+        footerAction("answer", R.string.ui_regenerate_reply_84a7d9)
+            .assertIsDisplayed().assertHasNoClickAction().performTouchInput { click() }
+        footerAction("answer", R.string.ui_delete_this_conversation_3f351b)
+            .assertIsDisplayed().assertHasNoClickAction().performTouchInput { click() }
         compose.onAllNodesWithContentDescription(text(R.string.copy_answer)).assertCountEquals(0)
         assertEquals(listOf("branch:answer"), callbacks)
         compose.runOnIdle { streaming.value = false }
@@ -200,7 +202,7 @@ class AgentTurnFooterRenderingTest {
     private fun footer(id: String) = compose.onNodeWithTag("turn-footer:$id", useUnmergedTree = true)
 
     private fun footerAction(id: String, resource: Int) = compose.onNode(
-        hasContentDescription(text(resource)) and hasClickAction() and
+        hasContentDescription(text(resource)) and
             hasAnyAncestor(hasTestTag("turn-footer:$id")),
     )
 

@@ -187,17 +187,17 @@ class AgentQuestionCardCompactTest {
         val description = (1..5).joinToString("\n") { "Option condition $it" }
         show(initial.copy(request = initial.request.copy(question = body,
             options = listOf(initial.request.options[0].copy(description = description), initial.request.options[1]))))
-        assertFalse(layout(body).hasVisualOverflow)
+        assertNoVisualOverflow(body)
         assertEquals(9, layout(body).lineCount)
-        assertFalse(layout(description).hasVisualOverflow)
+        assertNoVisualOverflow(description)
         assertEquals(5, layout(description).lineCount)
-        assertFalse(layout(text(R.string.question_delegate_hint)).hasVisualOverflow)
+        assertNoVisualOverflow(text(R.string.question_delegate_hint))
         compose.onNodeWithText(text(R.string.question_show_full_text)).assertDoesNotExist()
         header().performClick()
         compose.onNodeWithText(body).assertDoesNotExist()
         header().performClick()
-        assertFalse(layout(body).hasVisualOverflow)
-        assertFalse(layout(description).hasVisualOverflow)
+        assertNoVisualOverflow(body)
+        assertNoVisualOverflow(description)
         compose.runOnIdle { assertEquals(0, submissions) }
     }
 
@@ -330,8 +330,20 @@ class AgentQuestionCardCompactTest {
     private fun role(value: Role) = SemanticsMatcher.expectValue(SemanticsProperties.Role, value)
     private fun option(label: String) = compose.onNode(hasText(label) and role(Role.RadioButton))
     private fun header() = compose.onNode(role(Role.Button) and hasText("Decision title", substring = true))
-    private fun field(id: Int) = compose.onNode(hasSetTextAction() and hasContentDescription(text(id)))
+    private fun field(id: Int) = compose.onNodeWithContentDescription(text(id))
     private fun text(id: Int, vararg args: Any): String = RuntimeEnvironment.getApplication().getString(id, *args)
+
+    private fun assertNoVisualOverflow(value: String) {
+        val result = layout(value)
+        val diagnostic = "text=$value; size=${result.size}; paragraph=${result.multiParagraph.width}x${result.multiParagraph.height}; " +
+            "constraints=${result.layoutInput.constraints}; lines=${result.lineCount}; " +
+            "maxLines=${result.layoutInput.maxLines}; softWrap=${result.layoutInput.softWrap}; overflow=${result.layoutInput.overflow}; " +
+            "widthOverflow=${result.didOverflowWidth}; heightOverflow=${result.didOverflowHeight}; " +
+            "lastEnd=${result.getLineEnd(result.lineCount - 1)}; lastBottom=${result.getLineBottom(result.lineCount - 1)}"
+        assertFalse(diagnostic, result.hasVisualOverflow)
+        assertEquals(diagnostic, value.length, result.getLineEnd(result.lineCount - 1))
+        repeat(result.lineCount) { assertFalse(diagnostic, result.isLineEllipsized(it)) }
+    }
 
     private fun layout(text: String): TextLayoutResult {
         val results = mutableListOf<TextLayoutResult>()
