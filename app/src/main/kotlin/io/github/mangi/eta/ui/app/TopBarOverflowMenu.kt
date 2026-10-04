@@ -84,7 +84,6 @@ internal fun TopBarOverflowMenu(
 
     fun toggleInteractiveMode(enabled: Boolean) {
         TouchHaptics.click(view)
-        menuState.dismiss()
         onToggleInteractiveMode(enabled)
     }
 
