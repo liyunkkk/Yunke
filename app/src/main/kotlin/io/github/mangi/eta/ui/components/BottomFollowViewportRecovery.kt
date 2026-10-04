@@ -45,6 +45,23 @@ internal class BottomFollowViewportRecovery(
         return true
     }
 
+    /** Capture before a stable chat row changes its measured height. */
+    fun beginThinkingExpansion(
+        rowKey: Any,
+        expiresAtNanos: Long,
+        canOwnViewport: Boolean,
+    ): Boolean {
+        // Replace any previous owner before checking capture eligibility. This also makes a
+        // rapid toggle unable to reuse a stale work-group anchor.
+        workExpansion = null
+        if (!canOwnViewport || System.nanoTime() >= expiresAtNanos) return false
+        val items = state.layoutInfo.visibleItemsInfo
+        val row = items.firstOrNull { it.key == rowKey } ?: return false
+        val anchor = items.firstOrNull { it.index > row.index } ?: return false
+        workExpansion = WorkExpansion(rowKey, emptySet(), anchor.key, anchor.offset, expiresAtNanos)
+        return true
+    }
+
     fun cancelWorkExpansion(groupKey: Any) {
         if (workExpansion?.groupKey == groupKey) workExpansion = null
     }

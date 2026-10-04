@@ -345,6 +345,7 @@ internal fun ChatMessageItem(
     isPaused: Boolean = false,
     enableLivePreview: Boolean = true,
     speechPreface: String = "",
+    onThinkingToggle: ((String, Boolean) -> Unit)? = null,
 ) {
     when (message) {
         is io.github.mangi.eta.ui.model.AgentQuestionMessageUi -> AgentQuestionCard(message, modifier,
@@ -425,6 +426,7 @@ internal fun ChatMessageItem(
             modifier = modifier,
             compact = compact,
             isPaused = isPaused,
+            onToggle = onThinkingToggle,
         )
         is RunTraceMessageUi -> RunTraceRow(message = message, onClick = actions.onRunTraceClick, modifier = modifier)
         is ToolActivityMessageUi -> ToolActivityInline(
@@ -2412,6 +2414,7 @@ private fun ThinkingRow(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
     isPaused: Boolean = false,
+    onToggle: ((String, Boolean) -> Unit)? = null,
 ) {
     val bodyTraceMount = remember { nextChatBodyTraceMount() }
     SideEffect { traceChatBodyRun("thinking", bodyTraceMount) }
@@ -2477,6 +2480,7 @@ private fun ThinkingRow(
     Column(
         modifier = containerModifier
             .clickable(interactionSource = null, indication = null) {
+                onToggle?.invoke(message.id, !expanded)
                 anchorBottom = expansionHoldsBottom()
                 manuallyExpanded = true
                 expandedByTap = !expanded

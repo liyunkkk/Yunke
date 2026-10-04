@@ -1424,6 +1424,29 @@ internal fun AgentConversationMessages(
                             branchEnabled = branchEnabled,
                             isEditing = message.id == editTargetMessageId,
                             isPaused = isPaused,
+                            onThinkingToggle = if (message is ThinkingMessageUi) {
+                                { thinkingKey, willExpand ->
+                                    val now = System.nanoTime()
+                                    val alreadyPinned = expansionHoldsBottom()
+                                    val captured = if (willExpand) {
+                                        viewportRecovery.beginThinkingExpansion(
+                                            rowKey = thinkingKey,
+                                            expiresAtNanos = now + WORK_EXPANSION_RECOVERY_NANOS,
+                                            canOwnViewport = canOwnWorkExpansionViewport() &&
+                                                (alreadyPinned || scrollState.isConversationAtBottom()),
+                                        )
+                                    } else {
+                                        viewportRecovery.cancelWorkExpansion(thinkingKey)
+                                        false
+                                    }
+                                    if (alreadyPinned || captured ||
+                                        (!willExpand && canOwnWorkExpansionViewport() &&
+                                            scrollState.isConversationAtBottom())
+                                    ) {
+                                        bottomSnapUntilNanos = now + EXPANSION_BOTTOM_SNAP_NANOS
+                                    }
+                                }
+                            } else null,
                             // Keep this modifier stable. Attaching fadeIn only after the run
                             // ends replays appearance on the already-visible answer.
                             modifier = Modifier,
