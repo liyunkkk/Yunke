@@ -147,20 +147,22 @@ internal object AppFileLogger {
     }
 
     private fun write(level: String, message: String, throwable: Throwable?) {
-        if (!enabled.get()) return
-        val sink = appSink ?: return
-        val builder = StringBuilder(message.length + 80)
-        builder.append(timeFormatter.format(Instant.now()))
-            .append(' ')
-            .append(level)
-            .append('/')
-            .append(ModuleConfig.TAG)
-            .append(": ")
-            .append(message)
-        if (throwable != null) {
-            builder.append('\n').append(Log.getStackTraceString(throwable).trimEnd())
+        lock.withLock {
+            if (!enabled.get()) return
+            val sink = appSink ?: return
+            val builder = StringBuilder(message.length + 80)
+            builder.append(timeFormatter.format(Instant.now()))
+                .append(' ')
+                .append(level)
+                .append('/')
+                .append(ModuleConfig.TAG)
+                .append(": ")
+                .append(message)
+            if (throwable != null) {
+                builder.append('\n').append(Log.getStackTraceString(throwable).trimEnd())
+            }
+            runCatching { sink.append(builder.toString()) }
         }
-        runCatching { sink.append(builder.toString()) }
     }
 
     private fun writeSessionHeader() {
