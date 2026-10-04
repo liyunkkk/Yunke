@@ -30,7 +30,7 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         self.assertEqual(len(re.findall(r'\brememberChatScrollTraceEnabled\s*\(', chat)), 1)
         self.assertEqual(len(re.findall(r'\bChatScrollMonitor\s*\(', chat)), 1)
         self.assertRegex(chat, r'ChatScrollMonitor\(state = scrollState, enabled = scrollTraceEnabled\)')
-        self.assertLess(chat.index('ChatScrollMonitor('), chat.index('val timelineEntries'))
+        self.assertLess(chat.index('ChatScrollMonitor('), chat.index('val projectedTimelineEntries'))
         self.assertRegex(chat, r'LazyColumn\(\s*state = scrollState,')
 
     def test_row_probe_is_unconditional_without_a_rendering_wrapper(self):
