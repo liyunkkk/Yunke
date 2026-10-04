@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
@@ -74,6 +75,23 @@ class SubAgentGptSpeedButtonTest {
     private fun speedNode(name: String) =
         compose.onNodeWithContentDescription("$name GPT 速度", substring = true)
 
+    private fun assertSpeedContentCentered(name: String, label: String) {
+        val touch = speedNode(name).fetchSemanticsNode().boundsInRoot
+        val text = compose.onNode(
+            hasText(label) and hasAnyAncestor(hasContentDescription("$name GPT 速度", substring = true)),
+            useUnmergedTree = true,
+        ).fetchSemanticsNode().boundsInRoot
+        val minTouchSize = with(compose.density) { 48.dp.toPx() }
+        // Decorative Icon has no semantics node: recover the group bounds from its 18dp size
+        // and the shared 4dp gap declared in SubAgentGptSpeedButton.
+        val iconAndGap = with(compose.density) { 22.dp.toPx() }
+        val groupCenterX = (text.left - iconAndGap + text.right) / 2f
+        assertTrue("$name touch width must be at least 48dp", touch.width >= minTouchSize - 1f)
+        assertTrue("$name touch height must be at least 48dp", touch.height >= minTouchSize - 1f)
+        assertEquals("$name icon/label group must be horizontally centered", touch.center.x, groupCenterX, 1f)
+        assertEquals("$name label must be vertically centered", touch.center.y, text.center.y, 1f)
+    }
+
     private fun modeOf(fixture: SubAgentUiFixture, id: String): GptSpeedMode {
         val profile = fixture.snapshot().profiles.first { it.id == id }
         return profile.gptSpeedForModel(profile.providerId, profile.modelId)
@@ -112,16 +130,19 @@ class SubAgentGptSpeedButtonTest {
         button.assertExists().assertHasClickAction()
         // 图标 + 档位文字都可识别，而不是只有一个无文字的图标。
         compose.onNodeWithText("标准", useUnmergedTree = true).assertExists()
+        assertSpeedContentCentered("测试代理", "标准")
 
         button.performClick()
         compose.waitForIdle()
         compose.runOnIdle { assertEquals(GptSpeedMode.FAST, modeOf(fixture, gptProfile.id)) }
         compose.onNodeWithText("快速", useUnmergedTree = true).assertExists()
+        assertSpeedContentCentered("测试代理", "快速")
 
         button.performClick()
         compose.waitForIdle()
         compose.runOnIdle { assertEquals(GptSpeedMode.ULTRA_FAST, modeOf(fixture, gptProfile.id)) }
         compose.onNodeWithText("极速", useUnmergedTree = true).assertExists()
+        assertSpeedContentCentered("测试代理", "极速")
 
         button.performClick()
         compose.waitForIdle()

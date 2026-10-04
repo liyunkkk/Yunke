@@ -157,7 +157,8 @@ private fun BoundSubAgentGptSpeedButton(
                 },
             ),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        // 图标与文字作为一组在触摸区域内居中；两个入口共享同一间距，不做单行偏移。
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
     ) {
         Icon(
             imageVector = ImageVector.vectorResource(R.drawable.ic_atom),
