@@ -45,7 +45,7 @@ class AgentTimelineProjectionTest {
     @Test
     fun initialTailIndexUsesProjectedRowsAndAddsAtMostOneCompressionFooter() {
         val retry = SystemNoticeMessageUi("retry", SystemNoticeCode.ModelRetry)
-        val hiddenResume = UserMessageUi("resume", "hidden resume")
+        val hiddenResume = UserMessageUi("user-supplement-resume", "hidden resume")
         val entries = listOf(
             UserMessageUi("user", "task"),
             workMessage(0),
