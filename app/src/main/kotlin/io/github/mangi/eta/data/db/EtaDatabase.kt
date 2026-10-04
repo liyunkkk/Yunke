@@ -189,14 +189,12 @@ internal abstract class EtaDatabase : RoomDatabase() {
                     "ok INTEGER NOT NULL, " +
                     "created_at INTEGER NOT NULL)"
             )
+        }
 
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->
             database.execSQL(
                 "ALTER TABLE model_providers ADD COLUMN session_gateway_json TEXT NOT NULL DEFAULT ''"
             )
-        }
-
-
         }
 
         internal val MIGRATION_29_30 = Migration(29, 30) { database ->

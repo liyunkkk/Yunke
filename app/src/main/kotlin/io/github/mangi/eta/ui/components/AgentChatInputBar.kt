@@ -836,8 +836,8 @@ internal fun ThinkingEffortChip(
     if (overlayMode) {
         // 浮窗：无 Activity token，必须走 Popup（挂在 overlay 窗口下）。
         EtaDropdownMenu(
-            expanded = showPicker && pickerEnabled,
-            onDismissRequest = { showPicker = false },
+            expanded = showPicker.value && pickerEnabled,
+            onDismissRequest = { showPicker.value = false },
             preferAbove = true,
             minWidth = 0.dp,
             focusable = false,
@@ -857,7 +857,7 @@ internal fun ThinkingEffortChip(
                         )
                     },
                     onClick = {
-                        showPicker = false
+                        showPicker.value = false
                         onEffortChange(option)
                     },
                 )
@@ -865,10 +865,10 @@ internal fun ThinkingEffortChip(
         }
     } else {
         ThinkingEffortPickerDialog(
-            show = showPicker && pickerEnabled,
+            show = showPicker.value && pickerEnabled,
             effort = effort,
             options = options,
-            onDismiss = { showPicker = false },
+            onDismiss = { showPicker.value = false },
             onEffortChange = onEffortChange,
         )
     }
