@@ -1,8 +1,11 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
+import io.github.mangi.eta.agent.question.AgentQuestionCodec
+import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.delegation.*
+import io.github.mangi.eta.agent.browser.ChildBrowserSession
 import io.github.mangi.eta.agent.model.AgentToolCatalog
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeper
 import io.github.mangi.eta.agent.model.AgentModelClient
@@ -121,9 +124,9 @@ internal class AgentRuntimeRunExecutor(
                 }
             }
             val runSurface = session.taskSurfaceMode
-            // ASK 选定前也要让界面工具可见；选了前台后按真实无障碍状态收起。
+            // 副屏工具只在明确选择后台后暴露；ASK 首轮由执行位置弹窗决定后续轮次。
             val runVirtualDisplay = {
-                session.taskSurfaceMode != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND
+                session.taskSurfaceMode == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
             }
             val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
             val executor = AgentLocalTools(
@@ -190,7 +193,7 @@ internal class AgentRuntimeRunExecutor(
             // This never re-resolves a retained child's healthy configuration for continue.
             val ownerKey = SubAgentConfigKey.Conversation(request.effectiveModelSessionId)
             val childConfig = ConversationSubAgentPreferences().snapshot(ownerKey)
-            val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig) }
+            val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig, parentConfig = request.config) }
             val configuredChildren = AgentChildWorkerAvailability.configuredChildren(childCandidates)
             val childModels = configuredChildren.map { it.second }
             val frozenParallelLimits = childModels.map { childConfig.parallelLimit(SubAgentParallelModel(it.providerId, it.model)) }
@@ -210,6 +213,36 @@ internal class AgentRuntimeRunExecutor(
                 var children: SubAgentCoordinator? = null
                 try {
                     val workspace = childWorkspace
+                    // Each invocation/continuation owns its own ephemeral browser; never forward it
+                    // to the parent's AgentLocalTools (which is bound to the parent's browser page).
+                    fun runTextChild(config: AgentModelClient.ModelConfig, prompt: String,
+                        controller: AgentRunController, project: String, id: String?, writable: Boolean,
+                        progress: (AgentEvent) -> Unit = {}): String {
+                        val browser = if (io.github.mangi.eta.agent.browser.ChildBrowserPolicy.sessionAllowed(
+                                allowBrowser && currentPermissions().browserTools, controller.childBrowserAccess.wire))
+                            ChildBrowserSession(appContext, controller) { allowBrowser && currentPermissions().browserTools }
+                        else null
+                        try {
+                            if (id != null) {
+                                val backend = requireNotNull(workspace)
+                                return SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
+                                    backend.childExecutor(project, id, writable, controller), controller,
+                                    workspaceMode = true, writable = writable, sessionId = childSessionId,
+                                    onProgress = progress, browserExecutor = browser?.executor)
+                            }
+                            val readTools = SubAgentTools.filter(AgentToolCatalog.build(
+                                terminalTools = allowTerminal && currentPermissions().terminalTools,
+                                browserTools = false, // Installed separately with a task-owned executor.
+                                deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
+                                deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
+                                memoryTools = memoryEnabled,
+                                capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
+                            return SubAgentRunner.run(config, prompt, readTools, executor, controller,
+                                sessionId = childSessionId, onProgress = progress, browserExecutor = browser?.executor)
+                        } finally {
+                            browser?.release()
+                        }
+                    }
                     var generationForCallback: String? = null
                     val poolScope = "${request.effectiveModelSessionId}:${request.runId}:${UUID.randomUUID()}"
                     children = SubAgentCoordinator(childModels,
@@ -235,42 +268,13 @@ internal class AgentRuntimeRunExecutor(
                             appContext, childSessionId, config, prompt, controller, video = true) },
                         onContext = { stats -> childContextSink.get()?.invoke(stats) },
                         executeObservedChild = { config, prompt, controller, project, id, writable, progress ->
-                            if (id != null) {
-                                val backend = requireNotNull(workspace)
-                                SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
-                                    backend.childExecutor(project, id, writable, controller), controller,
-                                    workspaceMode = true, writable = writable, sessionId = childSessionId, onProgress = progress,
-                                    maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
-                            } else {
-                                val readTools = SubAgentTools.filter(AgentToolCatalog.build(
-                                    terminalTools = allowTerminal && currentPermissions().terminalTools,
-                                    browserTools = false,
-                                    deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
-                                    deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
-                                    memoryTools = memoryEnabled,
-                                    capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
-                                SubAgentRunner.run(config, prompt, readTools, executor, controller,
-                                    sessionId = childSessionId, onProgress = progress,
-                                    maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
-                            }
+                            runTextChild(config, prompt, controller, project, id, writable, progress)
                         },
                         executeWorkspaceChild = { config, prompt, controller, project, id, writable ->
-                            val backend = requireNotNull(workspace)
-                            SubAgentRunner.run(config, prompt, SubAgentWorkspace.childTools(writable),
-                                backend.childExecutor(project, id, writable, controller), controller,
-                                workspaceMode = true, writable = writable, sessionId = childSessionId,
-                                maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
+                            runTextChild(config, prompt, controller, project, id, writable)
                         },
                     ) { config, prompt, controller ->
-                        val readTools = SubAgentTools.filter(AgentToolCatalog.build(
-                            terminalTools = allowTerminal && currentPermissions().terminalTools,
-                            browserTools = false,
-                            deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
-                            deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
-                            memoryTools = memoryEnabled,
-                            capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
-                        SubAgentRunner.run(config, prompt, readTools, executor, controller, sessionId = childSessionId,
-                            maxRounds = controller.subAgentBudget?.maxRounds, tokenBudget = controller.subAgentBudget?.tokenBudget)
+                        runTextChild(config, prompt, controller, "", null, false)
                     }
                     val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
                         releaseTools = { ownership.release() }, workspaceEnvironment = workspaceEnvironment,
@@ -293,9 +297,28 @@ internal class AgentRuntimeRunExecutor(
             } else {
                 ExistingChildTaskTools.appendTo(mcpTools)
             }
+            val questionCoordinator = AgentQuestionCoordinator(runController) { event ->
+                acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder)
+            }
+            session.questionCoordinator = questionCoordinator
             val delegatedExecutor = AgentModelClient.ToolExecutor { call ->
                 runController.throwIfCancelled()
-                if (call.name == "manage_agent_workspace") {
+                if (call.name == "ask_user") {
+                    val question = AgentQuestionCodec.parseArguments(call.argumentsJson,
+                        conversationId = request.effectiveModelSessionId,
+                        runId = request.runId, toolCallId = call.id,
+                        questionId = "question-${UUID.randomUUID()}", createdAtMillis = System.currentTimeMillis())
+                    val answer = try { questionCoordinator.awaitAnswer(question) }
+                    catch (failure: Exception) {
+                        runController.throwIfCancelled()
+                        throw io.github.mangi.eta.agent.question.AgentQuestionInterruptedException(failure)
+                    }
+                    if (answer == null) {
+                        runController.throwIfCancelled()
+                        throw io.github.mangi.eta.agent.question.AgentQuestionInterruptedException()
+                    }
+                    AgentModelClient.ToolResult(AgentQuestionCodec.resultJson(question, answer).toString())
+                } else if (call.name == "manage_agent_workspace") {
                     val backend = childWorkspace
                     val payload = try { AgentWorkspaceAccessPolicy.execute(
                         argumentsJson = call.argumentsJson,
@@ -334,6 +357,7 @@ internal class AgentRuntimeRunExecutor(
                 compactionArchive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, request.effectiveModelSessionId),
                 turnId = request.effectiveTurnId, runController = runController,
                 calibratedInputTokens = request.calibratedInputTokens,
+                allowUnmeasuredContextSend = request.allowUnmeasuredContextSend,
                 skillContext = skillContext, memoryContext = memoryContext,
                 skillContextProvider = {
                     check(AssistantRepository.currentProfile(assistant.id) != null) { "任务所属助手已删除" }
@@ -364,7 +388,8 @@ internal class AgentRuntimeRunExecutor(
             AgentRuntimeWire.RunResult(runId = request.runId, ok = true, content = completedResponse.content,
                 reasoningContent = completedResponse.reasoningContent, transcript = completedResponse.transcript)
         } catch (throwable: Throwable) {
-            cancelled = runController.isCancelled || throwable is AgentRunCancelledException
+            cancelled = runController.isCancelled || throwable is AgentRunCancelledException ||
+                throwable is java.util.concurrent.CancellationException || throwable is InterruptedException
             val modelFailure = throwable as? AgentModelExecutionException
             val message = if (cancelled) "已停止" else throwable.message ?: throwable.javaClass.simpleName
             // This catch is after the retry loop has given up, not a ModelRetryScheduled event.
@@ -377,6 +402,9 @@ internal class AgentRuntimeRunExecutor(
                 AndroidAgentLogger.error("Agent runtime failed: type=${throwable.safeLogType()}, " +
                     "model_code=${requestFailure?.code.orEmpty()}, cause_type=${requestFailure?.cause?.safeLogType().orEmpty()}, " +
                     "detail=${(requestFailure?.message ?: throwable.message).orEmpty().take(600)}")
+                AgentErrorReconnectTerminal.failureEvent(archivedEvents, throwable, request.config.apiKey)?.let {
+                    runCatching { acceptEvent(session, it, archivedEvents, entrySurfaceGuard, checkpointRecorder) }
+                }
                 val event = AgentEvent.RunFailed(message)
                 runCatching { acceptEvent(session, event, archivedEvents, entrySurfaceGuard, checkpointRecorder) }
                     .onFailure { checkpointFailure ->
@@ -384,6 +412,7 @@ internal class AgentRuntimeRunExecutor(
                         session.emit(event)
                     }
             }
+            if (throwable is Error || throwable is java.util.concurrent.CancellationException) throw throwable
             AgentRuntimeWire.RunResult(runId = request.runId, ok = false, content = "", error = message,
                 reasoningContent = modelFailure?.reasoningContent ?: (throwable as? AgentRunCancelledException)?.reasoningContent.orEmpty(),
                 transcript = modelFailure?.transcript ?: (throwable as? AgentRunCancelledException)?.transcript.orEmpty())
@@ -444,8 +473,11 @@ internal class AgentRuntimeRunExecutor(
     @Synchronized private fun acceptEvent(session: AgentRuntimeSession, event: AgentEvent,
         archivedEvents: MutableList<AgentEvent>, entrySurfaceGuard: EntrySurfaceGuard?,
         checkpointRecorder: AgentRunCheckpointRecorder?) {
-        checkpointRecorder?.accept(event)
-        if (!session.emit(event)) return
+        if (event is AgentEvent.QuestionRequested || event is AgentEvent.QuestionResolved) {
+            AgentQuestionEventPublisher.publish(session, event) { checkpointRecorder?.accept(event) }
+        } else {
+            if (!session.emit(event) { checkpointRecorder?.accept(event) }) return
+        }
         archivedEvents += event
         if (event is AgentEvent.ModelRetryScheduled) AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")
         else if (event !is AgentEvent.AssistantBlockDelta) AndroidAgentLogger.debug { "Agent runtime event: ${event.toLogLine()}" }

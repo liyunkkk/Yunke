@@ -11,6 +11,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import androidx.compose.material3.DropdownMenuItem
 import android.Manifest
 import android.content.pm.PackageManager
@@ -20,6 +21,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -75,6 +78,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import io.github.mangi.eta.ui.model.ConversationMention
 import androidx.compose.ui.text.TextRange
@@ -113,6 +117,9 @@ import io.github.mangi.eta.agent.voice.VoiceEntryMode
 import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.agent.voice.VoiceModePhase
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
+import io.github.mangi.eta.agent.skill.SkillRuntime
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.config.Prefs
 import androidx.core.content.ContextCompat
@@ -126,6 +133,7 @@ import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.liveContextUsage
 import io.github.mangi.eta.ui.model.shouldBlockSendForContextWindow
 import io.github.mangi.eta.ui.model.ConversationMentionInputUi
+import io.github.mangi.eta.ui.model.SkillSlashMention
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
 import kotlin.math.roundToInt
@@ -160,8 +168,9 @@ internal fun AgentChatInputBar(
     projectedContextTokens: Int? = null,
     billedHistoryTokens: Int? = null,
     requestOverheadTokens: Int = 0,
+    measuredContextTokens: Int? = null,
+    contextDisplayPolicy: io.github.mangi.eta.ui.model.ContextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(),
     billedOverheadTokens: Int? = null,
-    uncommittedLiveTokens: Int = 0,
     activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
@@ -204,50 +213,51 @@ internal fun AgentChatInputBar(
      *  任何 WindowDialog/Dialog.show 都会抛 BadTokenException 并杀死进程。
      *  开启后弹层全部改走 Popup 路线（挂在 overlay 自己的窗口 token 下）。 */
     overlayMode: Boolean = false,
+    /** GPT 速度档位（真值来自 owner 的 uiState，UI 不本地记忆）。 */
+    gptSpeedMode: GptSpeedMode = GptSpeedMode.NORMAL,
+    /** 长按速度图标时派发给 owner 的循环切换事件。 */
+    onCycleGptSpeedMode: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
     val draftText = textFieldState.text.toString()
-    // Raw counts calibrate existing cloud receipts; filtered counts are local preview only.
+    val skillAppContext = LocalContext.current.applicationContext
+    val assistantProfiles by AssistantRepository.profiles.collectAsState()
+    val repositoryActiveId by AssistantRepository.activeId.collectAsState()
+    val availableSkills = remember(assistantId, skillAppContext, assistantProfiles, repositoryActiveId) {
+        val profile = assistantProfiles.firstOrNull { it.id == assistantId }
+            ?: assistantProfiles.firstOrNull { it.id == repositoryActiveId }
+            ?: AssistantRepository.active()
+        val enabledIds = profile.enabledSkillIds.toSet()
+        SkillRuntime.createIndexService(skillAppContext)
+            .listSkillsForManagement()
+            .filter { it.installed && it.id in enabledIds }
+            .filter { SkillCompatibilityChecker.evaluate(it).available }
+    }
+    // 原始历史计数只服务静默发送/压缩预算；显示（圆环）不再消费任何本地计数。
     val historyTokenCount = remember(history) { history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) } }
     val supportsVision = modelPickerState.selectedModel?.supportsVision == true
     val supportsVideo = modelPickerState.selectedModel?.supportsVideo == true
+    // 只有“实际选中模型”的 modelId 是 GPT 速度模型、端点仍是文本 OpenAI 且非图像/视频生成时，
+    // 思考图标才具备长按切速度语义。非 GPT 立即走普通原色分支，不给长按语义，也不做旋转/缩放。
+    val gptSpeedSupported = modelPickerState.selectedModel?.gptSpeedSupported == true
     val localHistoryTokenCount = remember(history, supportsVision, supportsVideo) {
         io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
     }
-    val liveUsage = remember(
-        localHistoryTokenCount, projectedContextTokens,
-        billedContextTokens,
-        requestOverheadTokens,
-        billedOverheadTokens,
-        uncommittedLiveTokens,
-        draftText,
-        pendingImages,
-        pendingFileReferences,
-        conversationMentions.pending,
-        modelPickerState.selectedModel,
-        activeRunContextWindow,
-    ) {
+    val liveUsage = remember(contextDisplayPolicy, billedContextTokens, modelPickerState.selectedModel,
+        activeRunContextWindow) {
+        // 圆环只显示真实云端回执：没有实测回执时不投影任何本地估算。
         liveContextUsage(
-            history = emptyList(),
-            historyTokenCount = localHistoryTokenCount,
-            projectedContextTokens = projectedContextTokens,
-            currentInput = draftText,
-            pendingImages = pendingImages,
-            selectedModel = modelPickerState.selectedModel,
-            pendingFileReferences = pendingFileReferences,
-            pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens,
-            requestOverheadTokens = requestOverheadTokens,
-            billedOverheadTokens = billedOverheadTokens,
-            uncommittedLiveTokens = uncommittedLiveTokens,
+            selectedModel = modelPickerState.selectedModel,
+            contextDisplayPolicy = contextDisplayPolicy,
             activeRunContextWindow = activeRunContextWindow,
         )
     }
     val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
         conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
-        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, activeRunContextWindow) {
+        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, projectedContextTokens, activeRunContextWindow) {
         io.github.mangi.eta.ui.model.compressionContextUsage(
             history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
             selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
@@ -255,10 +265,13 @@ internal fun AgentChatInputBar(
             pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
             billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
             billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
+            projectedContextTokens = projectedContextTokens,
             activeRunContextWindow = activeRunContextWindow,
         )
     }
-    val contextSendBlocked = shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
+    // 真未知（没有有效实测）不因本地估算的 99% 被禁用；known 保留原有拦截与 autoCompress 短路。
+    val contextSendBlocked = measuredContextTokens != null &&
+        shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
     val compressionSendBlocked = isCompressingContext
     val canSend = !modelPickerState.isChanging && modelPickerState.selectedModel != null && !contextSendBlocked && !compressionSendBlocked && (
         textFieldState.text.isNotBlank() ||
@@ -303,6 +316,24 @@ internal fun AgentChatInputBar(
     ) {
         val mentionQuery = ConversationMention.queryAtCursor(draftText, textFieldState.selection.end)
             .takeIf { textFieldState.selection.collapsed }
+        val skillQuery = SkillSlashMention.queryAtCursor(draftText, textFieldState.selection.end)
+            .takeIf { textFieldState.selection.collapsed }
+        SkillSlashMentionPanel(
+            skills = availableSkills,
+            query = skillQuery?.query,
+            selectedIds = SkillSlashMention.selectedIds(draftText),
+            onSelect = { skill ->
+                val query = skillQuery
+                if (query != null) {
+                    val end = textFieldState.selection.end
+                    textFieldState.edit {
+                        replace(query.start, end, SkillSlashMention.token(skill.id))
+                        selection = TextRange(query.start + SkillSlashMention.token(skill.id).length)
+                    }
+                    focusRequester.requestFocus()
+                }
+            },
+        )
         ConversationMentionPanel(
             state = conversationMentions,
             query = mentionQuery?.query,
@@ -479,11 +510,17 @@ internal fun AgentChatInputBar(
 
                             Spacer(modifier = Modifier.width(2.dp))
 
-                            if (availableReasoningEfforts.isNotEmpty()) {
+                            // GPT 速度模型即使没有思考 options 也保留图标以便长按切速度；
+                            // 非 GPT 行为不变：仅在有思考 options 时出现。
+                            if (availableReasoningEfforts.isNotEmpty() || gptSpeedSupported) {
                                 ThinkingEffortChip(
                                     effort = reasoningEffort,
                                     options = availableReasoningEfforts,
-                                    enabled = !isStreaming || isPaused,
+                                    // 模型切换（isChanging）期间 owner 会 no-op，禁用以免出现“假动画”。
+                                    enabled = (!isStreaming || isPaused) && !modelPickerState.isChanging,
+                                    gptSpeedMode = gptSpeedMode,
+                                    gptSpeedSupported = gptSpeedSupported,
+                                    onCycleGptSpeedMode = onCycleGptSpeedMode,
                                     onEffortChange = onReasoningEffortChange,
                                     overlayMode = overlayMode,
                                 )
@@ -654,41 +691,146 @@ internal fun AgentChatInputBar(
 
 }
 
-/** 思考强度选择保持为单一图标，当前状态仅通过图标颜色区分。 */
+/**
+ * 思考强度图标：单击打开旧的思考强度弹窗；当实际选中模型是 GPT 速度模型时，
+ * 长按在原位循环切换速度档位（NORMAL → FAST → ULTRA_FAST → NORMAL）。
+ *
+ * 颜色始终由 owner 传入的 [gptSpeedMode] 决定（非 GPT 立即回到普通原色）；
+ * 旋转/缩放只是“一次长按正好一圈”的手势反馈，颜色与业务真值都不本地记忆。
+ */
 @Composable
-private fun ThinkingEffortChip(
+internal fun ThinkingEffortChip(
     effort: ReasoningEffort,
     options: List<ReasoningEffort>,
     enabled: Boolean,
+    gptSpeedMode: GptSpeedMode = GptSpeedMode.NORMAL,
+    gptSpeedSupported: Boolean = false,
+    onCycleGptSpeedMode: () -> Unit = {},
     onEffortChange: (ReasoningEffort) -> Unit,
     modifier: Modifier = Modifier,
     overlayMode: Boolean = false,
 ) {
-    var showPicker by remember { mutableStateOf(false) }
+    val showPicker = remember { mutableStateOf(false) }
     val active = effort != ReasoningEffort.OFF
     val pickerEnabled = enabled && options.isNotEmpty()
     LaunchedEffect(pickerEnabled) {
-        if (!pickerEnabled) showPicker = false
+        if (!pickerEnabled) showPicker.value = false
     }
+
+    val normalColor = if (active) {
+        MiuixTheme.colorScheme.primary
+    } else {
+        MiuixTheme.colorScheme.onSurfaceVariantSummary
+    }
+    // 颜色来自 owner 的 gptSpeedMode：非 GPT（gptSpeedSupported=false）直接回落普通原色，
+    // 且最终 tint 当帧恢复原色，不保存旧档位。
     val contentColor by animateColorAsState(
-        targetValue = if (active) {
-            MiuixTheme.colorScheme.primary
+        targetValue = if (gptSpeedSupported) {
+            gptSpeedChipColor(gptSpeedMode, normalColor)
         } else {
-            MiuixTheme.colorScheme.onSurfaceVariantSummary
+            normalColor
         },
-        animationSpec = tween(durationMillis = 160),
+        animationSpec = tween(durationMillis = GptSpeedAnimationDurationMillis),
         label = "thinking_content",
     )
+
+    val displayedColor = if (gptSpeedSupported) contentColor else normalColor
+    val canLongPressSpeed = gptSpeedSupported && enabled
+    val context = LocalContext.current
+    val progress = remember { Animatable(0f) }
+    val gate = remember { GptSpeedAnimationGate() }
+    val scope = rememberCoroutineScope()
+
+    // 用 rememberUpdatedState 固定回调身份：pointerInput 的 key 不随重组改变，
+    // 避免长按手势被反复重启，也不让重组触发额外旋转。
+    val pickerEnabledState = rememberUpdatedState(pickerEnabled)
+    val canLongPressState = rememberUpdatedState(canLongPressSpeed)
+    val gptSpeedModeState = rememberUpdatedState(gptSpeedMode)
+    val contextState = rememberUpdatedState(context)
+    val latestOnCycle by rememberUpdatedState(onCycleGptSpeedMode)
+
+    val openPicker: () -> Unit = remember {
+        { if (pickerEnabledState.value) showPicker.value = true }
+    }
+    val cycleSpeed: () -> Unit = remember {
+        {
+            // 动画中拒绝新的长按：不排队、不累计圈数，避免截断当前一圈或产生过期切换。
+            if (canLongPressState.value) {
+                val token = gate.request()
+                if (token != 0) {
+                    val nextMode = gptSpeedModeState.value.next()
+                    latestOnCycle()
+                    Toast.makeText(
+                        contextState.value,
+                        gptSpeedToastMessage(nextMode),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    scope.launch {
+                        try {
+                            progress.snapTo(0f)
+                            progress.animateTo(
+                                targetValue = 1f,
+                                animationSpec = tween(
+                                    durationMillis = GptSpeedAnimationDurationMillis,
+                                    easing = LinearEasing,
+                                ),
+                            )
+                        } finally {
+                            // 携带自己的 token：被取消的旧动画不会关掉随后新动画的门禁。
+                            gate.finish(token)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 模型切到非 GPT：立即清动画（取消进行中的一圈并复位），最终 tint 当帧恢复原色。
+    LaunchedEffect(gptSpeedSupported) {
+        if (!gptSpeedSupported) {
+            gate.reset()
+            progress.snapTo(0f)
+        }
+    }
+
+    val contentDescription = if (gptSpeedSupported) {
+        gptSpeedChipDescription(
+            stringResource(R.string.chat_reasoning_effort, effort.displayName),
+            gptSpeedMode,
+        )
+    } else {
+        stringResource(R.string.chat_reasoning_effort, effort.displayName)
+    }
+
     ChatInputNonFocusableIconButton(
-        onClick = { if (pickerEnabled) showPicker = true },
-        contentDescription = stringResource(R.string.chat_reasoning_effort, effort.displayName),
+        onClick = openPicker,
+        contentDescription = contentDescription,
+        onLongClick = if (canLongPressSpeed) cycleSpeed else null,
+        longClickLabel = gptSpeedLongPressLabel(),
         modifier = modifier,
     ) {
         Icon(
             imageVector = ImageVector.vectorResource(R.drawable.ic_atom),
             contentDescription = null,
-            modifier = Modifier.size(ThinkingIconSize),
-            tint = if (pickerEnabled) contentColor else contentColor.copy(alpha = 0.38f),
+            modifier = Modifier
+                .size(ThinkingIconSize)
+                .then(
+                    if (gptSpeedSupported) {
+                        Modifier.graphicsLayer {
+                            rotationZ = gptSpeedRotationDegrees(progress.value)
+                            val scale = gptSpeedScale(progress.value)
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                    } else {
+                        Modifier
+                    }
+                ),
+            tint = if (pickerEnabled || canLongPressSpeed) {
+                displayedColor
+            } else {
+                displayedColor.copy(alpha = 0.38f)
+            },
         )
     }
     if (overlayMode) {

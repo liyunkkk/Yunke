@@ -12,6 +12,7 @@ import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomHeader
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderTypes
@@ -105,6 +106,7 @@ internal object AgentModelClient {
         compactionArchive: AgentCompactionArchive? = null,
         turnId: String = java.util.UUID.randomUUID().toString(),
         calibratedInputTokens: Int? = null,
+        allowUnmeasuredContextSend: Boolean = false,
     ): ModelResponse.Text {
         config.validate()
         val initialCapabilities = capabilitiesProvider()
@@ -192,6 +194,7 @@ internal object AgentModelClient {
             compactionArchive = compactionArchive,
             turnId = turnId,
             calibratedInputTokens = calibratedInputTokens,
+            allowUnmeasuredContextSend = allowUnmeasuredContextSend,
             onHistoryCompacted = { transcriptStartIndex = messages.length() },
             toolsForRound = {
                 val capabilities = capabilitiesProvider()
@@ -319,6 +322,8 @@ internal object AgentModelClient {
         val supportsVision: Boolean = false,
         val supportsVideo: Boolean = false,
         val assistantId: String = "",
+        val gptSpeedMode: GptSpeedMode? = null,
+        val errorReconnectPolicy: String = "none",
     ) {
         val effectiveReasoningEffort: ReasoningEffort
             get() = reasoningEffort ?: ReasoningEffort.fromLegacy(thinkingEnabled)

@@ -68,7 +68,14 @@ class ConversationMemoryContractTest(unittest.TestCase):
         self.assertIn("application.applicationContext", host)
         self.assertIn("SupervisorJob()", host)
         runtime = (SRC / "agent/runtime/AgentRuntimeService.kt").read_text()
-        self.assertTrue("sessions.cancelAll(" in runtime, "runtime service destruction must still cancel owned sessions")
+        destroy = runtime[runtime.index("override fun onDestroy()"):runtime.index("private inner class IncomingHandler")]
+        self.assertIn("val retiring = sessions.snapshot()", destroy)
+        self.assertIn("stopWorker.close(retiring.map { session ->", destroy)
+        self.assertIn('session.cancel("Agent Runtime 服务已停止")', destroy)
+        self.assertIn("AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.USER_CANCEL)", destroy)
+        worker = (SRC / "agent/runtime/AgentRuntimeStopWorker.kt").read_text()
+        self.assertIn("executor.shutdown()", worker)
+        self.assertNotIn("executor.shutdownNow()", worker)
         self.assertIn("drainOwner", (SRC / "agent/runtime/AgentExecutionService.kt").read_text())
 
     def test_search_callback_is_suspend_and_captures_before_background_scan(self):

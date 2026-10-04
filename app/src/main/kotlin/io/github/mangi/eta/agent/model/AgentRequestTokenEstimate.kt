@@ -23,10 +23,14 @@ internal object AgentRequestTokenEstimate {
             .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
     /** Local UI preview only. Cloud calibration continues using the original raw DTO counts. */
-    fun history(messages: List<AgentModelClient.ConversationMessage>, vision: Boolean, video: Boolean): Int {
+    fun history(messages: List<AgentModelClient.ConversationMessage>, vision: Boolean, video: Boolean,
+        endpoint: EndpointKind = EndpointKind.CHAT_COMPLETIONS): Int {
         var total = 0L
         for (message in messages) {
-            total += countMessage(AgentConversationCodec.toJsonObject(message), vision, video, alreadyFiltered = false)
+            val json = AgentConversationCodec.toJsonObject(message)
+            // Preview only. The silent boundary/history calibration below stays unchanged.
+            if (!AgentWireRequestEstimate.sendsPlaintextReasoning(endpoint)) json.remove("reasoning_content")
+            total += countMessage(json, vision, video, alreadyFiltered = false)
         }
         return total.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }

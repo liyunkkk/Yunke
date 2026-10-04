@@ -5,6 +5,8 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
@@ -29,6 +31,9 @@ class AgentPruningUsageRegressionTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         try {
             val app = AgentAppState(context, scope)
+            call(app, "updateSelectionProviders", listOf(
+                OpenAiCompatibleProviderSetting("p", "Test", "https://example.org/v1",
+                    models = listOf(Model("m", "model", "Model")))))
             val oldHistory = listOf(AgentModelClient.ConversationMessage("user", "original"))
             call(app, "updateConversation", "prune-c", AgentChatHomeUiState(
                 messages = listOf(UserMessageUi("old-user", "original")), history = oldHistory,
@@ -72,11 +77,22 @@ class AgentPruningUsageRegressionTest {
             assertNull(state().cloudHistoryTokens)
             assertTrue(markerCount() > beforeMarkers)
             send(AgentEvent.UsageReceived(149, AgentTokenUsage(inputTokens = 80750), projected = true))
-            assertEquals(80750, state().livePromptTokens)
+            // Runtime projection remains budget-only while a fresh summary receipt is pending.
+            assertNull(state().livePromptTokens)
+            assertNull(state().cloudHistoryTokens)
+            assertNull(state().contextBudgetReceiptTokens)
+            assertNull(state().receiptPredictionTokens)
+            assertTrue(state().contextAwaitingReceipt)
+            assertEquals("未知", io.github.mangi.eta.ui.model.formatContextUsage(
+                io.github.mangi.eta.ui.model.liveContextUsage(
+                    contextDisplayPolicy = io.github.mangi.eta.ui.model.ContextDisplayPolicy(
+                        awaitingReceipt = state().contextAwaitingReceipt))))
             send(AgentEvent.UsageReceived(149, AgentTokenUsage(inputTokens = 95095),
                 requestHistoryTokens = 70000, requestOverheadTokens = 10000))
             assertEquals(95095, state().livePromptTokens)
             assertEquals(70000, state().cloudHistoryTokens)
+            assertEquals(95095, state().contextBudgetReceiptTokens)
+            assertFalse(state().contextAwaitingReceipt)
             assertFalse(state().livePromptIsProjected)
         } finally { scope.cancel(); EtaDatabase.closeForTests() }
     }

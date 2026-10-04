@@ -44,6 +44,14 @@ class SubAgentWorkspaceTest {
         assertNull(writer.validate(write))
         assertNull(reader.validate(call("read", JSONObject().put("path", "test.kt").put("offset", 2))))
         assertNotNull(writer.validate(call("merge")))
+        val search = call("search", JSONObject().put("path", "Big.kt").put("query", "needle").put("context", 2))
+        assertNull(reader.validate(search))
+        assertNull(reader.validate(call("read", JSONObject().put("path", "Big.kt").put("start_line", 4000).put("line_count", 200))))
+        val replace = call("replace", JSONObject().put("path", "Big.kt").put("old_text", "a").put("new_text", "b"))
+        assertNotNull(reader.validate(replace))
+        assertNull(writer.validate(replace))
+        assertNotNull(writer.validate(call("replace", JSONObject().put("path", "Big.kt").put("old_text", "").put("new_text", "b"))))
+        assertNotNull(writer.validate(call("read", JSONObject().put("path", "Big.kt").put("line_count", 2001))))
     }
 
     @Test fun cancellationPreventsAnyFurtherFileExecution() {

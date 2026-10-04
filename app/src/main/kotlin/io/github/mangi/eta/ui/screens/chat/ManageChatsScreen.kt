@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.PushPin
@@ -282,14 +284,6 @@ private fun ManageChatRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (conversation.isPinned) {
-                    Icon(
-                        imageVector = Icons.Rounded.PushPin,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MiuixTheme.colorScheme.primary,
-                    )
-                }
                 Text(
                     text = conversation.title.ifBlank { conversation.preview },
                     color = MiuixTheme.colorScheme.onSurface,
@@ -299,6 +293,17 @@ private fun ManageChatRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                if (conversation.isActiveRun || conversation.hasCompletionMarker) {
+                    Box(
+                        modifier = Modifier.size(6.dp).clip(CircleShape).then(
+                            if (conversation.isActiveRun) {
+                                Modifier.background(MiuixTheme.colorScheme.primary)
+                            } else {
+                                Modifier.border(1.dp, MiuixTheme.colorScheme.primary, CircleShape)
+                            },
+                        ),
+                    )
+                }
             }
             Text(
                 text = conversation.timeLabel,
@@ -312,9 +317,9 @@ private fun ManageChatRow(
         IconButton(onClick = onTogglePin) {
             Icon(
                 imageVector = if (conversation.isPinned) {
-                    Icons.Outlined.PushPin
-                } else {
                     Icons.Rounded.PushPin
+                } else {
+                    Icons.Outlined.PushPin
                 },
                 contentDescription = stringResource(
                     if (conversation.isPinned) {
@@ -325,7 +330,7 @@ private fun ManageChatRow(
                 ),
                 modifier = Modifier.size(20.dp),
                 tint = if (conversation.isPinned) {
-                    MiuixTheme.colorScheme.primary
+                    MiuixTheme.colorScheme.onSurface
                 } else {
                     MiuixTheme.colorScheme.onSurfaceVariantSummary
                 },

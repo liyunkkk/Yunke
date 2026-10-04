@@ -50,6 +50,11 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationParser
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.question.AgentQuestionAnswer
+import io.github.mangi.eta.agent.question.AgentQuestionCodec
+import io.github.mangi.eta.agent.question.AgentQuestionRequest
+import io.github.mangi.eta.agent.question.AgentQuestionStatus
+import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
 import io.github.mangi.eta.agent.runtime.AgentNotificationTrampolineActivity
@@ -65,12 +70,16 @@ import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.ui.model.RequestOverheadCalibration
+import io.github.mangi.eta.ui.model.ContextEstimateDiagnostics
 import io.github.mangi.eta.config.AutoCompressPreference
 import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.data.model.supportsGptSpeedBinding
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.EtaBackupExportOptions
 import io.github.mangi.eta.data.repository.EtaBackupRepository
@@ -161,7 +170,11 @@ import org.json.JSONArray
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.NonCancellable
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -181,6 +194,10 @@ internal class AgentAppState(
     private val runConversationIds = mutableMapOf<String, String>()
     private val runUsageResumeRounds = mutableMapOf<String, Int>()
     private val runUsageOwners = mutableMapOf<String, Pair<String, String>>()
+    private val runRequestRounds = mutableMapOf<String, Int>()
+    private val runUsageRoutes = mutableMapOf<String, String>()
+    private val usageRunByConversation = mutableMapOf<String, String>()
+    private val contextEstimateDiagnostics = ContextEstimateDiagnostics()
     private val invalidatedUsageRuns = mutableSetOf<String>()
     private val runGeneratedAtMillis = mutableMapOf<String, Long>()
     // A stopped worker still owns its transcript until its terminal result is committed.
@@ -272,6 +289,8 @@ internal class AgentAppState(
     private var bindingRefreshAfterArchive = false
     private val deferredArchiveSaves = mutableListOf<Pair<kotlinx.coroutines.CompletableDeferred<Boolean>, (() -> Unit)?>>()
     private val runtimeRecoveryInProgress = AtomicBoolean(false)
+    // Main-thread cursor: bounded recovery passes rotate rather than dropping older owners.
+    private var questionRecoveryQueryOffset = 0
     private val defaultThinkingEnabled = agentBooleanForUi(Prefs.Keys.AGENT_THINKING_ENABLED)
     private var skillNoticeSequence = 0L
     private var pendingSkillZipUri: Uri? = null
@@ -281,7 +300,8 @@ internal class AgentAppState(
     private var defaultModelId: String? = null
     private var modelBindingGeneration = 0L
     private var memoryEditGeneration = 0L
-    private var overheadGeneration = 0L
+    private val overheadSelection = RequestOverheadSelection()
+    private var overheadConfigurationGeneration = 0L
 
     private var currentReasoningCapabilities: ModelReasoningCapabilities? = null
     private var fileAttachmentOwnerVersion = 0L
@@ -299,6 +319,7 @@ internal class AgentAppState(
     private var conversationCreatedAt: Map<String, Long>
     private var conversationFolderIds: Map<String, String>
     private var conversationPinned: Set<String>
+    private var conversationCompletionMarkers: Set<String>
     private var conversationFolders: List<ConversationFolderUi>
 
     init {
@@ -312,6 +333,7 @@ internal class AgentAppState(
         conversationCreatedAt = initialConversations.createdAt
         conversationFolderIds = initialConversations.folderIds
         conversationPinned = initialConversations.pinnedIds
+        conversationCompletionMarkers = initialConversations.completionMarkerIds - listOfNotNull(initialConversations.selectedConversationId)
         conversationFolders = initialConversations.folders
     }
 
@@ -507,12 +529,67 @@ internal class AgentAppState(
         private set
 
     private val autoCompressPreference = AutoCompressPreference()
-
     var autoCompressEnabled by mutableStateOf(autoCompressPreference.enabled)
         private set
 
     var requestOverheadTokens by mutableStateOf(0)
         private set
+
+    /** 有效回执判定：未在等待新回执 + 实际路由签名仍然一致。
+     * 学习签名已随显示学习一起退场：custom gateway/headers 取不到 learning 签名，但
+     * actual-local-v1 实际路由摘要能验证“同一 provider/模型/配置”，因此同样算已测。
+     * 未测豁免、压缩锚点与预算 seed 必须共用这一个判定（否则 UI 认为已测而 runtime 没有 seed）。 */
+    private fun hasEffectiveContextReceipt(state: AgentChatHomeUiState): Boolean =
+        !state.contextAwaitingReceipt && state.cloudRouteSignature != null &&
+            state.cloudRouteSignature == contextRouteSignature(state)
+
+    /** 有效实测 helper：正数真实回执 + 有效实际路由/历史证据。 */
+    private fun validMeasuredContextTokens(state: AgentChatHomeUiState): Int? =
+        billedPromptTokens(state)?.takeIf { tokens -> tokens > 0 && hasEffectiveContextReceipt(state) }
+
+    /** Runtime 未实测豁免接线：只有“摘要真正提交过”（history 已被摘要替换）或本次请求确实
+     * 没有有效实测时才允许越界发送；known 仍由既有校准锚点/本地硬限约束。
+     * prune-only 或摘要失败都不算已压缩，也不能靠“看起来清了历史”来解锁。 */
+    private fun unmeasuredContextSendAllowed(
+        contextState: AgentChatHomeUiState,
+        summaryCommitted: Boolean,
+    ): Boolean = summaryCommitted || validMeasuredContextTokens(contextState) == null
+
+    /** 严格路由签名：customHeaders/customBody/sessionGatewayJson 一律 fail closed，
+     * 凭据内容从不参与任何持久化比较。 */
+    private fun strictRouteSignature(state: AgentChatHomeUiState): String? {
+        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
+        return RequestOverheadCalibration.routeSignature(provider, model).takeIf { it.isNotBlank() }
+    }
+
+    /** Actual receipts need a verifiable local scope even when custom routing forbids learning.
+     * Only a digest is checkpointed; custom configuration is never a calibration scope. */
+    private fun contextRouteSignature(state: AgentChatHomeUiState): String? {
+        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
+        strictRouteSignature(state)?.let { return it }
+        val endpoint = when (provider) {
+            is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.AnthropicProviderSetting -> provider.anthropicVersion
+        }
+        val fields = org.json.JSONArray().put(provider.id).put(provider.baseUrl).put(provider.sourceType)
+            .put(endpoint).put(provider.systemPrompt).put(provider.authMode).put(provider.apiKey)
+            .put(provider.responsesStripReasoningStatus).put(provider.hostedWebSearchEnabled)
+            .put(provider.sessionGatewayJson)
+            .put(org.json.JSONArray(provider.customHeaders.map { listOf(it.name, it.value) }))
+            .put(org.json.JSONArray(provider.customBody.map { listOf(it.key, it.value.toString()) }))
+            .put(kotlinx.serialization.json.Json.encodeToString(io.github.mangi.eta.data.model.Model.serializer(),
+                model.copy(createdAt = 0, displayName = "", sortOrder = 0)))
+        return "actual-local-v1:" + java.security.MessageDigest.getInstance("SHA-256")
+            .digest(fields.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    /** UI 侧同一个“有效实测”：InputBar 只有在它为 null（真未知）时才因为本地估算解除发送禁用，
+     * 已有实测的 known 状态保持原有 99% 拦截与 autoCompress 短路。 */
+    val measuredContextTokens: Int?
+        get() = if (homeState.messageEdit == null) validMeasuredContextTokens(homeState) else null
 
     var billedOverheadTokens by mutableStateOf<Int?>(null)
         private set
@@ -550,6 +627,9 @@ internal class AgentAppState(
         refreshConversationSummaries()
         observeRuntimeSelection()
         observeAutoCompressEnabled()
+        scope.launch(Dispatchers.Main.immediate) {
+            conversationSubAgentPreferences.revision.collectLatest { refreshRequestOverhead() }
+        }
         observeOwnerContexts()
         refreshRequestOverhead()
         ProviderBalanceStore.start(scope)
@@ -673,63 +753,100 @@ internal class AgentAppState(
         }
     }
 
-    fun refreshRequestOverhead() {
-        val overheadRequest = ++overheadGeneration
+    private fun requestOverheadAssistant(state: AgentChatHomeUiState = homeState) =
+        AssistantRepository.profile(resolvedAssistantId(state)) ?: AssistantRepository.active()
+
+    private fun currentOverheadBinding() = RequestOverheadSelection.Binding(
+        owner = when (val owner = subAgentConfigOwner) {
+            is SubAgentConfigKey.Conversation -> "conversation:${owner.value}"
+            is SubAgentConfigKey.Draft -> "draft:${owner.value}"
+        },
+        providerId = homeState.providerId,
+        modelId = homeState.modelId,
+        assistantId = requestOverheadAssistant().id,
+        modelGeneration = modelBindingGeneration,
+        configurationGeneration = overheadConfigurationGeneration,
+    )
+
+    fun refreshRequestOverhead(configurationChanged: Boolean = true) {
+        // Skills, MCP schemas and capability snapshots lack one common revision. Existing
+        // refresh callers signal a possible change, so invalidate conservatively before IO.
+        // Only an explicitly known-same-configuration retry may retain a successful estimate.
+        if (configurationChanged) overheadConfigurationGeneration++
+        val binding = currentOverheadBinding()
+        val overheadRequest = overheadSelection.begin(binding)
+        // A previous binding's positive value is not a fallback for an unknown new binding.
+        requestOverheadTokens = overheadSelection.tokensFor(binding) ?: 0
         val state = homeState
-        val owner = selectedConversationId
-        val generation = modelBindingGeneration
-        val assistant = AssistantRepository.active()
+        val owner = subAgentConfigOwner
+        val assistant = requestOverheadAssistant()
+        val providers = selectionProviders.toList()
         scope.launch(Dispatchers.IO) {
-            val tokens = runCatching { estimateRequestOverhead(state, assistant) }.getOrDefault(0)
+            val tokens = try {
+                val provider = providers.firstOrNull { it.id == state.providerId && it.isEnabled }
+                val model = provider?.models?.firstOrNull { it.id == state.modelId && it.isEnabled }
+                if (provider == null || model == null) null else {
+                    // Preview must not call configForProviderAndModel: that can refresh OAuth.
+                    val config = RuntimeConfigRepository.buildRuntimeConfig(provider, model, assistant).copy(
+                        terminalTools = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
+                        browserTools = agentBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
+                        deviceDirectTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
+                        deviceSensitiveReadTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
+                        deviceSensitiveActionTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
+                    )
+                    estimateRequestOverhead(config, assistant, owner, providers)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null // Unknown, not a successfully measured zero. Keep this binding's valid value.
+            }
             withContext(Dispatchers.Main) {
-                if (overheadRequest != overheadGeneration || owner != selectedConversationId || generation != modelBindingGeneration || AssistantRepository.active().id != assistant.id) return@withContext
-                requestOverheadTokens = tokens
+                if (requestOverheadAssistant() != assistant ||
+                    !overheadSelection.complete(overheadRequest, currentOverheadBinding(), tokens)) return@withContext
+                requestOverheadTokens = requireNotNull(tokens)
                 syncBilledOverhead(selectedConversationId, homeState.messages)
             }
         }
     }
 
-    private suspend fun estimateRequestOverhead(state: AgentChatHomeUiState, assistant: io.github.mangi.eta.data.model.AssistantProfile): Int {
-        val config = runtimeConfigForBoundModel(state, assistant)?.copy(
-            terminalTools = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
-            browserTools = agentBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
-            deviceDirectTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
-            deviceSensitiveReadTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS),
-            deviceSensitiveActionTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS),
-        ) ?: return 0
+    private suspend fun estimateRequestOverhead(
+        config: AgentModelClient.ModelConfig,
+        assistant: io.github.mangi.eta.data.model.AssistantProfile,
+        owner: SubAgentConfigKey,
+        providers: List<io.github.mangi.eta.data.model.ProviderSetting>,
+    ): Int {
         val enabledSkillIds = assistant.enabledSkillIds.toSet()
         val skillContext = SkillContext(
-            installedSkills = runCatching {
-                SkillRuntime.createIndexService(appContext)
-                    .listSkillsForManagement()
-                    .filter { it.installed && it.id in enabledSkillIds }
-                    .filter { SkillCompatibilityChecker.evaluate(it).available }
-            }.getOrDefault(emptyList()),
+            installedSkills = SkillRuntime.createIndexService(appContext)
+                .listSkillsForManagement()
+                .filter { it.installed && it.id in enabledSkillIds }
+                .filter { SkillCompatibilityChecker.evaluate(it).available },
         )
         val memoryContext = if (assistant.memoryEnabled) {
-            runCatching {
-                AgentMemoryContextBuilder.build(
-                    snapshot = AgentMemoryRepository.snapshot(assistant.id),
-                    contextWindow = config.contextWindow,
-                )
-            }.getOrDefault(AgentMemoryContextBuilder.empty(config.contextWindow))
+            AgentMemoryContextBuilder.build(
+                snapshot = AgentMemoryRepository.snapshot(assistant.id),
+                contextWindow = config.contextWindow,
+            )
         } else {
             AgentMemoryContext.DISABLED
         }
         val additionalTools = JSONArray()
-        runCatching {
-            McpRunSnapshot.appendCachedModelTools(
-                additionalTools,
-                McpServerRepository.enabledServers(),
-            )
-        }
+        McpRunSnapshot.appendCachedModelTools(additionalTools, McpServerRepository.enabledServers())
+        val childPrompt = io.github.mangi.eta.agent.delegation.SubAgentRequestPreview.appendTo(
+            tools = additionalTools,
+            owner = owner,
+            config = conversationSubAgentPreferences.previewSnapshot(owner),
+            providers = providers,
+            workspaceEnabled = config.terminalTools,
+        )
         return AgentRequestOverhead.estimate(
             config = config,
             skillContext = skillContext,
             memoryContext = memoryContext,
             capabilities = AgentToolCapabilities.capture(appContext),
             additionalTools = additionalTools,
-        )
+        ) + AgentContextBudget.countTokens(childPrompt)
     }
 
     private fun syncBilledOverhead(
@@ -745,17 +862,40 @@ internal class AgentAppState(
         }
         if (billedOverheadConversationId != conversationId || billedOverheadTokens == null) {
             billedOverheadConversationId = conversationId
-            billedOverheadTokens = requestOverheadTokens
+            billedOverheadTokens = overheadSelection.tokensFor(currentOverheadBinding())
         }
     }
+
+    private fun updateSelectionProviders(providers: List<io.github.mangi.eta.data.model.ProviderSetting>) {
+        if (selectionProviders != providers) modelBindingGeneration++
+        selectionProviders = providers
+        // Invalidate the old run permanently, including if settings are later changed back.
+        runUsageRoutes.forEach { (runId, route) ->
+            val state = conversationIdForRun(runId)?.let(::conversationState)
+            if (state != null && route != contextRouteSignature(state)) invalidatedUsageRuns.add(runId)
+        }
+        // Reset every loaded binding, including background conversations without a usage receipt.
+        // Once a binding becomes ineligible, changing settings back must not resurrect its old tier.
+        conversationsById.toList().forEach { (id, state) ->
+            val next = state.withCurrentGptSpeedBinding()
+            if (state.conversationContentLoaded && (next != state ||
+                (state.cloudRouteSignature != null && state.cloudRouteSignature != contextRouteSignature(state)))) {
+                updateConversation(id, next, updateTimestamp = false)
+            }
+        }
+        if (selectedConversationId == null) homeState = homeState.withCurrentGptSpeedBinding()
+    }
+
+    private fun AgentChatHomeUiState.withCurrentGptSpeedBinding(): AgentChatHomeUiState = copy(
+        gptSpeedMode = GptSpeedModePolicy.forSelection(gptSpeedMode, providerId, modelId, selectionProviders),
+    )
 
     private fun observeRuntimeSelection() {
         scope.launch {
             combine(SettingsDataStore.settingsFlow(), ProviderRepository.providersFlow()) { settings, providers ->
                 Triple(settings.selectedProviderId, settings.selectedModelId, providers)
             }.collectLatest { (providerId, modelId, providers) ->
-                if (selectionProviders != providers) modelBindingGeneration++
-                selectionProviders = providers
+                updateSelectionProviders(providers)
                 defaultProviderId = providerId
                 defaultModelId = modelId
                 refreshBoundModelPicker()
@@ -786,9 +926,22 @@ internal class AgentAppState(
         val next = if (initializingDraftBinding && model != null) {
             homeState.withPreferredReasoningEffort()
         } else homeState.copy(availableReasoningEfforts = currentReasoningCapabilities?.selectableEfforts.orEmpty())
-        if (next != homeState) {
+        val scopedNext = if (provider != null && model != null && next.cloudRouteSignature != null &&
+            next.cloudRouteSignature != contextRouteSignature(next)) next.copy(
+                livePromptTokens = null, livePromptIsProjected = false, cloudHistoryTokens = null,
+                contextBudgetReceiptTokens = null,
+                cloudRequestOverheadTokens = null, cloudRouteSignature = null, cloudReceiptRequestId = null,
+                contextReceiptEvidence = null, receiptPredictionTokens = null, contextAwaitingReceipt = true,
+                contextHasStarted = true) else next
+        // Re-evaluate the actual binding, not a display name or a remembered provider logo.
+        // A missing/deleted/non-GPT model clears the transient choice; returning to GPT stays normal.
+        val speedNext = scopedNext.copy(gptSpeedMode = GptSpeedModePolicy.forBinding(
+            scopedNext.gptSpeedMode, model?.modelId.orEmpty(),
+            supportsGptSpeedBinding(provider, model),
+        ))
+        if (speedNext != homeState) {
             val conversationId = selectedConversationId
-            if (conversationId == null) homeState = next else updateConversation(conversationId, next, updateTimestamp = false)
+            if (conversationId == null) homeState = speedNext else updateConversation(conversationId, speedNext, updateTimestamp = false)
         }
         refreshRequestOverhead()
     }
@@ -933,8 +1086,16 @@ internal class AgentAppState(
         memoryState = memoryState.copy(notice = null)
     }
 
-    private fun rejectConversationArchiveMutation(): Boolean {
-        if (stoppingRuns.keys.any { runConversationIds[it] == selectedConversationId }) {
+    private var conversationRevisionBusy = false
+
+    private fun rejectConversationArchiveMutation(protectStoppingRun: Boolean = true): Boolean {
+        if (conversationRevisionBusy) {
+            Toast.makeText(appContext, "正在恢复修订历史，请稍候。", Toast.LENGTH_SHORT).show()
+            return true
+        }
+        // Stop settlement owns the current transcript, not navigation, metadata or model choice.
+        // Those safe operations still obey the independent archive/backup maintenance lock.
+        if (protectStoppingRun && stoppingRuns.keys.any { runConversationIds[it] == selectedConversationId }) {
             Toast.makeText(appContext, StopSealNotices.PENDING, Toast.LENGTH_SHORT).show()
             return true
         }
@@ -947,7 +1108,7 @@ internal class AgentAppState(
         requireIdleRuns: Boolean = true,
         block: suspend () -> T,
     ): T = withContext(Dispatchers.Main.immediate) {
-        check(!conversationArchiveBusy) { "已有对话归档任务正在执行" }
+        check(!conversationArchiveBusy && !conversationRevisionBusy) { "已有对话归档或修订任务正在执行" }
         if (requireIdleRuns) {
             check(
                 !runtimeRecoveryInProgress.get() &&
@@ -1087,6 +1248,7 @@ internal class AgentAppState(
             conversationCreatedAt = snapshot.createdAt
             conversationFolderIds = snapshot.folderIds
             conversationPinned = snapshot.pinnedIds
+            conversationCompletionMarkers = snapshot.completionMarkerIds - listOfNotNull(snapshot.selectedConversationId)
             conversationFolders = snapshot.folders
             selectedFolderId = null
             pendingNewConversationFolderId = null
@@ -1180,12 +1342,10 @@ internal class AgentAppState(
             activeRunIds = activeRunIds,
             locallyObservedRunIds = locallyObservedRunIds,
         )
-        if (
-            plan.completed.isEmpty() &&
-            plan.interrupted.isEmpty() &&
-            plan.reattach.isEmpty()
-        ) {
-            return
+        // Room-only question recovery must run even with no checkpoint/outbox or unavailable
+        // run indexes. Run absence is not proof that a question's answer was never consumed.
+        val questionConversationIds = withContext(Dispatchers.IO) {
+            AgentConversationStore.questionConversationIds(appContext)
         }
 
         val acknowledgeAfterSave = mutableListOf<String>()
@@ -1205,8 +1365,9 @@ internal class AgentAppState(
                     ) || stateChanged
                 }
                 val result = completedRun.result
+                val beforeRecovery = conversationState(conversationId) ?: state
                 val recovery = AgentPendingResultRecovery.apply(
-                    state = conversationState(conversationId) ?: state,
+                    state = beforeRecovery,
                     runId = runId,
                     result = result,
                     promptSupplement = payload.promptSupplement,
@@ -1215,12 +1376,19 @@ internal class AgentAppState(
                         ?.filterIsInstance<AgentEvent.RunFinished>()?.lastOrNull()?.generatedAtMillis,
                 )
                 val ordered = normalizeTerminalRunMessages(runId, recovery.state.messages)
-                if (!recovery.alreadyApplied || ordered != recovery.state.messages) {
+                val next = AgentPendingResultRecovery.stateToPublish(beforeRecovery, recovery, ordered)
+                if (next != null) {
                     updateConversation(
-                        conversationId, recovery.state.copy(messages = ordered),
+                        conversationId, next,
                         updateTimestamp = !recovery.alreadyApplied,
                     )
                     stateChanged = true
+                    if (ConversationCompletionMarker.shouldMark(
+                            result, isSelected = conversationId == selectedConversationId,
+                            alreadyApplied = recovery.alreadyApplied,
+                        )) {
+                        markConversationCompleted(conversationId)
+                    }
                     if (!recovery.alreadyApplied && VirtualCompletionNotice.confirmed(result)) {
                         Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
                     }
@@ -1239,7 +1407,11 @@ internal class AgentAppState(
             stateChanged || acknowledgeAfterSave.isNotEmpty() || removeAfterSave.isNotEmpty()
         }
 
-        if (changed) {
+        // Query after local terminal projection, before the durable save/ACK boundary, so a
+        // missed QuestionResolved can correct an Interrupted card even on alreadyApplied runs.
+        val questionChanges = reconcileRecoveredQuestions(client, questionConversationIds,
+            completedRuns.map { AgentUiHandoffPayload.from(it.handoff.payload).conversationId })
+        if (changed || questionChanges) {
             val saved = withContext(Dispatchers.Main) { persistConversations() }.await()
             if (saved) {
                 acknowledgeAfterSave.forEach(client::ackResult)
@@ -1251,6 +1423,76 @@ internal class AgentAppState(
 
         plan.reattach.forEach { checkpoint ->
             withContext(Dispatchers.Main) { startReattachedRun(checkpoint) }
+        }
+    }
+
+    /** One finite authoritative question pass shared by outbox and Room-only recovery. */
+    private suspend fun reconcileRecoveredQuestions(
+        client: AgentRuntimeClient,
+        storedConversationIds: List<String>,
+        completedConversationIds: List<String>,
+    ): Boolean {
+        val conversationIds = withContext(Dispatchers.Main) {
+            (completedConversationIds + storedConversationIds + conversationsById.filterValues {
+                it.conversationContentLoaded && it.messages.any { m ->
+                    m is AgentQuestionMessageUi && m.status != AgentQuestionStatus.Answered
+                }
+            }.keys).distinct()
+        }
+        val owners = mutableListOf<AgentQuestionRequest>()
+        conversationIds.forEach { id ->
+            val cached = withContext(Dispatchers.Main) { conversationsById[id] } ?: return@forEach
+            if (!cached.conversationContentLoaded) {
+                val loaded = withContext(Dispatchers.IO) {
+                    AgentConversationStore.loadConversation(appContext, id)?.let(::orderedTerminalState)
+                } ?: return@forEach
+                withContext(Dispatchers.Main) {
+                    // Do not overwrite a concurrent edit/delete while Room was being read.
+                    if (conversationsById[id] === cached) {
+                        conversationsById = conversationsById + (id to loaded)
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                conversationsById[id]?.takeIf { it.conversationContentLoaded }?.let { state ->
+                    owners += AgentQuestionProjection.recoveryOwners(id, state.messages)
+                }
+            }
+        }
+        val batch = withContext(Dispatchers.Main) {
+            AgentQuestionProjection.recoveryQueryBatch(owners, questionRecoveryQueryOffset).also {
+                questionRecoveryQueryOffset = it.nextOffset
+            }
+        }
+        // At most 8 reads, in groups of 4, each interrupted after 5s. There is no polling,
+        // and neither a truncated batch nor null/timeout is used as evidence of death.
+        val observations = batch.owners.chunked(AgentQuestionProjection.RECOVERY_QUERY_CONCURRENCY)
+            .flatMap { group ->
+                withContext(Dispatchers.IO) {
+                    group.map { owner -> async {
+                        owner to withTimeoutOrNull(AgentQuestionProjection.RECOVERY_QUERY_TIMEOUT_MILLIS) {
+                            runInterruptible {
+                                client.queryQuestion(owner.conversationId, owner.runId, owner.questionId, owner.toolCallId)
+                            }
+                        }
+                    } }.map { it.await() }
+                }
+            }
+        return withContext(Dispatchers.Main) {
+            var changed = false
+            observations.forEach { (owner, snapshot) ->
+                // Persisted content may have been evicted/deleted while IPC was pending; never
+                // reinsert a stale conversation. A subsequent bounded pass can retry it.
+                val state = conversationsById[owner.conversationId]
+                    ?.takeIf { it.conversationContentLoaded } ?: return@forEach
+                val messages = AgentQuestionProjection.reconcileMessages(state.messages, owner, snapshot)
+                if (messages != state.messages) {
+                    updateConversation(owner.conversationId, state.copy(messages = messages), updateTimestamp = false)
+                    changed = true
+                }
+            }
+            if (changed) refreshConversationSummaries()
+            changed
         }
     }
 
@@ -1275,10 +1517,10 @@ internal class AgentAppState(
             val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
             val finalizedText = runMessageProjector.finalizeText(runId, finalizedThinking)
             if (interrupted) {
-                val interruptedTools = runMessageProjector.interruptRunningTools(
+                val interruptedTools = AgentQuestionProjection.interruptWaiting(runId, runMessageProjector.interruptRunningTools(
                     reason = appContext.getString(R.string.system_notice_interrupted),
                     messages = finalizedText,
-                )
+                ))
                 val noticeId = "interrupted-$runId"
                 if (interruptedTools.any { it.id == noticeId }) {
                     interruptedTools
@@ -1295,8 +1537,9 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         conversationUpdatedAt = conversationUpdatedAt +
             (conversationId to checkpoint.updatedAt)
         return true
@@ -1459,8 +1702,25 @@ internal class AgentAppState(
         replacedRun?.let { stopRun(it, reason = AgentChildControlPolicy.Reason.SETTINGS_CHANGED) }
     }
 
-    fun selectModel(modelId: String, providerId: String = "") {
+    fun cycleGptSpeedMode() {
         if (rejectConversationArchiveMutation()) return
+        if (homeState.isStreaming && !homeState.isPaused) return
+        if (modelPickerState.isChanging) return
+        val selected = modelPickerState.selectedModel ?: return
+        if (selected.id != homeState.modelId || selected.providerId != homeState.providerId) return
+        val provider = selectionProviders.firstOrNull { it.id == selected.providerId && it.isEnabled } ?: return
+        val model = provider.models.firstOrNull { it.id == selected.id && it.isEnabled } ?: return
+        val eligible = supportsGptSpeedBinding(provider, model)
+        val next = GptSpeedModePolicy.cycle(homeState.gptSpeedMode, model.modelId, eligible)
+        if (next == homeState.gptSpeedMode) return
+        val replacedRun = activeRunIdForSelectedConversation().takeIf { homeState.isPaused }
+        updateCurrentConversation(homeState.copy(gptSpeedMode = next))
+        // Session UI state only; never rewrite a provider's custom body or reasoning preference.
+        replacedRun?.let { stopRun(it, reason = AgentChildControlPolicy.Reason.SETTINGS_CHANGED) }
+    }
+
+    fun selectModel(modelId: String, providerId: String = "") {
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.isStreaming && !homeState.isPaused) return
         val provider = selectionProviders.filter { it.isEnabled && (providerId.isBlank() || it.id == providerId) && it.models.any { m -> m.id == modelId && m.isEnabled } }.singleOrNull() ?: return
         val model = provider.models.first { it.id == modelId && it.isEnabled }
@@ -1471,6 +1731,8 @@ internal class AgentAppState(
         val requestedEffort = rememberedModelReasoningEffort(provider.id, model.id, model.preferredReasoningEffort)
         val nextEffort = ConversationReasoningPolicy.resolve(requestedEffort, config.reasoningCapabilities)
         updateCurrentConversation(homeState.copy(providerId = provider.id, modelId = model.id,
+            gptSpeedMode = GptSpeedModePolicy.forBinding(homeState.gptSpeedMode, model.modelId,
+                supportsGptSpeedBinding(provider, model)),
             reasoningEffort = nextEffort, thinkingEnabled = nextEffort.enablesReasoning,
             livePromptTokens = null, livePromptIsProjected = false))
         billedOverheadTokens = null
@@ -1542,7 +1804,7 @@ internal class AgentAppState(
     fun selectConversation(conversationId: String) = selectConversationContent(conversationId) {}
 
     private fun selectConversationContent(conversationId: String, onSelected: () -> Unit) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.messageEdit != null) cancelMessageEdit()
         val version = ++conversationSelectionVersion
         conversationSelectionJob?.cancel()
@@ -1576,9 +1838,12 @@ internal class AgentAppState(
         check(state.conversationContentLoaded)
         fileAttachmentOwnerVersion += 1
         selectedConversationId = conversationId
+        if (conversationId in conversationCompletionMarkers) {
+            conversationCompletionMarkers = conversationCompletionMarkers - conversationId
+        }
         val owner = ownerContext(conversationId)
         val view = owner.projection()
-        val ordered = orderedTerminalState(state).copy(
+        val ordered = orderedTerminalState(state.withCurrentGptSpeedBinding()).copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
             childStatusRoster = owner.roster(),
         )
@@ -1588,38 +1853,49 @@ internal class AgentAppState(
         billedOverheadTokens = null
         syncBilledOverhead(conversationId, ordered.messages)
         conversationPaneState = conversationPaneState.copy(selectedConversationId = conversationId)
+        refreshConversationSummaries()
         persistConversations()
         restoreConversationRuntimeModel()
         requestOwnerContext(conversationId)
     }
 
     fun createConversation() {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.messageEdit != null) cancelMessageEdit()
         if (!beginNewSubAgentDraft()) return
+        val conversationId = newConversationId()
+        if (!bindSubAgentDraft(conversationId)) return
+        // A pending lazy selection must not replace the explicitly created conversation.
+        conversationSelectionVersion += 1
+        conversationSelectionJob?.cancel()
         fileAttachmentOwnerVersion += 1
-        selectedConversationId = null
+        selectedConversationId = conversationId
         pendingNewConversationFolderId = selectedFolderId
         homeState = newDraftChatState()
         rememberModelReasoningEffort(homeState.providerId, homeState.modelId, homeState.reasoningEffort)
         billedOverheadConversationId = null
         billedOverheadTokens = null
         conversationPaneState = conversationPaneState.copy(
-            selectedConversationId = null,
+            selectedConversationId = conversationId,
             searchQuery = "",
         )
+        // Explicit new conversations exist before their first message. Startup/deletion
+        // placeholders still use null IDs and are not automatically added to history.
+        updateConversation(conversationId, homeState)
+        assignPendingFolder(conversationId)
         restoreConversationRuntimeModel()
         refreshConversationSummaries()
+        persistConversations()
     }
 
     fun selectFolder(folderId: String?) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         selectedFolderId = folderId
         refreshConversationSummaries()
     }
 
     fun createFolder(name: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         val trimmed = name.trim()
         if (trimmed.isBlank()) return
         val folder = ConversationFolderUi(
@@ -1634,7 +1910,7 @@ internal class AgentAppState(
     }
 
     fun renameFolder(folderId: String, name: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         val trimmed = name.trim()
         if (trimmed.isBlank()) return
         conversationFolders = conversationFolders.map { folder ->
@@ -1645,7 +1921,7 @@ internal class AgentAppState(
     }
 
     fun deleteFolder(folderId: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         conversationFolders = conversationFolders.filterNot { it.id == folderId }
         conversationFolderIds = conversationFolderIds.filterValues { it != folderId }
         if (selectedFolderId == folderId) selectedFolderId = null
@@ -1655,7 +1931,7 @@ internal class AgentAppState(
     }
 
     fun moveConversationToFolder(conversationId: String, folderId: String?) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (conversationId !in conversationsById) return
         conversationFolderIds = if (folderId.isNullOrBlank()) {
             conversationFolderIds - conversationId
@@ -1667,7 +1943,7 @@ internal class AgentAppState(
     }
 
     fun toggleConversationPinned(conversationId: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (conversationId !in conversationsById) return
         conversationPinned = if (conversationId in conversationPinned) {
             conversationPinned - conversationId
@@ -1727,6 +2003,7 @@ internal class AgentAppState(
                             conversationCreatedAt = emptyMap()
                             conversationFolderIds = emptyMap()
                             conversationPinned = emptySet()
+                            conversationCompletionMarkers = emptySet()
                             fileAttachmentOwnerVersion += 1
                             beginNewSubAgentDraft()
                             selectedConversationId = null
@@ -1767,12 +2044,14 @@ internal class AgentAppState(
         conversationCreatedAt = conversationCreatedAt - conversationId
         conversationFolderIds = conversationFolderIds - conversationId
         conversationPinned = conversationPinned - conversationId
+        conversationCompletionMarkers = conversationCompletionMarkers - conversationId
         scope.launch(Dispatchers.IO) { chatImageCache.deleteConversation(conversationId) }
         if (wasSelected) {
             fileAttachmentOwnerVersion += 1
             val nextId = conversationsById.keys.firstOrNull()
             if (nextId != null) {
                 selectedConversationId = nextId
+                conversationCompletionMarkers = conversationCompletionMarkers - nextId
                 homeState = requireNotNull(conversationState(nextId))
                 conversationsById = conversationsById + (nextId to homeState)
             } else {
@@ -1798,7 +2077,7 @@ internal class AgentAppState(
     private val manuallyRenamedDuringTitleRequest = mutableSetOf<String>()
 
     fun renameConversation(conversationId: String, title: String) {
-        if (rejectConversationArchiveMutation()) return
+        if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         val trimmed = title.trim()
         if (trimmed.isBlank()) return
         manuallyRenamedDuringTitleRequest += conversationId
@@ -1883,7 +2162,10 @@ internal class AgentAppState(
         }
 
         val editBoundary = edit?.let {
-            AgentConversationRevisionReducer.boundary(homeState, it.targetMessageId)
+            if (it.preparedFromHistory != null && it.preparedFromHistory != homeState.history) return@let null
+            AgentConversationRevisionReducer.boundary(
+                homeState.copy(history = it.preparedHistory ?: homeState.history), it.targetMessageId,
+            )
         }
         if (edit != null && editBoundary == null) {
             if (submittedText != null) updateCurrentConversation(homeState.copy(input = submittedText))
@@ -1907,6 +2189,8 @@ internal class AgentAppState(
             conversationDrafts.promote(id)
             selectedConversationId = id
             conversationPaneState = conversationPaneState.copy(selectedConversationId = id)
+            // The pending draft callback is intentionally stale; replace it for the bound owner.
+            refreshRequestOverhead()
             assignPendingFolder(id)
         }
         if (conversationId !in conversationsById) {
@@ -2045,6 +2329,7 @@ internal class AgentAppState(
             ),
             reasoningEffort = homeState.reasoningEffort,
             consumeDraft = true,
+            logicalTurnId = editBoundary?.logicalTurnId ?: runId,
         )
     }
 
@@ -2070,16 +2355,82 @@ internal class AgentAppState(
             }
         }
 
-    fun beginMessageEdit(messageId: String) {
-        if (homeState.isStreaming || homeState.isPaused) return
-        if (rejectConversationArchiveMutation()) return
-        if (homeState.messageEdit != null) return
-        if (rejectSendIfCompressing()) return
-        abortActiveRunForRevision()
-        val boundary = AgentConversationRevisionReducer.boundary(homeState, messageId) ?: run {
-            showRevisionHistoryUnavailableNotice()
-            return
+    /** One unpublished transaction: IO may only produce a candidate, never mutate the source. */
+    private fun launchConversationRevision(
+        messageId: String,
+        publish: suspend (String, AgentChatHomeUiState, AgentChatHomeUiState, () -> Boolean) -> Unit,
+    ) {
+        if (homeState.isStreaming || homeState.isPaused || homeState.messageEdit != null) return
+        if (rejectConversationArchiveMutation() || rejectSendIfCompressing()) return
+        if (modelPickerState.isChanging || runtimeRecoveryInProgress.get()) return
+        val conversationId = selectedConversationId ?: return
+        if (runConversationIds.any { (run, owner) -> owner == conversationId && run in runJobs }) return
+        val snapshot = homeState
+        val selection = conversationSelectionVersion
+        val modelGeneration = modelBindingGeneration
+        val assistant = AssistantRepository.active().id
+        val draft = currentDraftField().text.toString()
+        val stillCurrent = {
+            selectedConversationId == conversationId && conversationSelectionVersion == selection &&
+                modelBindingGeneration == modelGeneration && AssistantRepository.active().id == assistant &&
+                homeState == snapshot && conversationState(conversationId) == snapshot &&
+                currentDraftField().text.toString() == draft && !homeState.isStreaming && !homeState.isPaused &&
+                !modelPickerState.isChanging && !runtimeRecoveryInProgress.get() && !isCompressionBlockingSend() &&
+                !conversationArchiveBusy && !io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance &&
+                stoppingRuns.keys.none { runConversationIds[it] == conversationId } &&
+                runConversationIds.none { (run, owner) -> owner == conversationId && run in runJobs }
         }
+        conversationRevisionBusy = true
+        // UNDISPATCHED installs finally even if the owner scope is cancelled before IO starts.
+        scope.launch(Dispatchers.Main.immediate, start = CoroutineStart.UNDISPATCHED) {
+            try {
+                val prepared = runInterruptible(Dispatchers.IO) {
+                    val archive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, conversationId)
+                    AgentConversationRevisionReducer.prepareForRevision(snapshot, messageId, archive::restoreHistory)
+                }
+                coroutineContext.ensureActive()
+                if (!stillCurrent()) return@launch
+                if (prepared == null) {
+                    showRevisionHistoryUnavailableNotice()
+                    return@launch
+                }
+                publish(conversationId, snapshot, prepared, stillCurrent)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                coroutineContext.ensureActive()
+                val reason = (failure.cause ?: failure).message.orEmpty().takeIf {
+                    it in setOf("分支归档引用层数超限", "分支归档存在循环引用", "分支根归档缺失或无效",
+                        "分支归档数量超限", "旧分支归档扫描数量超限", "旧分支归档副本数量超限",
+                        "旧分支归档副本不一致", "缺失的旧分支归档没有可验证副本")
+                }.orEmpty()
+                AndroidAgentLogger.warn("会话修订失败：${if (failure is BranchArchiveCopyException) "branch_archive_copy" else "revision_prepare"} ${failure.cause?.javaClass?.simpleName ?: failure.javaClass.simpleName} $reason")
+                if (stillCurrent()) {
+                    if (failure is BranchArchiveCopyException) Toast.makeText(appContext,
+                        "分支所需的历史归档或附件未能完整复制，已取消分支；原会话未修改。", Toast.LENGTH_LONG).show()
+                    else showRevisionHistoryUnavailableNotice()
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main.immediate) { conversationRevisionBusy = false }
+            }
+        }
+    }
+
+    fun beginMessageEdit(messageId: String) {
+        launchConversationRevision(messageId) { _, snapshot, prepared, _ ->
+            val boundary = AgentConversationRevisionReducer.boundary(prepared, messageId) ?: run {
+                showRevisionHistoryUnavailableNotice()
+                return@launchConversationRevision
+            }
+            applyPreparedMessageEdit(snapshot, prepared, boundary)
+        }
+    }
+
+    private fun applyPreparedMessageEdit(
+        snapshot: AgentChatHomeUiState,
+        prepared: AgentChatHomeUiState,
+        boundary: AgentConversationRevisionReducer.Boundary,
+    ) {
         val images = boundary.userMessage.images.mapIndexed { index, dataUrl ->
             val video = boundary.userMessage.isVideoAt(index)
             PendingImageUi(
@@ -2101,7 +2452,7 @@ internal class AgentAppState(
             )
         }
         updateCurrentConversation(
-            homeState.copy(
+            snapshot.copy(
                 input = parsedPrompt.request,
                 pendingImages = images,
                 pendingFileReferences = fileReferences,
@@ -2115,6 +2466,8 @@ internal class AgentAppState(
                     previousFileReferences = homeState.pendingFileReferences,
                     previousConversationMentions = homeState.pendingConversationMentions,
                     hasLaterTurns = boundary.laterTurnCount > 0,
+                    preparedHistory = prepared.history,
+                    preparedFromHistory = snapshot.history,
                 ),
             )
         )
@@ -2137,10 +2490,14 @@ internal class AgentAppState(
         )
     }
 
-    fun messageRevisionImpact(messageId: String): MessageRevisionImpact? =
-        AgentConversationRevisionReducer.boundary(homeState, messageId)?.let { boundary ->
-            MessageRevisionImpact(laterTurnCount = boundary.laterTurnCount)
-        }
+    fun messageRevisionImpact(messageId: String): MessageRevisionImpact? {
+        // Confirmation is UI-only. A compacted target is validated/restored later on IO.
+        val target = homeState.messages.indices.singleOrNull { homeState.messages[it].id == messageId } ?: return null
+        val user = (target downTo 0).firstOrNull { homeState.messages[it] is UserMessageUi } ?: return null
+        return MessageRevisionImpact(laterTurnCount = homeState.messages.drop(user + 1).count {
+            it is UserMessageUi && !it.isSteerSupplement()
+        })
+    }
 
     /** 删除确认框：按操作栏分段，统计目标段下面会一起删掉的段数。 */
     fun messageDeleteImpact(messageId: String): MessageRevisionImpact? =
@@ -2149,23 +2506,29 @@ internal class AgentAppState(
         }
 
     fun deleteMessageTurn(messageId: String) {
-        if (homeState.isStreaming || homeState.isPaused) return
-        if (rejectConversationArchiveMutation()) return
-        if (homeState.messageEdit != null) return
-        abortActiveRunForRevision()
-        val conversationId = selectedConversationId ?: return
-        val revised = AgentConversationRevisionReducer.deleteFromTurn(homeState, messageId) ?: run {
-            showRevisionHistoryUnavailableNotice()
-            return
+        launchConversationRevision(messageId) { conversationId, snapshot, prepared, _ ->
+            val revised = AgentConversationRevisionReducer.deleteFromTurn(prepared, messageId) ?: run {
+                showRevisionHistoryUnavailableNotice()
+                return@launchConversationRevision
+            }
+            applyPreparedMessageDeletion(conversationId, snapshot, revised)
         }
+    }
+
+    private fun applyPreparedMessageDeletion(
+        conversationId: String,
+        snapshot: AgentChatHomeUiState,
+        revised: AgentChatHomeUiState,
+    ) {
         if (revised.messages.isEmpty()) {
-            retainDeletedConversation(homeState.messages, conversationUpdatedAt[conversationId])
+            retainDeletedConversation(snapshot.messages, conversationUpdatedAt[conversationId])
             conversationsById = conversationsById - conversationId
             conversationTitles = conversationTitles - conversationId
             conversationUpdatedAt = conversationUpdatedAt - conversationId
         conversationCreatedAt = conversationCreatedAt - conversationId
             conversationFolderIds = conversationFolderIds - conversationId
             conversationPinned = conversationPinned - conversationId
+            conversationCompletionMarkers = conversationCompletionMarkers - conversationId
             scope.launch(Dispatchers.IO) { chatImageCache.deleteConversation(conversationId) }
             fileAttachmentOwnerVersion += 1
             beginNewSubAgentDraft()
@@ -2181,22 +2544,64 @@ internal class AgentAppState(
         persistConversations()
     }
 
+    private class BranchArchiveCopyException(cause: Exception) : Exception(cause)
     fun branchConversation(messageId: String) {
-        if (rejectConversationArchiveMutation()) return
-        if (homeState.messageEdit != null) cancelMessageEdit()
-        val sourceId = selectedConversationId ?: return
-        val snapshot = conversationState(sourceId) ?: homeState
-        val prefix = AgentConversationRevisionReducer.branchPrefix(snapshot, messageId) ?: run {
-            showRevisionHistoryUnavailableNotice()
-            return
+        launchConversationRevision(messageId) { sourceId, snapshot, prepared, stillCurrent ->
+            val prefix = AgentConversationRevisionReducer.branchPrefix(prepared, messageId) ?: run {
+                showRevisionHistoryUnavailableNotice()
+                return@launchConversationRevision
+            }
+            if (prefix.messages.isEmpty()) return@launchConversationRevision
+            val newId = newConversationId()
+            var published = false
+            try {
+                runInterruptible(Dispatchers.IO) {
+                    // Retained A and its tool/checkpoint closure must be independent of the source.
+                    try {
+                        io.github.mangi.eta.agent.model.AgentCompactionArchiveFork.copyReferenced(
+                            appContext.filesDir, sourceId, newId, prefix.history,
+                            rewriteAttachmentPath = { value -> chatImageCache.rewriteCachedPath(value, sourceId, newId) },
+                            recoverLegacyDependencies = true,
+                        )
+                        chatImageCache.copyConversation(sourceId, newId)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (interrupted: InterruptedException) {
+                        throw interrupted
+                    } catch (failure: Exception) {
+                        throw BranchArchiveCopyException(failure)
+                    }
+                }
+                coroutineContext.ensureActive()
+                if (!stillCurrent()) return@launchConversationRevision
+                publishPreparedBranch(sourceId, newId, snapshot, prefix) { published = true }
+            } finally {
+                if (!published) withContext(NonCancellable + Dispatchers.IO) {
+                    runCatching { io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, newId).delete() }
+                        .onFailure { AndroidAgentLogger.warn("未发布分支归档清理失败：${it.javaClass.simpleName}") }
+                    runCatching { chatImageCache.deleteConversation(newId) }
+                        .onFailure { AndroidAgentLogger.warn("未发布分支附件清理失败：${it.javaClass.simpleName}") }
+                }
+            }
         }
-        if (prefix.messages.isEmpty()) return
-        val newId = newConversationId()
+    }
+
+    private fun publishPreparedBranch(
+        sourceId: String,
+        newId: String,
+        snapshot: AgentChatHomeUiState,
+        prefix: AgentConversationRevisionReducer.BranchPrefix,
+        onPublished: () -> Unit,
+    ) {
         val rewrite = { value: String -> chatImageCache.rewriteCachedPath(value, sourceId, newId) }
+        val branchMessages = freezeStreamingMessages(prefix.messages).map { message ->
+            val frozen = message.withId("$newId:${message.id}").rewritePaths(rewrite)
+            if (frozen is AgentQuestionMessageUi) AgentQuestionProjection.freezeForBranch(frozen, newId)
+            else frozen
+        }
         val branched = snapshot.copy(
-            messages = freezeStreamingMessages(prefix.messages).map { message ->
-                message.withId("$newId:${message.id}").rewritePaths(rewrite)
-            },
+            messages = branchMessages,
+            isWaitingForAnswer = AgentQuestionProjection.hasWaiting(branchMessages),
             history = prefix.history.map { it.rewritePaths(rewrite) },
             input = "",
             isStreaming = false,
@@ -2210,11 +2615,18 @@ internal class AgentAppState(
             messageEdit = null,
             livePromptTokens = null,
                 livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null,
+                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                contextAwaitingReceipt = true, contextHasStarted = true,
+                cloudReceiptRequestId = null, cloudRouteSignature = null,
+                contextReceiptEvidence = null, receiptPredictionTokens = null,
         )
         val sourceTitle = conversationTitles[sourceId].orEmpty().ifBlank {
             appContext.getString(R.string.conversation_unnamed)
         }
+        // Preferences may fail durably; finish them before making any branch visible.
+        conversationSubAgentPreferences.createConversation(
+            SubAgentConfigKey.Conversation(newId), SubAgentConfigKey.Conversation(sourceId),
+        )
         conversationsById = conversationsById + (newId to branched)
         conversationTitles = conversationTitles + (
             newId to appContext.getString(R.string.conversation_branch_title, sourceTitle)
@@ -2224,20 +2636,15 @@ internal class AgentAppState(
         conversationFolderIds[sourceId]?.let { folderId ->
             conversationFolderIds = conversationFolderIds + (newId to folderId)
         }
-        conversationSubAgentPreferences.createConversation(
-            SubAgentConfigKey.Conversation(newId), SubAgentConfigKey.Conversation(sourceId),
-        )
         fileAttachmentOwnerVersion += 1
         selectedConversationId = newId
         homeState = branched
         billedOverheadConversationId = newId
         billedOverheadTokens = null
         conversationPaneState = conversationPaneState.copy(selectedConversationId = newId)
+        onPublished() // No suspensions between the validated snapshot and this publication boundary.
         refreshConversationSummaries()
         persistConversations()
-        scope.launch(Dispatchers.IO) {
-            chatImageCache.copyConversation(sourceId, newId)
-        }
     }
 
     fun regenerateMessage(messageId: String) {
@@ -2335,6 +2742,7 @@ internal class AgentAppState(
                         state = homeState,
                         reasoningEffort = homeState.reasoningEffort,
                         skipAutoCompress = ignoreCompression,
+                        logicalTurnId = boundary.logicalTurnId,
                     )
                 }
             }
@@ -2356,6 +2764,7 @@ internal class AgentAppState(
             state = homeState,
             reasoningEffort = homeState.reasoningEffort,
             skipAutoCompress = ignoreCompression,
+            logicalTurnId = boundary.logicalTurnId,
         )
     }
 
@@ -2367,11 +2776,10 @@ internal class AgentAppState(
         fileReferences: List<PendingFileReferenceUi> = emptyList(),
         conversationMentions: List<PendingConversationMentionUi> = homeState.pendingConversationMentions,
     ): Boolean {
-        val billed = if (homeState.messageEdit != null || history != homeState.history) {
-            null
-        } else {
-            billedPromptTokens(homeState)
-        }
+        // 普通历史前缀增长、补齐可见 assistant、turnId 元数据差都复用同一次云端实测
+        // （contextStateForRequestHistory）；只有编辑/改写历史或换路由才会退化成未实测。
+        val requestState = contextStateForRequestHistory(homeState, history)
+        val measured = if (homeState.messageEdit == null) validMeasuredContextTokens(requestState) else null
         val usage = compressionContextUsage(
             history = history,
             currentInput = prompt,
@@ -2379,12 +2787,13 @@ internal class AgentAppState(
             selectedModel = modelPickerState.selectedModel,
             pendingFileReferences = fileReferences,
             pendingConversationMentions = conversationMentions,
-            billedContextTokens = billed,
+            billedContextTokens = measured,
             requestOverheadTokens = requestOverheadTokens,
-            billedOverheadTokens = homeState.cloudRequestOverheadTokens.takeIf { billed != null },
-            billedHistoryTokens = homeState.cloudHistoryTokens.takeIf { billed != null },
+            billedOverheadTokens = requestState.cloudRequestOverheadTokens.takeIf { measured != null },
+            billedHistoryTokens = requestState.cloudHistoryTokens.takeIf { measured != null },
         )
-        if (!shouldBlockSendForContextWindow(autoCompressEnabled, usage)) {
+        // 真未知不能仅凭本地估算的 99% 拦截；known（有效实测）保留原有拦截与 autoCompress 短路。
+        if (measured == null || !shouldBlockSendForContextWindow(autoCompressEnabled, usage)) {
             return false
         }
         Toast.makeText(
@@ -2404,6 +2813,37 @@ internal class AgentAppState(
 
     private fun billedPromptTokens(state: AgentChatHomeUiState): Int? =
         state.livePromptTokens.takeUnless { state.livePromptIsProjected }
+
+    /** Ordinary commits keep the latest actual; edits/truncation open a new receipt epoch. */
+    private fun contextStateForRequestHistory(
+        state: AgentChatHomeUiState,
+        history: List<AgentModelClient.ConversationMessage>,
+    ): AgentChatHomeUiState {
+        // turnId is local metadata (runtime drain can omit it), not provider request content.
+        fun matchesRequestPrefix(prefix: List<AgentModelClient.ConversationMessage>): Boolean =
+            prefix.size <= history.size && prefix.indices.all { index ->
+                prefix[index].copy(turnId = "") == history[index].copy(turnId = "")
+            }
+        if (matchesRequestPrefix(state.history)) return state
+        // Only the real send reducer's exact visible-assistant commit may complete old text.
+        // Arbitrary content startsWith matches would incorrectly accept genuine history edits.
+        val committedHistory = AgentConversationRevisionReducer.commitVisibleAssistantIntoHistory(
+            state.history, state.messages)
+        if (matchesRequestPrefix(committedHistory)) return state
+        return state.copy(
+            livePromptTokens = null, livePromptIsProjected = false,
+            cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+            contextAwaitingReceipt = true, contextHasStarted = true,
+            cloudReceiptRequestId = null, cloudRouteSignature = null,
+            contextReceiptEvidence = null, receiptPredictionTokens = null,
+        )
+    }
+
+    /** 预算 seed 与未测豁免共用同一个有效实际回执判定：custom gateway 的真实回执也能继续
+     * 作为同一路由/模型的预算锚点，不再被已退场的 learning 签名拦成“未测”。 */
+    private fun budgetReceiptTokens(state: AgentChatHomeUiState): Int? =
+        (billedPromptTokens(state) ?: state.contextBudgetReceiptTokens)
+            .takeIf { hasEffectiveContextReceipt(state) }
 
     private fun compressionContextWindow(fallback: Int? = null): Int? =
         modelPickerState.selectedModel?.contextWindow?.takeIf { it > 0 }
@@ -2445,27 +2885,34 @@ internal class AgentAppState(
         contextWindow: Int? = null,
         billedTokens: Int? = null,
         localTokens: Int? = null,
+        sourceModelConfig: AgentModelClient.ModelConfig? = null,
+        /** 仅当本次确实产生了可用的摘要并已 ready 成功时触发；prune-only/摘要失败不触发。 */
+        onSummaryCommitted: (() -> Unit)? = null,
     ): List<AgentModelClient.ConversationMessage> {
         val resolvedKeepRecent = keepRecent ?: keepRecentFor()
         val archive = conversationId?.let {
             io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, it)
         }
+        val window = compressionBoundaryWindow(contextWindow)
         val config = AgentContextCompactor.Config(
             keepRecentMessages = coerceKeepRecent(resolvedKeepRecent),
             compressModelConfig = compressModelConfig,
             compactionArchive = archive,
             usageConversationId = conversationId,
+            sourceModelConfig = sourceModelConfig?.copy(contextWindow = window),
+            summaryTokenBudget = io.github.mangi.eta.agent.model.AgentCompressionBoundary.summaryProgressBudget(window),
         )
         return try {
             var summaryFailure: String? = null
             val compressed = runInterruptible {
-                val window = compressionBoundaryWindow(contextWindow)
                 // billed/local lets the 16% tail target the provider's bill, as in AgentLoop.
                 val initialCut = io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(
-                    history, window, billedTokens = billedTokens, localTokens = localTokens)
+                    history, window, billedTokens = billedTokens, localTokens = localTokens,
+                    opaqueItems = config::replayedOpaqueItems)
                 val working = AgentContextCompactor.pruneOversizedToolResults(history, archive, initialCut)
                 val cut = io.github.mangi.eta.agent.model.AgentCompressionBoundary.selectStart(
-                    working, window, billedTokens = billedTokens, localTokens = localTokens)
+                    working, window, billedTokens = billedTokens, localTokens = localTokens,
+                    opaqueItems = config::replayedOpaqueItems)
                 if (cut <= 0 || cut >= working.size) return@runInterruptible working
                 val boundArchive = archive ?: error("缺少会话身份，无法保存压缩原文")
                 val prefix = working.take(cut)
@@ -2479,8 +2926,13 @@ internal class AgentAppState(
                         keepStartOverride = cut,
                     )
                     val result = boundArchive.attachReferences(prefix, id, summary, working.size - cut)
-                    require(result.sumOf { AgentContextBudget.countMessage(it).toLong() } < history.sumOf { AgentContextBudget.countMessage(it).toLong() }) { "摘要及索引未缩小上下文" }
+                    require(io.github.mangi.eta.agent.model.AgentCompressionBoundary.compactionReduced(
+                        history, result, working.size - cut, config.progressBudget(),
+                        countsOpaque = { config.replayedOpaqueItems(it) > 0 },
+                    )) { "摘要及索引未缩小上下文" }
                     boundArchive.record(id, "ready")
+                    // attachReferences + compactionReduced + ready 全部成功之后才宣告摘要提交成功。
+                    onSummaryCommitted?.invoke()
                     result
                 } catch (failure: Exception) {
                     runCatching { boundArchive.record(id, "failed") }
@@ -2551,7 +3003,10 @@ internal class AgentAppState(
         } else {
             Prefs.Keys.AGENT_COMPRESS_ENDPOINT_MODE
         }
-        return AgentCompressionEndpoint.apply(compressed, prefs?.getString(endpointKey, null))
+        return AgentCompressionEndpoint.apply(compressed, prefs?.getString(endpointKey, null)).copy(
+            errorReconnectPolicy = fallback?.errorReconnectPolicy
+                ?: SettingsDataStore.settings().errorReconnectPolicy.persistedValue,
+        )
     }
 
     private fun launchConversationRun(
@@ -2579,14 +3034,18 @@ internal class AgentAppState(
             return
         }
         if (consumeDraft) conversationDrafts.replace(conversationId, "")
-        val runAssistant = AssistantRepository.active()
-        val runConfig = RuntimeConfigRepository.buildRuntimeConfig(runProvider, runModel, runAssistant)
+        val runAssistant = requestOverheadAssistant(state)
+        // Freeze the mode with THIS submitted state's binding before launching any coroutine.
+        // Later UI toggles must not mutate an in-flight request or affect a different model.
+        val runConfig = GptSpeedModePolicy.snapshot(
+            RuntimeConfigRepository.buildRuntimeConfig(runProvider, runModel, runAssistant),
+            state.gptSpeedMode,
+            supportsGptSpeedBinding(runProvider, runModel),
+        )
         val runModelOption = AgentModelPickerProjector.project(listOf(runProvider), runProvider.id, runModel.id).selectedModel
-        val runOverhead = requestOverheadTokens
-        val runBilledOverhead = billedOverheadTokens
+        val runProviders = selectionProviders.toList()
         val taggedUserHistoryMessage = userHistoryMessage.copy(turnId = logicalTurnId)
         bindUsageRun(runId, conversationId)
-        runOverheadTokens[runId] = requestOverheadTokens
         runConfig.contextWindow?.takeIf { it > 0 }?.let { runContextWindows[runId] = it }
         val generateVideo = runModel.supportsVideoGeneration
         val generateImage = !generateVideo && runModel.supportsImageGeneration
@@ -2601,6 +3060,11 @@ internal class AgentAppState(
             contextWindow = runConfig.contextWindow,
             estimatedTokens = if (history == state.history) billedPromptTokens(state) else null,
         )
+        val historyRewritten = history != state.history
+        val relatedHistory = history == state.history.take(history.size) || state.history == history.take(state.history.size)
+        // 同一有效实际回执判定：custom gateway 的真实回执同样可以作为压缩/预算锚点。
+        val validReceiptRoute = hasEffectiveContextReceipt(state)
+        val contextState = contextStateForRequestHistory(state, history)
         val runMessages = if (generateImage || generateVideo) {
             messages + AgentMessageUi(
                 id = "assistant-$runId-1",
@@ -2612,13 +3076,12 @@ internal class AgentAppState(
         }
         updateConversation(
             conversationId,
-            state.copy(
+            contextState.copy(
                 isStreaming = true,
                 isPaused = false,
-                // 估算只属于还没有云端账单的第一轮，以及压缩清掉账单后的第一轮。
-                // 普通发消息会把可见回复写进 history，不能因此丢掉上一轮实测。
-                livePromptTokens = state.livePromptTokens,
-                livePromptIsProjected = state.livePromptIsProjected,
+                // Keep the latest actual until a new valid usage replaces it. Estimates are only
+                // for contexts without a cloud receipt, never a delta replacement for an actual.
+                receiptPredictionTokens = null,
                 isCompressingContext = willCompress,
                 history = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(history) + taggedUserHistoryMessage,
                 messages = runMessages,
@@ -2661,6 +3124,7 @@ internal class AgentAppState(
                 ReasoningEffort.OFF
             }
             val config = runConfig.copy(
+                errorReconnectPolicy = SettingsDataStore.settings().errorReconnectPolicy.persistedValue,
                 terminalTools = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
                 browserTools = agentBooleanForUi(Prefs.Keys.AGENT_BROWSER_TOOLS),
                 deviceDirectTools = agentBooleanForUi(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS),
@@ -2678,29 +3142,49 @@ internal class AgentAppState(
                 }
                 return@launch
             }
+            // Recompute from THIS run's frozen model/assistant, never a positive global UI value.
+            val runOverhead = try {
+                estimateRequestOverhead(config, runAssistant, SubAgentConfigKey.Conversation(conversationId), runProviders)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (runOverhead != null && runId in runJobs && !stoppingRuns.containsKey(runId)) {
+                    runOverheadTokens[runId] = runOverhead
+                }
+            }
             val supportsVideo = config.supportsVideo
             val modelImages = images.map { p ->
                 p.toOutboundModelImage(supportsVideo).copy(source = "user_attach")
             }
             val compressModelConfig = resolveCompressModelConfig(config)
-            val billedForCompression = if (history == state.history) billedPromptTokens(state) else null
-            // compressionContextUsage 只有三项校准都齐时才按「实测 + 增量」算，否则退回本地估算。
-            val calibratedForCompression = billedForCompression != null && billedForCompression > 0 &&
-                state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null
-            val estimatedTokens = compressionContextUsage(
-                history = history,
-                currentInput = prompt,
-                pendingImages = images,
-                selectedModel = runModelOption,
-                billedContextTokens = billedForCompression,
-                requestOverheadTokens = runOverhead,
-                billedOverheadTokens = state.cloudRequestOverheadTokens,
-                billedHistoryTokens = state.cloudHistoryTokens,
-            ).contextTokens
+            val billedForCompression = if (!historyRewritten && validReceiptRoute) billedPromptTokens(state) else null
+            // Related same-route history may reuse an old receipt as a DELTA anchor, never as a new actual.
+            // It does not become an 80% auto-compression trigger for a rewritten request.
+            val receiptAnchorForDelta = budgetReceiptTokens(state).takeIf {
+                validReceiptRoute && relatedHistory && !state.contextAwaitingReceipt
+            }
+            val calibratedForCompression = receiptAnchorForDelta != null && receiptAnchorForDelta > 0 &&
+                runOverhead != null && state.cloudHistoryTokens != null && state.cloudRequestOverheadTokens != null
+            val estimatedTokens = runOverhead?.let { overhead ->
+                compressionContextUsage(
+                    history = history,
+                    currentInput = prompt,
+                    pendingImages = images,
+                    selectedModel = runModelOption,
+                    billedContextTokens = receiptAnchorForDelta,
+                    requestOverheadTokens = overhead,
+                    billedOverheadTokens = state.cloudRequestOverheadTokens,
+                    billedHistoryTokens = state.cloudHistoryTokens,
+                ).contextTokens
+            }
             // Same request in local units, so the retained tail can be scaled to the bill.
-            val localForCompression = billedForCompression?.let {
+            // An unknown overhead cannot establish a calibration or overwrite a valid receipt.
+            val localForCompression = runOverhead?.takeIf { billedForCompression != null }?.let { overhead ->
                 compressionContextUsage(history = history, currentInput = prompt, pendingImages = images,
-                    selectedModel = runModelOption, requestOverheadTokens = runOverhead).contextTokens
+                    selectedModel = runModelOption, requestOverheadTokens = overhead).contextTokens
             }
             val pendingInRunCompact = withContext(Dispatchers.Main) {
                 pendingInRunCompactConversationIds.remove(conversationId)
@@ -2719,14 +3203,17 @@ internal class AgentAppState(
                     setConversationCompressing(conversationId, shouldCompress)
                 }
             }
+            var summaryCommitted = false
             val historyToSend = if (shouldCompress) {
                 val compressed = tryCompressHistory(
                     history = history,
                     compressModelConfig = compressModelConfig,
+                    sourceModelConfig = config,
                     conversationId = conversationId,
                     contextWindow = config.contextWindow,
                     billedTokens = estimatedTokens.takeIf { billedForCompression != null },
                     localTokens = localForCompression,
+                    onSummaryCommitted = { summaryCommitted = true },
                 )
                 withContext(Dispatchers.Main) {
                     applyCompressedHistoryToConversation(
@@ -2735,6 +3222,7 @@ internal class AgentAppState(
                         compressedHistory = compressed,
                         userHistoryMessage = taggedUserHistoryMessage,
                         compressorLabel = compressorLabel(compressModelConfig),
+                        summaryCommitted = summaryCommitted,
                     )
                     setConversationCompressing(conversationId, false)
                 }
@@ -2742,6 +3230,9 @@ internal class AgentAppState(
             } else {
                 history
             }
+            // 只有摘要真正成功才算“已预压缩”：prune-only/摘要失败返回 working 时历史也可能不等，
+            // 不能拿 history != historyToSend 冒充压缩成功。
+            val compactedBeforeSend = shouldCompress && summaryCommitted
             // Pre-send compaction can outlive the 20s stop seal: the watchdog then settles the
             // run and drops it from runJobs. Re-check before handing anything to Runtime, or a
             // stopped run would start executing tools with no UI left to stop it.
@@ -2756,6 +3247,39 @@ internal class AgentAppState(
                 }
             }
             if (!stillWanted) return@launch
+            // Diagnostics only: numeric snapshot of the legacy basis the calibration is measured in.
+            // Never on Main, never allowed to interrupt the send path.
+            if (AppFileLogger.isEnabled()) {
+                try {
+                    val snapshotOverhead = runOverhead ?: 0
+                    val hasReceiptDelta = !compactedBeforeSend && calibratedForCompression
+                    val rawHistory = (historyToSend.sumOf { AgentContextBudget.countMessage(it).toLong() } +
+                        AgentContextBudget.countCurrentTurn(prompt, modelImages))
+                        .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    val estimate = if (hasReceiptDelta) estimatedTokens ?: 0 else
+                        (rawHistory.toLong() + snapshotOverhead).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                    val uiActual = billedPromptTokens(contextState).takeIf {
+                        !compactedBeforeSend && contextState.cloudRouteSignature != null &&
+                            contextState.cloudRouteSignature == contextRouteSignature(contextState)
+                    }
+                    val uiTokens = if (contextState.contextAwaitingReceipt) null else uiActual
+                    contextEstimateDiagnostics.capture(runId, ContextEstimateDiagnostics.Snapshot(
+                        basis = if (hasReceiptDelta) ContextEstimateDiagnostics.Basis.RECEIPT_DELTA
+                            else ContextEstimateDiagnostics.Basis.LOCAL_FALLBACK,
+                        localEstimateTokens = estimate, overheadTokensEst = snapshotOverhead, historyTokensEst = rawHistory,
+                        uiTokens = uiTokens,
+                        uiState = when {
+                            uiActual != null -> ContextEstimateDiagnostics.UiState.ACTUAL
+                            !state.contextHasStarted -> ContextEstimateDiagnostics.UiState.NONE
+                            else -> ContextEstimateDiagnostics.UiState.UNKNOWN
+                        },
+                    ))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    // A diagnostic failure must never block the run.
+                }
+            }
             val result = runInterruptible {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).run(
                     request = AgentRuntimeWire.RunRequest(
@@ -2768,10 +3292,14 @@ internal class AgentAppState(
                         history = historyToSend,
                         // UI owns context via auto-compress / 99% send block; Runtime must not trimHistory.
                         historyAlreadyCompacted = true,
-                        // 只在估算确实以同一段历史的云端回执为底、且没有在发送前压缩时传。
+                        // 只在估算确实以同一段历史的云端回执为底、且没有真正压缩掉这段历史时传。
+                        // 摘要尝试失败/仅 prune 不清掉仍然有效的旧锚点。
                         calibratedInputTokens = estimatedTokens?.takeIf {
-                            !shouldCompress && calibratedForCompression && it > 0
+                            !compactedBeforeSend && calibratedForCompression && it > 0
                         },
+                        // 只有实际未知（本次请求没有有效实测）或摘要真正提交过才放行；
+                        // known 一律沿用既有校准锚点，不免除 Runtime 的本地硬限。
+                        allowUnmeasuredContextSend = unmeasuredContextSendAllowed(contextState, compactedBeforeSend),
                         modelSessionId = conversationId,
                         handoff = AgentRuntimeWire.EntryHandoff(
                             id = runId,
@@ -3020,8 +3548,9 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3039,8 +3568,9 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations()
@@ -3110,11 +3640,21 @@ internal class AgentAppState(
         compressedHistory: List<AgentModelClient.ConversationMessage>,
         userHistoryMessage: AgentModelClient.ConversationMessage,
         compressorLabel: String = "",
+        summaryCommitted: Boolean = false,
     ) {
         if (compressedHistory == originalHistory) return
         val current = conversationState(conversationId) ?: return
         val expected = originalHistory + userHistoryMessage
         if (current.history.map { it.copy(turnId = "") } != expected.map { it.copy(turnId = "") }) return
+        if (!summaryCommitted) {
+            // Pruning or a failed summary only changes the silent budget delta, not this receipt epoch.
+            updateConversation(conversationId, current.copy(
+                history = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(compressedHistory) + userHistoryMessage,
+                isCompressingContext = false, isWaitingForCompression = false,
+            ))
+            persistConversations()
+            return
+        }
         updateConversation(
             conversationId,
             current.copy(
@@ -3123,7 +3663,10 @@ internal class AgentAppState(
                 history = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(compressedHistory) + userHistoryMessage,
                 livePromptTokens = null,
                 livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null,
+                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                contextAwaitingReceipt = true, contextHasStarted = true,
+                cloudReceiptRequestId = null, cloudRouteSignature = null,
+                contextReceiptEvidence = null, receiptPredictionTokens = null,
                 messages = AgentContextCompactionUi.applyMarker(
                     messages = current.messages,
                     originalHistory = originalHistory,
@@ -3519,6 +4062,9 @@ internal class AgentAppState(
                 val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
                 val accepted = if (keepChildren) client.stopMainRun(runId, reason) else { client.cancelRun(runId); true }
                 if (!accepted) withContext(Dispatchers.Main.immediate) {
+                    // A late transport failure cannot resurrect a run already settled by its
+                    // result/watchdog, nor mark a newer run in the same conversation streaming.
+                    if (!stoppingRuns.containsKey(runId)) return@withContext
                     stoppingRuns.remove(runId)
                     cancelStopSealWatchdog(runId)
                     conversationIdForRun(runId)?.let { owner ->
@@ -3543,7 +4089,7 @@ internal class AgentAppState(
         }
         replaceLatestAssistantWithNotice(
             runId,
-            if (retrying) SystemNoticeCode.RuntimeFailed else SystemNoticeCode.Stopped,
+            SystemNoticeCode.Stopped,
             detail = when {
                 imageGen -> "已停止本地生成等待并取消网络请求；服务端任务可能仍在处理或计费，不会自动重发。"
                 retrying -> "已停止等待接口重试"
@@ -3555,8 +4101,9 @@ internal class AgentAppState(
         if (imageGen) {
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
-            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
+            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+            contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
         }
         refreshConversationSummaries()
@@ -3627,8 +4174,9 @@ internal class AgentAppState(
             }
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
-            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId)
+            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+            contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
         }
         if (conversationId == null) {
@@ -4094,7 +4642,8 @@ internal class AgentAppState(
                 event !is AgentEvent.ContextCompacted &&
                 event !is AgentEvent.UserSupplementReceived &&
                 event !is AgentEvent.UsageReceived &&
-                event !is AgentEvent.ChildContextUpdated
+                event !is AgentEvent.ChildContextUpdated &&
+                !(event is AgentEvent.ErrorReconnectChanged && event.status != "running")
             ) {
                 return
             }
@@ -4130,8 +4679,8 @@ internal class AgentAppState(
         stopSealWatchdogJobs[runId] = scope.launch {
             delay(timeout.timeoutMillis)
             withContext(Dispatchers.Main.immediate) {
-                stopSealWatchdogJobs.remove(runId)
                 if (!timeout.claimUnlock(ticket)) return@withContext
+                stopSealWatchdogJobs.remove(runId)
                 // applyRunResult consumes the stoppingRuns entry itself; removing it here would
                 // erase the retry flag that decides which stop notice the user sees.
                 if (!stoppingRuns.containsKey(runId)) return@withContext
@@ -4162,13 +4711,16 @@ internal class AgentAppState(
      * 这里不动 stoppingRuns，transcript 归属与 retry 标志仍由 applyRunResult 统一收尾。
      */
     private fun finishStopSeal(runId: String) {
+        // Duplicate terminal notifications must not cancel the one remaining grace watchdog.
+        if (stopSealTerminalTimeout.isPending(runId)) return
         stopSealWatchdogJobs.remove(runId)?.cancel()
         stopSealTimeout.release(runId)
         armStopSealWatchdog(runId, stopSealTerminalTimeout)
     }
 
     private fun AgentEvent.allowedAfterSeal(): Boolean =
-        this is AgentEvent.UsageReceived || this is AgentEvent.ChildContextUpdated
+        this is AgentEvent.UsageReceived || this is AgentEvent.ChildContextUpdated ||
+            (this is AgentEvent.ErrorReconnectChanged && status != "running")
 
     private fun scheduleRunDeltaFlush(runId: String) {
         if (runEventFlushJobs[runId]?.isActive == true) return
@@ -4409,6 +4961,74 @@ internal class AgentAppState(
         }
     }
 
+    /** Draft edits and submissions are bound to stored four-ID ownership, not selected chat. */
+    fun updateQuestionDraft(conversationId: String, questionId: String, draft: AgentQuestionAnswer) {
+        val state = conversationState(conversationId) ?: return
+        val question = state.messages.filterIsInstance<AgentQuestionMessageUi>()
+            .singleOrNull { it.request.questionId == questionId } ?: return
+        if (question.status != AgentQuestionStatus.Waiting || question.submitting) return
+        val kind = when {
+            draft.kind == "option" -> "option"
+            draft.kind == "other" && question.request.allowOther -> "other"
+            draft.kind == "delegate" && question.request.allowDelegation -> "delegate"
+            else -> return
+        }
+        val selected = draft.optionId?.takeIf { id -> question.request.options.any { it.id == id } }
+        val updated = question.copy(answerKind = kind, selectedOptionId = selected,
+            otherText = draft.otherText.take(2000), note = if (question.request.allowNote) draft.note.take(2000) else "",
+            error = null)
+        updateConversation(conversationId, state.copy(messages = state.messages.map {
+            if (it.id == question.id) updated else it
+        }))
+        persistConversations()
+    }
+
+    fun submitQuestionAnswer(conversationId: String, questionId: String) {
+        val state = conversationState(conversationId) ?: return
+        val question = state.messages.filterIsInstance<AgentQuestionMessageUi>()
+            .singleOrNull { it.request.questionId == questionId } ?: return
+        if (question.request.conversationId != conversationId || question.status != AgentQuestionStatus.Waiting || question.submitting) return
+        val answer = AgentQuestionProjection.draftAnswer(question)
+        val validation = AgentQuestionCodec.validateAnswer(question.request, answer)
+        if (!validation.accepted) {
+            updateConversation(conversationId, state.copy(messages = state.messages.map {
+                if (it.id == question.id) question.copy(error = validation.message.ifBlank { validation.code }) else it
+            }))
+            return
+        }
+        val owner = question.request
+        updateConversation(conversationId, state.copy(messages = state.messages.map {
+            if (it.id == question.id) question.copy(submitting = true, error = null) else it
+        }))
+        scope.launch(Dispatchers.Main.immediate) {
+            val receipt = withContext(Dispatchers.IO) {
+                AgentRuntimeClient(appContext, AndroidAgentLogger).submitQuestionAnswer(
+                    owner.conversationId, owner.runId, owner.questionId, owner.toolCallId, answer)
+            }
+            val current = conversationState(conversationId) ?: return@launch
+            val messages = current.messages.map { m -> if (m is AgentQuestionMessageUi &&
+                AgentQuestionProjection.sameOwner(m.request, owner)) AgentQuestionProjection.acknowledged(m, answer, receipt) else m }
+            updateConversation(conversationId, current.copy(messages = messages))
+            persistConversations()
+            // A receipt only acknowledges the request. Query every non-Answered local card,
+            // including Interrupted/Cancelled cards closed by a racing terminal event; an
+            // authoritative Answered snapshot may correct those, while Waiting never reopens them.
+            if (receipt.accepted) delay(1_000)
+            val checkMessages = conversationState(conversationId)?.messages.orEmpty()
+            if (AgentQuestionProjection.needsAuthoritativeQuery(checkMessages, owner)) {
+                val snapshot = withContext(Dispatchers.IO) {
+                    AgentRuntimeClient(appContext, AndroidAgentLogger).queryQuestion(owner.conversationId,
+                        owner.runId, owner.questionId, owner.toolCallId)
+                }
+                val latest = conversationState(conversationId) ?: return@launch
+                updateConversation(conversationId, latest.copy(
+                    messages = AgentQuestionProjection.reconcileMessages(latest.messages, owner, snapshot)
+                ))
+                persistConversations()
+            }
+        }
+    }
+
     private fun applyRunEventBody(
         runId: String,
         event: AgentEvent,
@@ -4416,6 +5036,16 @@ internal class AgentAppState(
         replaying: Boolean,
     ) {
         when (event) {
+            is AgentEvent.QuestionRequested -> {
+                val owner = conversationIdForRun(runId) ?: return
+                updateRunTrace(runId) { messages -> runMessageProjector.requestQuestion(owner, runId, event, messages, replaying) }
+                if (!replaying) persistConversations()
+            }
+            is AgentEvent.QuestionResolved -> {
+                val owner = conversationIdForRun(runId) ?: return
+                updateRunTrace(runId) { messages -> runMessageProjector.resolveQuestion(owner, runId, event, messages) }
+                if (!replaying) persistConversations()
+            }
             is AgentEvent.AssistantBlockStart -> {
                 updateRunTrace(runId) { messages ->
                     runMessageProjector.startAssistantBlock(runId, event, messages)
@@ -4423,7 +5053,12 @@ internal class AgentAppState(
             }
 
             is AgentEvent.AssistantBlockDelta -> {
-                updateMessages(runId, updateTimestamp = false) { messages ->
+                updateMessages(
+                    runId = runId,
+                    updateTimestamp = false,
+                    normalizeTerminalOrder = false,
+                    recomputeWaitingQuestion = false,
+                ) { messages ->
                     when (event.kind) {
                         AgentEvent.AssistantBlockKind.TEXT ->
                             runMessageProjector.appendTextDelta(
@@ -4504,13 +5139,26 @@ internal class AgentAppState(
                     // Judge the receipt against the window this run was launched with,
                     // not against a limit the user may have changed mid-run.
                     val window = runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)
+                    // A gateway cache_read above its own prompt or the window is a billing
+                    // artefact, not occupancy: drop it and keep the previous cloud receipt.
+                    // Same inputs as AgentSilentContextBudget, so ring and compaction agree.
+                    val inflatedCache = io.github.mangi.eta.agent.model.AgentBilledPromptPlausibility
+                        .isInflatedCacheRead(occupancy, event.usage.cachedTokens, window)
                     val measured = occupancy.takeIf {
                         io.github.mangi.eta.ui.model.CloudReceiptPlausibility.isOccupancy(
                             tokens = it, contextWindow = window)
                     }
-                    if (measured != null) {
+                    if (inflatedCache) {
+                        // Ring keeps the last trusted cloud value; same rule as AgentSilentContextBudget.
+                    } else if (measured != null) {
                         updateLivePromptTokens(runId, measured, projected = false,
-                            historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens)
+                            historyTokens = event.requestHistoryTokens, overheadTokens = event.requestOverheadTokens,
+                            round = event.round)
+                        // 诊断只配对本次真实回执；显示学习通路已删除，不再持久化三样本比率。
+                        if (!replaying) contextEstimateDiagnostics.receipt(runId, measured,
+                            event.usage.cachedTokens, round = event.round,
+                            historyTokens = event.requestHistoryTokens,
+                            overheadTokens = event.requestOverheadTokens)
                     } else if (localBasis != null && localBasis > 0) {
                         // Keep a usable, self-consistent basis instead of an implausible bill.
                         updateLivePromptTokens(runId, localBasis, projected = true)
@@ -4585,8 +5233,20 @@ internal class AgentAppState(
             }
 
             is AgentEvent.ModelRetryScheduled -> {
+                contextEstimateDiagnostics.clear(runId)
+                revokeContextActual(runId)
                 updateRunTrace(runId) { messages ->
                     runMessageProjector.scheduleModelRetry(runId, event, messages)
+                }
+            }
+
+            is AgentEvent.ErrorReconnectChanged -> {
+                if (event.status == "running") {
+                    contextEstimateDiagnostics.clear(runId)
+                    revokeContextActual(runId)
+                }
+                updateRunTrace(runId) { messages ->
+                    runMessageProjector.reconnectChanged(runId, event, messages)
                 }
             }
 
@@ -4594,7 +5254,8 @@ internal class AgentAppState(
                 updateRunTrace(runId) { messages ->
                     val finalizedThinking = runMessageProjector.finalizeThinking(runId, messages)
                     val finalizedText = runMessageProjector.finalizeText(runId, finalizedThinking)
-                    runMessageProjector.failRunningTools(event.reason, finalizedText)
+                    runMessageProjector.terminalFailure(runId, event.reason,
+                        runMessageProjector.failRunningTools(event.reason, finalizedText))
                 }
                 runMessageProjector.seal(runId)
             }
@@ -4635,6 +5296,8 @@ internal class AgentAppState(
             }
 
             is AgentEvent.ProviderRequestStarted -> {
+                if (runRequestRounds.put(runId, event.round) != null || event.round != 1) contextEstimateDiagnostics.clear(runId)
+                revokeContextActual(runId)
                 runMessageProjector.beginProviderRequest(runId, event.round)
                 if (contextBudgetBlockedRuns.remove(runId) != null) {
                     if (contextBudgetPrompt?.runId == runId) contextBudgetPrompt = null
@@ -4676,6 +5339,7 @@ internal class AgentAppState(
             }
             return
         }
+        contextEstimateDiagnostics.clear(runId) // The pre-send request no longer exists, including pruning-only rewrites.
         runUsageResumeRounds[runId] = event.round
         val current = conversationState(conversationId) ?: return
         if (event.pruningOnly) {
@@ -4695,7 +5359,10 @@ internal class AgentAppState(
                 history = event.history,
                 livePromptTokens = null,
                 livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null,
+                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                contextAwaitingReceipt = true, contextHasStarted = true,
+                cloudReceiptRequestId = null, cloudRouteSignature = null,
+                contextReceiptEvidence = null, receiptPredictionTokens = null,
                 messages = AgentContextCompactionUi.applyMarker(
                     messages = current.messages,
                     originalHistory = current.history,
@@ -4739,7 +5406,7 @@ internal class AgentAppState(
             currentInput = "",
             pendingImages = emptyList(),
             selectedModel = boundModel,
-            billedContextTokens = billedPromptTokens(state),
+            billedContextTokens = budgetReceiptTokens(state),
             requestOverheadTokens = if (conversationId == selectedConversationId) requestOverheadTokens else state.cloudRequestOverheadTokens ?: 0,
             billedOverheadTokens = state.cloudRequestOverheadTokens,
             billedHistoryTokens = state.cloudHistoryTokens,
@@ -4787,13 +5454,23 @@ internal class AgentAppState(
         val fallback = runtimeConfigForBoundModel(snapshot, assistant = null)
             ?: return
         val compressModelConfig = resolveCompressModelConfig(fallback)
+        var summaryCommitted = false
         val compressed = tryCompressHistory(originalHistory, compressModelConfig,
+            sourceModelConfig = fallback,
             conversationId = conversationId, contextWindow = fallback.contextWindow,
-            billedTokens = billedTokens, localTokens = localTokens)
+            billedTokens = billedTokens, localTokens = localTokens,
+            onSummaryCommitted = { summaryCommitted = true })
         if (compressed == originalHistory) return
         withContext(Dispatchers.Main) {
             val latest = conversationState(conversationId) ?: return@withContext
             if (latest.history != originalHistory) return@withContext
+            if (!summaryCommitted) {
+                updateConversation(conversationId, latest.copy(
+                    history = compressed, isCompressingContext = false, isWaitingForCompression = false,
+                ))
+                persistConversations()
+                return@withContext
+            }
             updateConversation(
                 conversationId,
                 latest.copy(
@@ -4802,7 +5479,10 @@ internal class AgentAppState(
                     history = compressed,
                     livePromptTokens = null,
                 livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null,
+                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                contextAwaitingReceipt = true, contextHasStarted = true,
+                cloudReceiptRequestId = null, cloudRouteSignature = null,
+                contextReceiptEvidence = null, receiptPredictionTokens = null,
                     messages = AgentContextCompactionUi.applyMarker(
                         messages = latest.messages,
                         originalHistory = originalHistory,
@@ -4817,6 +5497,10 @@ internal class AgentAppState(
             persistConversations()
             showCompressionCompletedToast(conversationId, originalHistory, compressed, compressorLabel(compressModelConfig))
         }
+    }
+
+    private fun markConversationCompleted(conversationId: String) {
+        conversationCompletionMarkers = conversationCompletionMarkers + conversationId
     }
 
     private fun applyRunResult(
@@ -4839,7 +5523,7 @@ internal class AgentAppState(
         when {
             stoppedDuringRetry != null -> replaceLatestAssistantWithNotice(
                 runId,
-                if (stoppedDuringRetry) SystemNoticeCode.RuntimeFailed else SystemNoticeCode.Stopped,
+                SystemNoticeCode.Stopped,
                 detail = if (stoppedDuringRetry) "已停止等待接口重试" else null,
             )
             result.ok && (result.content.isNotBlank() || VirtualCompletionNotice.confirmed(result)) -> completeLatestAssistantMessage(
@@ -4861,13 +5545,23 @@ internal class AgentAppState(
                 Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
             }
         }
+        // A stop/failure without this round's receipt still keeps the latest actual from this epoch.
+        // setConversationStreaming consumes first-turn NONE without fabricating a cloud receipt.
+        revokeContextActual(runId)
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
+        if (conversationId != null && ConversationCompletionMarker.shouldMark(
+                result, wasStopped = stoppedDuringRetry != null,
+                isSelected = conversationId == selectedConversationId,
+            )) {
+            markConversationCompleted(conversationId)
+        }
         conversationId?.let(pendingInRunCompactConversationIds::remove)
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
         persistConversations(
@@ -4893,14 +5587,16 @@ internal class AgentAppState(
     }
 
     private fun isStaleUsageAfterCompact(runId: String, round: Int): Boolean =
-        runUsageResumeRounds[runId]?.let { round < it } ?: false
+        (runUsageResumeRounds[runId]?.let { round < it } ?: false) ||
+            (runRequestRounds[runId]?.let { round < it } ?: false)
 
     private fun updateAssistantUsage(runId: String, round: Int, usage: TokenUsageUi) {
         if (usage.isEmpty) return
         if (isStaleUsageAfterCompact(runId, round)) return
         // 只补充 token 用量。不能触碰 isStreaming：Usage 事件紧跟在文本块结束之后，
         // 若把 isStreaming 改回 true，流式渲染会在流式/静态两种视图间反复切换，整段重渲染。
-        val overhead = runOverheadTokens[runId] ?: requestOverheadTokens
+        // A recovered/unknown run must not borrow the currently selected model's estimate.
+        val overhead = runOverheadTokens[runId]
         val conversationId = conversationIdForRun(runId)
         updateMessages(runId) { messages ->
             val textIndex = messages.indexOfLast { message ->
@@ -4933,29 +5629,60 @@ internal class AgentAppState(
         billedOverheadTokens = overhead
     }
 
+    /** Request/retry/terminal boundaries only revoke a receipt if its model or route became invalid.
+     * Same-route requests keep actual and evidence, including same-request usage corrections.
+     * A new request's evidence is separated by ContextReceiptEvidence.merge(requestId), not here. */
+    private fun revokeContextActual(runId: String) {
+        val id = conversationIdForRun(runId) ?: return
+        val state = conversationState(id) ?: return
+        if (usageRunByConversation[id] != runId || runId in invalidatedUsageRuns) return
+        val route = contextRouteSignature(state)
+        if (route != null && runUsageOwners[runId] == (state.providerId to state.modelId) &&
+            runUsageRoutes[runId] == route &&
+            (state.cloudRouteSignature == null || state.cloudRouteSignature == route)) return
+        invalidatedUsageRuns.add(runId)
+        updateConversation(id, state.copy(
+            livePromptTokens = null, livePromptIsProjected = false,
+            cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+            contextAwaitingReceipt = state.contextAwaitingReceipt || state.contextHasStarted,
+            cloudReceiptRequestId = null, cloudRouteSignature = null,
+            contextReceiptEvidence = null, receiptPredictionTokens = null,
+        ), updateTimestamp = false)
+    }
+
     private fun bindUsageRun(runId: String, conversationId: String) {
+        // Reattachment cannot revive an invalidated run or steal a newer run's receipt ownership.
+        if (runId in invalidatedUsageRuns) return
         runConversationIds[runId] = conversationId
-        runUsageResumeRounds.remove(runId)
-        invalidatedUsageRuns.remove(runId)
+        usageRunByConversation[conversationId] = runId
+        // A run's owner, route and compression resume floor are frozen at its first binding.
+        if (runId in runUsageOwners) return
         conversationState(conversationId)?.let {
             runUsageOwners[runId] = it.providerId to it.modelId
+            contextRouteSignature(it)?.let { signature -> runUsageRoutes[runId] = signature }
         }
     }
 
     private fun updateLivePromptTokens(runId: String, tokens: Int?, projected: Boolean = false,
-        historyTokens: Int? = null, overheadTokens: Int? = null) {
+        historyTokens: Int? = null, overheadTokens: Int? = null, round: Int? = null) {
         if (projected && stoppingRuns.containsKey(runId)) return
         if (tokens == null || tokens <= 0 || runId in invalidatedUsageRuns) return
         val conversationId = conversationIdForRun(runId) ?: return
         val state = conversationState(conversationId) ?: return
-        val owner = runUsageOwners.getOrPut(runId) { state.providerId to state.modelId }
-        if (owner != (state.providerId to state.modelId)) return
-        // Existing cloud measurement wins across tool rounds AND across user runs.
-        // A successful context replacement clears it and reopens the local boundary.
-        if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return
-        val next = state.copy(livePromptTokens = tokens, livePromptIsProjected = projected,
-            cloudHistoryTokens = historyTokens.takeUnless { projected },
-            cloudRequestOverheadTokens = overheadTokens.takeUnless { projected })
+        val owner = runUsageOwners[runId] ?: return
+        if (owner != (state.providerId to state.modelId) || usageRunByConversation[conversationId] != runId) return
+        val route = runUsageRoutes[runId] ?: return
+        if (route != contextRouteSignature(state)) return
+        // Runtime projections are budget evidence only, not learned display estimates.
+        if (projected) return
+        val requestId = round?.let { "$runId:$it" } ?: return
+        val evidence = io.github.mangi.eta.ui.model.ContextReceiptEvidence.merge(
+            state.contextReceiptEvidence, requestId, tokens, historyTokens, overheadTokens)
+        val next = state.copy(livePromptTokens = tokens, livePromptIsProjected = false,
+            contextBudgetReceiptTokens = tokens,
+            contextHasStarted = true, contextAwaitingReceipt = false, receiptPredictionTokens = null,
+            cloudReceiptRequestId = requestId, cloudRouteSignature = route, contextReceiptEvidence = evidence,
+            cloudHistoryTokens = evidence.history, cloudRequestOverheadTokens = evidence.overhead)
         if (next == state) return
         updateConversation(
             conversationId,
@@ -4998,10 +5725,11 @@ internal class AgentAppState(
     ) {
         updateMessages(runId) { messages ->
             val targetIndex = AgentRunMessageProjector.resultTargetIndex(runId, messages)
+            val resultTail = AgentRunMessageProjector.completedResultTail(runId, messages, targetIndex, fallbackContent)
             if (targetIndex < 0) {
                 messages + AgentMessageUi(
                     id = AgentRunMessageProjector.resultFallbackId(runId, messages),
-                    content = fallbackContent,
+                    content = resultTail,
                     isStreaming = false,
                     renderMarkdown = true,
                     generatedAtMillis = generatedAtMillis,
@@ -5017,7 +5745,7 @@ internal class AgentAppState(
                 messages.mapIndexed { index, message ->
                     if (index == targetIndex && message is AgentMessageUi) {
                         message.copy(
-                            content = mergeCompletedAssistantContent(message.content, fallbackContent, sameRoundBlocks),
+                            content = mergeCompletedAssistantContent(message.content, resultTail, sameRoundBlocks),
                             isStreaming = false,
                             renderMarkdown = true,
                             generatedAtMillis = message.generatedAtMillis ?: generatedAtMillis,
@@ -5036,9 +5764,16 @@ internal class AgentAppState(
         detail: String? = null,
     ) {
         updateMessages(runId) { messages ->
-            // Never replace partial or completed answer text with a terminal notice.
-            // The write boundary deduplicates notices and orders only this run's body.
-            messages + SystemNoticeMessageUi("interrupted-$runId", code, detail)
+            // Error details belong in a clickable marker, never in the answer body.
+            // Keep stop/control notices and the existing child-disposition flow intact.
+            when (code) {
+                SystemNoticeCode.RuntimeFailed -> runMessageProjector.terminalFailure(
+                    runId, detail.orEmpty(), messages,
+                )
+                SystemNoticeCode.Stopped -> runMessageProjector.runStopped(runId, messages) +
+                    SystemNoticeMessageUi("interrupted-$runId", code, detail)
+                else -> messages + SystemNoticeMessageUi("interrupted-$runId", code, detail)
+            }
         }
     }
 
@@ -5068,16 +5803,27 @@ internal class AgentAppState(
     private fun updateMessages(
         runId: String,
         updateTimestamp: Boolean = true,
+        normalizeTerminalOrder: Boolean = true,
+        recomputeWaitingQuestion: Boolean = true,
         transform: (List<AgentChatMessageUi>) -> List<AgentChatMessageUi>,
     ) {
         val conversationId = conversationIdForRun(runId) ?: return
         val state = conversationState(conversationId) ?: return
         StreamPerformanceDiagnostics.measure("ui.messages.apply", state.messages.size.toLong()) {
-            val nextMessages = runReplayBatch.normalize(runId, transform(state.messages))
+            val projected = transform(state.messages)
+            // Text/thinking deltas only replace or append the active run block. They
+            // cannot create a terminal notice; defer the cross-history terminal
+            // ordering pass to the next boundary/terminal event.
+            val nextMessages = if (normalizeTerminalOrder) {
+                runReplayBatch.normalize(runId, projected)
+            } else {
+                projected
+            }
             updateConversation(
                 conversationId = conversationId,
                 state = state.copy(messages = nextMessages),
                 updateTimestamp = updateTimestamp,
+                recomputeWaitingQuestion = recomputeWaitingQuestion,
             )
         }
     }
@@ -5125,22 +5871,35 @@ internal class AgentAppState(
         conversationId: String,
         state: AgentChatHomeUiState,
         updateTimestamp: Boolean = true,
+        recomputeWaitingQuestion: Boolean = true,
     ) {
         check(state.conversationContentLoaded) { "Conversation content must be loaded before editing" }
         val previous = conversationState(conversationId)
         val modelChanged = previous != null &&
-            (previous.providerId != state.providerId || previous.modelId != state.modelId)
+            (previous.providerId != state.providerId || previous.modelId != state.modelId ||
+                (state.cloudRouteSignature != null && state.cloudRouteSignature != contextRouteSignature(state)))
         if (modelChanged) runConversationIds.filterValues { it == conversationId }.keys.forEach { invalidatedUsageRuns.add(it) }
         val projected = when {
             modelChanged -> state.copy(livePromptTokens = null, livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
-            state.livePromptTokens == null || state.livePromptIsProjected -> state.copy(
+                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                // Selecting a model is not a completed first turn or a compression boundary.
+                contextAwaitingReceipt = state.contextAwaitingReceipt || state.contextHasStarted,
+                contextReceiptEvidence = null,
+                receiptPredictionTokens = null, cloudReceiptRequestId = null, cloudRouteSignature = null)
+            state.contextAwaitingReceipt || state.cloudHistoryTokens == null || state.cloudRequestOverheadTokens == null ->
+                state.copy(contextBudgetReceiptTokens = null)
+            (state.livePromptTokens == null || state.livePromptIsProjected) && state.contextBudgetReceiptTokens == null -> state.copy(
                 cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
             else -> state
         }
         val ownerContext = ownerContexts[conversationId]
         val view = ownerContext?.projection()
-        val current = if (view == null || ownerContext == null) projected else projected.copy(
+        val questionProjected = if (recomputeWaitingQuestion) {
+            projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+        } else {
+            projected
+        }
+        val current = if (view == null || ownerContext == null) questionProjected else questionProjected.copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
             childStatusRoster = ownerContext.roster(),
         )
@@ -5187,6 +5946,8 @@ internal class AgentAppState(
             conversationId,
             state.copy(
                 isStreaming = isStreaming,
+                // Normal, failed, stopped and direct-media completion all consume first-turn NONE.
+                contextHasStarted = state.contextHasStarted || !isStreaming,
                 // A parent terminal event does not determine independently owned child status.
                 // Keep the last reported child snapshot; the task-group registry owns liveness.
                 childContexts = state.childContexts,
@@ -5301,6 +6062,7 @@ internal class AgentAppState(
                     mode = ConversationModeUi.Chat,
                     isPinned = id in conversationPinned,
                     isActiveRun = state.isStreaming,
+                    hasCompletionMarker = id in conversationCompletionMarkers,
                     folderId = conversationFolderIds[id],
                 )
             }
@@ -5343,6 +6105,7 @@ internal class AgentAppState(
         val timestamps: Map<String, Long>,
         val folderIds: Map<String, String>,
         val pinnedIds: Set<String>,
+        val completionMarkerIds: Set<String>,
         val folders: List<ConversationFolderUi>,
         val retired: ConversationTokenUsageUi,
         val retiredConversations: Int,
@@ -5373,7 +6136,7 @@ internal class AgentAppState(
         return synchronized(persistenceLock) {
             val snapshot = ConversationSaveSnapshot(
                 selectedConversationId, conversationsById, conversationTitles, conversationUpdatedAt,
-                conversationFolderIds, conversationPinned, conversationFolders,
+                conversationFolderIds, conversationPinned, conversationCompletionMarkers, conversationFolders,
                 pendingRetiredUsage, pendingRetiredConversations, pendingRetiredMessages, pendingRetiredHeatmap,
             )
             pendingRetiredUsage = ConversationTokenUsageUi()
@@ -5392,7 +6155,8 @@ internal class AgentAppState(
                     context = appContext, selectedConversationId = snapshot.selected,
                     conversationsById = snapshot.conversations, titles = snapshot.titles,
                     updatedAt = snapshot.timestamps, folderIds = snapshot.folderIds,
-                    pinnedIds = snapshot.pinnedIds, folders = snapshot.folders,
+                    pinnedIds = snapshot.pinnedIds, completionMarkerIds = snapshot.completionMarkerIds,
+                    folders = snapshot.folders,
                 )
                 SettingsDataStore.addRetiredUsage(
                     inputTokens = snapshot.retired.inputTokens,
@@ -5466,9 +6230,11 @@ internal class AgentAppState(
             updateCurrentConversation(homeState.copy(assistantId = assistantId))
             if (persist) persistConversations()
         }
+        // Bind the local preview immediately to the selected conversation assistant. Remote
+        // preference sync may suspend/fail; it must not keep the previous assistant's count.
+        refreshRequestOverhead()
         if (AssistantRepository.activeId.value == assistantId) {
             refreshMemory()
-            refreshRequestOverhead()
             return
         }
         scope.launch(Dispatchers.IO) {
@@ -5683,9 +6449,15 @@ internal class AgentAppState(
     }
 
     private fun isCompressionBlockingSend(): Boolean {
-        if (compressionJob?.isActive == true || homeState.isCompressingContext) return true
-        val pending = pendingManualCompress ?: return false
-        return pending.conversationId == null || pending.conversationId == selectedConversationId
+        val pending = pendingManualCompress
+        return conversationCompressionBlocksSend(
+            conversationId = selectedConversationId,
+            isCompressingContext = homeState.isCompressingContext,
+            jobActive = compressionJob?.isActive == true,
+            jobConversationId = compressionJobConversationId,
+            hasPending = pending != null,
+            pendingConversationId = pending?.conversationId,
+        )
     }
 
     private fun rejectSendIfCompressing(): Boolean {
@@ -5761,12 +6533,15 @@ internal class AgentAppState(
                     }
                     return@launch
                 }
+                var summaryCommitted = false
                 val compressed = tryCompressHistory(
                     history = originalHistory,
                     compressModelConfig = modelConfig,
+                    sourceModelConfig = fallback,
                     keepRecent = request.keepRecent,
                     conversationId = request.conversationId,
                     contextWindow = fallback?.contextWindow,
+                    onSummaryCommitted = { summaryCommitted = true },
                 )
                 withContext(Dispatchers.Main) {
                     if (compressed == originalHistory) {
@@ -5782,6 +6557,7 @@ internal class AgentAppState(
                         originalHistory,
                         compressed,
                         compressorLabel(modelConfig),
+                        summaryCommitted,
                     )
                 }
             } finally {
@@ -5870,7 +6646,18 @@ internal class AgentAppState(
         originalHistory: List<AgentModelClient.ConversationMessage>,
         compressedHistory: List<AgentModelClient.ConversationMessage>,
         compressorLabel: String = "",
+        summaryCommitted: Boolean = false,
     ) {
+        if (compressedHistory == originalHistory) return
+        if (!summaryCommitted) {
+            val current = if (conversationId == null) homeState.takeIf { selectedConversationId == null }
+                else conversationState(conversationId)
+            if (current == null || current.isStreaming || current.isPaused || current.history != originalHistory) return
+            val pruned = current.copy(history = compressedHistory)
+            if (conversationId == null) homeState = pruned else updateConversation(conversationId, pruned)
+            persistConversations()
+            return
+        }
         if (conversationId != null) {
             val current = conversationState(conversationId) ?: return
             if (current.isStreaming || current.isPaused) return
@@ -5881,7 +6668,10 @@ internal class AgentAppState(
                     history = compressedHistory,
                     livePromptTokens = null,
                 livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null,
+                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                contextAwaitingReceipt = true, contextHasStarted = true,
+                cloudReceiptRequestId = null, cloudRouteSignature = null,
+                contextReceiptEvidence = null, receiptPredictionTokens = null,
                     messages = AgentContextCompactionUi.applyMarker(
                         messages = current.messages,
                         originalHistory = originalHistory,
@@ -5900,7 +6690,10 @@ internal class AgentAppState(
                 history = compressedHistory,
                 livePromptTokens = null,
                 livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null,
+                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                contextAwaitingReceipt = true, contextHasStarted = true,
+                cloudReceiptRequestId = null, cloudRouteSignature = null,
+                contextReceiptEvidence = null, receiptPredictionTokens = null,
                 messages = AgentContextCompactionUi.applyMarker(
                     messages = homeState.messages,
                     originalHistory = originalHistory,

@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.SystemNoticeCode
+import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
@@ -44,6 +46,10 @@ internal fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEnt
         if (message is UserMessageUi && message.isResumeAfterCompress()) {
             return@forEach
         }
+        // Keep retry records for continuation logic, but never render a retry bubble.
+        if (message is SystemNoticeMessageUi && message.code == SystemNoticeCode.ModelRetry) {
+            return@forEach
+        }
         if (message.isWorkProcessMessage()) {
             workMessages += message
             if (workMessages.size >= WORK_PROCESS_UI_BATCH_LIMIT) flushWorkProcess()
@@ -56,6 +62,14 @@ internal fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEnt
 }
 
 /** Use projected list indices, not raw message indices (work steps are grouped). */
+internal fun initialTimelineItemIndex(
+    timelineEntries: List<AgentTimelineEntry>,
+    isCompressingContext: Boolean,
+    isWaitingForCompression: Boolean,
+    hasCompactingChildContext: Boolean,
+): Int = timelineEntries.size +
+    if (isCompressingContext || isWaitingForCompression || hasCompactingChildContext) 1 else 0
+
 internal fun List<AgentTimelineEntry>.userMessageIndices(): List<Int> = mapIndexedNotNull { index, entry ->
     val user = (entry as? AgentTimelineEntry.Message)?.message as? UserMessageUi
     index.takeIf { user != null && !user.isResumeAfterCompress() }

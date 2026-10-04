@@ -26,7 +26,7 @@ function deferred() {
 }
 function element() {
     return {
-        style: {}, disabled: false, hidden: false, value: '', textContent: '', src: '', children: [],
+        style: {}, disabled: false, hidden: false, checked: false, value: '', textContent: '', src: '', children: [],
         removeAttribute(name) { if (name === 'src') this.src = ''; },
         replaceChildren() { this.children = []; this.value = ''; },
         appendChild(child) { this.children.push(child); },
@@ -55,9 +55,9 @@ function frame(display = A, override = {}, chunks = [PNG]) {
     }) };
     return res;
 }
-function setup({ hash = HASH, origin = 'http://127.0.0.1:3070', fetch: handler = () => list(), confirm = () => true, now = Date.now } = {}) {
+function setup({ hash = HASH, origin = 'http://127.0.0.1:3070', fetch: handler = () => list(), confirm = () => true, now = Date.now, storage = null, historyThrows = false } = {}) {
     const elements = Object.fromEntries(['status-display', 'snapshot-img', 'empty-tip', 'btn-toggle',
-        'preview-mode', 'eta-display', 'eta-display-controls'].map(id => [id, element()]));
+        'preview-mode', 'eta-display', 'eta-display-controls', 'pairing-controls', 'remember-pairing', 'remember-pairing-text', 'btn-forget'].map(id => [id, element()]));
     const footer = element();
     const events = {}, requests = [], images = [], created = [], revoked = [], timers = new Map();
     const location = { hash, pathname: '/', search: '', origin };
@@ -65,7 +65,7 @@ function setup({ hash = HASH, origin = 'http://127.0.0.1:3070', fetch: handler =
     let timerID = 0;
     const sandbox = {
         location,
-        history: { replaceState(...args) { historyCalls.push(args); location.hash = ''; } },
+        history: { replaceState(...args) { if (historyThrows) throw new Error('history denied'); historyCalls.push(args); location.hash = ''; } },
         document: {
             getElementById: id => elements[id],
             querySelector: selector => selector === '.footer-note' ? footer : element(),
@@ -88,7 +88,7 @@ function setup({ hash = HASH, origin = 'http://127.0.0.1:3070', fetch: handler =
         setTimeout(callback, ms) { const id = ++timerID; timers.set(id, { callback, ms }); return id; },
         clearTimeout(id) { timers.delete(id); }
     };
-    Object.defineProperty(sandbox, 'localStorage', { get() { throw new Error('credential persistence'); } });
+    Object.defineProperty(sandbox, 'localStorage', { get() { if (storage) return storage; throw new Error('storage unavailable'); } });
     Object.defineProperty(sandbox, 'sessionStorage', { get() { throw new Error('credential persistence'); } });
     const context = vm.createContext(sandbox);
     vm.runInContext(script, context, { filename: 'index.html' });
@@ -522,4 +522,232 @@ test('explicitly blocked commit requires fresh prepare, malformed commit stays l
     const malformed=setup({hash:CONTROL_HASH,fetch:(u,o)=>u.endsWith('/close/commit')?response(200,{}, {'Content-Type':'application/json'}):closeFetch(u,o)});
     await settle();await malformed.invoke('toggleScreen');await malformed.invoke('toggleScreen');
     assert.equal(closeRequests(malformed).length,2);assert.match(malformed.message(),/未确认/);
+});
+
+const PAIR_KEY = 'eta.preview.pairing.v1';
+function pairing(controlToken = CONTROL, port = 45678, token = TOKEN) {
+    return { v: 1, port, token, controlToken };
+}
+function memoryStorage(initial = null) {
+    const values = new Map(initial === null ? [] : [[PAIR_KEY, typeof initial === 'string' ? initial : JSON.stringify(initial)]]);
+    return { values, getItem: k => values.get(k) ?? null,
+        setItem: (k, v) => values.set(k, String(v)), removeItem: k => values.delete(k) };
+}
+
+test('explicit remember permits later bare URL and browser reload without weakening close authorization', async () => {
+    const storage = memoryStorage();
+    const first = setup({ hash: CONTROL_HASH, storage, fetch: closeFetch });
+    await settle();
+    assert.equal(storage.getItem(PAIR_KEY), null, 'link alone must not opt in to browser persistence');
+    first.elements['remember-pairing'].checked = true;
+    first.invoke('rememberPairingChanged');
+    assert.deepEqual(JSON.parse(storage.getItem(PAIR_KEY)), pairing());
+    const reopened = setup({ hash: '', storage, fetch: closeFetch });
+    await settle();
+    assert.equal(reopened.elements['preview-mode'].value, 'eta');
+    assert.equal(reopened.elements['remember-pairing'].checked, true);
+    assert.equal(reopened.historyCalls.length, 0);
+    assert.equal(closeRequests(reopened).length, 0, 'reopening must not close automatically');
+    assertNoLegacy(reopened);
+    await reopened.invoke('refreshSnapshot');
+    assert.equal(reopened.requests.length, 4);
+    await reopened.invoke('toggleScreen');
+    assert.equal(closeRequests(reopened).length, 2);
+    assert.equal(reopened.confirmations.length, 1);
+    assert.equal(reopened.timers.size, 0);
+    for (const r of reopened.requests) {
+        assert.equal(r.options.headers.Authorization, 'Bearer ' + TOKEN);
+        assert.ok(!r.url.includes(TOKEN) && !r.url.includes(CONTROL));
+    }
+});
+
+test('unchecking removes saved authority but keeps the current in-memory connection; forget disconnects without closing', async () => {
+    const storage = memoryStorage(pairing());
+    const page = setup({ hash: '', storage, fetch: closeFetch });
+    await settle();
+    page.elements['remember-pairing'].checked = false;
+    page.invoke('rememberPairingChanged');
+    assert.equal(storage.getItem(PAIR_KEY), null);
+    await page.invoke('refreshSnapshot');
+    assert.equal(page.requests.length, 4);
+    page.invoke('forgetPairing');
+    await page.invoke('refreshSnapshot');
+    await page.invoke('toggleScreen');
+    assert.equal(page.requests.length, 4);
+    assert.equal(page.elements['snapshot-img'].src, '');
+    assert.equal(page.elements['pairing-controls'].hidden, true);
+    assert.match(page.message(), /已忘记/);
+    assert.equal(closeRequests(page).length, 0);
+    assertNoLegacy(page);
+});
+
+test('fresh fragment replaces in-memory authority and never inherits saved control permission', async () => {
+    const storage = memoryStorage(pairing());
+    const fresh = 'fresh-read-only';
+    const page = setup({ hash: '#eta-preview=45679.' + fresh, storage, fetch: previewFetch });
+    await settle();
+    assert.equal(page.elements['remember-pairing'].checked, false);
+    assert.equal(page.elements['btn-toggle'].disabled, true);
+    await page.invoke('toggleScreen');
+    assert.equal(closeRequests(page).length, 0);
+    assert.ok(page.requests.every(r => r.url.startsWith('http://127.0.0.1:45679/eta-preview/') &&
+        r.options.headers.Authorization === 'Bearer ' + fresh));
+    assert.deepEqual(JSON.parse(storage.getItem(PAIR_KEY)), pairing(), 'new link requires a fresh explicit remember choice');
+});
+
+test('invalid new fragments never fall back to valid saved credentials', async () => {
+    for (const hash of ['#eta-preview=0.bad', '#eta-preview=65536.bad', '#eta-preview=45678.bad%0d%0aHeader',
+        CONTROL_HASH + '&other=x']) {
+        const page = setup({ hash, storage: memoryStorage(pairing()), fetch: closeFetch });
+        await settle();
+        assert.equal(page.requests.length, 0);
+        assert.equal(page.elements['preview-mode'].value, 'eta');
+        assert.match(page.message(), /预览链接无效/);
+    }
+});
+
+test('damaged saved credentials are discarded without contacting either controller', async () => {
+    for (const bad of ['bad-json', { ...pairing(), v: 2 }, { ...pairing(), port: '45678' },
+        { ...pairing(), token: '' }, { ...pairing(), token: 'x'.repeat(257) },
+        { ...pairing(), controlToken: 'broken' }, { ...pairing(), port: -1 }, 'x'.repeat(1025)]) {
+        const storage = memoryStorage(bad);
+        const page = setup({ hash: '', storage });
+        await settle();
+        assert.equal(storage.getItem(PAIR_KEY), null);
+        assert.equal(page.requests.length, 0);
+        assert.equal(page.elements['preview-mode'].value, 'eta');
+    }
+});
+
+test('stored pairing is not read on a remote or lookalike origin', async () => {
+    for (const origin of ['http://remote:3070', 'http://127.0.0.1.evil:3070', 'https://127.0.0.1:3070']) {
+        let reads = 0;
+        const storage = { getItem() { reads++; return JSON.stringify(pairing()); } };
+        const page = setup({ hash: '', origin, storage, fetch: () => response(200, { status: 'stopped' }) });
+        await settle();
+        assert.equal(reads, 0);
+        assert.equal(page.requests.length, 1);
+        assert.equal(page.requests[0].url, '/api/status');
+        await page.mode('eta');
+        assert.equal(page.requests.length, 1);
+    }
+});
+
+test('browser storage denied does not break temporary pairing or falsely report persistence', async () => {
+    const page = setup({ hash: CONTROL_HASH, fetch: closeFetch });
+    await settle();
+    page.elements['remember-pairing'].checked = true;
+    page.invoke('rememberPairingChanged');
+    assert.equal(page.elements['remember-pairing'].checked, false);
+    assert.match(page.message(), /无法保存或清除/);
+    await page.invoke('refreshSnapshot');
+    assert.equal(page.requests.length, 4);
+    page.invoke('forgetPairing');
+    assert.match(page.message(), /未能清除/);
+    await page.invoke('refreshSnapshot');
+    assert.equal(page.requests.length, 4);
+});
+
+test('401 from list, prepare or commit removes expired stored authority and never retries close', async () => {
+    for (const route of ['/displays', '/close/prepare', '/close/commit']) {
+        const storage = memoryStorage(pairing());
+        const page = setup({ hash: '', storage, fetch: (url, options) =>
+            url.endsWith(route) ? response(401) : closeFetch(url, options) });
+        await settle();
+        if (route !== '/displays') await page.invoke('toggleScreen');
+        assert.equal(storage.getItem(PAIR_KEY), null);
+        assert.match(page.message(), /401/);
+        const count = page.requests.length;
+        await page.invoke('toggleScreen');
+        await page.invoke('refreshSnapshot');
+        assert.equal(page.requests.length, count);
+    }
+});
+
+test('offline service preserves remembered pairing and retries only on manual refresh', async () => {
+    const storage = memoryStorage(pairing());
+    const page = setup({ hash: '', storage, fetch: () => Promise.reject(new Error('offline')) });
+    await settle();
+    assert.match(page.message(), /离线.*原配对会保留/);
+    assert.notEqual(storage.getItem(PAIR_KEY), null);
+    assert.equal(page.requests.length, 1);
+    assert.equal(page.timers.size, 0);
+    await page.invoke('refreshSnapshot');
+    assert.equal(page.requests.length, 2);
+    assertNoLegacy(page);
+});
+
+test('an old tab receiving 401 cannot erase a newer pairing stored by another tab', async () => {
+    const pending = deferred();
+    const storage = memoryStorage(pairing());
+    const page = setup({ hash: '', storage, fetch: () => pending.promise });
+    const newer = pairing(null, 45679, 'another-preview-ticket');
+    storage.setItem(PAIR_KEY, JSON.stringify(newer));
+    pending.resolve(response(401));
+    await settle();
+    assert.deepEqual(JSON.parse(storage.getItem(PAIR_KEY)), newer);
+    await page.invoke('refreshSnapshot');
+    assert.equal(page.requests.length, 1);
+});
+
+test('remembered read-only grant stays read-only and an empty list never creates a screen', async () => {
+    const storage = memoryStorage(pairing(null));
+    const page = setup({ hash: '', storage, fetch: () => list([]) });
+    await settle();
+    assert.match(page.message(), /没有可预览的副屏/);
+    assert.equal(page.elements['btn-toggle'].disabled, true);
+    assert.equal(page.elements['pairing-controls'].hidden, false);
+    await page.invoke('toggleScreen');
+    assert.equal(page.requests.length, 1);
+    assertNoLegacy(page);
+});
+
+test('forget cancels pending frame and a late image cannot restore a revoked page connection', async () => {
+    const pending = deferred();
+    const page = setup({ hash: '', storage: memoryStorage(pairing()), fetch: url =>
+        url.endsWith('/frame') ? pending.promise : list() });
+    await settle();
+    page.invoke('forgetPairing');
+    pending.resolve(frame());
+    await settle();
+    assert.equal(page.elements['snapshot-img'].src, '');
+    assert.equal(page.created.length, 0);
+    assert.match(page.message(), /已忘记/);
+});
+
+test('same valid fragment recognizes an existing explicit remember choice without gaining permissions', async () => {
+    const page = setup({ hash: CONTROL_HASH, storage: memoryStorage(pairing()), fetch: previewFetch });
+    await settle();
+    assert.equal(page.elements['remember-pairing'].checked, true);
+    assert.match(page.elements['remember-pairing-text'].textContent, /含关闭授权/);
+});
+
+test('history scrub failure fails closed without a request or script crash', async () => {
+    const page = setup({ historyThrows: true, storage: memoryStorage(pairing()), fetch: previewFetch });
+    await settle();
+    assert.equal(page.requests.length, 0);
+    assert.match(page.message(), /预览链接无效/);
+});
+
+test('silent browser storage failure is not reported as remembered or forgotten', async () => {
+    const silent = { getItem: () => null, setItem() {}, removeItem() {} };
+    const page = setup({ storage: silent, fetch: previewFetch });
+    await settle();
+    page.elements['remember-pairing'].checked = true;
+    page.invoke('rememberPairingChanged');
+    assert.equal(page.elements['remember-pairing'].checked, false);
+    assert.match(page.message(), /无法保存/);
+    const undeletable = { getItem: () => JSON.stringify(pairing()), removeItem() {} };
+    const other = setup({ hash: '', storage: undeletable, fetch: previewFetch });
+    await settle(); other.invoke('forgetPairing');
+    assert.match(other.message(), /未能清除/);
+});
+
+test('localhost origin can restore its own pairing but still only targets the loopback preview service', async () => {
+    const page = setup({ origin: 'http://localhost:3070', hash: '', storage: memoryStorage(pairing(null)), fetch: previewFetch });
+    await settle();
+    assert.equal(page.elements['preview-mode'].value, 'eta');
+    assert.equal(page.elements['remember-pairing'].checked, true);
+    assert.match(page.elements['remember-pairing-text'].textContent, /只读/);
+    assertNoLegacy(page);
 });

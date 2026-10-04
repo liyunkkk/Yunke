@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.app
 
 import android.content.Context
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.db.ConversationEntity
@@ -68,6 +70,20 @@ class AgentConversationStoreTest {
         assertEquals(126364, (restored.messages.single() as AgentMessageUi).usage?.inputTokens)
     }
 
+    @Test fun compactedUnknownSurvivesReopenWithoutAnyVisibleMarker() {
+        val compacted = AgentChatHomeUiState(messages = emptyList(),
+            history = listOf(AgentModelClient.ConversationMessage("system", "summary")),
+            input = "", isStreaming = false, thinkingEnabled = false,
+            providerId = "p", modelId = "m", contextHasStarted = true, contextAwaitingReceipt = true)
+        runBlocking { AgentConversationStore.save(context, "c", mapOf("c" to compacted), mapOf("c" to "task"), mapOf("c" to 1L)) }
+        EtaDatabase.closeForTests()
+        val restored = requireNotNull(AgentConversationStore.load(context).conversationsById["c"])
+        assertTrue(restored.contextHasStarted)
+        assertTrue(restored.contextAwaitingReceipt)
+        assertTrue(restored.messages.isEmpty())
+        assertNull(restored.livePromptTokens)
+    }
+
     @Test fun cloudInputSurvivesDatabaseReopenAndInvalidationStaysEmpty() {
         val original = AgentChatHomeUiState(messages = emptyList(),
             history = listOf(AgentModelClient.ConversationMessage("user", "task")),
@@ -126,6 +142,7 @@ class AgentConversationStoreTest {
                 io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
                     role = "user",
                     content = "看一下当前屏幕",
+                    turnId = "1",
                 ),
                 io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
                     role = "assistant",
@@ -173,8 +190,11 @@ class AgentConversationStoreTest {
         assertEquals(ReasoningEffort.HIGH, restored.reasoningEffort)
         assertEquals("provider-1", restored.providerId)
         assertEquals("model-1", restored.modelId)
-        assertEquals(conversation.messages, restored.messages)
-        assertEquals(conversation.history, restored.history)
+        assertEquals(conversation.messages.drop(1), restored.messages.drop(1))
+        assertEquals((conversation.messages.first() as UserMessageUi).content,
+            (restored.messages.first() as UserMessageUi).content)
+        assertTrue(restored.messages.first().id.startsWith("user-"))
+        assertEquals(io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(conversation.history), restored.history)
     }
 
     @Test
@@ -239,10 +259,41 @@ class AgentConversationStoreTest {
 
         val snapshot = AgentConversationStore.load(context)
         assertEquals("", snapshot.titles.getValue("conv-notice"))
-        assertEquals(
-            notice,
-            snapshot.conversationsById.getValue("conv-notice").messages.single(),
-        )
+        val loaded = snapshot.conversationsById.getValue("conv-notice").messages.single()
+            as io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+        assertEquals(notice.id, loaded.id)
+        assertEquals(notice.detail, loaded.reasonDetail)
+        assertEquals(io.github.mangi.eta.ui.model.ErrorReconnectStatus.Failed, loaded.status)
+        assertFalse(loaded.isReconnect)
+    }
+
+    @Test fun reconnectMarkersSurviveDatabaseReopenWithStableIdsAndFullDiagnostics() {
+        val detail = "HTTP 502\n" + "long diagnostic\n".repeat(2_000)
+        val statuses = io.github.mangi.eta.ui.model.ErrorReconnectStatus.entries
+        val markers = statuses.mapIndexed { index, status ->
+            io.github.mangi.eta.ui.model.ErrorReconnectMessageUi(
+                id = io.github.mangi.eta.ui.model.errorReconnectMessageId("run", "disconnect-$index"),
+                runId = "run", reconnectId = "disconnect-$index", round = 2, status = status,
+                elapsedMs = 90_061_123L + index, reasonCode = "MODEL_TIMEOUT", reasonDetail = detail,
+            )
+        }
+        val partial = AgentMessageUi("assistant-run-2-0", "partial answer", isStreaming = true)
+        val tool = ToolActivityMessageUi("run-tool-1-call", "read_file", ToolActivityStatusUi.Success, "{}")
+        val state = AgentChatHomeUiState(messages = listOf(partial, tool) + markers,
+            input = "", isStreaming = true, thinkingEnabled = false)
+        runBlocking { AgentConversationStore.save(context, "c", mapOf("c" to state), mapOf("c" to "task"), mapOf("c" to 1L)) }
+        EtaDatabase.closeForTests()
+        val restored = AgentConversationStore.load(context).conversationsById.getValue("c")
+        assertEquals(state.messages.map { it.id }, restored.messages.map { it.id })
+        assertEquals("partial answer", (restored.messages.first() as AgentMessageUi).content)
+        assertEquals(tool, restored.messages[1])
+        val loadedMarkers = restored.messages.filterIsInstance<io.github.mangi.eta.ui.model.ErrorReconnectMessageUi>()
+        markers.zip(loadedMarkers).forEach { (before, after) ->
+            assertEquals(before.copy(status = if (before.status == io.github.mangi.eta.ui.model.ErrorReconnectStatus.Running)
+                io.github.mangi.eta.ui.model.ErrorReconnectStatus.Stopped else before.status), after)
+        }
+        assertFalse(restored.isStreaming)
+        assertTrue(restored.history.none { it.content.contains("MODEL_TIMEOUT") || it.content.contains("long diagnostic") })
     }
 
     @Test
@@ -426,7 +477,89 @@ class AgentConversationStoreTest {
     }
 
     @Test
-    fun loadKeepsDatabaseEmptyUntilFirstMessageIsSent() {
+    fun loadingRepairsLegacyMessageIdsAndPersistsThemAcrossReopen() {
+        val history = listOf(
+            AgentModelClient.ConversationMessage("user", "first task", turnId = "turn-first"),
+            AgentModelClient.ConversationMessage("assistant", "first answer", turnId = "turn-first"),
+            AgentModelClient.ConversationMessage("user", "second task", turnId = "turn-second"),
+        )
+        val state = AgentChatHomeUiState(
+            messages = listOf(
+                UserMessageUi("user-run-old", "first task"),
+                AgentMessageUi("assistant-run-old", "first answer"),
+                UserMessageUi("user-run-old-supplement-7", "用户补充指令：检查结果"),
+                UserMessageUi("user-run-second", "second task"),
+            ),
+            history = history,
+            input = "",
+            isStreaming = false,
+            thinkingEnabled = false,
+        )
+        runBlocking {
+            AgentConversationStore.save(
+                context = context,
+                selectedConversationId = "conv-identity",
+                conversationsById = mapOf("conv-identity" to state),
+                titles = mapOf("conv-identity" to "identity"),
+                updatedAt = mapOf("conv-identity" to 1L),
+            )
+        }
+
+        val firstLoad = AgentConversationStore.load(context).conversationsById.getValue("conv-identity")
+        assertEquals(
+            listOf(
+                "user-turn-first",
+                "assistant-run-old",
+                "user-turn-first-supplement-7",
+                "user-turn-second",
+            ),
+            firstLoad.messages.map { it.id },
+        )
+        assertEquals(listOf("turn-first", "turn-first", "turn-second"), firstLoad.history.map { it.turnId })
+
+        val dao = EtaDatabase.get(context).conversationDao()
+        assertEquals(
+            firstLoad.messages.map { it.id },
+            runBlocking { dao.messagesForConversation("conv-identity").map { it.id } },
+        )
+        EtaDatabase.closeForTests()
+
+        val secondLoad = AgentConversationStore.load(context).conversationsById.getValue("conv-identity")
+        assertEquals(firstLoad.messages.map { it.id }, secondLoad.messages.map { it.id })
+        assertEquals(firstLoad.history.map { it.turnId }, secondLoad.history.map { it.turnId })
+    }
+
+    @Test
+    fun loadingDoesNotRepairAmbiguousRepeatedUserText() {
+        val state = AgentChatHomeUiState(
+            messages = listOf(
+                UserMessageUi("user-old-one", "repeat"),
+                UserMessageUi("user-old-two", "repeat"),
+            ),
+            history = listOf(
+                AgentModelClient.ConversationMessage("user", "repeat", turnId = "turn-one"),
+                AgentModelClient.ConversationMessage("user", "repeat", turnId = "turn-two"),
+            ),
+            input = "",
+            isStreaming = false,
+            thinkingEnabled = false,
+        )
+        runBlocking {
+            AgentConversationStore.save(
+                context = context,
+                selectedConversationId = "conv-ambiguous",
+                conversationsById = mapOf("conv-ambiguous" to state),
+                titles = mapOf("conv-ambiguous" to "ambiguous"),
+                updatedAt = mapOf("conv-ambiguous" to 1L),
+            )
+        }
+
+        val loaded = AgentConversationStore.load(context).conversationsById.getValue("conv-ambiguous")
+        assertEquals(listOf("user-old-one", "user-old-two"), loaded.messages.map { it.id })
+    }
+
+    @Test
+    fun loadingAnEmptyDatabaseDoesNotCreateAPlaceholderRecord() {
         val snapshot = AgentConversationStore.load(context)
 
         assertTrue(snapshot.conversationsById.isEmpty())
@@ -434,24 +567,98 @@ class AgentConversationStoreTest {
     }
 
     @Test
-    fun creatingConversationKeepsEmptyStateOutOfHistoryAndDatabase() {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-        try {
-            val state = AgentAppState(context, scope)
+    fun explicitNewConversationsExistBeforeSendingAndSurviveSwitching() = withNavigationState { state ->
+        assertNull(state.conversationPaneState.selectedConversationId)
+        assertTrue(state.conversationPaneState.conversations.isEmpty())
 
-            state.createConversation()
-            state.createConversation()
+        state.createConversation()
+        val first = requireNotNull(state.conversationPaneState.selectedConversationId)
+        assertEquals(first, state.conversationPaneState.conversations.single().id)
+        assertTrue(state.homeState.messages.isEmpty())
+        state.currentDraftField().setTextAndPlaceCursorAtEnd("unsent first draft")
 
-            assertEquals(null, state.conversationPaneState.selectedConversationId)
-            assertTrue(state.conversationPaneState.conversations.isEmpty())
-            assertTrue(
-                runBlocking {
-                    EtaDatabase.get(context).conversationDao().conversations().isEmpty()
-                }
-            )
-        } finally {
-            scope.cancel()
+        state.createConversation()
+        val second = requireNotNull(state.conversationPaneState.selectedConversationId)
+        assertTrue(first != second)
+        assertEquals(setOf(first, second), state.conversationPaneState.conversations.map { it.id }.toSet())
+        assertEquals("", state.currentDraftField().text.toString())
+        assertTrue(state.homeState.messages.isEmpty())
+
+        state.selectConversation(first)
+        assertEquals(first, state.conversationPaneState.selectedConversationId)
+        assertEquals("unsent first draft", state.currentDraftField().text.toString())
+        assertTrue(state.homeState.messages.isEmpty())
+        state.selectConversation(second)
+        assertEquals(second, state.conversationPaneState.selectedConversationId)
+        assertEquals("", state.currentDraftField().text.toString())
+        assertEquals(2, state.conversationPaneState.conversations.size)
+    }
+
+    @Test
+    fun explicitNewConversationBelongsToTheSelectedFolderImmediately() = withNavigationState { state ->
+        state.createFolder("Project")
+        val folder = state.conversationPaneState.folders.single().id
+        state.createConversation()
+        val id = requireNotNull(state.conversationPaneState.selectedConversationId)
+        assertEquals(folder, state.conversationPaneState.conversations.single().folderId)
+        state.selectFolder(null)
+        assertTrue(state.conversationPaneState.conversations.isEmpty())
+        state.selectFolder(folder)
+        assertEquals(id, state.conversationPaneState.conversations.single().id)
+    }
+
+    @Test
+    fun deletingLastExplicitConversationReturnsToAnUnstoredPlaceholder() = withNavigationState { state ->
+        state.createConversation()
+        val id = requireNotNull(state.conversationPaneState.selectedConversationId)
+        state.deleteConversation(id)
+        assertNull(state.conversationPaneState.selectedConversationId)
+        assertTrue(state.conversationPaneState.conversations.isEmpty())
+        assertTrue(state.homeState.messages.isEmpty())
+    }
+
+    @Test
+    fun explicitNewConversationDoesNotStealTheStartupDraft() = withNavigationState { state ->
+        state.currentDraftField().setTextAndPlaceCursorAtEnd("startup draft")
+        state.createConversation()
+        val id = requireNotNull(state.conversationPaneState.selectedConversationId)
+        assertEquals("", state.currentDraftField().text.toString())
+        state.deleteConversation(id)
+        assertEquals("startup draft", state.currentDraftField().text.toString())
+    }
+
+    @Test
+    fun emptyUntitledConversationsSurviveSavingAnotherSelectionAndReopeningDatabase() {
+        val empty = AgentChatHomeUiState(
+            messages = emptyList(), history = emptyList(), input = "",
+            isStreaming = false, thinkingEnabled = false,
+        )
+        val conversations = mapOf("empty-first" to empty, "empty-second" to empty.copy())
+        runBlocking {
+            AgentConversationStore.save(context, "empty-second", conversations, emptyMap(),
+                mapOf("empty-first" to 1L, "empty-second" to 2L))
+            AgentConversationStore.save(context, "empty-first", conversations, emptyMap(),
+                mapOf("empty-first" to 1L, "empty-second" to 2L))
         }
+        EtaDatabase.closeForTests()
+        val restored = AgentConversationStore.load(context)
+        assertEquals(conversations.keys, restored.conversationsById.keys)
+        assertEquals("empty-first", restored.selectedConversationId)
+        restored.conversationsById.values.forEach {
+            assertTrue(it.messages.isEmpty())
+            assertTrue(it.history.isEmpty())
+        }
+    }
+
+    private fun withNavigationState(block: (AgentAppState) -> Unit) {
+        Prefs.initLocal(context)
+        Prefs.localAgentPreferences()?.edit()?.clear()?.commit()
+        context.getSharedPreferences("conversation_input_drafts", Context.MODE_PRIVATE).edit().clear().commit()
+        // These tests exercise synchronous navigation, not asynchronous persistence/runtime jobs.
+        // The separate Store round-trip test covers empty conversation persistence.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).also { it.cancel() }
+        try { block(AgentAppState(context, scope)) }
+        finally { scope.cancel() }
     }
 
     @Test
@@ -509,6 +716,7 @@ class AgentConversationStoreTest {
                 updatedAt = mapOf("conv-1" to 2L, "conv-2" to 1L),
                 folderIds = mapOf("conv-1" to "folder-work"),
                 pinnedIds = setOf("conv-2"),
+                completionMarkerIds = setOf("conv-2"),
                 folders = listOf(
                     ConversationFolderUi(id = "folder-work", name = "工作", sortIndex = 0),
                 ),
@@ -519,6 +727,7 @@ class AgentConversationStoreTest {
         assertEquals("folder-work", snapshot.folderIds["conv-1"])
         assertEquals(null, snapshot.folderIds["conv-2"])
         assertEquals(setOf("conv-2"), snapshot.pinnedIds)
+        assertEquals(setOf("conv-2"), snapshot.completionMarkerIds)
         assertEquals(listOf("folder-work"), snapshot.folders.map { it.id })
         assertEquals("工作", snapshot.folders.single().name)
     }
@@ -552,6 +761,14 @@ class AgentConversationStoreTest {
                         input = "",
                         isStreaming = false,
                         thinkingEnabled = false,
+                        history = listOf(
+                            io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                                role = "user", content = "旧消息", turnId = "1",
+                            ),
+                            io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                                role = "user", content = "继续", turnId = "2",
+                            ),
+                        ),
                     ),
                 ),
                 titles = mapOf("conv-compact" to "压缩"),
@@ -560,7 +777,8 @@ class AgentConversationStoreTest {
         }
         val restored = AgentConversationStore.load(context)
             .conversationsById.getValue("conv-compact").messages
-        assertEquals(listOf("u1", "compacted-1", "u2"), restored.map { it.id })
+        assertEquals(listOf("旧消息", "继续"), restored.filterIsInstance<UserMessageUi>().map { it.content })
+        assertEquals("compacted-1", restored[1].id)
         val loaded = restored[1] as ContextCompactedMessageUi
         assertEquals(6, loaded.compactedCount)
         assertEquals("用户要查 Actions，已经推送成功。", loaded.summary)

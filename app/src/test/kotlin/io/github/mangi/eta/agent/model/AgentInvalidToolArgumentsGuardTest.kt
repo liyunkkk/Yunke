@@ -19,7 +19,7 @@ class AgentInvalidToolArgumentsGuardTest {
         assertTrue(rejection.message.contains(AgentInvalidToolArgumentsGuard.STOP_CODE))
         assertTrue(rejection.message.contains("纠错预算耗尽"))
         assertTrue(rejection.message.contains("本次调用未执行"))
-        assertTrue(rejection.message.contains("本批工具结果完整配对后终止运行"))
+        assertTrue(rejection.message.contains("本批工具结果完整配对后按错误重连策略处理"))
     }
 
     @Test fun validArgumentsResetOnlyTheirOwnUnexhaustedBudget() {

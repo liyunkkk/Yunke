@@ -32,6 +32,13 @@ class ChildWorkerConfigResolverTest {
     ) = ChildWorkerConfigResolver.resolveWorker(owner, config, selected.id, selected.role,
         providerLookup = { id -> source.takeIf { it.id == id } }, modelResolver = build)
 
+    @Test fun childSnapshotInheritsParentsUnifiedReconnectPolicy() = runBlocking {
+        val parent = model(profile).copy(errorReconnectPolicy = "continuous")
+        val result = ChildWorkerConfigResolver.resolveWorker(owner, ConversationSubAgentConfig(listOf(profile)),
+            profile.id, profile.role, providerLookup = { provider }, modelResolver = { model(it) }, parentConfig = parent)
+        assertEquals("continuous", result.configuration?.model?.errorReconnectPolicy)
+    }
+
     @Test fun selectedModelResolvedExactlyAndNeverReplacedByFirstModel() = runBlocking {
         val selected = profile.copy(modelId = "selection-new")
         val result = resolve(selected)
@@ -93,6 +100,23 @@ class ChildWorkerConfigResolverTest {
             resolve { model(it).copy(providerId = "other-provider") }.availability)
         assertEquals(Policy.Availability.SELECTION_CHANGED_DURING_RESOLUTION,
             resolve { model(it).copy(model = "other-model") }.availability)
+    }
+
+    @Test fun injectedNullLookupsFailClosedInsteadOfRunningPersistedDefaults() = runBlocking {
+        // providerLookup is injected and returns null although the id matches; the persisted
+        // ProviderRepository default must not be consulted as a fallback.
+        val providerMiss = ChildWorkerConfigResolver.resolveWorker(
+            owner, ConversationSubAgentConfig(listOf(profile)), profile.id, profile.role,
+            providerLookup = { null }, modelResolver = { model(it) })
+        assertEquals(Policy.Availability.PROVIDER_UNAVAILABLE, providerMiss.availability)
+        assertNull(providerMiss.configuration)
+        // modelResolver is injected and returns null while the provider and model selection are
+        // valid; the persisted ModelFeatureSelection default must not be consulted as a fallback.
+        val modelMiss = ChildWorkerConfigResolver.resolveWorker(
+            owner, ConversationSubAgentConfig(listOf(profile)), profile.id, profile.role,
+            providerLookup = { id -> provider.takeIf { it.id == id } }, modelResolver = { null })
+        assertEquals(Policy.Availability.MODEL_UNAVAILABLE, modelMiss.availability)
+        assertNull(modelMiss.configuration)
     }
 
     @Test fun concurrentUserConfigurationChangeFailsClosedRatherThanMixingSnapshots() = runBlocking {

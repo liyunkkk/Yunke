@@ -132,6 +132,19 @@ internal class SubAgentWorkspace(
             if (!it.optBoolean("ok")) throw WorkspaceOperationException(it.optString("code"))
         }
 
+    /** Verify sealing and then independently reread the retained tree before publishing completion. */
+    fun sealImplementation(project: String, id: String, expectedBase: String, controller: AgentRunController): JSONObject {
+        controller.throwIfCancelled()
+        val sealed = SubAgentDeliveryEvidence.verify(requireOperation(project, "seal", id), id, expectedBase)
+        controller.throwIfCancelled()
+        val inspected = SubAgentDeliveryEvidence.verify(requireOperation(project, "inspect", id), id, expectedBase)
+        controller.throwIfCancelled()
+        if (sealed.getString("artifact_commit") != inspected.getString("artifact_commit") ||
+            sealed.getLong("changed_file_count") != inspected.getLong("changed_file_count"))
+            throw WorkspaceOperationException(SubAgentDeliveryEvidence.INVALID)
+        return inspected
+    }
+
     fun childExecutor(project: String, id: String, writable: Boolean, controller: AgentRunController) =
         AgentModelClient.ToolExecutor { call ->
             controller.throwIfCancelled()
@@ -150,8 +163,8 @@ internal class SubAgentWorkspace(
 
     companion object {
         const val CHILD_TOOL = "workspace_file"
-        private val READ_ACTIONS = setOf("read", "list_files", "diff")
-        private val WRITE_ACTIONS = setOf("write", "delete")
+        private val READ_ACTIONS = setOf("read", "search", "list_files", "diff")
+        private val WRITE_ACTIONS = setOf("write", "replace", "delete")
         private fun quote(value: String) = "'" + value.replace("'", "'\"'\"'") + "'"
         fun childTools(writable: Boolean): JSONArray {
             val actions = READ_ACTIONS + if (writable) WRITE_ACTIONS else emptySet()
@@ -161,10 +174,23 @@ internal class SubAgentWorkspace(
                 .put("content", JSONObject().put("type", "string").put("maxLength", 60000))
                 .put("offset", JSONObject().put("type", "integer").put("minimum", 0))
                 .put("limit", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 4000))
+                .put("start_line", JSONObject().put("type", "integer").put("minimum", 1))
+                .put("line_count", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 2000))
+                .put("query", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 500))
+                .put("regex", JSONObject().put("type", "boolean"))
+                .put("ignore_case", JSONObject().put("type", "boolean"))
+                .put("context", JSONObject().put("type", "integer").put("minimum", 0).put("maximum", 3))
+                .put("max_results", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 100))
+                .put("old_text", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 60000))
+                .put("new_text", JSONObject().put("type", "string").put("maxLength", 60000))
+                .put("expected_count", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 1000))
             val schema = JSONObject().put("type", "object").put("additionalProperties", false)
                 .put("properties", properties).put("required", JSONArray().put("action"))
             return JSONArray().put(AgentToolSchema.function(CHILD_TOOL,
-                "Read or edit UTF-8 source files in your assigned isolated worktree. Paths are relative. No shell, Git metadata, symlinks or other projects. list_files/diff/read are paginated with offset/limit. Build/test and integration belong to the main agent.", schema))
+                "Read or edit UTF-8 source files (up to 8 MiB each) in your assigned isolated worktree. Paths are relative. No shell, Git metadata, symlinks or other projects. " +
+                    "For large files: search (query, optional path/regex/ignore_case/context) to find line numbers, read with start_line/line_count (follow next_line until null), then replace " +
+                    "old_text with new_text; old_text must match exactly expected_count times (default 1), otherwise nothing changes. write replaces a whole file and is only for new or small files (64 KiB). " +
+                    "list_files/diff and character reads are paginated with offset/limit. Build/test and integration belong to the main agent.", schema))
         }
     }
 }

@@ -74,6 +74,7 @@ internal object ResponsesRequestBuilder {
                 request.put(rule.safeKeyField(), sessionId)
             }
         }
+        GptServiceTier.apply(request, config)
         return request
     }
 
@@ -184,7 +185,7 @@ internal object ResponsesRequestBuilder {
         }
     }
 
-    private fun buildTools(tools: JSONArray, hostedWebSearchEnabled: Boolean): JSONArray =
+    internal fun buildTools(tools: JSONArray, hostedWebSearchEnabled: Boolean): JSONArray =
         JSONArray().also { result ->
             for (index in 0 until tools.length()) {
                 val function = tools.optJSONObject(index)?.optJSONObject("function") ?: continue

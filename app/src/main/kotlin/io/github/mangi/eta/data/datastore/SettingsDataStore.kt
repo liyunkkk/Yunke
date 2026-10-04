@@ -17,6 +17,7 @@ import io.github.mangi.eta.data.model.AppearancePaletteStyle
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.model.Settings
 import java.io.IOException
 import java.time.LocalDate
@@ -37,6 +38,7 @@ internal object SettingsDataStore {
         stringPreferencesKey("selected_translation_model_id")
     private val MEMORY_ENABLED = booleanPreferencesKey("memory_enabled")
     private val FILE_LOGGING_ENABLED = booleanPreferencesKey("file_logging_enabled")
+    private val ERROR_RECONNECT_POLICY = stringPreferencesKey("error_reconnect_policy")
     private val LINUX_DISTRIBUTION = stringPreferencesKey("linux_distribution")
     private val APPEARANCE_THEME_MODE = stringPreferencesKey("appearance_theme_mode")
     private val APPEARANCE_MONET_ENABLED = booleanPreferencesKey("appearance_monet_enabled")
@@ -111,6 +113,7 @@ internal object SettingsDataStore {
             prefs.putOrRemove(SELECTED_TRANSLATION_MODEL_ID, updated.selectedTranslationModelId)
             prefs[MEMORY_ENABLED] = updated.memoryEnabled
             prefs[FILE_LOGGING_ENABLED] = updated.fileLoggingEnabled
+            prefs[ERROR_RECONNECT_POLICY] = updated.errorReconnectPolicy.persistedValue
             prefs.putAppearance(updated.appearance.normalized())
         }
     }
@@ -160,6 +163,13 @@ internal object SettingsDataStore {
 
     suspend fun setFileLoggingEnabled(enabled: Boolean) {
         updateSettings { it.copy(fileLoggingEnabled = enabled) }
+    }
+
+    fun errorReconnectPolicyFlow(): Flow<ErrorReconnectPolicy> =
+        settingsFlow().map { it.errorReconnectPolicy }
+
+    suspend fun setErrorReconnectPolicy(policy: ErrorReconnectPolicy) {
+        updateSettings { it.copy(errorReconnectPolicy = policy) }
     }
 
     fun linuxDistributionFlow(): Flow<String?> {
@@ -260,6 +270,7 @@ internal object SettingsDataStore {
             selectedModelId = settings.selectedModelId,
             memoryEnabled = settings.memoryEnabled,
             fileLoggingEnabled = settings.fileLoggingEnabled,
+            errorReconnectPolicy = settings.errorReconnectPolicy.persistedValue,
             linuxDistribution = prefs[LINUX_DISTRIBUTION],
             linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
             selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
@@ -287,6 +298,8 @@ internal object SettingsDataStore {
             prefs.putOrRemove(SELECTED_MODEL_ID, snapshot.selectedModelId)
             prefs[MEMORY_ENABLED] = snapshot.memoryEnabled
             prefs[FILE_LOGGING_ENABLED] = snapshot.fileLoggingEnabled
+            prefs[ERROR_RECONNECT_POLICY] =
+                ErrorReconnectPolicy.fromPersistedValue(snapshot.errorReconnectPolicy).persistedValue
             prefs.putOrRemove(LINUX_DISTRIBUTION, snapshot.linuxDistribution)
             prefs.putAppearance(snapshot.appearance.normalized())
             snapshot.linuxBackends.forEach { (distribution, backend) ->
@@ -529,6 +542,7 @@ internal object SettingsDataStore {
         selectedTranslationModelId = this[SELECTED_TRANSLATION_MODEL_ID],
         memoryEnabled = this[MEMORY_ENABLED] ?: true,
         fileLoggingEnabled = this[FILE_LOGGING_ENABLED] ?: true,
+        errorReconnectPolicy = ErrorReconnectPolicy.fromPersistedValue(this[ERROR_RECONNECT_POLICY]),
         appearance = AppearanceSettings(
             themeMode = AppearanceThemeMode.fromPersistedValue(this[APPEARANCE_THEME_MODE]),
             monetEnabled = true,
@@ -582,6 +596,8 @@ internal data class EtaSettingsBackup(
     val retiredConversations: Int = 0,
     val retiredMessages: Int = 0,
     val retiredHeatmapJson: String = "",
+    // Use a nullable string so older, null and future backup values restore safely to NONE.
+    val errorReconnectPolicy: String? = ErrorReconnectPolicy.NONE.persistedValue,
 )
 
 internal data class RetiredUsage(

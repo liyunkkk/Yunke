@@ -28,6 +28,18 @@ class SubAgentCoordinatorTest {
         }
     }
 
+    @Test fun outputLimitFailureIsClassifiedWithoutEchoingProviderText() {
+        SubAgentCoordinator(listOf(model)) { _, _, _ ->
+            throw io.github.mangi.eta.agent.model.AgentOutputLimitException("private-thinking-text")
+        }.use { c ->
+            val done = get(c, start(c).getString("task_id"), 3000)
+            assertEquals("failed", done.getString("status"))
+            assertEquals("SUB_AGENT_OUTPUT_LIMIT", done.getString("error_code"))
+            assertTrue(done.getString("result").contains("输出上限"))
+            assertFalse(done.getString("result").contains("private-thinking-text"))
+        }
+    }
+
     @Test fun dynamicWorkersRunInParallelAndBusyWorkerQueues() {
         val started = CountDownLatch(6)
         val release = CountDownLatch(1)
@@ -418,13 +430,7 @@ class SubAgentCoordinatorTest {
     }
 
     @Test fun implementationWorkspaceIsReadyBeforeTheCallerReturns() {
-        val workspace = SubAgentWorkspace("unused", AgentModelClient.ToolExecutor {
-            AgentModelClient.ToolResult(JSONObject().put("ok", true).put("exit_code", 0)
-                .put("stdout", JSONObject().put("ok", true)
-                    .put("id", "0123456789abcdef0123456789abcdef")
-                    .put("path", "/workspace/Eta/.agent/worktrees/0123456789abcdef0123456789abcdef")
-                    .put("state", "editing").toString()).toString())
-        })
+        val workspace = SubAgentWorkspace("unused", AgentModelClient.ToolExecutor { SubAgentDeliveryFixture.response(it) })
         SubAgentCoordinator(listOf(model), roles = listOf("implementation"), workerIds = listOf("exec-agent"),
             workspace = workspace, executeWorkspaceChild = { _, _, _, _, _, _ -> "edited" },
             executeChild = { _, _, _ -> error("research runner must not own an implementation task") }).use { coordinator ->
@@ -436,7 +442,9 @@ class SubAgentCoordinatorTest {
             assertTrue(started.getString("workspace_path").contains("worktrees"))
             val finished = get(coordinator, started.getString("task_id"))
             assertEquals("completed", finished.getString("status"))
-            assertEquals("edited", finished.getString("result"))
+            assertEquals("edited", finished.getString("model_report_unverified"))
+            assertEquals("artifact_ready_pending_review", finished.getString("delivery_state"))
+            assertFalse(finished.getBoolean("acceptance_verified"))
         }
     }
 

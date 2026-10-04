@@ -1,0 +1,126 @@
+package io.github.mangi.eta.ui.model
+
+import kotlinx.serialization.Serializable
+import kotlin.math.roundToInt
+
+/** Empirical request-unit ratios in raw request units, never an additive fixed overhead.
+ * Provider/model and configuration scope are checked by the caller/store. Raw overhead and
+ * history share are conservative composition proxies, NOT proof of identical tokenization.
+ *
+ * 显示学习已停用：没有任何生产调用方再持久化、复用或展示三样本跨请求/会话比率，
+ * 圆环只显示真实云端回执。此处纯函数与可序列化样本保留给作用域校验/预算辅助调用。 */
+internal object RequestOverheadCalibration {
+    private const val WINDOW = 3
+
+    fun routeSignature(provider: io.github.mangi.eta.data.model.ProviderSetting,
+        model: io.github.mangi.eta.data.model.Model): String {
+        // Arbitrary headers/body/gateway JSON can contain credentials and change routing. Fail closed
+        // rather than persisting their contents or silently sharing a calibration across changes.
+        if (provider.customHeaders.isNotEmpty() || provider.customBody.isNotEmpty() ||
+            model.customHeaders.isNotEmpty() || model.customBody.isNotEmpty() || provider.sessionGatewayJson.isNotBlank()) return ""
+        val uri = runCatching { java.net.URI(provider.baseUrl) }.getOrNull() ?: return ""
+        if (uri.userInfo != null || uri.query != null) return ""
+        val endpoint = when (provider) {
+            is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
+            is io.github.mangi.eta.data.model.AnthropicProviderSetting -> provider.anthropicVersion
+        }
+        val fields = listOf(provider.id, provider.baseUrl, provider.sourceType, endpoint,
+            provider.systemPrompt, provider.authMode, provider.responsesStripReasoningStatus,
+            provider.hostedWebSearchEnabled, model.copy(createdAt = 0, displayName = "", sortOrder = 0))
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest(fields.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    @Serializable
+    data class Observation(val requestId: String, val cloudInput: Int, val history: Int, val overhead: Int,
+        val complete: Boolean = true) {
+        val ratio: Double get() = cloudInput.toDouble() / (history.toLong() + overhead)
+    }
+
+    @Serializable
+    data class Sample(val observations: List<Observation>, val routeSignature: String = "") {
+        val samples: Int get() = observations.size
+        val ratio: Double? get() {
+            if (observations.size != WINDOW || observations.any { !it.complete } ||
+                observations.map { it.requestId }.distinct().size != WINDOW) return null
+            val ratios = observations.map { it.ratio }
+            if (ratios.any { !it.isFinite() || it !in 0.5..2.0 } || ratios.max() / ratios.min() > 1.10) return null
+            return ratios.average()
+        }
+        fun estimate(history: Int, overhead: Int): Int? {
+            val stable = ratio ?: return null
+            if (observations.any { !compatible(it.history, it.overhead, history, overhead) }) return null
+            return ((history.toLong() + overhead) * stable).coerceIn(0.0, Int.MAX_VALUE.toDouble()).roundToInt()
+        }
+    }
+
+    fun compatible(oldHistory: Int, oldOverhead: Int, history: Int, overhead: Int): Boolean {
+        if (history < 0 || overhead <= 0 || oldHistory < 0 || oldOverhead <= 0) return false
+        // Runtime injects small request-specific overhead (observed 25237 UI vs 25270 request).
+        // Allow at most 2% / 512 raw tokens, not unrelated tool/config compositions.
+        if (kotlin.math.abs(oldOverhead.toLong() - overhead) > minOf(512.0, oldOverhead * 0.02)) return false
+        val oldTotal = oldHistory.toLong() + oldOverhead
+        val total = history.toLong() + overhead
+        return total.toDouble() / oldTotal in 0.75..1.25 &&
+            kotlin.math.abs(overhead.toDouble() / total - oldOverhead.toDouble() / oldTotal) <= 0.05
+    }
+
+    fun hasUsableBaseline(history: Int?, overhead: Int?): Boolean =
+        history != null && history >= 0 && overhead != null && overhead > 0
+
+    /** Corrections with missing/zero baselines revoke learning as well as changed input does. */
+    fun recordReceipt(previous: Sample?, cloudInput: Int, history: Int?, overhead: Int?,
+        requestId: String, routeSignature: String): Sample? {
+        val scoped = previous?.takeIf { it.routeSignature == routeSignature }
+        return if (hasUsableBaseline(history, overhead)) {
+            learn(scoped, cloudInput, requireNotNull(history), requireNotNull(overhead),
+                requestId = requestId, routeSignature = routeSignature)
+        } else invalidateCorrection(scoped, requestId, cloudInput)
+    }
+
+    fun learn(previous: Sample?, cloudInput: Int, requestHistoryTokens: Int,
+        requestOverheadTokens: Int, inflatedCache: Boolean = false,
+        requestId: String, routeSignature: String = ""): Sample? {
+        if (inflatedCache || routeSignature.isBlank() || requestId.isBlank() || cloudInput <= 0 || !hasUsableBaseline(requestHistoryTokens, requestOverheadTokens)) return null
+        val observation = Observation(requestId, cloudInput, requestHistoryTokens, requestOverheadTokens)
+        val scoped = previous?.takeIf { it.routeSignature == routeSignature }
+        val existing = scoped?.observations?.indexOfFirst { it.requestId == requestId } ?: -1
+        if (existing >= 0) {
+            if (scoped!!.observations[existing] == observation) return null
+            // Correct the same request in place: never count a usage frame as a new sample.
+            return scoped.copy(observations = scoped.observations.toMutableList().also { it[existing] = observation })
+        }
+        // Always retain the latest requests, including volatility; never cherry-pick stable history.
+        return Sample((scoped?.observations.orEmpty() + observation).takeLast(WINDOW), routeSignature)
+    }
+
+    /** Keep the request's window position, but revoke its old basis after an incomplete correction. */
+    fun invalidateCorrection(previous: Sample?, requestId: String, cloudInput: Int): Sample? {
+        val sample = previous ?: return null
+        val index = sample.observations.indexOfFirst { it.requestId == requestId }
+        if (index < 0 || cloudInput <= 0) return null
+        if (!sample.observations[index].complete && sample.observations[index].cloudInput == cloudInput) return null
+        return sample.copy(observations = sample.observations.toMutableList().also {
+            it[index] = it[index].copy(cloudInput = cloudInput, complete = false)
+        })
+    }
+
+    /** A same-session last receipt may degrade to an estimate, within the same composition range. */
+    fun receiptEstimate(cloudInput: Int, oldHistory: Int, oldOverhead: Int, history: Int, overhead: Int): Int? {
+        if (cloudInput <= 0 || !compatible(oldHistory, oldOverhead, history, overhead)) return null
+        val ratio = cloudInput.toDouble() / (oldHistory.toLong() + oldOverhead)
+        if (ratio !in 0.5..2.0) return null
+        return ((history.toLong() + overhead) * ratio).coerceIn(0.0, Int.MAX_VALUE.toDouble()).roundToInt()
+    }
+}
+
+/** Unmeasured display state is independent of the conservative internal send budget. */
+internal data class ContextDisplayPolicy(val firstTurn: Boolean = false, val awaitingReceipt: Boolean = false)
+
+/** 圆环只消费真实云端回执：首轮固定 "0k"，其余未实测状态一律 "未知"。
+ * state.receiptPredictionTokens 仅供旧持久化字段兼容，不再进入任何显示判断。 */
+internal fun contextDisplayPolicy(state: AgentChatUiState) = ContextDisplayPolicy(
+    firstTurn = !state.contextHasStarted,
+    awaitingReceipt = state.contextAwaitingReceipt,
+)

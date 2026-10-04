@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.runtime
 
+import io.github.mangi.eta.agent.browser.ChildBrowserAccess
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.delegation.SubAgentPlan
 import java.util.concurrent.CountDownLatch
@@ -12,6 +13,29 @@ import kotlin.concurrent.withLock
 
 internal class AgentRunController {
     private val resources = CopyOnWriteArraySet<CancellableResource>()
+    private val transportScope = ThreadLocal<TransportScope>()
+
+    /** Cancels only the current model transport, never the user run or its tool owners. */
+    internal inner class TransportScope {
+        private val scopedResources = CopyOnWriteArraySet<CancellableResource>()
+        private val expired = AtomicBoolean(false)
+        val isExpired: Boolean get() = expired.get()
+        internal fun attach(resource: CancellableResource) {
+            scopedResources.add(resource)
+            if (expired.get()) resource.cancel()
+        }
+        fun cancelTransport() {
+            expired.set(true)
+            scopedResources.forEach { it.cancel() }
+        }
+        fun <T> run(block: () -> T): T {
+            val previous = transportScope.get()
+            transportScope.set(this)
+            try { return block() }
+            finally { if (previous == null) transportScope.remove() else transportScope.set(previous) }
+        }
+    }
+    internal fun newTransportScope(): TransportScope = TransportScope()
     @Volatile private var cancelled = false
     val isCancelled: Boolean get() = cancelled
     private val lock = ReentrantLock()
@@ -31,6 +55,8 @@ internal class AgentRunController {
     private var pendingCompact: CompactRequest? = null
     private var boundaryObserver: (() -> Unit)? = null
     private var taskProgressReporter: ((String) -> Boolean)? = null
+    /** Set once at child dispatch. Unset reads as full. Cancel and continue do not clear or widen it. */
+    private var frozenChildBrowserAccess: ChildBrowserAccess? = null
 
     /** 子代理预算：协调器在派发前写入，运行器读取以告知子代理；默认 null 表示不额外约束。 */
     @Volatile var subAgentBudget: SubAgentPlan? = null
@@ -53,7 +79,14 @@ internal class AgentRunController {
             taskProgressReporter = null
             pauseCondition.signalAll()
         }
-        resources.forEach { resource -> runCatching { resource.cancel() } }
+        // Wake the in-flight model request before releasing tool owners. Tool/browser cleanup
+        // may block; insertion order used to put it ahead of the SSE cancellation binding.
+        // Keep the contract-visible interruptible ordering, then stably prioritize resources
+        // that must wake the provider before slower tool/browser cleanup starts.
+        resources.toList()
+            .sortedByDescending { it.interruptible }
+            .sortedByDescending { it.wakeBeforeCleanup }
+            .forEach { resource -> runCatching { resource.cancel() } }
     }
 
     /** Existing interactive steering keeps its immediate-interrupt semantics. */
@@ -121,6 +154,17 @@ internal class AgentRunController {
 
     fun setPauseBoundaryObserver(observer: (() -> Unit)?) { lock.withLock { boundaryObserver = observer } }
     fun setTaskProgressReporter(reporter: ((String) -> Boolean)?) { lock.withLock { taskProgressReporter = reporter } }
+
+    /** First call wins. A different later mode is refused and the frozen value stays. */
+    fun freezeChildBrowserAccess(mode: ChildBrowserAccess): Boolean = lock.withLock {
+        val current = frozenChildBrowserAccess
+        if (current != null) return current == mode
+        frozenChildBrowserAccess = mode
+        true
+    }
+
+    val childBrowserAccess: ChildBrowserAccess
+        get() = lock.withLock { frozenChildBrowserAccess ?: ChildBrowserAccess.FULL }
     fun reportTaskProgress(summary: String): Boolean {
         if (summary.isBlank() || summary.length > 1000) return false
         val reporter = lock.withLock { if (cancelled) null else taskProgressReporter }
@@ -164,24 +208,33 @@ internal class AgentRunController {
         finally { if (depth == 0) transportCallbackDepth.remove() else transportCallbackDepth.set(depth) }
     }
     fun awaitRetryDelay(delayMs: Long) {
-        throwIfCancelled()
+        if (cancelled) throw AgentRunCancelledException()
+        if (hasPendingImmediateSteering || paused) return
         val cancelledLatch = CountDownLatch(1)
-        val binding = register { cancelledLatch.countDown() }
-        try { cancelledLatch.await(delayMs, TimeUnit.MILLISECONDS) }
+        // Retry waits are model-request boundaries: steering/pause may wake them too.
+        val binding = register(interruptible = true, wakeBeforeCleanup = true) { cancelledLatch.countDown() }
+        try {
+            // Close the race between the first boundary check and registration.
+            if (hasPendingImmediateSteering || paused) cancelledLatch.countDown()
+            cancelledLatch.await(delayMs, TimeUnit.MILLISECONDS)
+        }
         catch (_: InterruptedException) { Thread.currentThread().interrupt(); throw AgentRunCancelledException() }
         finally { binding.close() }
-        throwIfCancelled()
+        // Let the caller preserve its draft before entering a pause checkpoint.
+        if (cancelled) throw AgentRunCancelledException()
     }
-    fun register(interruptible: Boolean = false, cancel: () -> Unit): ResourceBinding {
-        val resource = CancellableResource(cancel, interruptible)
+    fun register(interruptible: Boolean = false, wakeBeforeCleanup: Boolean = false, cancel: () -> Unit): ResourceBinding {
+        val resource = CancellableResource(cancel, interruptible, wakeBeforeCleanup)
         resources.add(resource)
+        if (interruptible) transportScope.get()?.attach(resource)
         if (cancelled) resource.cancel()
         return ResourceBinding { resources.remove(resource) }
     }
     inner class ResourceBinding internal constructor(private val closeBlock: () -> Unit) {
         fun close() { closeBlock() }
     }
-    private class CancellableResource(private val cancelBlock: () -> Unit, val interruptible: Boolean) {
+    internal class CancellableResource(private val cancelBlock: () -> Unit, val interruptible: Boolean,
+        val wakeBeforeCleanup: Boolean) {
         private val cancelled = AtomicBoolean(false)
         fun cancel() { if (cancelled.compareAndSet(false, true)) cancelBlock() }
     }

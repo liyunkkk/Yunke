@@ -109,7 +109,9 @@ internal object RuntimeConfigRepository {
         val settings = ProviderRepository.repairSelection()
         val provider = settings.selectedProviderId?.let { ProviderRepository.providerById(it) } ?: return null
         val model = provider.selectedOrFirstModel(settings.selectedModelId) ?: return null
-        return buildRuntimeConfig(resolveOAuth(provider), model, AssistantRepository.active())
+        return buildRuntimeConfig(resolveOAuth(provider), model, AssistantRepository.active()).copy(
+            errorReconnectPolicy = settings.errorReconnectPolicy.persistedValue,
+        )
     }
     /** 屏幕翻译专用配置：优先取「翻译模型」选择，未指定时回落到默认对话模型。 */
     suspend fun translationRuntimeConfig(): AgentModelClient.ModelConfig? {
@@ -240,7 +242,9 @@ internal object RuntimeConfigRepository {
     ): AgentModelClient.ModelConfig? {
         val provider = ProviderRepository.providerById(providerId)?.takeIf { it.isEnabled } ?: return null
         val model = provider.models.firstOrNull { it.id == modelId && it.isEnabled } ?: return null
-        return buildRuntimeConfig(resolveOAuth(provider), model, assistant)
+        return buildRuntimeConfig(resolveOAuth(provider), model, assistant).copy(
+            errorReconnectPolicy = SettingsDataStore.settings().errorReconnectPolicy.persistedValue,
+        )
     }
 
     private suspend fun resolveOAuth(provider: ProviderSetting): ProviderSetting {

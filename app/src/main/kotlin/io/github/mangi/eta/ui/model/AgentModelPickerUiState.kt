@@ -43,6 +43,8 @@ internal data class AgentModelOptionUi(
     val supportsImageGeneration: Boolean = false,
     val supportsVideo: Boolean = false,
     val supportsVideoGeneration: Boolean = false,
+    val gptSpeedSupported: Boolean = false,
+    val requestEndpoint: io.github.mangi.eta.agent.model.EndpointKind = io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS,
 )
 
 @Immutable
@@ -50,6 +52,7 @@ internal data class AgentContextUsageUi(
     val contextTokens: Int?,
     val contextWindow: Int?,
     val estimated: Boolean = false,
+    val firstTurn: Boolean = false,
 ) {
     val progress: Float?
         get() = contextUsageProgress(contextTokens, contextWindow)
@@ -123,10 +126,24 @@ internal object AgentModelPickerProjector {
             displayName = model.displayName.ifBlank { model.modelId },
             contextWindow = model.effectiveContextWindow,
             preferredReasoningEffort = model.preferredReasoningEffort,
+            gptSpeedSupported = io.github.mangi.eta.data.model.supportsGptSpeedBinding(this, model),
             supportsVision = model.supportsVision,
             supportsImageGeneration = model.supportsImageGeneration,
             supportsVideo = model.supportsVideo,
             supportsVideoGeneration = model.supportsVideoGeneration,
+            requestEndpoint = when (this) {
+                is io.github.mangi.eta.data.model.AnthropicProviderSetting -> io.github.mangi.eta.agent.model.EndpointKind.ANTHROPIC_MESSAGES
+                else -> {
+                    val mode = when (this) {
+                        is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> endpointMode
+                        is io.github.mangi.eta.data.model.CustomProviderSetting -> endpointMode
+                        else -> ""
+                    }
+                    if (mode == io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+                        io.github.mangi.eta.agent.model.EndpointKind.RESPONSES
+                    else io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS
+                }
+            },
         )
 }
 
@@ -258,21 +275,14 @@ internal fun windowTokensFromUsage(usage: TokenUsageUi?): Int? {
     return usage.contextTokens?.takeIf { it > 0 }
 }
 
-/** Ring display: keep actual input stable. Only an unmeasured context uses local budget. */
+/** Ring display: only a real cloud measurement moves the ring. Unmeasured contexts are never
+ * rendered from local counts, drafted text, images or learned sample/receipt ratios: a first
+ * turn shows a display-only "0k", every other unmeasured state stays "未知" with an unmoved ring. */
 internal fun liveContextUsage(
-    history: List<AgentModelClient.ConversationMessage>,
-    currentInput: String,
-    pendingImages: List<PendingImageUi>,
-    selectedModel: AgentModelOptionUi?,
-    pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
-    pendingConversationMentions: List<PendingConversationMentionUi> = emptyList(),
-    historyTokenCount: Int? = null,
     billedContextTokens: Int? = null,
-    requestOverheadTokens: Int = 0,
-    billedOverheadTokens: Int? = null,
-    uncommittedLiveTokens: Int = 0,
-    projectedContextTokens: Int? = null,
     activeRunContextWindow: Int? = null,
+    selectedModel: AgentModelOptionUi? = null,
+    contextDisplayPolicy: ContextDisplayPolicy = ContextDisplayPolicy(),
 ): AgentContextUsageUi {
     // An in-flight run keeps the window it was launched with, so a mid-run settings
     // change must not restate the percentage of a request that never saw the new limit.
@@ -280,15 +290,12 @@ internal fun liveContextUsage(
     if (billedContextTokens != null && billedContextTokens > 0) {
         return AgentContextUsageUi(billedContextTokens, window)
     }
-    val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    val local = projectedContextTokens?.takeIf { it > 0 }?.toLong()
-        ?: ((historyTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
-            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
-            requestOverheadTokens.coerceAtLeast(0) + uncommittedLiveTokens.coerceAtLeast(0))
-    return AgentContextUsageUi((local + draft).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), window, estimated = true)
+    if (contextDisplayPolicy.awaitingReceipt) return AgentContextUsageUi(null, window)
+    return AgentContextUsageUi(null, window, firstTurn = contextDisplayPolicy.firstTurn)
 }
 
-/** Decision-only: actual input + locally counted changes since that exact request. */
+/** Predict the next cloud input: a validated receipt is the full prompt baseline, including cache.
+ * Keep an unchanged baseline marked as actual so the ring does not show a false estimate. */
 internal fun compressionContextUsage(
     history: List<AgentModelClient.ConversationMessage>,
     currentInput: String,
@@ -303,19 +310,20 @@ internal fun compressionContextUsage(
     billedHistoryTokens: Int? = null,
     localHistoryTokenCount: Int? = null,
     activeRunContextWindow: Int? = null,
+    projectedContextTokens: Int? = null,
 ): AgentContextUsageUi {
     if (billedContextTokens == null || billedContextTokens <= 0 ||
         billedHistoryTokens == null || billedOverheadTokens == null) {
         // Legacy cloud receipts keep the ring accurate, but lack the calibration
         // needed for a safe delta. Only the silent budget falls back to a full estimate.
-        val local = liveContextUsage(history, currentInput, pendingImages, selectedModel,
-            pendingFileReferences, pendingConversationMentions, localHistoryTokenCount,
-            requestOverheadTokens = requestOverheadTokens,
-            activeRunContextWindow = activeRunContextWindow)
-        val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) +
-            draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-        return local.copy(contextTokens = maxOf(local.contextTokens?.toLong() ?: 0L, floor)
-            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+        // Unknown UI must not remove the conservative internal budget or change send blocking.
+        val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
+        val local = (localHistoryTokenCount ?: io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(
+            history, selectedModel?.supportsVision == true, selectedModel?.supportsVideo == true)).toLong() +
+            requestOverheadTokens.coerceAtLeast(0) + draft
+        val floor = (billedContextTokens?.coerceAtLeast(0)?.toLong() ?: 0L) + draft
+        return AgentContextUsageUi(maxOf(local, floor).coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+            activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow, estimated = true)
     }
     // Both calibration snapshots belong to the validated cloud receipt.
     val delta = billedHistoryTokens?.let { baseline ->
@@ -323,9 +331,13 @@ internal fun compressionContextUsage(
     } ?: 0L
     val fixedDelta = billedOverheadTokens?.let { requestOverheadTokens.toLong() - it } ?: 0L
     val draft = draftContextTokens(currentInput, pendingImages, selectedModel, pendingFileReferences, pendingConversationMentions)
-    return AgentContextUsageUi((billedContextTokens.toLong() + delta + fixedDelta + draft)
-        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(),
-        activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow, estimated = true)
+    val projected = (billedContextTokens.toLong() + delta + fixedDelta + draft)
+        .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+    return AgentContextUsageUi(
+        projected,
+        activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow,
+        estimated = projected != billedContextTokens,
+    )
 }
 
 private fun draftContextTokens(
@@ -414,19 +426,22 @@ internal fun formatContextUsage(
     noLimitText: String = "The current model does not provide a context limit",
     locale: Locale = Locale.getDefault(),
 ): String {
-    // "Not measured yet" and "measured as zero" are different states. Rendering both as
-    // 0K / 0.0% made an unknown occupancy look like a real reading, while the ring stayed
-    // empty because progress is null — one state shown two ways.
+    // A first-turn "0k" is a display-only label, not a measured zero.
+    // Unmeasured states keep null occupancy/progress and omit a percentage;
+    // measured values and trusted estimates are formatted separately below.
     val measured = usage.contextTokens
+    val window = usage.contextWindow
     if (measured == null) {
-        val window = usage.contextWindow
-        return if (window == null || window <= 0) noUsageText
-        else "$noUsageText · ${formatCompactTokenCount(window, locale)} tokens"
+        // Only the numerator is unknown; the configured window the ring is measured against is
+        // already known, so keep it in the same denominator format a measured reading uses.
+        // The ratio stays null, so the ring is still shown unmoved for both unmeasured states.
+        val state = if (usage.firstTurn) "0k" else "未知"
+        if (window == null || window <= 0) return state
+        return "$state / ${formatCompactTokenCount(window, locale)} tokens"
     }
     val tokens = measured.coerceAtLeast(0)
     val tokenText = (if (usage.estimated) "≈" else "") +
         (if (tokens == 0) "0K" else formatCompactTokenCount(tokens, locale))
-    val window = usage.contextWindow
     if (window == null || window <= 0) return "$tokenText tokens" + 10.toChar() + noLimitText
     val percentFormat = NumberFormat.getNumberInstance(locale).apply {
         minimumFractionDigits = 1

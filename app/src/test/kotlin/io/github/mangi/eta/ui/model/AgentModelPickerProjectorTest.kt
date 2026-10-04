@@ -189,9 +189,10 @@ class AgentModelPickerProjectorTest {
         assertEquals(0f, contextUsageProgress(0, 100_000) ?: -1f, 0f)
         assertEquals(1f, contextUsageProgress(120_000, 100_000) ?: -1f, 0f)
         assertEquals("1.05M", formatCompactTokenCount(1_050_000))
-        // Unknown occupancy must not be rendered as a measured 0K / 0.0%.
+        // Unknown occupancy must not be rendered as a measured 0K / 0.0%, but it still keeps
+        // the configured window as its denominator.
         assertEquals(
-            "No conversation context yet · 100K tokens",
+            "未知 / 100K tokens",
             formatContextUsage(AgentContextUsageUi(contextTokens = null, contextWindow = 100_000)),
         )
         assertEquals(
@@ -213,6 +214,67 @@ class AgentModelPickerProjectorTest {
                 locale = java.util.Locale.GERMANY,
             ),
         )
+    }
+
+    @Test
+    fun unmeasuredStatesKeepTheConfiguredWindowInTheMeasuredDenominatorFormat() {
+        val model = AgentModelOptionUi(
+            id = "model",
+            providerId = "provider",
+            providerName = "Provider",
+            providerSourceType = ProviderSourceTypes.CUSTOM,
+            modelId = "model",
+            displayName = "Model",
+            contextWindow = 128_000,
+        )
+        // First turn before any learned ratio: "0k" still names the configured limit it will be
+        // measured against, in the same place a measured reading prints its denominator.
+        val firstTurn = liveContextUsage(
+            selectedModel = model,
+            contextDisplayPolicy = ContextDisplayPolicy(firstTurn = true),
+        )
+        assertEquals("0k / 128K tokens", formatContextUsage(firstTurn))
+        // First receipt after compaction: "未知" keeps the same denominator.
+        val awaitingReceipt = liveContextUsage(
+            selectedModel = model,
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true),
+        )
+        assertEquals("未知 / 128K tokens", formatContextUsage(awaitingReceipt))
+        // An in-flight run is measured against the window it was launched with, even while unknown.
+        val inFlight = liveContextUsage(
+            selectedModel = model, activeRunContextWindow = 200_000,
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true),
+        )
+        assertEquals("未知 / 200K tokens", formatContextUsage(inFlight))
+        // An unknown numerator never becomes a reading: no ratio, so the ring stays unmoved.
+        for (usage in listOf(firstTurn, awaitingReceipt, inFlight)) {
+            assertNull(usage.contextTokens)
+            assertNull(usage.progress)
+            assertFalse(usage.estimated)
+        }
+        // Structural contract: the unknown denominator is literally the measured one, and a model
+        // without a configured window still has no denominator to invent.
+        val measured = formatContextUsage(AgentContextUsageUi(64_000, 128_000), locale = java.util.Locale.US)
+        assertEquals("64K / 128K tokens · 50.0%", measured)
+        assertTrue(measured.contains(" / 128K tokens"))
+        assertTrue(formatContextUsage(awaitingReceipt, locale = java.util.Locale.US).endsWith(" / 128K tokens"))
+        val noWindow = AgentModelOptionUi(
+            id = "model",
+            providerId = "provider",
+            providerName = "Provider",
+            providerSourceType = ProviderSourceTypes.CUSTOM,
+            modelId = "model",
+            displayName = "Model",
+            contextWindow = null,
+        )
+        assertEquals("0k", formatContextUsage(liveContextUsage(
+            selectedModel = noWindow,
+            contextDisplayPolicy = ContextDisplayPolicy(firstTurn = true),
+        )))
+        assertEquals("未知", formatContextUsage(liveContextUsage(
+            selectedModel = noWindow,
+            contextDisplayPolicy = ContextDisplayPolicy(awaitingReceipt = true),
+        )))
     }
 
 
@@ -249,7 +311,7 @@ class AgentModelPickerProjectorTest {
                 ),
             ),
         )
-        val usage = liveContextUsage(
+        val usage = compressionContextUsage(
             history = history,
             currentInput = "please read this",
             pendingImages = images,
@@ -289,25 +351,25 @@ class AgentModelPickerProjectorTest {
             dataUrl = "data:image/png;base64," + "A".repeat(50_000),
             mimeType = "image/png",
         )
-        val withImage = liveContextUsage(
+        val withImage = compressionContextUsage(
             history = emptyList(),
             currentInput = "看图",
             pendingImages = listOf(huge),
             selectedModel = selected,
         )
-        val textOnly = liveContextUsage(
+        val textOnly = compressionContextUsage(
             history = emptyList(),
             currentInput = "看图",
             pendingImages = emptyList(),
             selectedModel = selected,
         )
-        val vision = liveContextUsage(
+        val vision = compressionContextUsage(
             history = emptyList(),
             currentInput = "看图",
             pendingImages = listOf(huge),
             selectedModel = selected.copy(supportsVision = true),
         )
-        val tiny = liveContextUsage(emptyList(), "看图", listOf(huge.copy(dataUrl = "data:image/png;base64,AA")), selected)
+        val tiny = compressionContextUsage(emptyList(), "看图", listOf(huge.copy(dataUrl = "data:image/png;base64,AA")), selected)
         assertEquals(tiny.contextTokens, withImage.contextTokens)
         assertTrue(requireNotNull(withImage.contextTokens) >= requireNotNull(textOnly.contextTokens))
         assertTrue(requireNotNull(vision.contextTokens) > requireNotNull(textOnly.contextTokens))
@@ -328,13 +390,13 @@ class AgentModelPickerProjectorTest {
             AgentModelClient.ConversationMessage(role = "user", content = "hello world"),
         )
         val usage = liveContextUsage(
-            history = history,
-            currentInput = "",
-            pendingImages = emptyList(),
             selectedModel = selected,
         )
-        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) }, usage.contextTokens)
-        assertTrue(usage.estimated)
+        assertNull(usage.contextTokens)
+        assertEquals("未知 / 8K tokens", formatContextUsage(usage))
+        assertNull(usage.progress)
+        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) },
+            compressionContextUsage(history, "", emptyList(), selected).contextTokens)
     }
 
     @Test
@@ -357,12 +419,12 @@ class AgentModelPickerProjectorTest {
             dataUrl = "data:image/png;base64," + "A".repeat(4_096 * 90),
             mimeType = "image/png",
         )
-        val usage = liveContextUsage(
+        val usage = compressionContextUsage(
             history = history,
             currentInput = "look",
             pendingImages = listOf(image),
             selectedModel = selected,
-            historyTokenCount = 1_000,
+            localHistoryTokenCount = 1_000,
         )
         val expected = 1_000 + AgentContextBudget.countCurrentTurn(
             "look",
@@ -492,27 +554,21 @@ class AgentModelPickerProjectorTest {
             AgentModelClient.ConversationMessage(role = "assistant", content = "b".repeat(30_000)),
         )
         val idle = liveContextUsage(
-            history = history,
-            currentInput = "",
-            pendingImages = emptyList(),
             selectedModel = selected,
             billedContextTokens = 262_556,
         )
         assertEquals(262_556, idle.contextTokens)
-
-        val typing = liveContextUsage(
-            history = history,
-            currentInput = "next question",
-            pendingImages = emptyList(),
-            selectedModel = selected,
-            billedContextTokens = 262_556,
-        )
-        assertEquals(262_556, typing.contextTokens)
-        assertEquals(idle.contextTokens, typing.contextTokens)
+        assertFalse(idle.estimated)
+        // 同一段历史/草稿只进入静默预算，不再作为圆环的本地估计参与显示。
+        val budget = compressionContextUsage(history, "next question", emptyList(), selected,
+            billedContextTokens = 262_556, billedHistoryTokens = 1, billedOverheadTokens = 1,
+            requestOverheadTokens = 1)
+        assertTrue(requireNotNull(budget.contextTokens) > 262_556)
+        assertEquals(262_556, idle.contextTokens)
     }
 
     @Test
-    fun liveContextUsage_addsRequestOverheadWhenThereIsNoBill() {
+    fun liveContextUsageNeverProjectsRequestOverheadWithoutABill() {
         val selected = AgentModelOptionUi(
             id = "model",
             providerId = "provider",
@@ -527,18 +583,15 @@ class AgentModelPickerProjectorTest {
         )
         val local = history.sumOf { AgentContextBudget.countMessage(it) }
         val usage = liveContextUsage(
-            history = history,
-            currentInput = "",
-            pendingImages = emptyList(),
             selectedModel = selected,
-            requestOverheadTokens = 12_000,
         )
-        assertEquals(local + 12_000, usage.contextTokens)
-        assertTrue(usage.estimated)
+        assertNull(usage.contextTokens)
+        assertEquals(local + 12_000, compressionContextUsage(history, "", emptyList(), selected,
+            requestOverheadTokens = 12_000).contextTokens)
     }
 
     @Test
-    fun liveContextUsage_appliesOverheadDeltaOnTopOfBill() {
+    fun localOverheadDeltasMoveTheSilentBudgetButNotTheRing() {
         val selected = AgentModelOptionUi(
             id = "model",
             providerId = "provider",
@@ -549,35 +602,16 @@ class AgentModelPickerProjectorTest {
             contextWindow = 500_000,
         )
         val unchanged = liveContextUsage(
-            history = emptyList(),
-            currentInput = "",
-            pendingImages = emptyList(),
             selectedModel = selected,
             billedContextTokens = 262_556,
-            requestOverheadTokens = 12_000,
-            billedOverheadTokens = 12_000,
         )
         assertEquals(262_556, unchanged.contextTokens)
-        val increased = liveContextUsage(
-            history = emptyList(),
-            currentInput = "",
-            pendingImages = emptyList(),
-            selectedModel = selected,
-            billedContextTokens = 262_556,
-            requestOverheadTokens = 14_500,
-            billedOverheadTokens = 12_000,
-        )
-        assertEquals(262_556, increased.contextTokens)
-        val decreased = liveContextUsage(
-            history = emptyList(),
-            currentInput = "",
-            pendingImages = emptyList(),
-            selectedModel = selected,
-            billedContextTokens = 262_556,
-            requestOverheadTokens = 10_000,
-            billedOverheadTokens = 12_000,
-        )
-        assertEquals(262_556, decreased.contextTokens)
+        // overhead 本地增量只作用于静默预算（+2500），圆环保持实测值不变。
+        val shifted = compressionContextUsage(emptyList(), "", emptyList(), selected,
+            historyTokenCount = 1_000, billedContextTokens = 262_556, requestOverheadTokens = 14_500,
+            billedHistoryTokens = 1_000, billedOverheadTokens = 12_000)
+        assertEquals(265_056, shifted.contextTokens)
+        assertEquals(262_556, unchanged.contextTokens)
     }
 
 
@@ -773,7 +807,7 @@ class AgentModelPickerProjectorTest {
     }
 
     @Test
-    fun liveContextUsageAddsUncommittedStreamingWhenThereIsNoBill() {
+    fun liveContextUsageIgnoresUncommittedStreamingWithoutABill() {
         val selected = AgentModelOptionUi(
             id = "model",
             providerId = "provider",
@@ -787,15 +821,16 @@ class AgentModelPickerProjectorTest {
             AgentModelClient.ConversationMessage(role = "user", content = "hello"),
         )
         val streaming = AgentContextBudget.countCurrentTurn("long chinese answer 中文回复", emptyList())
+        assertTrue(streaming > 0) // 有未提交的流式文本，但圆环不再叠加本地增量
         val usage = liveContextUsage(
-            history = history,
-            currentInput = "",
-            pendingImages = emptyList(),
             selectedModel = selected,
-            uncommittedLiveTokens = streaming,
         )
-        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) } + streaming, usage.contextTokens)
-        assertTrue(usage.estimated)
+        assertNull(usage.contextTokens)
+        assertEquals("未知 / 150K tokens", formatContextUsage(usage))
+        assertNull(usage.progress)
+        // 本地历史仍然进入内部静默预算，只是不再作为显示值。
+        assertEquals(history.sumOf { AgentContextBudget.countMessage(it) },
+            compressionContextUsage(history, "", emptyList(), selected).contextTokens)
     }
 
     @Test

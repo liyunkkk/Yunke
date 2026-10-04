@@ -13,12 +13,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.voice.offline.OfflineSpeechPack
 import io.github.mangi.eta.agent.voice.offline.SpeechModelManifest
-import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import top.yukonga.miuix.kmp.basic.Card
@@ -39,7 +37,7 @@ internal fun SpeechSettingsScreen(onBack: () -> Unit) {
     }
     var confirmDownload by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { DoubaoVoiceConfig.load(context); OfflineSpeechPack.initialize(context) }
-    MiuixScaffoldPage(title = stringResource(R.string.speech_title), onBack = onBack) {
+    VoiceSettingsSectionPage(title = stringResource(R.string.speech_title), onBack = onBack) {
         item(key = "speech_enable") {
             Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                 SwitchPreference(
@@ -91,13 +89,7 @@ internal fun SpeechSettingsScreen(onBack: () -> Unit) {
                     insideMargin = PaddingValues(16.dp), onClick = { page = "asr" })
             }
         }
-        item(key = "speech_privacy") {
-            Text(if (config.cloudAsr) "点击后收音，音频发送至豆包识别；文字留在输入框，不自动发送。离开聊天或切到后台停止收音。" else stringResource(R.string.speech_privacy),
-                modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Start)
-        }
+
     }
     top.yukonga.miuix.kmp.window.WindowDialog(
         show = confirmDownload,

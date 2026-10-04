@@ -1,22 +1,20 @@
 package io.github.mangi.eta.agent.model
 
+/** Fixed receipt outcomes. Names and numbers only; not a display string. */
+internal enum class SilentReceiptDecision {
+    ACCEPTED,
+    REJECTED_NON_POSITIVE,
+    REJECTED_OVER_WINDOW,
+    REJECTED_INFLATED_CACHE,
+}
+
 /** Decision-only calibration. Never emitted as a cloud bill or ordinary ring usage. */
 internal class AgentSilentContextBudget {
     private var requestLocal: Int = 0
     private var measuredInput: Int? = null
     private var measuredLocal: Int = 0
 
-    /**
-     * True while [measuredInput] came from [seed], i.e. the previous run's receipt
-     * projected onto this request, rather than from a receipt of this run.
-     *
-     * A seed is an estimate, so it must not serve as the baseline of the growth check
-     * in [isPlausible]. Observed on a 272k window: the seed was ~153k, the first real
-     * receipt of the new run was 209964 (cache miss, local growth ~0). The +57k step
-     * exceeded the ~21.8k slack and was refused; every later receipt (88%, 92%, 95%)
-     * was then compared with the same stale seed and refused too, so [cloudInput]
-     * stayed null and automatic compaction never ran while the ring showed 95%.
-     */
+    /** A previous-run seed calibrates the send guard, but is never a target receipt. */
     private var anchorIsSeed: Boolean = false
 
     /**
@@ -43,35 +41,53 @@ internal class AgentSilentContextBudget {
      * 等下一张回执再决定。上一轮带来的种子只校准发送上限，不算回执。
      */
     private var cloudInput: Int? = null
+    private var requestGeneration: Int = 0
+    var lastReceiptDecision: SilentReceiptDecision? = null
+        private set
+    private var lastLoggedDecision: SilentReceiptDecision? = null
+    private var lastLoggedAtNanos: Long = 0L
 
-    fun requestStarted(localTokens: Int) { requestLocal = localTokens.coerceAtLeast(0) }
+    fun requestStarted(localTokens: Int) {
+        requestLocal = localTokens.coerceAtLeast(0)
+        if (requestGeneration == Int.MAX_VALUE) requestGeneration = 0
+        requestGeneration++
+    }
+
+    /** True only after this run accepted a receipt. A previous-run seed is not a target receipt. */
+    fun hasTargetReceipt(): Boolean = measuredInput != null && !anchorIsSeed
 
     /**
-     * Anchors on a cloud measurement, but only when it can actually describe the
-     * prompt that was just sent.
+     * Accept a positive, plausible receipt of the current request immediately. The caller
+     * owns request attribution and merges partial fields only within that request.
      *
-     * Some gateways sum a retried or multi-leg request into one usage object: on the
-     * wire we saw `input_tokens = 784267` for a request that succeeded on a 500000
-     * window, and a later round billing 267917 right after 38880 while the local
-     * transcript had grown by ~1100. Anchoring on such a number makes every later
-     * decision believe the context is nearly full, which is how auto-compaction fired
-     * far below its threshold and then immediately compacted a second time.
+     * Keep the provider/window checks: unbounded totals and cache reads exceeding their
+     * own total or the window cannot describe occupancy. Refusing them preserves the
+     * previous anchor and does not teach a send-limit scale.
      *
-     * Only two things are checked, both one-directional refusals:
-     *  - the value cannot exceed the window by an unbounded factor;
-     *  - its step above the previous anchor cannot far exceed the local growth since
-     *    that anchor.
-     * The absolute ratio between a bill and the local estimate is deliberately *not*
-     * checked: a first bill can legitimately be several times the local count, so that
-     * test would reject correct receipts.
-     *
-     * Rejecting an outlier keeps the previous anchor (or the local boundary), which is
-     * conservative in the safe direction: a genuine overflow still surfaces as a
-     * provider CONTEXT_WINDOW_EXCEEDED failure rather than as a silently wrong anchor.
+     * Do not compare cloud growth with a local character estimate: cache accounting,
+     * images and tokenization can change the bill without comparable local growth.
+     * In particular, 193223 -> 230402 on a 272000 window must update cloudTokens now,
+     * not require another provider request to confirm crossing the 80% boundary.
      */
-    fun measured(inputTokens: Int?, contextWindow: Int? = null) {
-        if (inputTokens == null || inputTokens <= 0) return
-        if (!isPlausible(inputTokens, contextWindow)) return
+    fun measured(inputTokens: Int?, contextWindow: Int? = null, cachedTokens: Int? = null) {
+        if (inputTokens == null || inputTokens <= 0) {
+            record(SilentReceiptDecision.REJECTED_NON_POSITIVE, 0)
+            return
+        }
+        val window = contextWindow?.takeIf { it > 0 }
+        if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) {
+            record(SilentReceiptDecision.REJECTED_OVER_WINDOW, inputTokens)
+            return
+        }
+        if (AgentBilledPromptPlausibility.isInflatedCacheRead(inputTokens, cachedTokens, window)) {
+            record(SilentReceiptDecision.REJECTED_INFLATED_CACHE, inputTokens)
+            return
+        }
+        accept(inputTokens)
+        record(SilentReceiptDecision.ACCEPTED, inputTokens)
+    }
+
+    private fun accept(inputTokens: Int) {
         measuredInput = inputTokens
         measuredLocal = requestLocal
         anchorIsSeed = false
@@ -96,7 +112,9 @@ internal class AgentSilentContextBudget {
     fun cloudTokens(): Int? = cloudInput
 
     /** 上下文被工具修剪改过：旧回执不再代表下一次请求，等新回执。发送上限的锚点保留。 */
-    fun cloudStale() { cloudInput = null }
+    fun cloudStale() {
+        cloudInput = null
+    }
 
     private fun learnScale(inputTokens: Int) {
         if (requestLocal < MIN_SCALE_BASIS) return
@@ -105,18 +123,18 @@ internal class AgentSilentContextBudget {
         underCountScale = maxOf(underCountScale, observed.coerceAtMost(MAX_SCALE))
     }
 
-    private fun isPlausible(inputTokens: Int, contextWindow: Int?): Boolean {
-        val window = contextWindow?.takeIf { it > 0 }
-        if (!AgentBilledPromptPlausibility.fitsWindow(inputTokens, window)) return false
-        // A seeded estimate is not a receipt: the first bill of a run has no baseline.
-        if (anchorIsSeed) return true
-        val previous = measuredInput?.takeIf { it > 0 } ?: return true
-        val billedGrowth = inputTokens.toLong() - previous
-        if (billedGrowth <= 0) return true
-        val localGrowth = (requestLocal.toLong() - measuredLocal).coerceAtLeast(0L)
-        val slack = GROWTH_SLACK_TOKENS.toLong() +
-            (window?.toLong() ?: 0L) * GROWTH_SLACK_WINDOW_PERCENT / 100
-        return billedGrowth <= localGrowth + slack
+    private fun record(decision: SilentReceiptDecision, inputTokens: Int) {
+        lastReceiptDecision = decision
+        val now = System.nanoTime()
+        if (decision == lastLoggedDecision && now - lastLoggedAtNanos < 2_000_000_000L) return
+        lastLoggedDecision = decision
+        lastLoggedAtNanos = now
+        val anchor = measuredInput ?: -1
+        runCatching {
+            io.github.mangi.eta.core.AndroidAgentLogger.info(
+                "silent_budget decision=${decision.name} input=$inputTokens anchor=$anchor gen=$requestGeneration",
+            )
+        }
     }
 
     fun tokens(currentLocal: Int): Int {
@@ -157,12 +175,6 @@ internal class AgentSilentContextBudget {
     }
 
     private companion object {
-        /** Absolute slack for cache accounting and per-round request scaffolding. */
-        const val GROWTH_SLACK_TOKENS = 8_192
-
-        /** Extra slack proportional to the window, for large-context models. */
-        const val GROWTH_SLACK_WINDOW_PERCENT = 5
-
         /** Below this a ratio is dominated by fixed per-request overhead. */
         const val MIN_SCALE_BASIS = 2_000
 

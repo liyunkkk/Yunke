@@ -13,30 +13,27 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.voice.tts.SpeechEngineResolver
 import io.github.mangi.eta.agent.voice.tts.ReadAloudVoiceHistory
 import io.github.mangi.eta.agent.voice.tts.SpeechPlayback
+import io.github.mangi.eta.agent.voice.tts.SpeechPlaybackProfile
 import io.github.mangi.eta.agent.voice.tts.SpeechVoice
 import io.github.mangi.eta.agent.voice.tts.SpeechVoices
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.data.repository.ProviderRepository
-import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 
 @Composable
-internal fun TtsSettingsScreen(onBack: () -> Unit) {
-    var personalPage by remember { mutableStateOf(false) }
-    if (personalPage) {
-        PersonalVoicesScreen(onBack = { personalPage = false })
-        return
-    }
+internal fun TtsSettingsScreen(onBack: () -> Unit, conversation: Boolean = false) {
+    val profile = if (conversation) SpeechPlaybackProfile.CONVERSATION else SpeechPlaybackProfile.READ_ALOUD
+    val previewOwner = if (conversation) "voice-conversation-preview" else "tts-preview"
     val context = LocalContext.current
     val view = LocalView.current
-    var cloud by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_TTS_MODE) == "cloud") }
-    var providerId by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID)) }
-    var modelId by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_ID)) }
-    var voice by remember { mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_TTS_VOICE)) }
+    var cloud by remember(profile) { mutableStateOf(Prefs.getString(profile.modeKey) == "cloud") }
+    var providerId by remember(profile) { mutableStateOf(Prefs.getString(profile.providerKey)) }
+    var modelId by remember(profile) { mutableStateOf(Prefs.getString(profile.modelKey)) }
+    var voice by remember(profile) { mutableStateOf(Prefs.getString(profile.voiceKey)) }
     var picker by remember { mutableStateOf(false) }
     var voicePicker by remember { mutableStateOf(false) }
     val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
@@ -58,8 +55,11 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
             mimoVoices.filter { it.providerId == selectedProvider?.id }.map { SpeechVoice(it.id, it.name, personal = true) }
         } else emptyList()
     }
-    LaunchedEffect(Unit) { ReadAloudVoiceHistory.rememberCurrent(context) }
+    LaunchedEffect(profile) { ReadAloudVoiceHistory.rememberCurrent(context, profile) }
     val playback by SpeechPlayback.state.collectAsState()
+    DisposableEffect(previewOwner) {
+        onDispose { SpeechPlayback.stopOwned("preview_dispose") { it == previewOwner } }
+    }
     val sample = stringResource(R.string.tts_sample)
     LaunchedEffect(cloud, providerId, selectedProvider?.id, engine, modelId, catalog, voice) {
         // A missing/expired personal voice must not silently become a public voice.
@@ -76,16 +76,11 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
         }
         val fallback = catalog.first().id
         voice = fallback
-        Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, fallback)
-        ReadAloudVoiceHistory.remember(context, providerId, modelId, fallback)
+        Prefs.putString(profile.voiceKey, fallback)
+        ReadAloudVoiceHistory.remember(context, providerId, modelId, fallback, profile)
     }
-    MiuixScaffoldPage(title = stringResource(R.string.tts_title), onBack = onBack) {
-        item(key = "my_voices") {
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                ArrowPreference(title = "我的声音", summary = "导入、制作和试听个人声音",
-                    insideMargin = PaddingValues(16.dp), onClick = { TouchHaptics.click(view); personalPage = true })
-            }
-        }
+    VoiceSettingsSectionPage(title = stringResource(if (conversation) R.string.voice_section_conversation else R.string.tts_title), onBack = onBack) {
+        if (conversation) item(key = "conversation_recognition") { VoiceConversationRecognitionSettings() }
         item(key = "tts_mode") {
             Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 SwitchPreference(
@@ -95,9 +90,9 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
                     insideMargin = PaddingValues(16.dp),
                     onCheckedChange = {
                         TouchHaptics.click(view)
-                        SpeechPlayback.stop("settings")
+                        SpeechPlayback.stopOwned("settings") { it == previewOwner }
                         cloud = it
-                        Prefs.putString(Prefs.Keys.AGENT_TTS_MODE, if (it) "cloud" else "system")
+                        Prefs.putString(profile.modeKey, if (it) "cloud" else "system")
                     },
                 )
             }
@@ -125,12 +120,12 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
         item(key = "tts_preview") {
             Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 ArrowPreference(
-                    title = stringResource(if (playback.owner == "tts-preview") R.string.tts_stop else R.string.tts_preview),
-                    summary = playback.error ?: playback.source.takeIf { it.isNotBlank() }
-                        ?: stringResource(if (playback.preparing) R.string.tts_preparing else R.string.tts_manual_hint),
+                    title = stringResource(if (playback.owner == previewOwner) R.string.tts_stop else R.string.tts_preview),
+                    summary = playback.error ?: playback.source.takeIf { playback.owner == previewOwner && it.isNotBlank() }
+                        ?: if (playback.owner == previewOwner && playback.preparing) stringResource(R.string.tts_preparing) else null,
                     insideMargin = PaddingValues(16.dp),
                     enabled = !playback.recording && (!cloud || (models.selectedModel != null && voice.isNotBlank())),
-                    onClick = { TouchHaptics.click(view); SpeechPlayback.toggle(context, "tts-preview", sample) },
+                    onClick = { TouchHaptics.click(view); SpeechPlayback.toggle(context, previewOwner, sample, settings = profile.snapshot()) },
                 )
             }
         }
@@ -139,16 +134,16 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
         state = models, show = picker, onDismiss = { picker = false },
         title = stringResource(R.string.tts_model),
         onModelSelected = { provider, model ->
-            SpeechPlayback.stop("settings")
+            SpeechPlayback.stopOwned("settings") { it == previewOwner }
             if (providerId != provider || modelId != model) {
-                ReadAloudVoiceHistory.remember(context, providerId, modelId, voice)
-                voice = ReadAloudVoiceHistory.restore(context, provider, model)
-                Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, voice)
+                ReadAloudVoiceHistory.remember(context, providerId, modelId, voice, profile)
+                voice = ReadAloudVoiceHistory.restore(context, provider, model, profile)
+                Prefs.putString(profile.voiceKey, voice)
             }
             providerId = provider
             modelId = model
-            Prefs.putString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID, provider)
-            Prefs.putString(Prefs.Keys.AGENT_TTS_MODEL_ID, model)
+            Prefs.putString(profile.providerKey, provider)
+            Prefs.putString(profile.modelKey, model)
             picker = false
         },
     )
@@ -159,10 +154,10 @@ internal fun TtsSettingsScreen(onBack: () -> Unit) {
         title = stringResource(R.string.tts_voice),
         onDismiss = { voicePicker = false },
         onSelected = { id ->
-            SpeechPlayback.stop("settings")
+            SpeechPlayback.stopOwned("settings") { it == previewOwner }
             voice = id
-            Prefs.putString(Prefs.Keys.AGENT_TTS_VOICE, id)
-            ReadAloudVoiceHistory.remember(context, providerId, modelId, id)
+            Prefs.putString(profile.voiceKey, id)
+            ReadAloudVoiceHistory.remember(context, providerId, modelId, id, profile)
             voicePicker = false
         },
     )

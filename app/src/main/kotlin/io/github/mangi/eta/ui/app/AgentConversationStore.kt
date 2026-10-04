@@ -8,6 +8,8 @@ import java.io.File
 import androidx.room.withTransaction
 import io.github.mangi.eta.ui.model.CloudUsageReceiptCodec
 import io.github.mangi.eta.agent.model.AgentConversationCodec
+import io.github.mangi.eta.agent.model.AgentContextCompactor
+import io.github.mangi.eta.agent.model.AgentTurnIdentity
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.agent.model.ConversationCheckpointTooLargeException
 import io.github.mangi.eta.agent.model.AgentModelClient
@@ -25,6 +27,8 @@ import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.ConversationFolderUi
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.ContextCompactedMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectStatus
 import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
@@ -32,9 +36,11 @@ import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
+import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.isSteerSupplement
 import io.github.mangi.eta.ui.model.attachUserImageSources
 import io.github.mangi.eta.ui.model.decodeUserMessageImages
 import io.github.mangi.eta.ui.model.encodeUserMessageImages
@@ -61,6 +67,7 @@ internal object AgentConversationStore {
         val createdAt: Map<String, Long> = emptyMap(),
         val folderIds: Map<String, String> = emptyMap(),
         val pinnedIds: Set<String> = emptySet(),
+        val completionMarkerIds: Set<String> = emptySet(),
         val folders: List<ConversationFolderUi> = emptyList(),
     )
 
@@ -193,6 +200,7 @@ internal object AgentConversationStore {
         updatedAt: Map<String, Long>,
         folderIds: Map<String, String> = emptyMap(),
         pinnedIds: Set<String> = emptySet(),
+        completionMarkerIds: Set<String> = emptySet(),
         folders: List<ConversationFolderUi> = emptyList(),
     ) {
         val appContext = context.applicationContext
@@ -217,6 +225,7 @@ internal object AgentConversationStore {
                         updatedAt = updatedAt[id] ?: now,
                         folderId = folderIds[id].orEmpty(),
                         isPinned = id in pinnedIds,
+                        hasCompletionMarker = id in completionMarkerIds,
                         providerId = state.providerId,
                         modelId = state.modelId,
                         assistantId = state.assistantId,
@@ -243,7 +252,7 @@ internal object AgentConversationStore {
                     dao.updateConversationMetadata(metadata.map { row ->
                         ConversationMetadata(row.id, row.title, row.thinkingEnabled, row.reasoningEffort,
                             row.appliedRuntimeRunIdsJson, row.createdAt, row.updatedAt, row.folderId,
-                            row.isPinned, row.providerId, row.modelId, row.assistantId)
+                            row.isPinned, row.hasCompletionMarker, row.providerId, row.modelId, row.assistantId)
                     })
                     dao.deleteState()
                     for ((conversationId, state) in sorted) {
@@ -263,6 +272,8 @@ internal object AgentConversationStore {
                                 conversationId, state.providerId, state.modelId, encodedHistory,
                                 state.livePromptTokens.takeUnless { state.livePromptIsProjected },
                                 state.cloudHistoryTokens, state.cloudRequestOverheadTokens,
+                                state.contextHasStarted, state.contextAwaitingReceipt, state.cloudRouteSignature,
+                                state.cloudReceiptRequestId,
                             ),
                         )))
                     }
@@ -370,6 +381,9 @@ internal object AgentConversationStore {
             AgentConversationCodec.encodeConversationCheckpoint(history.map { it.copy(turnId = "") })
         }
 
+    suspend fun questionConversationIds(context: Context): List<String> =
+        EtaDatabase.get(context.applicationContext).conversationDao().questionConversationIds()
+
     fun loadConversation(context: Context, id: String): AgentChatHomeUiState? = runBlocking(Dispatchers.IO) {
         val database = EtaDatabase.get(context.applicationContext)
         database.withTransaction {
@@ -383,36 +397,66 @@ internal object AgentConversationStore {
     ): AgentChatHomeUiState {
         val (fallbackProviderId, fallbackModelId) = defaultSelection()
         val checkpoint = if (withContent) dao.contextCheckpoint(conversation.id) else null
-        val decodedHistory = if (!withContent) emptyList() else {
+        val persistedHistory = if (!withContent) emptyList() else {
             readConversationHistory(context, conversation.id)
                 ?: AgentConversationCodec.decodeTranscript(checkpoint?.historyJson)
         }
         val legacyHistory = mutableListOf<AgentModelClient.ConversationMessage>()
-        val uiMessages = buildList {
+        val storedRows = buildList {
             if (!withContent) {
-                dao.conversationPreview(conversation.id)?.asMessageEntity()?.toMessageOrNull()?.let { add(it) }
+                dao.conversationPreview(conversation.id)?.asMessageEntity()?.let(::add)
             } else {
                 var offset = 0
                 while (true) {
                     val page = dao.messagesPage(conversation.id, MESSAGE_LOAD_PAGE_SIZE, offset)
-                    // Never retain the raw rows for the whole conversation alongside UI objects.
-                    page.mapNotNullTo(this) { it.toMessageOrNull() }
-                    if (decodedHistory.isEmpty()) legacyHistory.addAll(page.toLegacyHistory())
+                    // Keep rows briefly so a one-time identity repair can update their primary keys.
+                    addAll(page)
+                    if (persistedHistory.isEmpty()) legacyHistory.addAll(page.toLegacyHistory())
                     if (page.size < MESSAGE_LOAD_PAGE_SIZE) break
                     offset += page.size
                 }
             }
         }
-        val history = decodedHistory.ifEmpty { legacyHistory }
-        val messages = attachUserImageSources(messages = uiMessages, history = history)
+        val sourceHistory = persistedHistory.ifEmpty { legacyHistory }
+        val history = AgentTurnIdentity.migrate(sourceHistory)
+        val rawMessages = storedRows.mapNotNull { it.toMessageOrNull() }
+        val identityMigration = if (withContent) {
+            migrateStableMessageIdentities(rawMessages, history)
+        } else {
+            StableIdentityMigration(rawMessages, emptyList())
+        }
+        if (withContent) {
+            val rowIds = storedRows.mapTo(mutableSetOf()) { it.id }
+            identityMigration.renames.forEach { (oldId, newId) ->
+                if (oldId == newId || oldId !in rowIds || newId in rowIds) return@forEach
+                dao.renameMessageId(conversation.id, oldId, newId)
+                rowIds.remove(oldId)
+                rowIds.add(newId)
+            }
+            if (history.isNotEmpty() && history != sourceHistory) {
+                writeConversationHistory(context, conversation.id, history)
+            }
+        }
+        val messages = attachUserImageSources(
+            messages = identityMigration.messages,
+            history = history,
+        )
         // Invalid receipts must not resurrect bills from a different history/model.
-        val receipt = checkpoint?.takeIf { decodedHistory.isNotEmpty() }?.let {
+        val receipt = checkpoint?.takeIf { persistedHistory.isNotEmpty() }?.let {
             CloudUsageReceiptCodec.decodeReceipt(it.cloudUsageJson, conversation.id,
                 conversation.providerId, conversation.modelId, it.historyJson)
         }
+        val contextDisplay = checkpoint?.let {
+            CloudUsageReceiptCodec.decodeDisplayState(it.cloudUsageJson, conversation.id, it.historyJson)
+        }
         return AgentChatHomeUiState(
+            contextHasStarted = contextDisplay?.hasStarted ?: (history.isNotEmpty() || messages.isNotEmpty()),
+            // Legacy checkpoints without state metadata are conservative, even if markers aren't loaded.
+            contextAwaitingReceipt = contextDisplay?.awaitingReceipt ?: (receipt == null && history.isNotEmpty()),
+            cloudRouteSignature = receipt?.routeSignature,
             conversationContentLoaded = withContent,
             messages = messages,
+            isWaitingForAnswer = AgentQuestionProjection.hasWaiting(messages),
             history = history,
             appliedRuntimeRunIds = conversation.appliedRuntimeRunIdsJson.toStringList(),
             input = "",
@@ -423,9 +467,96 @@ internal object AgentConversationStore {
             modelId = if (conversation.providerId.isBlank() && conversation.modelId.isBlank()) fallbackModelId else conversation.modelId,
             assistantId = conversation.assistantId,
             livePromptTokens = receipt?.inputTokens,
+            contextBudgetReceiptTokens = receipt?.takeIf {
+                io.github.mangi.eta.ui.model.RequestOverheadCalibration.hasUsableBaseline(
+                    it.historyTokens, it.overheadTokens)
+            }?.inputTokens,
+            cloudReceiptRequestId = receipt?.requestId,
+            contextReceiptEvidence = receipt?.let { actual -> actual.requestId?.let { requestId ->
+                io.github.mangi.eta.ui.model.ContextReceiptEvidence(requestId, actual.inputTokens,
+                    actual.historyTokens, actual.overheadTokens)
+            } },
             cloudHistoryTokens = receipt?.historyTokens,
             cloudRequestOverheadTokens = receipt?.overheadTokens,
         )
+    }
+
+    private data class StableIdentityMigration(
+        val messages: List<AgentChatMessageUi>,
+        val renames: List<Pair<String, String>>,
+    )
+
+    /**
+     * Repair the old split identity scheme only when the visible user sequence and the
+     * persisted history sequence prove the same turns. Repeated or incomplete payloads
+     * stay untouched and continue through the reducer's fail-closed compatibility path.
+     */
+    private fun migrateStableMessageIdentities(
+        messages: List<AgentChatMessageUi>,
+        history: List<AgentModelClient.ConversationMessage>,
+    ): StableIdentityMigration {
+        val uiUsers = messages.filterIsInstance<UserMessageUi>()
+        val ordinaryUiUsers = uiUsers.filterNot { it.isSteerSupplement() }
+        val ordinaryHistory = history.withIndex().filter { (_, message) ->
+            message.role.equals("user", ignoreCase = true) &&
+                !AgentContextCompactor.isCompressionSummary(message) &&
+                !AgentContextCompactor.isSteeringUserMessage(message)
+        }
+        if (ordinaryUiUsers.size != ordinaryHistory.size) {
+            return StableIdentityMigration(messages, emptyList())
+        }
+        val uiTexts = ordinaryUiUsers.map { it.content.trim() }
+        val historyTexts = ordinaryHistory.map { (_, message) ->
+            AgentConversationCodec.userVisibleText(message).trim()
+        }
+        // Repeated visible text is not enough evidence to identify the corresponding turn.
+        if (uiTexts.distinct().size != uiTexts.size ||
+            historyTexts.distinct().size != historyTexts.size ||
+            uiTexts != historyTexts) {
+            return StableIdentityMigration(messages, emptyList())
+        }
+        val turnIds = ordinaryHistory.map { it.value.turnId }
+        if (turnIds.any(String::isBlank) || turnIds.distinct().size != turnIds.size) {
+            return StableIdentityMigration(messages, emptyList())
+        }
+
+        val updated = messages.toMutableList()
+        val renames = mutableListOf<Pair<String, String>>()
+        val stableByUiIndex = mutableMapOf<Int, String>()
+        var ordinaryIndex = 0
+        messages.forEachIndexed { index, message ->
+            val user = message as? UserMessageUi ?: return@forEachIndexed
+            if (!user.isSteerSupplement()) {
+                val turnId = turnIds[ordinaryIndex++]
+                stableByUiIndex[index] = turnId
+                val newId = "user-$turnId"
+                if (user.id != newId) {
+                    updated[index] = user.copy(id = newId)
+                    renames += user.id to newId
+                }
+            }
+        }
+
+        var currentTurnId: String? = null
+        messages.forEachIndexed { index, message ->
+            val user = message as? UserMessageUi ?: return@forEachIndexed
+            stableByUiIndex[index]?.let { currentTurnId = it }
+            if (!user.isSteerSupplement()) return@forEachIndexed
+            val owner = currentTurnId ?: return@forEachIndexed
+            val suffix = user.id.substringAfter("-supplement-", "message-$index")
+            val newId = "user-$owner-supplement-$suffix"
+            if (user.id != newId) {
+                updated[index] = user.copy(id = newId)
+                renames += user.id to newId
+            }
+        }
+        val targets = renames.map { it.second }
+        val sourceIds = messages.map { it.id }.toSet()
+        if (targets.size != targets.distinct().size ||
+            renames.any { (oldId, newId) -> newId in sourceIds && newId != oldId }) {
+            return StableIdentityMigration(messages, emptyList())
+        }
+        return StableIdentityMigration(updated, renames)
     }
 
     private suspend fun loadSnapshot(context: Context, selectedOnly: Boolean): Snapshot {
@@ -469,6 +600,7 @@ internal object AgentConversationStore {
                 }
                 .toMap(),
             pinnedIds = conversations.filter { it.isPinned }.map { it.id }.toSet(),
+            completionMarkerIds = conversations.filter { it.hasCompletionMarker }.map { it.id }.toSet(),
             folders = dao.folders().toUiFolders(),
         )
     }
@@ -537,6 +669,15 @@ internal object AgentConversationStore {
                 renderMarkdown = false,
             )
 
+            is ErrorReconnectMessageUi -> ConversationMessageEntity(
+                id = id,
+                conversationId = conversationId,
+                sortIndex = sortIndex,
+                type = TYPE_ERROR_RECONNECT,
+                content = AgentErrorReconnectCodec.encode(this),
+                renderMarkdown = false,
+            )
+
             is ThinkingMessageUi -> ConversationMessageEntity(
                 id = id,
                 conversationId = conversationId,
@@ -544,6 +685,11 @@ internal object AgentConversationStore {
                 type = TYPE_THINKING,
                 content = content,
                 elapsedSeconds = elapsedSeconds,
+            )
+
+            is AgentQuestionMessageUi -> ConversationMessageEntity(
+                id = id, conversationId = conversationId, sortIndex = sortIndex,
+                type = AgentQuestionPersistence.TYPE, content = AgentQuestionPersistence.encode(this), renderMarkdown = false,
             )
 
             is ToolActivityMessageUi -> ConversationMessageEntity(
@@ -617,12 +763,18 @@ internal object AgentConversationStore {
             )
 
             TYPE_SYSTEM_NOTICE -> SystemNoticeCode.fromWireValue(content)?.let { code ->
-                SystemNoticeMessageUi(
+                if (code == SystemNoticeCode.RuntimeFailed) ErrorReconnectMessageUi(
                     id = id,
-                    code = code,
-                    detail = resultSummary,
-                )
+                    runId = "",
+                    reconnectId = "legacy:$id",
+                    round = 0,
+                    status = ErrorReconnectStatus.Failed,
+                    reasonDetail = resultSummary.orEmpty(),
+                    isReconnect = false,
+                ) else SystemNoticeMessageUi(id = id, code = code, detail = resultSummary)
             }
+
+            TYPE_ERROR_RECONNECT -> AgentErrorReconnectCodec.decode(id, content)
 
             TYPE_THINKING -> ThinkingMessageUi(
                 id = id,
@@ -631,6 +783,8 @@ internal object AgentConversationStore {
                 elapsedSeconds = elapsedSeconds,
                 collapsed = true,
             )
+
+            AgentQuestionPersistence.TYPE -> AgentQuestionPersistence.decode(id, conversationId, content)
 
             TYPE_TOOL -> ToolActivityMessageUi(
                 id = id,
@@ -719,6 +873,7 @@ internal object AgentConversationStore {
     private const val TYPE_USER = "user"
     private const val TYPE_ASSISTANT = "assistant"
     private const val TYPE_SYSTEM_NOTICE = "system_notice"
+    private const val TYPE_ERROR_RECONNECT = "error_reconnect"
     private const val TYPE_THINKING = "thinking"
     private const val TYPE_TOOL = "tool"
     private const val TYPE_TOOL_SUMMARY = "tool_summary"

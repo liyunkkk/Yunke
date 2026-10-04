@@ -38,7 +38,7 @@ internal data class ConversationSubAgentConfig(
     val kimiModel: String? = null,
 ) {
     fun detached(): ConversationSubAgentConfig = copy(
-        profiles = profiles.map { it.copy(reasoningByModel = it.reasoningByModel.toMap()) }.toList(),
+        profiles = profiles.map { it.copy(reasoningByModel = it.reasoningByModel.toMap(), gptSpeedByModel = it.gptSpeedByModel.toMap()) }.toList(),
         parallelLimits = parallelLimits.toMap(), legacyParallelLimits = legacyParallelLimits.toMap())
     fun parallelLimit(model: SubAgentParallelModel): Int =
         parallelLimits[model] ?: legacyParallelLimits[model.legacyKey()] ?: 1
@@ -53,6 +53,10 @@ internal data class ConversationSubAgentConfig(
                 val parts = key.split('\u0000')
                 parts.size == 2 && parts.all { it.isNotBlank() }
             }) { "Invalid reasoning-memory model key" }
+            require(profile.gptSpeedByModel.keys.all { key ->
+                val parts = key.split('\u0000')
+                parts.size == 2 && parts.all { it.isNotBlank() }
+            }) { "Invalid GPT-speed-memory model key" }
         }
         require(parallelLimits.values.all { it >= 0 })
         require(legacyParallelLimits.all { (key, limit) -> key.matches(Regex("agent_model_parallel_[0-9a-f]{64}")) && limit >= 0 })
@@ -143,7 +147,7 @@ internal class ConversationSubAgentPreferences(
         }
         state.changes.value = state.changes.value + 1
     }
-    private fun seed(): ConversationSubAgentConfig {
+    private fun seed(persist: Boolean = true): ConversationSubAgentConfig {
         stored(SEED_KEY)?.let { return decode(it) }
         // Legacy profile records are migrated using their historical tolerant reader, NOT archive validation.
         val profiles = if (preferences.contains(SubAgentPreferences.PROFILES_KEY)) {
@@ -168,11 +172,11 @@ internal class ConversationSubAgentPreferences(
             }.also { require(it >= 0) } }
         val result = ConversationSubAgentConfig(profiles, legacyParallelLimits = legacy)
         result.validate()
-        transaction(mapOf(SEED_KEY to encode(result)))
+        if (persist) transaction(mapOf(SEED_KEY to encode(result)))
         return result.detached()
     }
-    private fun initial(owner: SubAgentConfigKey): ConversationSubAgentConfig {
-        val base = seed().detached()
+    private fun initial(owner: SubAgentConfigKey, persistSeed: Boolean = true): ConversationSubAgentConfig {
+        val base = seed(persist = persistSeed).detached()
         if (owner is SubAgentConfigKey.Conversation) {
             val old = stored("agent_collaboration_${owner.value}")
             if (old != null) {
@@ -184,6 +188,10 @@ internal class ConversationSubAgentPreferences(
     }
     private fun read(owner: SubAgentConfigKey): ConversationSubAgentConfig = stored(key(owner))?.let(::decode) ?: initial(owner)
     fun snapshot(owner: SubAgentConfigKey): ConversationSubAgentConfig = synchronized(lock) { read(owner).detached() }
+    /** Same owner/legacy selection as runtime, without initializing or persisting the seed. */
+    fun previewSnapshot(owner: SubAgentConfigKey): ConversationSubAgentConfig = synchronized(lock) {
+        (stored(key(owner))?.let(::decode) ?: initial(owner, persistSeed = false)).detached()
+    }
     /** No seed fallback: pointer recovery must distinguish absence from unreadable storage. */
     fun existingDraftOrNull(owner: SubAgentConfigKey.Draft): ConversationSubAgentConfig? = synchronized(lock) {
         stored(key(owner))?.let { decode(it).detached() }
@@ -345,6 +353,19 @@ internal class ConversationSubAgentPreferences(
             require(provider.isNotBlank() && model.isNotBlank() && '\u0000' !in provider && '\u0000' !in model)
             require(pairs.add(provider to model))
             require(ReasoningEffort.fromWireValue(string(item, "reasoning")) != null)
+        }
+        // Absent in older archives. Present malformed fields must not silently lose user settings.
+        if (j.has("gpt_speed_memory")) {
+            val speeds = array(j, "gpt_speed_memory")
+            val speedPairs = mutableSetOf<Pair<String, String>>()
+            for (i in 0 until speeds.length()) {
+                val item = speeds.getJSONObject(i)
+                val provider = string(item, "provider"); val model = string(item, "model")
+                require(provider.isNotBlank() && model.isNotBlank() && '\u0000' !in provider && '\u0000' !in model)
+                require(speedPairs.add(provider to model))
+                val speed = string(item, "speed")
+                require(io.github.mangi.eta.data.model.GptSpeedMode.entries.any { it.name == speed })
+            }
         }
         return SubAgentProfile.fromJson(j)
     }

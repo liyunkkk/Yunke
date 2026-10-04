@@ -39,6 +39,19 @@ class ChildGroupReplacementTest {
         assertNull(select(snapshot().put("workspace_id", JSONObject.NULL)).error)
     }
 
+    @Test fun stoppedNoProgressPauseIsEligibleButManualPauseIsNot() {
+        val stalled = snapshot().put("status", "awaiting_decision").put("error_code", "SUB_AGENT_NO_PROGRESS")
+        assertTrue(ChildTaskReplacementSelection.eligibleStatus(stalled))
+        assertFalse(ChildTaskReplacementSelection.eligibleStatus(snapshot().put("status", "awaiting_decision")))
+        assertFalse(ChildTaskReplacementSelection.eligibleStatus(snapshot().put("status", "cancelled")))
+        val selected = ChildTaskReplacementSelection.choose("owner", "old-generation", listOf(worker("owner")),
+            listOf(worker("owner", revision = "new")), stalled, JSONObject(), 7, false)
+        assertEquals(0, selected.index)
+        assertEquals("STOP_NOT_CONFIRMED", ChildTaskReplacementSelection.choose("owner", "old-generation",
+            listOf(worker("owner")), listOf(worker("owner", revision = "new")),
+            stalled.put("execution_stopped", false), JSONObject(), 7, false).error)
+    }
+
     @Test fun explicitOtherWorkerKeepsProviderIsolationButNoFirstAvailableFallback() {
         val old = worker("owner")
         val alternate = AgentChildTaskGroups.Worker("other", "review", "provider-b")
@@ -66,6 +79,58 @@ class ChildGroupReplacementTest {
         assertFalse(handoffs.matchesRead("old-task", stopped.getLong("handoff_version")))
         handoffs.recordRead(stopped)
         assertTrue(handoffs.matchesRead("old-task", stopped.getLong("handoff_version")))
+    }
+
+    @Test fun errorDetailsAreAddedToJsonBeforeWrappingToolResult() {
+        val method = AgentChildTaskGroups.javaClass.declaredMethods.single {
+            it.name == "error" && it.parameterCount == 2
+        }.apply { isAccessible = true }
+        val details: JSONObject.() -> Unit = {
+            put("workspace_id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            put("can_replace", false)
+            put("allowed_actions", org.json.JSONArray(listOf("get_task_result")))
+            put("next_step", "wait for cleanup")
+        }
+        val result = method.invoke(AgentChildTaskGroups, "WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW", details)
+            as AgentModelClient.ToolResult
+        val json = JSONObject(result.content)
+        assertFalse(json.getBoolean("ok"))
+        assertEquals("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW", json.getString("code"))
+        assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", json.getString("workspace_id"))
+        assertFalse(json.getBoolean("can_replace"))
+        assertEquals("get_task_result", json.getJSONArray("allowed_actions").getString(0))
+        assertEquals("wait for cleanup", json.getString("next_step"))
+        assertTrue(json.getString("message").isNotBlank())
+    }
+
+    @Test fun archiveKeepsRecoveryMetadataButDoesNotAdvertiseContinuation() {
+        val method = AgentChildTaskGroups.javaClass.declaredMethods.single { it.name == "archiveSnapshot" }
+            .apply { isAccessible = true }
+        val input = snapshot().put("allowed_actions", org.json.JSONArray(listOf("get_task_result")))
+            .put("next_step", "inspect retained worktree").put("can_continue", true)
+        val archived = JSONObject(method.invoke(AgentChildTaskGroups, input) as String)
+        assertTrue(archived.getBoolean("archived"))
+        assertFalse(archived.getBoolean("can_continue"))
+        assertEquals("get_task_result", archived.getJSONArray("allowed_actions").getString(0))
+        assertEquals("inspect retained worktree", archived.getString("next_step"))
+    }
+
+    @Test fun archivePreservesBoundedGitEvidenceSeparateFromModelClaims() {
+        val method = AgentChildTaskGroups.javaClass.declaredMethods.single { it.name == "archiveSnapshot" }
+            .apply { isAccessible = true }
+        val evidence = JSONObject().put("base_commit", "a".repeat(40)).put("artifact_commit", "b".repeat(40))
+            .put("changed_file_count", 2)
+        val input = snapshot().put("status", "completed").put("role", "implementation")
+            .put("delivery_state", "artifact_ready_pending_review").put("artifact_verified", true)
+            .put("artifact_evidence", evidence).put("acceptance_verified", false)
+            .put("model_report_unverified", "model-claim ".repeat(600))
+        val archived = JSONObject(method.invoke(AgentChildTaskGroups, input) as String)
+        assertEquals("artifact_ready_pending_review", archived.getString("delivery_state"))
+        assertTrue(archived.getBoolean("artifact_verified"))
+        assertFalse(archived.getBoolean("acceptance_verified"))
+        assertEquals(evidence.toString(), archived.getJSONObject("artifact_evidence").toString())
+        assertTrue(archived.getBoolean("model_report_unverified_truncated"))
+        assertEquals(2048, archived.getString("model_report_unverified").length)
     }
 
     @Suppress("UNCHECKED_CAST")

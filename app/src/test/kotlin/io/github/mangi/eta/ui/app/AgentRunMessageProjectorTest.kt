@@ -16,6 +16,108 @@ import org.junit.Test
 
 class AgentRunMessageProjectorTest {
     @Test
+    fun longHistoryContinuousTailDeltasKeepOrderAndTerminalFlags() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        val history: List<io.github.mangi.eta.ui.model.AgentChatMessageUi> = (0 until 4_096).map {
+            UserMessageUi("history-$it", "old-$it")
+        }
+        val textId = "assistant-stream-1-0"
+        var textMessages = history + AgentMessageUi(textId, "start", isStreaming = true, renderMarkdown = false)
+        repeat(64) { index ->
+            textMessages = projector.appendTextDelta("stream", 1, 0, ".", textMessages)
+            assertEquals(history, textMessages.dropLast(1))
+            assertEquals("start" + ".".repeat(index + 1), (textMessages.last() as AgentMessageUi).content)
+        }
+        assertEquals(textId, textMessages.last().id)
+        assertTrue((textMessages.last() as AgentMessageUi).isStreaming)
+        assertFalse((textMessages.last() as AgentMessageUi).renderMarkdown)
+
+        val thinkingId = "thinking-stream-thinking-1-0"
+        var thinkingMessages = history + ThinkingMessageUi(
+            thinkingId, "start", isStreaming = true, collapsed = false,
+        )
+        repeat(64) {
+            thinkingMessages = projector.appendReasoningDelta("thinking-stream", 1, 0, ".", thinkingMessages)
+        }
+        assertEquals(history, thinkingMessages.dropLast(1))
+        assertEquals("start" + ".".repeat(64), (thinkingMessages.last() as ThinkingMessageUi).content)
+        assertTrue((thinkingMessages.last() as ThinkingMessageUi).isStreaming)
+    }
+
+    @Test
+    fun nonTailTargetStillClosesEarlierStreamingSiblingBeforeAppending() {
+        val projector = AgentRunMessageProjector()
+        val earlier = AgentMessageUi(
+            "assistant-switch-1-0", "old", isStreaming = true, renderMarkdown = false,
+        )
+        val tail = UserMessageUi("user-switch", "follow-up")
+        val messages = projector.appendTextDelta("switch", 1, 1, "new", listOf(earlier, tail))
+        assertEquals("old", (messages[0] as AgentMessageUi).content)
+        assertFalse((messages[0] as AgentMessageUi).isStreaming)
+        assertTrue((messages[0] as AgentMessageUi).renderMarkdown)
+        assertEquals(tail, messages[1])
+        assertEquals("new", (messages[2] as AgentMessageUi).content)
+        assertTrue((messages[2] as AgentMessageUi).isStreaming)
+    }
+
+    @Test
+    fun switchingFromTailThinkingToTextUsesFallbackAndClosesThinking() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        var messages: List<io.github.mangi.eta.ui.model.AgentChatMessageUi> = emptyList()
+        messages = projector.appendReasoningDelta("switch-tail", 1, 0, "thought", messages)
+        messages = projector.appendTextDelta("switch-tail", 1, 0, "answer", messages)
+        val thinking = messages.filterIsInstance<ThinkingMessageUi>().single()
+        val answer = messages.filterIsInstance<AgentMessageUi>().single()
+        assertFalse(thinking.isStreaming)
+        assertTrue(thinking.collapsed)
+        assertEquals("answer", answer.content)
+        assertTrue(answer.isStreaming)
+    }
+
+    @Test
+    fun replacingWarmTextSnapshotStillFinishesStreamingSibling() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        val warm = projector.appendTextDelta("r", 1, 1, "A", emptyList())
+        val replaced = listOf(
+            AgentMessageUi("assistant-r-1-0", "old ", isStreaming = true, renderMarkdown = false),
+            warm.last(),
+        )
+        // A deferred/no-op delta must not certify an externally supplied snapshot.
+        val deferred = projector.appendReasoningDelta("r", 1, 2, "private", replaced)
+        val next = projector.appendTextDelta("r", 1, 1, "B", deferred)
+        val old = next.first() as AgentMessageUi
+        assertEquals("old", old.content)
+        assertFalse(old.isStreaming)
+        assertTrue(old.renderMarkdown)
+        assertEquals("AB", (next.last() as AgentMessageUi).content)
+    }
+
+    @Test
+    fun replacingWarmThinkingSnapshotStillFinishesStreamingSibling() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        val warm = projector.appendReasoningDelta("r", 1, 1, "A", emptyList())
+        val replaced = listOf(
+            ThinkingMessageUi("r-thinking-1-0", "old", isStreaming = true, collapsed = false),
+            warm.last(),
+        )
+        val next = projector.appendReasoningDelta("r", 1, 1, "B", replaced)
+        assertFalse((next.first() as ThinkingMessageUi).isStreaming)
+        assertTrue((next.first() as ThinkingMessageUi).collapsed)
+        assertEquals("AB", (next.last() as ThinkingMessageUi).content)
+    }
+
+    @Test
+    fun existingNonTailTextTargetIsUpdatedWithoutMovingRows() {
+        val projector = AgentRunMessageProjector { 1_000L }
+        val warm = projector.appendTextDelta("r", 1, 0, "A", emptyList())
+        val tail = UserMessageUi("user-tail", "follow-up")
+        val next = projector.appendTextDelta("r", 1, 0, "B", warm + tail)
+        assertEquals(2, next.size)
+        assertEquals("AB", (next.first() as AgentMessageUi).content)
+        assertEquals(tail, next.last())
+    }
+
+    @Test
     fun supplementSeparatesResumedTextAndReplacementFromPausedBubble() {
         val projector = AgentRunMessageProjector()
         var messages: List<io.github.mangi.eta.ui.model.AgentChatMessageUi> = emptyList()

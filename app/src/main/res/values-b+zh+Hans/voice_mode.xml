@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="stats_model_cache_hit_rate">缓存命中率</string>
+    <string name="voice_title">语音</string>
+    <string name="voice_section_speech">语音识别</string>
+    <string name="voice_section_tts">朗读</string>
+    <string name="voice_section_conversation">语音对话</string>
+    <string name="voice_section_realtime">豆包实时通话</string>
+    <string name="voice_section_personal">我的声音</string>
+    <string name="voice_section_choose">选择语音设置</string>
     <string name="voice_mode_title">语音对话</string>
     <string name="voice_mode_open">打开语音模式</string>
     <string name="voice_mode_stop">结束语音对话</string>
@@ -19,7 +26,8 @@
     <string name="voice_mode_doubao_provider_missing">请先新增并配置豆包语音提供商</string>
     <string name="voice_mode_doubao_voice">实时通话音色 ID</string>
     <string name="voice_mode_doubao_instructions">实时助手提示词</string>
-    <string name="voice_mode_doubao_settings_hint">提供商、音色和提示词独立配置，不继承朗读设置；下次通话生效。请从上方列表选择实时音色。</string>
     <string name="voice_mode_universal_enable">启用语音对话</string>
     <string name="voice_mode_doubao_enable">启用豆包实时通话</string>
+    <string name="voice_conversation_cloud_asr">豆包语音识别</string>
+    <string name="voice_conversation_asr_resource">识别服务</string>
 </resources>

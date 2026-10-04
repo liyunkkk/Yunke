@@ -46,6 +46,7 @@
             gap: 12px;
             margin-bottom: 12px;
         }
+        .controls[hidden] { display: none; }
         .source-controls { flex-wrap: wrap; gap: 8px; }
         .source-controls label { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 0.85rem; }
         .source-controls label[hidden] { display: none; }
@@ -155,27 +156,88 @@
         <button id="btn-toggle" class="btn-stop" onclick="toggleScreen()">关闭副屏</button>
     </div>
 
+    <div class="controls source-controls" id="pairing-controls" hidden>
+        <label for="remember-pairing">
+            <input id="remember-pairing" type="checkbox" onchange="rememberPairingChanged()">
+            <span id="remember-pairing-text">记住此浏览器配对</span>
+        </label>
+        <button id="btn-forget" type="button" class="btn-refresh" onclick="forgetPairing()">忘记此浏览器配对</button>
+    </div>
+
     <div class="screen-box">
         <img id="snapshot-img" alt="副屏快照" />
         <div id="empty-tip">副屏未启动</div>
     </div>
 
-    <div class="footer-note">两种模式均为手动刷新。代鱼预览请从代鱼副屏入口打开。</div>
+    <div class="footer-note">两种模式均为手动刷新。代鱼首次授权后可记住配对，以后直接打开本页。</div>
 
     <script>
-        // Consume and erase the capability before parsing it or making any request.
-        // It never goes to Go, a query string, storage, logs, or an <img> URL.
-        let etaRequested = false;
+        // Only preview capabilities are remembered, after an explicit browser opt-in.
+        // Never send credentials to Go, query strings, logs, or image URLs.
+        const PAIR_KEY = 'eta.preview.pairing.v1';
+        const pairOriginOk = () => ['http://127.0.0.1:3070', 'http://localhost:3070'].includes(location.origin);
+        function parsePair(port, token, control) {
+            const parsed = Number(port);
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535 ||
+                typeof token !== 'string' || token.length > 256 || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) ||
+                !(control == null || (typeof control === 'string' && /^[a-f0-9]{64}$/.test(control)))) return null;
+            return { port: parsed, token, controlToken: control || null };
+        }
+        function clearStoredPair(expected = null) {
+            if (!pairOriginOk()) return false;
+            try {
+                // An old tab's 401 must not erase a newer pairing made in another tab.
+                if (expected) {
+                    const raw = localStorage.getItem(PAIR_KEY);
+                    if (raw) {
+                        let stored; try { stored = JSON.parse(raw); } catch (_) {}
+                        if (stored && (stored.port !== expected.port || stored.token !== expected.token ||
+                            stored.controlToken !== expected.controlToken)) return true;
+                    }
+                }
+                localStorage.removeItem(PAIR_KEY); return localStorage.getItem(PAIR_KEY) === null;
+            } catch (_) { return false; }
+        }
+        function readStoredPair() {
+            if (!pairOriginOk()) return null;
+            let raw; try { raw = localStorage.getItem(PAIR_KEY); } catch (_) { return null; }
+            if (raw == null) return null;
+            etaRequested = true; // A damaged Eta pairing must never fall back to the module controller.
+            try {
+                if (raw.length > 1024) throw new Error('invalid');
+                const data = JSON.parse(raw);
+                const pair = data && data.v === 1 && typeof data.port === 'number'
+                    ? parsePair(data.port, data.token, data.controlToken) : null;
+                if (!pair) throw new Error('invalid');
+                etaRemembered = true; return pair;
+            } catch (_) { etaPairingDamaged = true; clearStoredPair(); return null; }
+        }
+        function writeStoredPair(config) {
+            if (!pairOriginOk() || !config) return false;
+            try {
+                const value = JSON.stringify({ v: 1, ...config });
+                localStorage.setItem(PAIR_KEY, value); return localStorage.getItem(PAIR_KEY) === value;
+            } catch (_) { return false; }
+        }
+        let etaRequested = false, etaRemembered = false, etaPairingDamaged = false;
         let etaConfig = (() => {
             const fragment = location.hash.slice(1);
-            if (!fragment.startsWith('eta-preview')) return null;
+            if (!fragment.startsWith('eta-preview')) return readStoredPair();
             etaRequested = true;
-            history.replaceState(null, '', location.pathname + location.search);
-            // Treat the preview-only bearer as opaque, not as an owner IPC token.
+            try { history.replaceState(null, '', location.pathname + location.search); }
+            catch (_) { return null; } // Never fetch with an unerased capability fragment.
             const match = /^eta-preview=([0-9]{1,5})[.]([A-Za-z0-9._~+/-]+=*)(?:&eta_control=([a-f0-9]{64}))?$/.exec(fragment);
-            if (!match || +match[1] < 1 || +match[1] > 65535 ||
-                !['http://127.0.0.1:3070', 'http://localhost:3070'].includes(location.origin)) return null;
-            return { port: +match[1], token: match[2], controlToken: match[3] || null };
+            // A new or malformed fragment never inherits old stored read/control authority.
+            if (!match || !pairOriginOk()) return null;
+            const pair = parsePair(match[1], match[2], match[3]);
+            if (pair) {
+                try {
+                    const saved = JSON.parse(localStorage.getItem(PAIR_KEY));
+                    etaRemembered = Boolean(saved && saved.v === 1 && saved.port === pair.port &&
+                        saved.token === pair.token && saved.controlToken === pair.controlToken);
+                } catch (_) {}
+            }
+            return pair;
         })();
 
         const statusEl = document.getElementById('status-display');
@@ -186,6 +248,10 @@
         const displayEl = document.getElementById('eta-display');
         const displayControlsEl = document.getElementById('eta-display-controls');
         const footerEl = document.querySelector('.footer-note');
+        const pairingControlsEl = document.getElementById('pairing-controls');
+        const rememberEl = document.getElementById('remember-pairing');
+        const rememberTextEl = document.getElementById('remember-pairing-text');
+        const forgetEl = document.getElementById('btn-forget');
 
         // The legacy target always comes from /api/status, NEVER an Eta display ID.
         // 'unreachable' stays distinct from 'stopped', so it cannot offer a start.
@@ -196,13 +262,45 @@
         let etaCloseBusy = false;
         const etaUnconfirmed = new Set();
         const etaIdentityKey = d => JSON.stringify([d.displayId, d.uniqueId]);
-        let etaUnavailable = etaRequested
+        let etaUnavailable = etaPairingDamaged ? '已保存的配对无效，请从代鱼副屏入口重新授权' : etaRequested
             ? '预览链接无效，请从代鱼副屏入口重新打开'
             : '未连接代鱼预览，请从代鱼副屏入口打开';
         let requestGeneration = 0, requestAbort = null, moduleImage = null, etaObjectUrl = null;
         const frameLimit = 6 * 1024 * 1024;
         const phaseLabels = { active: '运行中', held: '保留中', uncertain: '异常保留',
             recovery_pending: '待恢复', finishing: '交接中' };
+
+        function syncPairingControls() {
+            pairingControlsEl.hidden = previewMode !== 'eta' || !etaConfig;
+            rememberTextEl.textContent = etaConfig && etaConfig.controlToken
+                ? '记住此浏览器配对（含关闭授权）' : '记住此浏览器配对（只读）';
+            rememberEl.checked = etaRemembered;
+            rememberEl.disabled = etaCloseBusy;
+            forgetEl.disabled = etaCloseBusy;
+        }
+        function rememberPairingChanged() {
+            if (etaCloseBusy || !etaConfig) { syncPairingControls(); return; }
+            const remember = rememberEl.checked;
+            const ok = remember ? writeStoredPair(etaConfig) : clearStoredPair();
+            if (ok) etaRemembered = remember;
+            syncPairingControls();
+            showMessage(ok ? (remember ? '已记住配对；以后可直接打开本页' : '已取消记住配对；本次连接仍有效')
+                : '浏览器无法保存或清除配对，请检查本站存储权限；本次连接仍有效', ok ? '#7ee787' : '#d29922');
+        }
+        function forgetPairing() {
+            if (etaCloseBusy) return;
+            const cleared = clearStoredPair();
+            cancelRequests(); etaConfig = null; etaRemembered = false;
+            etaDisplays = []; etaSelected = null; previewMode = 'eta';
+            etaUnavailable = cleared ? '已忘记此浏览器配对，请从代鱼副屏入口重新授权'
+                : '未能清除浏览器配对，请在浏览器设置中清除本站数据；当前连接已断开';
+            renderDisplays('未连接代鱼预览'); renderMode(); showMessage(etaUnavailable, '#d29922');
+        }
+        function invalidatePairing() {
+            clearStoredPair(etaConfig);
+            etaConfig = null; etaRemembered = false;
+            syncPairingControls();
+        }
 
         function clearFrame() {
             imgEl.removeAttribute('src');
@@ -255,6 +353,7 @@
             displayEl.disabled = etaCloseBusy || etaDisplays.length === 0;
         }
         function renderToggle() {
+            syncPairingControls();
             if (previewMode === 'eta') {
                 const authorized = Boolean(etaConfig && etaConfig.controlToken);
                 const uncertain = etaSelected && etaUnconfirmed.has(etaIdentityKey(etaSelected));
@@ -373,12 +472,12 @@
                 etaDisplays = []; etaSelected = null; renderDisplays('列表不可用');
             }
             if (error.message === 'ETA_AUTH') {
-                etaConfig = null;
+                invalidatePairing();
                 etaUnavailable = messages.ETA_AUTH;
             }
             showMessage(messages[error.message] || (error.name === 'AbortError'
                 ? '代鱼预览请求超时，请手动刷新'
-                : '无法连接代鱼预览，请检查代鱼和浏览器跨域授权后手动刷新'), '#f85149');
+                : '无法连接代鱼预览：服务离线或连接受限；请启动代鱼后手动刷新，原配对会保留'), '#f85149');
         }
         // One bounded request per user action (or initial entry); no polling,
         // automatic retries, visibility-based refresh, or legacy fallback.
@@ -447,6 +546,7 @@
                 method: 'POST', mode: 'cors', headers, signal: controller.signal,
                 cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer'
             });
+            if (response.status === 401) throw new Error('ETA_AUTH');
             if (![200, 409, 503].includes(response.status) ||
                 (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase() !== 'application/json')
                 throw new Error('CLOSE_RESPONSE_UNAVAILABLE');
@@ -507,8 +607,12 @@
                 } else {
                     showMessage('关闭结果未确认，已停止重试；请到代鱼查看恢复状态', '#f85149');
                 }
-            } catch (_) {
-                if (isCurrent(generation, 'eta')) showMessage(dispatched
+            } catch (error) {
+                if (isCurrent(generation, 'eta') && error.message === 'ETA_AUTH') {
+                    invalidatePairing();
+                    etaUnavailable = '代鱼预览授权已失效（401），请从代鱼副屏入口重新打开';
+                    showMessage(dispatched ? etaUnavailable + '；关闭结果未确认，已停止重试' : etaUnavailable, '#f85149');
+                } else if (isCurrent(generation, 'eta')) showMessage(dispatched
                     ? '关闭结果未确认，已停止重试；请到代鱼查看恢复状态'
                     : '关闭核验失败，未发送关闭请求；请检查授权或重新打开入口', '#f85149');
             } finally {

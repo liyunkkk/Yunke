@@ -12,7 +12,7 @@ import androidx.room.Transaction
 internal interface ConversationDao {
     @Query(
         "SELECT id, title, thinking_enabled, reasoning_effort, " +
-            "applied_runtime_run_ids_json, created_at, updated_at, folder_id, is_pinned, " +
+            "applied_runtime_run_ids_json, created_at, updated_at, folder_id, is_pinned, has_completion_marker, " +
             "provider_id, model_id, assistant_id " +
             "FROM conversations ORDER BY updated_at DESC"
     )
@@ -20,14 +20,14 @@ internal interface ConversationDao {
 
     @Query(
         "SELECT id, title, thinking_enabled, reasoning_effort, " +
-            "applied_runtime_run_ids_json, created_at, updated_at, folder_id, is_pinned, " +
+            "applied_runtime_run_ids_json, created_at, updated_at, folder_id, is_pinned, has_completion_marker, " +
             "provider_id, model_id, assistant_id " +
             "FROM conversations ORDER BY updated_at DESC LIMIT :limit OFFSET :offset"
     )
     suspend fun conversationsPage(limit: Int, offset: Int): List<ConversationMetadata>
 
     @Query("SELECT id, title, thinking_enabled, reasoning_effort, applied_runtime_run_ids_json, " +
-        "created_at, updated_at, folder_id, is_pinned, provider_id, model_id, assistant_id " +
+        "created_at, updated_at, folder_id, is_pinned, has_completion_marker, provider_id, model_id, assistant_id " +
         "FROM conversations WHERE id = :id")
     suspend fun conversationMetadata(id: String): ConversationMetadata?
 
@@ -51,6 +51,9 @@ internal interface ConversationDao {
         "AND type IN ('user', 'assistant', 'thinking', 'tool') ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
     suspend fun searchablePage(id: String, limit: Int, offset: Int): List<ConversationTextRow>
 
+    @Query("SELECT DISTINCT conversation_id FROM conversation_messages WHERE type = 'question'")
+    suspend fun questionConversationIds(): List<String>
+
     @Query("SELECT * FROM conversation_messages ORDER BY conversation_id ASC, sort_index ASC")
     suspend fun messages(): List<ConversationMessageEntity>
 
@@ -68,6 +71,9 @@ internal interface ConversationDao {
 
     @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
     suspend fun messagesPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
+
+    @Query("UPDATE conversation_messages SET id = :newId WHERE conversation_id = :conversationId AND id = :oldId")
+    suspend fun renameMessageId(conversationId: String, oldId: String, newId: String)
 
     @Query("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = :conversationId")
     suspend fun messageCount(conversationId: String): Int

@@ -122,7 +122,16 @@ class AgentChatViewportContractTest(unittest.TestCase):
         )
         self.assertRegex(self.messages, r"bottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset")
         self.assertRegex(self.messages, r"bottom\s*=\s*12\.dp\s*\+\s*bottomInset")
-        self.assertEqual(len(re.findall(r"\bbottomInset\b", self.messages)), 5)
+        # The inset is a resting-space budget, not a reason to keep an idle
+        # anchored conversation permanently clipped.
+        clip_calls = list(calls(self.messages, "shouldClipChatTail"))
+        self.assertEqual(len(clip_calls), 1)
+        self.assertRegex(clip_calls[0], r"\bisStreaming\s*=\s*isStreaming\b")
+        self.assertRegex(clip_calls[0], r"\bisBottomSettling\s*=\s*isBottomSettling\b")
+        self.assertRegex(
+            clip_calls[0],
+            r"navigationActive\s*=\s*messageNavigationJob\s*!=\s*null\s*\|\|\s*scrollToMessageId\s*!=\s*null",
+        )
 
     def test_lazy_column_rests_above_the_composer(self):
         lists = list(calls(self.messages, "LazyColumn"))
@@ -148,9 +157,31 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertNotIn("colorScheme.surface)", bar.split("AgentChatInputBar(", 1)[0])
         self.assertNotIn("textureBlur", self.source)
 
+    def test_idle_reanchoring_observes_applied_geometry_and_respects_scroll_owners(self):
+        anchor_call = self.messages.index("AnchorChatTailOnViewportChange(")
+        callback_start = self.messages.index("{", anchor_call)
+        callback_end = balanced_end(self.messages, callback_start, "{", "}")
+        callback = self.messages[callback_start + 1:callback_end]
+        for guard in (
+            "currentAnchor.value", "!currentStreaming.value", "!isBottomSettling",
+            "!initialBottomPositionPending", "!pointerDown[0]", "!currentDragging.value",
+            "!isUserScrolling", "messageNavigationJob == null", "currentScrollTarget == null",
+        ):
+            self.assertIn(guard, callback)
+        helper_start = self.source.index("internal fun AnchorChatTailOnViewportChange(")
+        helper_end = self.source.index("private suspend fun snapListToBottom(", helper_start)
+        helper = self.source[helper_start:helper_end]
+        self.assertIn("rememberUpdatedState(canPosition)", helper)
+        self.assertIn("LaunchedEffect(scrollState)", helper)
+        self.assertIn("info.viewportEndOffset - info.afterContentPadding", helper)
+        self.assertIn("previousRestLine != null && previousRestLine != restLine", helper)
+        self.assertIn("changed && currentCanPosition()", helper)
+        self.assertIn("snapListToBottom(scrollState, currentBottomIndex) { currentCanPosition() }", helper)
+        self.assertNotIn("bottomInset", helper)
+
     def test_bottom_follow_retains_effective_viewport_formula(self):
-        # The viewport already ends at the composer top edge; subtracting the list's
-        # own bottom padding keeps the follow target at the last text line.
+        # The viewport is full height; subtract its measured composer/IME padding
+        # to target the last text line above the floating composer.
         self.assertRegex(
             self.messages,
             r"\bviewportEnd\s*=\s*layoutInfo\.viewportEndOffset\s*"

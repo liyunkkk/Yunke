@@ -5,6 +5,8 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
@@ -46,8 +48,7 @@ class AgentCloudReceiptRegressionTest {
                 assertEquals(historyTokens, state(app).cloudHistoryTokens)
             }
             val current = state(app)
-            val ring = liveContextUsage(history = current.history, currentInput = "",
-                pendingImages = emptyList(), selectedModel = null,
+            val ring = liveContextUsage(selectedModel = null,
                 billedContextTokens = current.livePromptTokens, activeRunContextWindow = 272_000)
             assertEquals(270_648, ring.contextTokens)
             assertEquals(272_000, ring.contextWindow)
@@ -81,6 +82,29 @@ class AgentCloudReceiptRegressionTest {
         }
     }
 
+    @Test fun partialUsageKeepsOnlySameRequestBaselineAndNewRequestCannotBorrowIt() {
+        withApp { app ->
+            send(app, AgentEvent.ProviderRequestStarted(1))
+            send(app, AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 37214),
+                requestHistoryTokens = 481, requestOverheadTokens = 25270))
+            send(app, AgentEvent.UsageReceived(1, AgentTokenUsage(inputTokens = 37214, outputTokens = 10)))
+            assertEquals(481, state(app).cloudHistoryTokens)
+            assertEquals(25270, state(app).cloudRequestOverheadTokens)
+            send(app, AgentEvent.ProviderRequestStarted(2))
+            send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000)))
+            assertEquals(40000, state(app).livePromptTokens)
+            assertNull(state(app).cloudHistoryTokens)
+            assertNull(state(app).cloudRequestOverheadTokens)
+            // A repeated start is not new evidence and must not break same-request corrections.
+            send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000),
+                requestHistoryTokens = 1000, requestOverheadTokens = 25270))
+            send(app, AgentEvent.ProviderRequestStarted(2))
+            send(app, AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 40000)))
+            assertEquals(1000, state(app).cloudHistoryTokens)
+            assertEquals(25270, state(app).cloudRequestOverheadTokens)
+        }
+    }
+
     private fun withApp(block: (AgentAppState) -> Unit) {
         val context = RuntimeEnvironment.getApplication() as Context
         EtaDatabase.closeForTests()
@@ -88,6 +112,9 @@ class AgentCloudReceiptRegressionTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         try {
             val app = AgentAppState(context, scope)
+            call(app, "updateSelectionProviders", listOf(OpenAiCompatibleProviderSetting(
+                "p", "Test", "https://example.org/v1",
+                models = listOf(Model("m", "model", "Model", contextWindow = 272_000)))))
             call(app, "updateConversation", "cloud-c", AgentChatHomeUiState(
                 messages = listOf(UserMessageUi("cloud-user", "original")),
                 history = listOf(AgentModelClient.ConversationMessage("user", "original")),

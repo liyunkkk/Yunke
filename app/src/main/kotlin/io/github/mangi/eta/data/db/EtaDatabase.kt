@@ -177,6 +177,10 @@ internal abstract class EtaDatabase : RoomDatabase() {
         }
 
         // Version 29 existed in two development lines. Preserve either receipt type.
+        internal val MIGRATION_31_32 = Migration(31, 32) { database ->
+            database.execSQL("ALTER TABLE conversations ADD COLUMN has_completion_marker INTEGER NOT NULL DEFAULT 0")
+        }
+
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->
             database.execSQL(
                 "ALTER TABLE model_providers ADD COLUMN session_gateway_json TEXT NOT NULL DEFAULT ''"

@@ -11,6 +11,9 @@ import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.canContinuePausedGeneration
+import io.github.mangi.eta.ui.model.stoppedDuringModelRetry
+import io.github.mangi.eta.ui.model.canContinueDisconnectedRun
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -37,6 +40,27 @@ class AgentTimelineProjectionTest {
                 assertSame(original, projected)
             }
         }
+    }
+
+    @Test
+    fun initialTailIndexUsesProjectedRowsAndAddsAtMostOneCompressionFooter() {
+        val retry = SystemNoticeMessageUi("retry", SystemNoticeCode.ModelRetry)
+        val hiddenResume = UserMessageUi("user-supplement-resume", "hidden resume")
+        val entries = listOf(
+            UserMessageUi("user", "task"),
+            workMessage(0),
+            retry,
+            hiddenResume,
+        ).toTimelineEntries()
+
+        // The initial anchor follows rendered timeline rows, not raw messages:
+        // retry and resume records do not create LazyColumn items.
+        assertEquals(2, entries.size)
+        assertEquals(2, initialTimelineItemIndex(entries, false, false, false))
+        assertEquals(3, initialTimelineItemIndex(entries, true, false, false))
+        assertEquals(3, initialTimelineItemIndex(entries, false, true, false))
+        assertEquals(3, initialTimelineItemIndex(entries, false, false, true))
+        assertEquals(3, initialTimelineItemIndex(entries, true, true, true))
     }
 
     @Test
@@ -111,6 +135,46 @@ class AgentTimelineProjectionTest {
         for (index in 0..99) {
             assertTrue("Missing work step $index from transcript", originalTranscript.contains("payload-$index-end"))
         }
+    }
+
+    @Test
+    fun modelRetryStaysInHistoryButNotInTheChatTimeline() {
+        val retry = SystemNoticeMessageUi("retry", SystemNoticeCode.ModelRetry, "retry detail")
+        val stopped = SystemNoticeMessageUi("stopped", SystemNoticeCode.Stopped)
+        val messages = listOf(
+            UserMessageUi("user-run", "task"),
+            workMessage(0),
+            retry,
+            workMessage(1),
+            stopped,
+        )
+
+        val entries = messages.toTimelineEntries()
+        assertEquals(listOf("user-run", "work-step-0", "stopped"), entries.map { it.key })
+        assertEquals(listOf(workMessage(0), workMessage(1)),
+            (entries[1] as AgentTimelineEntry.WorkProcess).messages)
+        assertEquals(messages.filterNot { it == retry }, entries.flattenMessages())
+        assertEquals(listOf(messages[0], workMessage(0), retry, workMessage(1), stopped), messages)
+        assertTrue(messages.stoppedDuringModelRetry())
+        assertTrue(canContinuePausedGeneration(messages))
+        assertTrue(canContinueDisconnectedRun(messages))
+        assertTrue(listOf(retry).toTimelineEntries().isEmpty())
+    }
+
+    @Test
+    fun hidingRetryPreservesOtherNoticesAndBoundedWorkGroups() {
+        val notices = SystemNoticeCode.entries.filterNot { it == SystemNoticeCode.ModelRetry }
+            .map { SystemNoticeMessageUi("notice-${it.wireValue}", it, "detail") }
+        val work = List(65, ::workMessage)
+        val retry = SystemNoticeMessageUi("retry", SystemNoticeCode.ModelRetry)
+        val messages = work.take(31) + retry + work.drop(31) + notices
+        val entries = messages.toTimelineEntries()
+        assertEquals(listOf(32, 32, 1),
+            entries.filterIsInstance<AgentTimelineEntry.WorkProcess>().map { it.messages.size })
+        assertEquals(work + notices, entries.flattenMessages())
+        assertEquals(entries.size, entries.map { it.key }.toSet().size)
+        val rows = entries.toLazyTimelineRows(emptyMap(), isStreaming = false)
+        assertFalse(rows.any { it is AgentTimelineRow.Message && it.message == retry })
     }
 
     private fun workMessage(index: Int): AgentChatMessageUi = when (index % 3) {

@@ -211,8 +211,8 @@ internal object AgentChildTaskGroups {
             "workspace_path", "workspace_ownership_verified", "review_required", "can_continue", "can_replace", "replace_reason",
             "continuation_count", "parallel_limit", "successor_task_id", "replaces_task_id", "context_usage",
             "pause_supported", "pause_requested", "pause_confirmed", "pause_source", "execution_exited",
-            "execution_stopped", "handoff_version", "partial_result_unverified").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
-        listOf("result", "partial_result").forEach { key ->
+            "execution_stopped", "handoff_version", "partial_result_unverified", "stopping", "allowed_actions", "next_step", "browser_access", "delivery_state", "artifact_verified", "artifact_evidence", "acceptance_verified").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
+        listOf("result", "partial_result", "model_report_unverified").forEach { key ->
             snapshot.put(key, json.optString(key).take(MAX_RESULT_CHARS))
             snapshot.put("${key}_truncated", json.optString(key).length > MAX_RESULT_CHARS)
         }
@@ -453,13 +453,34 @@ internal object AgentChildTaskGroups {
         val snapshot = runCatching { JSONObject(result(old, predecessorId, AgentModelClient.ToolCall(
             "replacement-check", "get_task_result", JSONObject().put("task_id", predecessorId).toString())).content) }
             .getOrNull() ?: return error("REPLACEMENT_EVIDENCE_UNAVAILABLE")
-        if (snapshot.optString("status") != "failed" || !snapshot.optBoolean("can_replace")) return error("REPLACEMENT_NOT_ALLOWED")
-        if (!snapshot.optBoolean("execution_stopped") || old.coordinator?.hasActiveTasks() == true) return error("REPLACE_PENDING_STOP")
         val role = snapshot.optString("role")
-        if (role in setOf("image_generation", "video_generation")) return error("MEDIA_DELIVERY_UNCERTAIN")
         val workspaceId = (snapshot.opt("workspace_id") as? String)?.takeIf { it.isNotBlank() }
-        if (role == "implementation" || (snapshot.optString("workspace_path")).isNotBlank() || workspaceId != null)
-            return error("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW")
+        val workspaceBound = role == "implementation" || workspaceId != null || snapshot.optString("workspace_path").isNotBlank()
+        // A failed isolated worktree is not "just another failed task": this run never replaces an
+        // implementation/workspace task, so name the accurate inspect/discard/relaunch path instead.
+        if (workspaceBound && snapshot.optString("status") == "failed") {
+            return error("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW") {
+                put("workspace_id", workspaceId ?: JSONObject.NULL)
+                put("can_replace", false)
+                put("allowed_actions", snapshot.optJSONArray("allowed_actions") ?: JSONArray(listOf("get_task_result")))
+                put("next_step", snapshot.optString("next_step").ifBlank {
+                    "带工作区的任务不能替换；先用 get_task_result 确认 execution_stopped，再 inspect 核验工作树。"
+                })
+            }
+        }
+        if (!ChildTaskReplacementSelection.eligibleStatus(snapshot) || !snapshot.optBoolean("can_replace")) {
+            return error("REPLACEMENT_NOT_ALLOWED") {
+                put("can_replace", false)
+                put("status", snapshot.optString("status"))
+                put("allowed_actions", snapshot.optJSONArray("allowed_actions") ?: JSONArray(listOf("get_task_result")))
+                put("next_step", snapshot.optString("next_step").ifBlank {
+                    "仅 failed 或 SUB_AGENT_NO_PROGRESS 的 awaiting_decision 任务，在 can_replace=true 且 execution_stopped=true 后可显式替换；先读取实际状态，不重放任务。"
+                })
+            }
+        }
+        if (!snapshot.optBoolean("execution_stopped") || old.coordinator?.hasActiveTasks() == true) return error("REPLACE_PENDING_STOP")
+        if (role in setOf("image_generation", "video_generation")) return error("MEDIA_DELIVERY_UNCERTAIN")
+        if (workspaceBound) return error("WORKSPACE_HANDOFF_REQUIRES_MANUAL_REVIEW") { put("workspace_id", workspaceId ?: JSONObject.NULL) }
         if (args.has("role") && args.optString("role") != role) return error("REPLACEMENT_ROLE_MISMATCH")
         // 失败的任务已经停了，没法再要检查点；没报过检查点就让接替的任务从头做。
         val checkpoint = snapshot.optJSONObject("supervision")?.optString("checkpoint").orEmpty()
@@ -543,7 +564,7 @@ internal object AgentChildTaskGroups {
                 "list-$id", "get_task_result", JSONObject().put("task_id", id).toString())).content) }.getOrNull() ?: continue
             val item = JSONObject().put("task_id", id).put("status", json.optString("status"))
                 .put("role", json.optString("role")).put("agent_id", json.optString("agent_id"))
-            listOf("pause_requested", "pause_confirmed", "pause_source", "pause_supported", "can_continue", "archived", "stopping", "execution_exited", "execution_stopped")
+            listOf("pause_requested", "pause_confirmed", "pause_source", "pause_supported", "can_continue", "archived", "stopping", "execution_exited", "execution_stopped", "delivery_state", "artifact_verified", "acceptance_verified", "error_code", "workspace_id", "review_required", "allowed_actions", "next_step")
                 .forEach { key -> if (json.has(key)) item.put(key, json.get(key)) }
             synchronized(this) { replacedBy[id]?.predecessorId }?.let { item.put("replaces_task_id", it) }
             page.put(item)
@@ -552,8 +573,9 @@ internal object AgentChildTaskGroups {
             .put("total", ids.size).put("next_offset", if (offset + page.length() < ids.size) offset + page.length() else JSONObject.NULL)
             .toString(), sensitive = true)
     }
-    private fun error(code: String) = AgentModelClient.ToolResult(
-        io.github.mangi.eta.agent.delegation.SubAgentErrorHints.annotate(JSONObject().put("ok", false).put("code", code)).also { json ->
+    private fun error(code: String, details: JSONObject.() -> Unit = {}) = AgentModelClient.ToolResult(
+        io.github.mangi.eta.agent.delegation.SubAgentErrorHints.annotate(
+            JSONObject().put("ok", false).put("code", code).apply(details)).also { json ->
             // 替换策略的拒绝码自带英文原因，没有中文说明时用它。
             if (json.optString("message").isBlank()) {
                 ChildTaskConfigPolicy.Code.entries.firstOrNull { it.name == code }?.let { json.put("message", it.reason) }

@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -19,23 +20,16 @@ import javax.net.ssl.SSLHandshakeException
 
 class AgentModelRetryTest {
     @Test
-    fun retriesAreBoundedAndBackoffIsPerModelRound() {
+    fun safeRequestRetryUsesPolicyDelayAndDistinctModelRound() {
         val delays = mutableListOf<Long>()
         // 注入中性随机源：抖动因子恒为 1.0，便于断言基础退避序列。
         val retry = AgentModelRetry(waitBeforeRetry = { _, delay -> delays += delay }, random = { 0.5 })
         var calls = 0
-        val failure = assertThrows(AgentModelFailure::class.java) {
-            complete(retry, provider { _, _ -> calls++; throw SocketTimeoutException("timeout") })
-        }
-        assertEquals(4, calls)
-        assertEquals(listOf(2_000L, 4_000L, 8_000L), delays)
-        assertTrue(failure.message.orEmpty().contains("已重试 3 次"))
-        delays.clear()
-        calls = 0
         val result = complete(retry, provider { _, _ ->
             if (calls++ == 0) throw IOException("connection reset")
             response()
         })
+        assertEquals(2, calls)
         assertEquals(2, result.round)
         assertEquals(listOf(2_000L), delays)
     }
@@ -103,7 +97,7 @@ class AgentModelRetryTest {
     }
 
     @Test
-    fun callbackFailuresAndHostedToolFailuresDoNotReplayProvider() {
+    fun callbackFailuresDoNotReplayAndHostedFailuresUseLocalOnlyRecovery() {
         val noRetry = AgentModelRetry { _, _ -> fail("不应重试") }
         val callbackFailure = IOException("checkpoint write failed")
         val thrown = assertThrows(IOException::class.java) {
@@ -113,12 +107,19 @@ class AgentModelRetryTest {
             }, onProviderEvent = { _, _ -> throw callbackFailure })
         }
         assertSame(callbackFailure, thrown)
-        assertThrows(AgentModelFailure::class.java) {
-            complete(noRetry, provider { _, emit ->
+        var calls = 0
+        val recovered = complete(AgentModelRetry { _, _ -> }, provider { request, emit ->
+            if (calls++ == 0) {
                 emit(ProviderEvent.HostedToolStarted("search-1", "web_search"))
                 throw SocketTimeoutException()
-            })
-        }
+            }
+            assertFalse(request.reconnectTextOnly)
+            assertTrue(request.reconnectLocalToolsOnly)
+            assertEquals(0, request.tools.length())
+            response()
+        })
+        assertEquals(2, calls)
+        assertEquals(2, recovered.round)
     }
 
     @Test
@@ -179,7 +180,7 @@ class AgentModelRetryTest {
             assertFalse(AgentModelFailure.http(status, "").retryable)
         }
         assertFalse(AgentModelFailure.http(429, """{"error":{"code":"insufficient_quota"}}""").retryable)
-        assertNull(AgentModelFailure.transport(SSLHandshakeException("certificate")))
+        assertEquals("MODEL_CONNECTION_FAILED", AgentModelFailure.transport(SSLHandshakeException("certificate"))?.code)
         assertNull(AgentModelFailure.transport(org.json.JSONException("invalid JSON")))
         assertTrue(AgentModelFailure.stream(JSONObject().put("type", "overloaded_error"), "过载").retryable)
         assertFalse(AgentModelFailure.stream(JSONObject().put("type", "authentication_error"), "认证失败").retryable)
@@ -207,7 +208,7 @@ class AgentModelRetryTest {
         assertSame(original, thrown)
     }
 
-    @Test fun repetitiveReasoningStopsWithoutRetryOrDeliveringRejectedDelta() {
+    @Test fun repetitiveReasoningStopsWithoutRetryWhenPolicyIsNone() {
         var calls = 0
         var delivered = 0
         val failure = assertThrows(AgentModelFailure::class.java) {
@@ -218,7 +219,8 @@ class AgentModelRetryTest {
                     emit(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, index, "OK.\nWrite.\nNow.\nWriting.\nDONE.\n"))
                 }
                 response()
-            }, onProviderEvent = { _, event -> if (event is ProviderEvent.BlockDelta) delivered++ })
+            }, onProviderEvent = { _, event -> if (event is ProviderEvent.BlockDelta) delivered++ },
+                policy = ErrorReconnectPolicy.NONE)
         }
         assertEquals("MODEL_REPETITIVE_REASONING", failure.code)
         assertFalse(failure.retryable)
@@ -226,7 +228,7 @@ class AgentModelRetryTest {
         assertTrue(delivered in 1..300)
     }
 
-    @Test fun repetitiveReasoningFailureWinsEvenIfProviderSwallowsIt() {
+    @Test fun repetitiveReasoningFailureWinsForNoneEvenIfProviderSwallowsIt() {
         var calls = 0
         val failure = assertThrows(AgentModelFailure::class.java) {
             complete(AgentModelRetry { _, _ -> fail("must not retry") }, provider { _, emit ->
@@ -235,10 +237,49 @@ class AgentModelRetryTest {
                     emit(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, 0, "Write.\n".repeat(2000)))
                 } catch (_: AgentModelFailure) { }
                 response()
-            })
+            }, policy = ErrorReconnectPolicy.NONE)
         }
         assertEquals("MODEL_REPETITIVE_REASONING", failure.code)
         assertEquals(1, calls)
+    }
+
+    @Test fun repetitiveReasoningRecoversUnderContinuousPolicyEvenWhenProviderSwallowsIt() {
+        var calls = 0
+        val result = complete(AgentModelRetry { _, _ -> }, provider { request, emit ->
+            if (calls++ == 0) {
+                try {
+                    emit(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, 0, "Write.\n".repeat(2000)))
+                } catch (_: AgentModelFailure) { }
+            } else {
+                assertFalse(request.reconnectTextOnly)
+                assertTrue(request.reconnectLocalToolsOnly)
+            }
+            response()
+        })
+        assertEquals(2, calls)
+        assertEquals(2, result.round)
+    }
+
+    @Test fun continuationFlushConsumerFailureIsNotRetriedAsTransportFailure() {
+        val failure = IOException("consumer flush failed")
+        var calls = 0
+        var waits = 0
+        val thrown = assertThrows(IOException::class.java) {
+            complete(AgentModelRetry { _, _ -> waits++ }, provider { _, emit ->
+                if (calls++ == 0) {
+                    emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "Hello world"))
+                    throw IOException("disconnect")
+                }
+                // Ambiguous overlap remains buffered until successful-response flush.
+                emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "Hello"))
+                response()
+            }, onProviderEvent = { round, event ->
+                if (round == 2 && event is ProviderEvent.BlockDelta) throw failure
+            })
+        }
+        assertSame(failure, thrown)
+        assertEquals(2, calls)
+        assertEquals(1, waits)
     }
 
     @Test fun answerTextAndToolArgumentsAreNotReasoningRepetitions() {
@@ -254,10 +295,11 @@ class AgentModelRetryTest {
         provider: AgentProviderClient,
         controller: AgentRunController = AgentRunController(),
         onProviderEvent: (Int, ProviderEvent) -> Unit = { _, _ -> },
+        policy: ErrorReconnectPolicy = ErrorReconnectPolicy.CONTINUOUS,
     ) = retry.complete(
         initialRound = 1,
         request = ProviderRequest(
-            AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test-key", model = "test-model", systemPrompt = ""),
+            AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test-key", model = "test-model", systemPrompt = "", errorReconnectPolicy = policy.persistedValue),
             JSONArray(), JSONArray(),
         ),
         provider = provider,

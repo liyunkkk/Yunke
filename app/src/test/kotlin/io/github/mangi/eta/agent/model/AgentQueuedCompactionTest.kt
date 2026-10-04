@@ -28,6 +28,10 @@ class AgentQueuedCompactionTest {
                 override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
                     requests++
                     assertEquals(requests - 1, compactions)
+                    onEvent(ProviderEvent.RequestStarted)
+                    AgentWireRequestEstimate.publish(
+                        AgentWireRequestEstimate.previewBody(request.config, request.messages, request.tools),
+                        AgentWireRequestEstimate.endpoint(request.config), request, onEvent)
                     if (requests == 1 || (freshUsage && requests == 2)) {
                         onEvent(ProviderEvent.Usage(io.github.mangi.eta.agent.runtime.AgentTokenUsage(inputTokens = 85_000)))
                         return ProviderResponse(JSONObject().put("role", "assistant").put("content", "")

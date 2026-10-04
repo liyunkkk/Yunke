@@ -43,9 +43,9 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertNotIn("TopAppBar(", page)
         self.assertIn("Row(", page)
         self.assertIn("FlowRow(", page)
-        # 三个操作各只有一个入口；按钮文字不允许折行。
-        self.assertEqual(3, page.count("TouchHaptics.click(view)"))
-        self.assertEqual(3, page.count("maxLines = 1"))
+        # 四个操作各只有一个入口；按钮文字不允许折行。
+        self.assertEqual(4, page.count("TouchHaptics.click(view)"))
+        self.assertEqual(4, page.count("maxLines = 1"))
         self.assertIn("VirtualDisplayWebPreview.openWithManualClose(context)", page)
         self.assertNotIn("VirtualDisplayWebPreview.open(context)", page)
         self.assertNotIn("vd_preview_control_open", page)
@@ -54,7 +54,16 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertIn("LaunchedEffect(Unit) { refresh() }", page)
         self.assertIn('snapshot.optBoolean("recoverable")', page)
         self.assertIn("VirtualDisplaySession::recoverAndFinishManually", page)
-        self.assertIn("VirtualDisplayWebPreview.stop()", page)
+        self.assertNotIn("VirtualDisplayWebPreview.stop()", page)
+        for action in ("vd_preview_open", "vd_preview_revoke", "vd_recovery_refresh", "vd_recovery_action"):
+            self.assertIn("R.string." + action, page)
+        self.assertIn('snapshot?.optBoolean("busy")', page)
+        self.assertIn("busy -> R.string.vd_recovery_busy", page)
+        self.assertIn("val showWeb = installed == true || webPaired", page)
+        preview_button = page.split("FlowRow(", 1)[1].split("R.string.vd_preview_open", 1)[0]
+        self.assertIn("enabled = installed == true && !working,", preview_button)
+        self.assertNotIn('optBoolean("present")', preview_button)
+        self.assertNotIn('optBoolean("recoverable")', preview_button)
         root = (UI / "app/AgentAppRoot.kt").read_text()
         self.assertIn("entry<AppRoute.VirtualDisplayRecovery>", root)
         self.assertNotIn("VirtualDisplayRecoveryScreen(onBack = ::popRoute)", root)
@@ -75,11 +84,19 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertNotIn("inspect_virtual_backend", source)
         self.assertIn("awaitCancellation()", source)
 
-    def test_leaving_recovery_revokes_preview_without_stopping_on_pause(self):
+    def test_leaving_page_keeps_pairing_and_revocation_is_explicit(self):
         page = (UI / "VirtualDisplayRecoveryScreen.kt").read_text()
         cleanup = page.split("DisposableEffect(Unit) {", 1)[1].split("val snapshot", 1)[0]
         self.assertIn("onDispose {", cleanup)
-        self.assertIn("VirtualDisplayWebPreview.stop()", cleanup)
+        self.assertIn("onWorkingChanged(false)", cleanup)
+        self.assertNotIn("VirtualDisplayWebPreview.", cleanup)
+        self.assertNotIn("VirtualDisplayWebPreview.stop()", page)
+        self.assertIn("if (installed == false && !working)", page)
+        self.assertIn("if (!stillInstalled)", page)
+        revoke_button = page.split("R.string.vd_preview_open", 1)[1].split("R.string.vd_preview_revoke", 1)[0]
+        self.assertIn("enabled = webPaired && !working", revoke_button)
+        self.assertIn("VirtualDisplayWebPreview.revoke(context)", revoke_button)
+        self.assertIn("webPaired = false", revoke_button)
         self.assertNotIn("Lifecycle.Event.ON_PAUSE", page)
         self.assertNotIn("Lifecycle.Event.ON_STOP", page)
 

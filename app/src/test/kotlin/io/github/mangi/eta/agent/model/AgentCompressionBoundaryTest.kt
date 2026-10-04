@@ -78,7 +78,11 @@ class AgentCompressionBoundaryTest {
 
     @Test fun billedToLocalRatioScalesTheVerbatimBudgetDown() {
         assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, null, 40_000))
-        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, 30_000, 40_000))
+        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, 0, 40_000))
+        assertEquals(80_000, AgentCompressionBoundary.localRetentionBudget(80_000, 30_000, -1))
+        // Same-request local over-count enlarges, but not past 1.5x.
+        assertEquals(106_666, AgentCompressionBoundary.localRetentionBudget(80_000, 30_000, 40_000))
+        assertEquals(120_000, AgentCompressionBoundary.localRetentionBudget(80_000, 10_000, 40_000))
         assertEquals(10_000, AgentCompressionBoundary.localRetentionBudget(80_000, 400_000, 50_000))
         val history = mutableListOf(message("user", "task"))
         repeat(40) { i ->
@@ -198,21 +202,45 @@ class AgentCompressionBoundaryTest {
     }
 
     @Test fun firstRequestDoesNotAutoCompactFromLocalHistoryEstimate() {
-        val source = JSONArray().put(AgentConversationCodec.userTextMessage("x".repeat(352_000)))
+        // The fixture must sit inside the band between the 80% auto-compaction pressure line and
+        // the conservative uncalibrated hard send limit (same shape as AgentAutomaticCompactionTest).
+        // A 100k window can no longer host that band once the 12% reserve landed: its hard limit
+        // (~78.9k) is below the 80% line (~80k), so the old ~90k fixture paused instead of sending.
+        // 260k reopens a 208k..211.7k band for the same local-only estimate.
+        val window = 260_000
+        val huge = "x".repeat(830_000)
+        val source = JSONArray().put(AgentConversationCodec.userTextMessage(huge))
             .put(JSONObject().put("role", "assistant").put("content", "old result"))
             .put(AgentConversationCodec.userTextMessage("y".repeat(8000)))
-        val model = config(100_000)
+        val model = config(window)
+        val outputReserve = AgentCompressionBoundary.outputReserve(model)
+        val pressure = AgentContextCompactor.autoPressureTokens(window)
+        val hardLimit = AgentCompressionBoundary.inputLimit(window, outputReserve, calibrated = false)
+        val local = AgentRequestTokenEstimate.boundary(source, JSONArray(), model.supportsVision, model.supportsVideo)
+        // Above 80% of the window, so a target receipt could schedule a summary...
+        assertTrue("local=$local pressure=$pressure", local >= pressure)
+        // ...but below the uncalibrated send limit, so the first request still leaves unsummarized.
+        assertTrue("local=$local hardLimit=$hardLimit", local <= hardLimit)
+        // The 12% reserve must keep the uncalibrated ceiling strictly below the calibrated one.
+        assertTrue(hardLimit < AgentCompressionBoundary.inputLimit(window, outputReserve))
         var compacted = false
         var requests = 0
+        val controller = AgentRunController()
         AgentLoop(model, source, JSONArray(), provider { request ->
             requests++
             assertFalse(compacted)
-            assertEquals("x".repeat(352_000), request.messages.getJSONObject(0).getString("content"))
+            assertEquals(huge, request.messages.getJSONObject(0).getString("content"))
             assertEquals("y".repeat(8000), request.messages.getJSONObject(2).getString("content"))
             JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop")
-        }, AgentModelClient.ToolExecutor { error("No tools") }, AgentRunController(), AgentTraceFormatter(),
-            onEvent = { if (it is AgentEvent.ContextCompacted && it.applied) compacted = true },
-            compactPolicy = AgentLoop.CompactPolicy(true, 100_000, 1, model),
+        }, AgentModelClient.ToolExecutor { error("No tools") }, controller, AgentTraceFormatter(),
+            onEvent = {
+                if (it is AgentEvent.ContextCompacted) {
+                    if (it.applied) compacted = true
+                    // A hard-limit pause must fail fast instead of hanging until the 45s rule.
+                    if (it.blocked) controller.cancel()
+                }
+            },
+            compactPolicy = AgentLoop.CompactPolicy(true, window, 1, model),
             compactHistory = { _, _ -> error("No cloud usage: must not summarize") },
         ).run()
         assertEquals(1, requests)
@@ -453,6 +481,159 @@ class AgentCompressionBoundaryTest {
             AgentCompressionEndpoint.apply(session, null).openAiEndpointMode)
         assertEquals(io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES, session.openAiEndpointMode)
     }
+
+    @Test fun singleUserFiftySevenRoundOpaqueRunCutsToNewestBatchNotTheOpeningUser() {
+        val history = opaqueToolRun(rounds = 57)
+        assertEquals(0, AgentContextCompactor.recentKeepStartIndex(history, 0))
+        val cut = AgentCompressionBoundary.selectStart(history, 500_000)
+        assertEquals(cut, AgentCompressionBoundary.opaqueTailCut(history, 0))
+        assertTrue(cut in AgentCompressionBoundary.balancedCuts(history))
+        assertEquals(history.size - 2, cut)
+        assertEquals(1, history.drop(cut).count { AgentCompressionBoundary.opaqueReplayItemCount(it) > 0 })
+        assertEquals(56, history.take(cut).count { AgentCompressionBoundary.opaqueReplayItemCount(it) > 0 })
+        val plan = AgentCompressionBoundary.planRetention(history, 500_000)
+        assertNull(plan.stopReason)
+        assertEquals(1, plan.opaqueReplayItems)
+        assertTrue(plan.opaqueEncryptedChars > 0)
+    }
+
+    @Test fun ordinaryHistoryWithoutOpaqueReplayKeepsThePricedTail() {
+        val history = mutableListOf(message("user", "task"))
+        repeat(40) { index ->
+            history += message("assistant", calls = "[{\"id\":\"c$index\"}]")
+            history += message("tool", "r".repeat(4_000), id = "c$index")
+        }
+        assertEquals(
+            AgentCompressionBoundary.selectStart(history, 100_000, billedTokens = 400_000, localTokens = 40_000),
+            AgentCompressionBoundary.planRetention(history, 100_000, billedTokens = 400_000, localTokens = 40_000).cut,
+        )
+    }
+
+    @Test fun pendingParallelToolPairStaysWithTheNewestCompleteBatch() {
+        val older = opaqueToolRun(rounds = 2)
+        val history = older + listOf(
+            message("assistant", calls = "[{\"id\":\"a\"},{\"id\":\"b\"}]").copy(responsesReasoningJson = reasoningJson("live")),
+            message("tool", "one", id = "a"),
+        )
+        val cut = AgentCompressionBoundary.selectStart(history, 500_000)
+        assertTrue(cut in AgentCompressionBoundary.availableCuts(history))
+        assertFalse(cut in runCatching { AgentCompressionBoundary.balancedCuts(history) }.getOrDefault(emptyList()))
+        val tail = history.drop(cut)
+        assertTrue(tail.any { it.toolCallsJson.contains("\"a\"") && it.toolCallsJson.contains("\"b\"") })
+        assertTrue(tail.any { it.toolCallId == "a" })
+        assertTrue(history.take(cut).any { AgentCompressionBoundary.opaqueReplayItemCount(it) > 0 })
+    }
+
+    @Test fun malformedOrMissingReasoningDoesNotInventACut() {
+        val plain = listOf(message("user", "only"), message("assistant", "done"))
+        assertEquals(AgentCompressionBoundary.selectStart(plain, 10_000), AgentCompressionBoundary.selectStart(plain, 10_000))
+        val malformed = plain.map { it.copy(responsesReasoningJson = "{not-json") }
+        assertEquals(0, AgentCompressionBoundary.opaqueReplayItemCount(malformed[1]))
+        assertEquals(
+            AgentCompressionBoundary.selectStart(plain, 10_000),
+            AgentCompressionBoundary.selectStart(malformed, 10_000),
+        )
+        val noUser = listOf(
+            message("assistant", calls = "[{\"id\":\"a\"}]").copy(responsesReasoningJson = reasoningJson("a")),
+            message("tool", "a", id = "a"),
+            message("assistant", calls = "[{\"id\":\"b\"}]").copy(responsesReasoningJson = reasoningJson("b")),
+            message("tool", "b", id = "b"),
+        )
+        assertEquals(2, AgentCompressionBoundary.selectStart(noUser, 500_000))
+    }
+
+    @Test fun unsplittableOpaqueChainStopsWithoutClaimingSuccess() {
+        val history = listOf(
+            message("assistant", calls = "[{\"id\":\"only\"}]").copy(responsesReasoningJson = reasoningJson("only")),
+            message("tool", "done", id = "only"),
+        )
+        val plan = AgentCompressionBoundary.planRetention(history, 500_000)
+        assertEquals(0, plan.cut)
+        assertEquals(AgentCompressionBoundary.OPAQUE_CUT_STOP, plan.stopReason)
+    }
+
+    @Test fun removedOpaqueUnitsCountAsProgressEvenWhenPricedTokensGrow() {
+        val before = opaqueToolRun(rounds = 57)
+        val cut = AgentCompressionBoundary.selectStart(before, 500_000)
+        val summary = message("user", "S".repeat(24_000))
+        val after = listOf(summary) + before.drop(cut)
+        assertTrue(AgentContextBudget.countMessage(summary).toLong() + before.drop(cut).sumOf { AgentContextBudget.countMessage(it).toLong() } >=
+            before.sumOf { AgentContextBudget.countMessage(it).toLong() })
+        assertTrue(AgentCompressionBoundary.compactionReduced(
+            before, after, before.size - cut, AgentCompressionBoundary.summaryProgressBudget(500_000)))
+        assertFalse(AgentCompressionBoundary.compactionReduced(
+            before, before, before.size, AgentCompressionBoundary.summaryProgressBudget(500_000)))
+        assertFalse(AgentCompressionBoundary.compactionReduced(
+            before, listOf(summary) + before, before.size, AgentCompressionBoundary.summaryProgressBudget(500_000)))
+    }
+
+    @Test fun explicitCutStaysAuthoritativeAndChatCompletionsCannotExcuseGrowth() {
+        val responses = config().copy(openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+        val chat = responses.copy(openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS)
+        val other = responses.copy(model = "other-model")
+        val live = JSONObject().put("role", "assistant").put("content", "note")
+            .put("tool_calls", JSONArray().put(JSONObject().put("id", "seed").put("type", "function")
+                .put("function", JSONObject().put("name", "tool").put("arguments", "{}"))))
+        ResponsesEphemeralState.attachOutputItems(live, JSONArray().put(
+            JSONObject().put("type", "reasoning").put("id", "rs").put("encrypted_content", "cipher"),
+        ))
+        ResponsesReasoningState.capture(live, responses)
+        val reasoned = AgentConversationCodec.fromJsonObject(live)
+        assertTrue(AgentCompressionBoundary.replayedOpaqueItemCount(reasoned, responses) > 0)
+        assertEquals(0, AgentCompressionBoundary.replayedOpaqueItemCount(reasoned, chat))
+        assertEquals(0, AgentCompressionBoundary.replayedOpaqueItemCount(reasoned, other))
+        val history = mutableListOf(message("user", "task"))
+        repeat(8) { index ->
+            history += reasoned.copy(toolCallsJson = "[{\"id\":\"c$index\"}]", content = "note")
+            history += message("tool", "ok", id = "c$index")
+        }
+        val plain = history.map { it.copy(responsesReasoningJson = "") }
+        val plainCut = AgentCompressionBoundary.selectStart(plain, 500_000)
+        assertEquals(plainCut, AgentCompressionBoundary.selectStart(history, 500_000, opaqueItems = {
+            AgentCompressionBoundary.replayedOpaqueItemCount(it, chat)
+        }))
+        assertEquals(plainCut, AgentCompressionBoundary.selectStart(history, 500_000, opaqueItems = {
+            AgentCompressionBoundary.replayedOpaqueItemCount(it, other)
+        }))
+        val kept = AgentCompressionBoundary.selectStart(history, 500_000, opaqueItems = {
+            AgentCompressionBoundary.replayedOpaqueItemCount(it, responses)
+        })
+        assertTrue(kept > plainCut)
+        assertEquals(1, AgentContextCompactor.resolveKeepStart(history, 0, 1))
+        assertEquals(
+            AgentCompressionBoundary.opaqueTailCut(history, AgentContextCompactor.recentKeepStartIndex(history, 0)),
+            AgentContextCompactor.resolveKeepStart(history, 0, null) {
+                AgentCompressionBoundary.replayedOpaqueItemCount(it, responses)
+            },
+        )
+        val summary = message("user", "S".repeat(24_000))
+        val after = listOf(summary) + history.drop(kept)
+        val budget = AgentCompressionBoundary.summaryProgressBudget(500_000)
+        assertTrue(after.sumOf { AgentContextBudget.countMessage(it).toLong() } >= history.sumOf { AgentContextBudget.countMessage(it).toLong() })
+        assertTrue(AgentCompressionBoundary.compactionReduced(history, after, history.size - kept, budget) {
+            AgentCompressionBoundary.replayedOpaqueItemCount(it, responses) > 0
+        })
+        assertFalse(AgentCompressionBoundary.compactionReduced(history, after, history.size - kept, budget) {
+            AgentCompressionBoundary.replayedOpaqueItemCount(it, chat) > 0
+        })
+    }
+
+    private fun opaqueToolRun(rounds: Int): List<AgentModelClient.ConversationMessage> {
+        val history = mutableListOf(message("user", "single task"))
+        repeat(rounds) { index ->
+            history += message("assistant", "note", calls = "[{\"id\":\"c$index\"}]")
+                .copy(responsesReasoningJson = reasoningJson("c$index"))
+            history += message("tool", "ok", id = "c$index")
+        }
+        return history
+    }
+
+    private fun reasoningJson(id: String) = org.json.JSONObject()
+        .put("scope", "ab".repeat(32))
+        .put("items", org.json.JSONArray().put(
+            org.json.JSONObject().put("type", "reasoning").put("id", id).put("encrypted_content", "cipher-$id"),
+        ))
+        .toString()
 
     private fun config(window: Int = 9000) = AgentModelClient.ModelConfig(
         baseUrl = "https://example.invalid/v1", apiKey = "test", model = "test", systemPrompt = "", contextWindow = window,

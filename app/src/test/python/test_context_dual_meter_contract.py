@@ -33,13 +33,19 @@ class ContextDualMeterContractTest(unittest.TestCase):
         app = self.text('ui/app/AgentAppState.kt')
         # Send guard, pre-send tail scaling and post-run tail scaling. Automatic compaction
         # itself reads the ring's cloud receipt, not this silent budget.
-        self.assertEqual(3, app.count('= compressionContextUsage('))
+        # Includes the two local-tail counterparts; nullable run overhead gates pre-send sizing.
+        self.assertEqual(5, app.count('compressionContextUsage('))
+        self.assertIn('val estimatedTokens = runOverhead?.let { overhead ->', app)
         # Every automatic-compaction call passes the ring's cloud receipt, never a local estimate.
         self.assertEqual(4, app.count('shouldAutoCompress('))  # one declaration + three call sites
         self.assertIn('estimatedTokens = if (history == state.history) billedPromptTokens(state) else null', app)
         self.assertIn('if (!shouldAutoCompress(state.history, contextWindow, billedPromptTokens(state))) return', app)
         self.assertRegex(app, r'shouldAutoCompress\(\s*history,\s*config\.contextWindow,\s*(//[^\n]*\n\s*)?billedForCompression,')
-        self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', app)
+        self.assertIn('if (projected) return', app)  # Raw projections cannot masquerade as learned UI estimates.
+        silent = model.split('internal fun compressionContextUsage(', 1)[1].split('private fun draftContextTokens(', 1)[0]
+        self.assertNotIn('liveContextUsage(', silent)
+        self.assertNotIn('overheadCalibrationTokens', silent)
+        self.assertIn('requestOverheadTokens.coerceAtLeast(0) + draft', silent)
         # Only a plausible receipt may become occupancy, judged against the run's own window.
         self.assertIn('CloudReceiptPlausibility.isOccupancy(', app)
         self.assertIn('runContextWindows[runId] ?: conversation?.let(::boundCompressionWindow)', app)

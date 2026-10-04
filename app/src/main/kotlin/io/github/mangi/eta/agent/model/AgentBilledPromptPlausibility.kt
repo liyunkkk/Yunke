@@ -32,4 +32,27 @@ internal object AgentBilledPromptPlausibility {
         val window = contextWindow?.takeIf { it > 0 } ?: return true
         return value.toLong() * 100 <= window.toLong() * MAX_WINDOW_PERCENT
     }
+
+    /**
+     * True when the cache read cannot be a prefix of a prompt that fit this window.
+     *
+     * A cache read is a prefix of the prompt, so it can exceed neither the prompt it was
+     * billed with nor the window that prompt was accepted in. One relay (ST API, group
+     * `claude-超高缓`) billed `cache_read_input_tokens = 520658` on a 500000 window for a
+     * request that billed 129987 uncached. Such a bill is real money but not window
+     * occupancy, so callers drop it and keep the previous trusted receipt; nothing is scaled.
+     *
+     * Both bounds come from the provider and the configured window only. Comparing with
+     * the local estimate is deliberately avoided: the local heuristic under-counts images
+     * and screenshots, so a genuine cache hit can be several times larger than it, and
+     * dropping that receipt would freeze the ring and silence the 80% compaction.
+     * Plausible receipts are adopted immediately; no local-growth or later-request
+     * confirmation is required.
+     */
+    fun isInflatedCacheRead(inputTokens: Int?, cachedTokens: Int?, contextWindow: Int?): Boolean {
+        val cached = cachedTokens?.takeIf { it > 0 } ?: return false
+        if (inputTokens != null && cached > inputTokens) return true
+        val window = contextWindow?.takeIf { it > 0 } ?: return false
+        return cached > window
+    }
 }

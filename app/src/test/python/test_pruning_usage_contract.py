@@ -61,9 +61,11 @@ class PruningUsageContractTest(unittest.TestCase):
     def test_cloud_readings_are_not_clamped_to_a_historical_maximum(self):
         app = self.read('ui/app/AgentAppState.kt')
         handler = app.split('private fun updateLivePromptTokens(', 1)[1].split('private fun insertSupplementMessage(', 1)[0]
-        self.assertIn('state.copy(livePromptTokens = tokens, livePromptIsProjected = projected', handler)
+        self.assertIn('state.copy(livePromptTokens = tokens, livePromptIsProjected = false', handler)
         self.assertNotIn('maxOf(', handler)
-        self.assertIn('if (projected && state.livePromptTokens != null && !state.livePromptIsProjected) return', handler)
+        self.assertIn('if (projected) return', handler)
+        self.assertIn('ContextReceiptEvidence.merge(', handler)
+        self.assertIn('usageRunByConversation[conversationId] != runId', handler)
 
 if __name__ == '__main__':
     unittest.main()

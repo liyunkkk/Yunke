@@ -49,8 +49,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .also { ProviderRequestHeaders.mergeInto(it, config.baseUrl, config.customHeaders, request.sessionId) }
             .build()
 
-        val requestBody = buildRequestJson(config, request.messages, request.tools)
-            .toString()
+        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools), capabilities.endpoint)
+        val requestBody = requestJson.toString()
             .toRequestBody(JSON_MEDIA_TYPE)
 
         val httpRequest = Request.Builder()
@@ -62,7 +62,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
-            val assistantMessage = readStreamingAssistantMessage(httpRequest, runController, onEvent)
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength())
+            val assistantMessage = readStreamingAssistantMessage(httpRequest, runController, onEvent, request.requiresCompleteStream)
             onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistantMessage)
         } catch (throwable: Throwable) {
@@ -72,7 +73,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         }
     }
 
-    private fun buildRequestJson(
+    internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray
@@ -95,6 +96,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 mergeExtraBody(request, config.extraBodyJson)
                 RequestBodyMerge.mergeCustomBody(request, config.customBody)
+                GptServiceTier.apply(request, config)
                 request.remove("eta_media_reasoning")
                 request.remove(ImageRequestParameters.CONFIG_KEY) // Local image settings never enter text protocols.
                 ProviderReasoning.applyOpenAiCompatibleRequest(request, config)
@@ -109,7 +111,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
     private fun readStreamingAssistantMessage(
         request: Request,
         runController: AgentRunController,
-        onEvent: (ProviderEvent) -> Unit
+        onEvent: (ProviderEvent) -> Unit,
+        requireTerminal: Boolean,
     ): JSONObject {
         val content = StringBuilder()
         val reasoningContent = StringBuilder()
@@ -150,19 +153,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             onEvent(ProviderEvent.BlockDelta(kind, block.contentIndex, delta))
         }
 
-        AgentSseClient.collect(
-            request = request,
-            runController = runController,
-            onOpen = { code -> onEvent(ProviderEvent.ResponseHeaders(code)) },
-            onEvent = sseEvent@{ _, _, data ->
-                val payload = data.trim()
-                if (payload.isBlank()) return@sseEvent
+        fun consumeFrame(payload: String) {
                 sawStreamData = true
-                if (payload == "[DONE]") {
-                    sawDone = true
-                    finish()
-                    return@sseEvent
-                }
                 val chunk = JSONObject(payload)
                 // Some gateways put billable usage on the same SSE frame as an error.
                 // Capture it before propagating the error so a completed/failed request
@@ -173,8 +165,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 throwStreamingErrorIfPresent(chunk)
                 val choices = chunk.optJSONArray("choices")
-                if (choices == null || choices.length() == 0) return@sseEvent
-                val choice = choices.optJSONObject(0) ?: return@sseEvent
+                if (choices == null || choices.length() == 0) return
+                val choice = choices.optJSONObject(0) ?: return
                 val reason = choice.optString("finish_reason")
                 if (reason.isNotBlank() && reason != "null") {
                     finishReason = reason
@@ -184,7 +176,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 val delta = choice.optJSONObject("delta")
                 val snapshot = choice.optJSONObject("message")
-                if (delta == null && snapshot == null) return@sseEvent
+                if (delta == null && snapshot == null) return
                 fun appendReasoning(text: String, isSnapshot: Boolean = false) {
                     if (text.isEmpty()) return
                     // A real delta is never a cumulative snapshot. Deduplicating repeated deltas
@@ -236,7 +228,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 }
                 val incomingToolCalls = delta?.optJSONArray("tool_calls")?.takeIf { it.length() > 0 }
                     ?: snapshot?.optJSONArray("tool_calls")?.takeIf { delta == null || toolCalls.isEmpty() }
-                    ?: return@sseEvent
+                    ?: return
                 if (incomingToolCalls.length() > 0) finishActiveVisibleBlock()
                 for (i in 0 until incomingToolCalls.length()) {
                     val item = incomingToolCalls.optJSONObject(i) ?: continue
@@ -271,9 +263,36 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                         )
                     }
                 }
+        }
+
+        AgentSseClient.collect(
+            request = request,
+            runController = runController,
+            onOpen = { code -> onEvent(ProviderEvent.ResponseHeaders(code)) },
+            onEvent = sseEvent@{ _, _, data ->
+                val payload = data.trim()
+                if (payload.isBlank()) return@sseEvent
+                if (payload == "[DONE]") {
+                    sawStreamData = true
+                    sawDone = true
+                    finish()
+                } else consumeFrame(payload)
+            },
+            onJson = { payload ->
+                val json = AgentResponseFormat.parseJsonObject(payload)
+                if (json.has("error") && !json.isNull("error") && json.optJSONObject("error") == null) {
+                    throw AgentModelFailure.stream(JSONObject(), "模型接口 JSON 返回错误")
+                }
+                if (json.optJSONObject("error") == null && json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message") == null) {
+                    throw AgentModelFailure.unexpectedResponse(200, "application/json", "")
+                }
+                consumeFrame(payload)
+                // A complete JSON message is terminal evidence, not an unfinished SSE tool delta.
+                sawDone = true
             },
             shouldIgnoreFailure = {
-                recoveredFinishReason(finishReason, content, reasoningContent, toolCalls) != null
+                (!requireTerminal || sawDone || !finishReason.isNullOrBlank()) &&
+                    recoveredFinishReason(finishReason, content, reasoningContent, toolCalls) != null
             },
         )
 
@@ -281,6 +300,10 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         if (finishReason.isNullOrBlank() && (runController.hasPendingSteering || runController.hasPausedInterrupt)) {
             finishActiveVisibleBlock()
             return interruptedAssistantMessage(content.toString(), reasoningContent.toString())
+        }
+
+        if (requireTerminal && !sawDone && finishReason.isNullOrBlank()) {
+            throw AgentModelFailure.incompleteStream("模型响应尚未完成，连接已中断；保留正文并按重连策略继续请求。")
         }
 
         if (!sawStreamData) throw AgentModelFailure.incompleteStream("模型接口未返回 SSE data chunk")

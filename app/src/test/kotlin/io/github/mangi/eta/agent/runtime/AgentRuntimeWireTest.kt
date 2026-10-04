@@ -120,6 +120,26 @@ class AgentRuntimeWireTest {
         assertEquals("run-session", AgentRuntimeWire.runRequestFromBundle(bundle).effectiveModelSessionId)
     }
 
+    @Test fun reconnectPolicyAndEventsSurviveWireAndDurableReplay() {
+        val config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test",
+            model = "test", systemPrompt = "", errorReconnectPolicy = "continuous")
+        val request = AgentRuntimeWire.RunRequest(runId = "reconnect", prompt = "test", config = config, images = emptyList())
+        val bundle = AgentRuntimeWire.toLegacyBundle(request, emptyHistoryDescriptor())
+        bundle.remove(AgentRuntimeWire.KEY_HISTORY_FD)
+        bundle.putParcelableArrayList(AgentRuntimeWire.KEY_HISTORY, java.util.ArrayList())
+        assertEquals("continuous", AgentRuntimeWire.runRequestFromBundle(bundle).config.errorReconnectPolicy)
+        bundle.remove("error_reconnect_policy")
+        assertEquals("none", AgentRuntimeWire.runRequestFromBundle(bundle).config.errorReconnectPolicy)
+        assertEquals(config, AgentRuntimeWire.compactModelConfigFromBundle(
+            AgentRuntimeWire.compactBundle("reconnect", compressModelConfig = config)))
+        for (status in listOf("running", "succeeded", "failed", "stopped")) {
+            val event = AgentEvent.ErrorReconnectChanged(7, "same-disconnect", status, 5_000_000_000L, "HTTP_401", "safe detail")
+            assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+            assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+            assertEquals(event, event.recoveryProjection())
+        }
+    }
+
     @Test
     fun retryEventSurvivesIpcAndArchiveJson() {
         val event = AgentEvent.ModelRetryScheduled(7, 2, 3, 4_000, "HTTP_429", "服务端：Model busy；Retry-After：45")
@@ -704,6 +724,35 @@ class AgentRuntimeWireTest {
         }
         val legacyRoundTrip = AgentRuntimeWire.runRequestFromBundle(missingKey)
         assertFalse(legacyRoundTrip.historyAlreadyCompacted)
+    }
+
+    @Test
+    fun unknownContextSendPermissionRoundTripsAndOldBundleDefaultsFalse() {
+        val config = AgentModelClient.ModelConfig(
+            baseUrl = "https://example.invalid/v1", apiKey = "test", model = "test", systemPrompt = "",
+        )
+        val request = AgentRuntimeWire.RunRequest(
+            runId = "unknown-context", prompt = "hello", config = config, images = emptyList(),
+        )
+        assertFalse(request.allowUnmeasuredContextSend)
+        for (allowed in listOf(false, true)) {
+            // Both encoders share requestBundle; verify the current and legacy entry points.
+            val restored = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toBundle(
+                request.copy(allowUnmeasuredContextSend = allowed), emptyList(), emptyHistoryDescriptor(),
+            ))
+            assertEquals(allowed, restored.allowUnmeasuredContextSend)
+            assertNull(restored.calibratedInputTokens) // Permission must never become trusted usage.
+            val seeded = AgentRuntimeWire.runRequestFromBundle(AgentRuntimeWire.toLegacyBundle(
+                request.copy(allowUnmeasuredContextSend = allowed, calibratedInputTokens = 100_000),
+                emptyHistoryDescriptor(),
+            ))
+            assertEquals(allowed, seeded.allowUnmeasuredContextSend)
+            assertEquals(100_000, seeded.calibratedInputTokens)
+        }
+        val oldBundle = AgentRuntimeWire.toLegacyBundle(
+            request.copy(allowUnmeasuredContextSend = true), emptyHistoryDescriptor(),
+        ).apply { remove("allow_unmeasured_context_send") }
+        assertFalse(AgentRuntimeWire.runRequestFromBundle(oldBundle).allowUnmeasuredContextSend)
     }
 
     @Test

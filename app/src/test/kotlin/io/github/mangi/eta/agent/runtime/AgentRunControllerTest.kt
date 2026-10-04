@@ -12,6 +12,48 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunControllerTest {
+    @Test fun questionNotificationSurvivesSteeringAndPrecedesBlockingCleanup() {
+        val controller = AgentRunController()
+        val wake = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        controller.register { entered.countDown(); release.await() }
+        controller.register(wakeBeforeCleanup = true) { wake.countDown() }
+        controller.steer("guidance is not an answer or cancellation")
+        assertEquals(1L, wake.count)
+        val stopping = thread(isDaemon = true) { controller.cancel() }
+        try {
+            assertTrue(wake.await(1, TimeUnit.SECONDS))
+            assertTrue(entered.await(1, TimeUnit.SECONDS))
+        } finally { release.countDown(); stopping.join(2_000) }
+    }
+
+    @Test fun cancellationInterruptsTransportBeforePotentiallyBlockingToolCleanup() {
+        val controller = AgentRunController()
+        val transportStopped = CountDownLatch(1)
+        val cleanupEntered = CountDownLatch(1)
+        val releaseCleanup = CountDownLatch(1)
+        val cleanupSawTransport = AtomicReference<Boolean>()
+        // This is the runtime's registration order: the tool owner precedes the SSE binding.
+        controller.register {
+            cleanupSawTransport.set(transportStopped.count == 0L)
+            cleanupEntered.countDown()
+            releaseCleanup.await()
+        }
+        controller.register(interruptible = true) { transportStopped.countDown() }
+        val stopping = thread(isDaemon = true) { controller.cancel() }
+        try {
+            assertTrue(cleanupEntered.await(2, TimeUnit.SECONDS))
+            assertTrue(controller.isCancelled)
+            assertEquals(true, cleanupSawTransport.get())
+            assertTrue(transportStopped.await(1, TimeUnit.SECONDS))
+        } finally {
+            releaseCleanup.countDown()
+            stopping.join(2_000)
+            controller.cancel()
+        }
+    }
+
     @Test fun budgetPauseWaitsOnlyAtWorkerCheckpoints() {
         val controller = AgentRunController()
         val interrupted = AtomicInteger()
@@ -94,6 +136,38 @@ class AgentRunControllerTest {
         } finally {
             controller.cancel()
             worker.join(1_000)
+        }
+    }
+
+    @Test
+    fun steeringAndPauseWakeRetryWaitWithoutConsumingThemOrCancellingToolOwners() {
+        for (pause in listOf(false, true)) {
+            val controller = AgentRunController()
+            val started = CountDownLatch(1)
+            val finished = CountDownLatch(1)
+            val failure = AtomicReference<Throwable?>()
+            val toolCancellations = AtomicInteger(0)
+            val owner = controller.register { toolCancellations.incrementAndGet() }
+            val worker = thread {
+                started.countDown()
+                try { controller.awaitRetryDelay(60_000L) }
+                catch (error: Throwable) { failure.set(error) }
+                finally { finished.countDown() }
+            }
+            try {
+                assertTrue(started.await(1, TimeUnit.SECONDS))
+                if (pause) controller.pause() else assertTrue(controller.steer("new steering"))
+                assertTrue(finished.await(1, TimeUnit.SECONDS))
+                assertNull(failure.get())
+                assertEquals(0, toolCancellations.get())
+                if (pause) assertTrue(controller.isPaused)
+                else assertEquals("new steering", controller.pollSteeringMessage())
+            } finally {
+                owner.close()
+                controller.resume()
+                controller.cancel()
+                worker.join(1_000)
+            }
         }
     }
 

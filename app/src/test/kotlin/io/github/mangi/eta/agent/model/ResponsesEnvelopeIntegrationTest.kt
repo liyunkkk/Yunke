@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import com.sun.net.httpserver.HttpServer
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import java.net.InetSocketAddress
 import java.io.IOException
@@ -23,12 +24,19 @@ class ResponsesEnvelopeIntegrationTest {
         .put("status", "completed").put("output", JSONArray().put(JSONObject()
             .put("type", "message").put("id", "m").put("role", "assistant")
             .put("content", JSONArray().put(JSONObject().put("type", "output_text").put("text", "done")))))))
-    private fun request(url: String) = ProviderRequest(AgentModelClient.ModelConfig(
+    private fun request(url: String, errorReconnectPolicy: String = "none") = ProviderRequest(AgentModelClient.ModelConfig(
         baseUrl = url, apiKey = "test", model = "test", systemPrompt = "original instructions",
         openAiEndpointMode = OpenAiEndpointMode.RESPONSES, browserTools = false,
+        errorReconnectPolicy = errorReconnectPolicy,
     ), JSONArray(), JSONArray())
-    private fun run(url: String, callback: (Int, ProviderEvent) -> Unit = { _, _ -> }) = AgentModelRetry { _, _ -> }.complete(
-        1, request(url), OpenAiResponsesProvider, AgentRunController(), {}, callback, {},
+    private fun run(
+        url: String,
+        errorReconnectPolicy: String = "none",
+        timing: ReconnectTiming = SystemReconnectTiming,
+        wait: (AgentRunController, Long) -> Unit = { _, _ -> },
+        callback: (Int, ProviderEvent) -> Unit = { _, _ -> },
+    ) = AgentModelRetry(timing = timing, waitBeforeRetry = wait).complete(
+        1, request(url, errorReconnectPolicy), OpenAiResponsesProvider, AgentRunController(), {}, callback, {},
     )
     @Test fun httpAndFlattenedSseRejectionsRegenerateOnce() {
         for (http in listOf(true, false)) {
@@ -120,11 +128,41 @@ class ResponsesEnvelopeIntegrationTest {
             assertEquals(1, calls.get())
         }
     }
-    @Test fun correctedRequestsIncludingTransientFailuresAreBounded() {
-        server({ n -> if (n == 2) 503 to "temporary" else
-            500 to JSONObject().put("error", error()).toString() }) { url, calls ->
-            assertThrows(AgentModelFailure::class.java) { run(url) }
+    @Test fun correctionLimitDoesNotEndReconnectBeforeTheSelectedDeadline() {
+        val clock = object : ReconnectTiming {
+            var now = 0L
+            override fun nowMs() = now
+            override fun schedule(delayMs: Long, action: () -> Unit): AutoCloseable = AutoCloseable { }
+        }
+        val bodies = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        server(reply = { n -> if (n == 2) 503 to "temporary" else
+            500 to JSONObject().put("error", error()).toString() }, onRequest = bodies::add) { url, calls ->
+            val failure = assertThrows(AgentModelFailure::class.java) {
+                run(url, errorReconnectPolicy = ErrorReconnectPolicy.WINDOW_30S.persistedValue,
+                    timing = clock, wait = { _, ms -> clock.now += ms })
+            }
+            assertEquals("ERROR_RECONNECT_DEADLINE", failure.code)
+            assertEquals(30_000L, clock.now)
+            assertTrue(calls.get() > 1 + ResponsesToolEnvelopeRecovery.MAX_RETRIES + 1)
+            assertTrue(bodies.drop(4).all { !it.has("tools") && !it.has("parallel_tool_calls") })
+        }
+    }
+    @Test fun transientFailureAfterCorrectionReconnectsSuccessfully() {
+        val bodies = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        server(reply = { n ->
+            when (n) {
+                1 -> 500 to JSONObject().put("error", error()).toString()
+                2 -> 503 to "temporary"
+                else -> 200 to success()
+            }
+        }, onRequest = bodies::add) { url, calls ->
+            assertEquals("done", run(
+                url,
+                errorReconnectPolicy = ErrorReconnectPolicy.WINDOW_30S.persistedValue,
+            ).response.assistantMessage.getString("content"))
             assertEquals(3, calls.get())
+            assertTrue(bodies[1].getString("instructions").contains(ResponsesToolEnvelopeRecovery.CORRECTION))
+            assertTrue(bodies[2].getString("instructions").contains(ResponsesToolEnvelopeRecovery.CORRECTION))
         }
     }
     @Test fun transientHttpErrorWithOutputForbidsRetryBeforeOrAfterCorrection() {

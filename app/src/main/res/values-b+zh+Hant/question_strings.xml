@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="question_heading">需要你回答</string>
+    <string name="question_other">其他…</string>
+    <string name="question_other_hint">填寫你的選擇</string>
+    <string name="question_delegate">你看著辦</string>
+    <string name="question_delegate_hint">僅把當前問題交給代魚決定，不擴大操作權限</string>
+    <string name="question_note">補充說明（選填）</string>
+    <string name="question_submit">提交回答</string>
+    <string name="question_submitting">正在提交…</string>
+    <string name="question_answered">已回答</string>
+    <string name="question_cancelled">提問已取消</string>
+    <string name="question_interrupted">提問已中斷</string>
+    <string name="question_waiting">等待你回答</string>
+    <string name="question_recommended">推薦</string>
+    <string name="question_selected">已選擇：%1$s</string>
+    <string name="question_view_details">展開查看原題和回答</string>
+    <string name="question_hide_details">收起原題和回答</string>
+    <string name="question_show_full_text">展開完整問題和選項說明</string>
+    <string name="question_show_less">收起長說明</string>
+    <string name="question_note_added">補充說明（已填寫）</string>
+    <string name="question_expanded">已展開</string>
+    <string name="question_collapsed">已收起</string>
+</resources>

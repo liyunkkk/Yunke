@@ -18,8 +18,7 @@ class SubAgentPausedWorkspaceTest {
         val operations = AtomicInteger()
         val workspace = SubAgentWorkspace("fixture", AgentModelClient.ToolExecutor {
             val id = operations.incrementAndGet().toString(16).padStart(32, '0')
-            AgentModelClient.ToolResult(JSONObject().put("ok", true).put("exit_code", 0).put("stdout", JSONObject().put("ok", true)
-                .put("id", id).put("path", "/workspace/project/.agent/worktrees/$id").put("state", "editing").toString()).toString())
+            SubAgentDeliveryFixture.response(it, prepareId = id)
         })
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)

@@ -12,7 +12,7 @@ import org.junit.Test
 class AgentToolRequirementsTest {
     @Test
     fun everyRegisteredToolHasExactlyOneRequirement() {
-        val tools = catalog(root = true)
+        val tools = catalog(root = true, virtualDisplay = true)
         assertEquals(AgentToolRequirements.toolNames, tools.names())
         assertEquals(tools.length(), tools.names().size)
         assertFalse(tools.toString().contains("rootRequirement"))
@@ -81,11 +81,11 @@ class AgentToolRequirementsTest {
             .unavailableCode("search_coloros_memories"))
     }
 
-    private fun catalog(root: Boolean) = AgentToolCatalog.build(
+    private fun catalog(root: Boolean, virtualDisplay: Boolean = false) = AgentToolCatalog.build(
         terminalTools = true, browserTools = true, deviceDirectTools = true,
         deviceSensitiveReadTools = true, deviceSensitiveActionTools = true,
         skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true,
-        capabilities = AgentToolCapabilities(rootAvailable = root),
+        capabilities = AgentToolCapabilities(rootAvailable = root, virtualDisplay = virtualDisplay),
     )
 
     private fun JSONArray.names(): Set<String> = (0 until length()).mapTo(linkedSetOf()) {

@@ -20,7 +20,7 @@ import org.robolectric.annotation.Config
 
 /**
  * Automatic compaction is driven purely by the provider's billed input usage (cloud policy):
- *  - no billed usage => no automatic compaction, no matter how large the local history is;
+ *  - no billed usage => no 80% scheduling; the conservative hard send limit still applies;
  *  - the decision is the latest receipt itself (the ring's number), never receipt + local growth;
  *  - a receipt carried over from the previous run only calibrates the hard send limit;
  *  - automatic compaction fires at exactly 80% of the effective window (configured window wins);
@@ -38,7 +38,7 @@ class AgentAutomaticCompactionTest {
 
     // --- Billing-driven automatic summarization -------------------------------------------------
 
-    @Test fun partialOutputUsagePreservesSameRequestInputAndAllowsRealCorrection() {
+    @Test fun partialOutputUsagePreservesSameRequestInputWithoutClearingPressureLatch() {
         for (corrected in listOf(false, true)) {
             val frames = mutableListOf(AgentTokenUsage(outputTokens = 20))
             if (corrected) frames += AgentTokenUsage(inputTokens = AUTO_PRESSURE - 1000)
@@ -49,7 +49,7 @@ class AgentAutomaticCompactionTest {
                 summaries++
                 summarize(source, policy)
             })
-            assertEquals(if (corrected) 0 else 1, summaries)
+            assertEquals(1, summaries)
             assertEquals(1, provider.requests.size)
             assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
         }
@@ -59,6 +59,8 @@ class AgentAutomaticCompactionTest {
         // The local estimate is above 80% but below the hard send limit: only a receipt may decide.
         val messages = largeHistory()
         assertTrue(requestTokens(messages) >= AUTO_PRESSURE)
+        assertTrue(requestTokens(messages) <= AgentCompressionBoundary.inputLimit(
+            WINDOW, AgentCompressionBoundary.outputReserve(modelConfig()), calibrated = false))
         val events = mutableListOf<AgentEvent>()
         var summaries = 0
         val provider = ScriptedProvider(listOf({ _, _ -> assistant() }))
@@ -70,6 +72,30 @@ class AgentAutomaticCompactionTest {
         assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
         // The ring keeps its single local estimate for the first request.
         assertEquals(1, events.filterIsInstance<AgentEvent.UsageReceived>().count { it.projected })
+    }
+
+    @Test fun unmeasuredFullRequestCannotBeRelaxedByALowSeed() {
+        for (targetWindow in listOf(WINDOW, 170_000)) {
+            for (seed in listOf<Int?>(null, 50_000)) {
+                val config = modelConfig().copy(contextWindow = targetWindow)
+                val messages = history("x".repeat(100_000), count = 9)
+                val hardLimit = AgentCompressionBoundary.inputLimit(targetWindow,
+                    AgentCompressionBoundary.outputReserve(config), calibrated = false)
+                assertTrue(requestTokens(messages) > hardLimit)
+                val events = mutableListOf<AgentEvent>()
+                var summaries = 0
+                val provider = ScriptedProvider(listOf({ request, _ ->
+                    assertTrue("complete request must fit before provider send",
+                        requestTokens(request.messages) <= hardLimit)
+                    assistant()
+                }))
+                assertEquals("done", runLoop(messages, provider, events, config = config,
+                    calibratedInputTokens = seed,
+                    compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+                assertTrue(summaries > 0)
+                assertEquals(1, provider.requests.size)
+            }
+        }
     }
 
     @Test fun carriedOverReceiptOnlyCalibratesTheHardSendLimit() {
@@ -94,8 +120,8 @@ class AgentAutomaticCompactionTest {
     }
 
     @Test fun firstReceiptJumpingFarAboveTheSeedStillSchedulesCompaction() {
-        // Seed below 80%, then a cache-miss receipt 40k higher with no local growth. The
-        // step exceeds the growth slack, but a seed is not a receipt and must not veto it.
+        // Seed below 80%, then a cache-miss receipt 40k higher with no local growth.
+        // A seed is not a receipt and must not veto the current request's measurement.
         val seed = AUTO_PRESSURE - 40_000
         val events = mutableListOf<AgentEvent>()
         var summaries = 0
@@ -103,6 +129,287 @@ class AgentAutomaticCompactionTest {
         assertEquals("done", runLoop(smallHistory(), provider, events, calibratedInputTokens = seed,
             compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
         assertEquals(1, provider.requests.size)
+        assertEquals(1, summaries)
+        assertTrue(events.any { it is AgentEvent.AutoCompactWaiting })
+    }
+
+    @Test fun observedReceiptJumpWaitsInItsCallbackAndCompactsAtFinalWithoutAnotherRequest() {
+        val events = mutableListOf<AgentEvent>()
+        val order = mutableListOf<String>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { _, _ ->
+                order += "provider-1"
+                toolReply("warmup").put("usage", JSONObject().put("prompt_tokens", 193_223))
+            },
+            { _, _ ->
+                order += "provider-2"
+                assertEquals(0, summaries)
+                assertTrue(events.none { it is AgentEvent.AutoCompactWaiting })
+                assistant(promptTokens = 230_402)
+            },
+        ), afterUsage = { requestCount ->
+            if (requestCount == 2) {
+                // Runs before provider.complete returns: no next request can confirm this receipt.
+                assertEquals(listOf(2), events.filterIsInstance<AgentEvent.AutoCompactWaiting>().map { it.round })
+                assertEquals(0, summaries)
+                assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+                order += "pressure"
+            }
+        })
+        assertEquals("done", runLoop(smallHistory(), provider, events,
+            config = modelConfig().copy(contextWindow = 272_000),
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                assertEquals("warmup", call.id)
+                order += "tool-warmup"
+                AgentModelClient.ToolResult("ok")
+            },
+            compactHistory = { source, policy ->
+                assertTrue(events.any { it is AgentEvent.AssistantReceived && it.round == 2 })
+                assertEquals(230_402, events.filterIsInstance<AgentEvent.UsageReceived>().last { !it.projected }.usage.inputTokens)
+                summaries++
+                order += "summarize"
+                summarize(source, policy)
+            }).content)
+        assertEquals(listOf("provider-1", "tool-warmup", "provider-2", "pressure", "summarize"), order)
+        assertEquals(2, provider.requests.size)
+        assertEquals(1, summaries)
+        assertEquals(2, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        val compacted = events.indexOfFirst { it is AgentEvent.ContextCompacted && it.applied }
+        val finished = events.indexOfFirst { it is AgentEvent.RunFinished }
+        assertTrue(compacted in 0 until finished)
+    }
+
+    @Test fun observedReceiptJumpQueuesBeforeToolsAndCompactsOnlyAfterWholeBatchBeforeNextRequest() {
+        val events = mutableListOf<AgentEvent>()
+        val order = mutableListOf<String>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { _, _ ->
+                order += "provider-1"
+                toolReply("warmup").put("usage", JSONObject().put("prompt_tokens", 193_223))
+            },
+            { _, _ ->
+                order += "provider-2"
+                assertEquals(0, summaries)
+                toolReply("hot-a").also { reply ->
+                    reply.getJSONArray("tool_calls").put(toolReply("hot-b").getJSONArray("tool_calls").getJSONObject(0))
+                    reply.put("usage", JSONObject().put("prompt_tokens", 230_402))
+                }
+            },
+            { request, _ ->
+                order += "provider-3"
+                assertEquals(1, summaries)
+                assertTrue(events.any { it is AgentEvent.ContextCompacted && it.applied })
+                assertEquals(2, AgentConversationCodec.transcript(request.messages, 0)
+                    .count { it.role == "tool" && it.toolCallId in setOf("hot-a", "hot-b") })
+                // The next request has no usage: it must not inherit 230402 and recompact.
+                assistant()
+            },
+        ), afterUsage = { requestCount ->
+            if (requestCount == 2) {
+                assertEquals(listOf(2), events.filterIsInstance<AgentEvent.AutoCompactWaiting>().map { it.round })
+                assertEquals(0, summaries)
+                assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+                order += "pressure"
+            }
+        })
+        assertEquals("done", runLoop(smallHistory(), provider, events,
+            config = modelConfig().copy(contextWindow = 272_000),
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                if (call.id != "warmup") {
+                    assertEquals(0, summaries)
+                    assertTrue(events.any { it is AgentEvent.AutoCompactWaiting && it.round == 2 })
+                    assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+                }
+                order += "tool-${call.id}"
+                AgentModelClient.ToolResult("ok")
+            },
+            compactHistory = { source, policy ->
+                assertEquals(listOf("warmup", "hot-a", "hot-b"),
+                    events.filterIsInstance<AgentEvent.ToolFinished>().map { it.toolCallId })
+                assertEquals(2, source.count { it.role == "tool" && it.toolCallId in setOf("hot-a", "hot-b") })
+                summaries++
+                order += "summarize"
+                summarize(source, policy)
+            }).content)
+        assertEquals(listOf("provider-1", "tool-warmup", "provider-2", "pressure", "tool-hot-a", "tool-hot-b",
+            "summarize", "provider-3"), order)
+        assertEquals(3, provider.requests.size)
+        assertEquals(1, summaries)
+        val waiting = events.indexOfFirst { it is AgentEvent.AutoCompactWaiting }
+        val lastTool = events.indexOfLast { it is AgentEvent.ToolFinished }
+        val started = events.indexOfFirst { it is AgentEvent.ContextCompactionStarted }
+        val nextRequest = events.indexOfFirst { it is AgentEvent.RoundStarted && it.round == 3 }
+        assertTrue(waiting in 0 until lastTool)
+        assertTrue(lastTool in 0 until started)
+        assertTrue(started in 0 until nextRequest)
+        assertEquals(3, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        assertEquals(listOf(193_223, 230_402), events.filterIsInstance<AgentEvent.UsageReceived>()
+            .filterNot { it.projected }.map { it.usage.inputTokens })
+    }
+
+    @Test fun usageLessNextRequestDoesNotInheritInputFromThePreviousReceipt() {
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> toolReply("warmup").put("usage", JSONObject().put("prompt_tokens", 193_223)) },
+            { _, _ -> assistant() },
+        ), usageFrames = listOf(AgentTokenUsage(outputTokens = 20)))
+        assertEquals("done", runLoop(smallHistory(), provider, events,
+            config = modelConfig().copy(contextWindow = 272_000),
+            toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("ok") },
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(2, provider.requests.size)
+        assertEquals(0, summaries)
+        val receipts = events.filterIsInstance<AgentEvent.UsageReceived>().filterNot { it.projected }
+        assertEquals(listOf(193_223, 193_223, null), receipts.map { it.usage.inputTokens })
+        assertTrue(events.none { it is AgentEvent.AutoCompactWaiting || it is AgentEvent.ContextCompactionStarted })
+    }
+
+    @Test fun invalidCurrentRequestReceiptsNeverQueuePressure() {
+        val invalidFrames = listOf(
+            AgentTokenUsage(outputTokens = 20),
+            AgentTokenUsage(inputTokens = 0),
+            AgentTokenUsage(inputTokens = -1),
+            AgentTokenUsage(inputTokens = 784_267),
+            AgentTokenUsage(inputTokens = 230_402, cachedTokens = 230_403),
+            AgentTokenUsage(inputTokens = 300_000, cachedTokens = 272_001),
+        )
+        for (frame in invalidFrames) {
+            val events = mutableListOf<AgentEvent>()
+            var summaries = 0
+            val provider = ScriptedProvider(listOf({ _, _ -> assistant() }), listOf(frame),
+                afterUsage = {
+                    assertTrue(events.none { it is AgentEvent.AutoCompactWaiting || it is AgentEvent.ContextCompactionStarted })
+                })
+            assertEquals("done", runLoop(smallHistory(), provider, events,
+                config = modelConfig().copy(contextWindow = 272_000),
+                compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+            assertEquals(1, provider.requests.size)
+            assertEquals(0, summaries)
+            assertTrue(events.none { it is AgentEvent.AutoCompactWaiting || it is AgentEvent.ContextCompactionStarted })
+        }
+    }
+
+    @Test fun relayCacheReadLargerThanTheWindowNeverSchedulesCompaction() {
+        // The total still fits the 130% bound, but its cache read alone is above the window.
+        val input = WINDOW + WINDOW / 10
+        assertTrue(AgentBilledPromptPlausibility.fitsWindow(input, WINDOW))
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }),
+            listOf(AgentTokenUsage(inputTokens = input, cachedTokens = WINDOW + 100)))
+        assertEquals("done", runLoop(smallHistory(), provider, events,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(0, summaries)
+        assertTrue(events.none { it is AgentEvent.AutoCompactWaiting })
+        assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+    }
+
+    @Test fun noOpaqueCutDoesNotDisableNextCloudPressureRetry() {
+        val config = modelConfig().copy(openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+        val events = mutableListOf<AgentEvent>()
+        val executed = mutableListOf<String>()
+        var summaries = 0
+        fun opaqueReply(id: String): JSONObject = toolReply(id).also {
+            ResponsesEphemeralState.attachOutputItems(it, JSONArray().put(
+                JSONObject().put("type", "reasoning").put("id", "rs-$id").put("encrypted_content", "cipher-$id")))
+            ResponsesReasoningState.capture(it, config)
+            it.put("usage", JSONObject().put("prompt_tokens", AUTO_PRESSURE))
+        }
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> opaqueReply("first") },
+            { _, _ ->
+                assertEquals(0, summaries)
+                assertTrue(events.any { it is AgentEvent.ContextCompacted && !it.applied && !it.blocked &&
+                    it.reason == AgentCompressionBoundary.OPAQUE_CUT_STOP })
+                opaqueReply("second")
+            },
+            { _, _ ->
+                assertEquals(1, summaries)
+                assistant(promptTokens = 20)
+            },
+        ))
+        // State-machine fixture: the first reply establishes a sole complete batch,
+        // which is not yet compactable. No actual empty request is sent to a server.
+        assertEquals("done", runLoop(JSONArray(), provider, events, config = config,
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                executed += call.id
+                AgentModelClient.ToolResult("ok")
+            },
+            compactHistory = { source, policy ->
+                summaries++
+                assertEquals(2, requireNotNull(policy.keepStartOverride))
+                assertEquals(2, source.count { AgentCompressionBoundary.opaqueReplayItemCount(it) > 0 })
+                summarize(source, policy)
+            },
+        ).content)
+        assertEquals(listOf("first", "second"), executed)
+        assertEquals(3, provider.requests.size)
+        assertEquals(1, summaries)
+        assertEquals(listOf(1, 2), events.filterIsInstance<AgentEvent.AutoCompactWaiting>().map { it.round })
+        assertEquals(3, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        assertEquals(listOf(AUTO_PRESSURE, AUTO_PRESSURE, 20), events.filterIsInstance<AgentEvent.UsageReceived>()
+            .filterNot { it.projected }.map { it.usage.inputTokens })
+    }
+
+    @Test fun singleUserOpaqueToolRunStillCompactsAtEightyPercentCloudPressure() {
+        val config = modelConfig().copy(openAiEndpointMode = io.github.mangi.eta.data.model.OpenAiEndpointMode.RESPONSES)
+        val messages = JSONArray()
+        messages.put(AgentConversationCodec.userTextMessage("single task").put(AgentTurnIdentity.JSON_KEY, "current-turn"))
+        repeat(57) { index ->
+            val call = "c$index"
+            val assistantMessage = JSONObject().put("role", "assistant").put("content", "note")
+                .put("tool_calls", JSONArray().put(JSONObject().put("id", call).put("type", "function")
+                    .put("function", JSONObject().put("name", "get_current_context").put("arguments", "{}"))))
+            ResponsesEphemeralState.attachOutputItems(assistantMessage, JSONArray().put(
+                JSONObject().put("type", "reasoning").put("id", "rs$index").put("encrypted_content", "cipher-$index"),
+            ))
+            ResponsesReasoningState.capture(assistantMessage, config)
+            messages.put(assistantMessage)
+            messages.put(JSONObject().put("role", "tool").put("tool_call_id", call).put("content", "ok"))
+        }
+        var cut = -1
+        var keptOpaque = -1
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }),
+            listOf(AgentTokenUsage(inputTokens = AUTO_PRESSURE, cachedTokens = AUTO_PRESSURE - 100)))
+        assertEquals("done", runLoop(messages, provider, mutableListOf(), config = config, compactHistory = { source, policy ->
+            cut = requireNotNull(policy.keepStartOverride)
+            keptOpaque = source.drop(cut).count { AgentCompressionBoundary.opaqueReplayItemCount(it) > 0 }
+            summarize(source, policy)
+        }).content)
+        assertEquals(1, provider.requests.size)
+        assertTrue(cut > 1)
+        assertTrue(keptOpaque <= 1)
+        assertTrue(AgentContextCompactor.recentKeepStartIndex(
+            (0 until messages.length()).map { AgentConversationCodec.fromJsonObject(messages.getJSONObject(it)) }, 0) == 0)
+    }
+
+    @Test fun cacheHitFarAboveTheLocalEstimateStillCompactsAtEightyPercent() {
+        // Images and screenshots under-count locally; a real hit must not be mistaken for inflation.
+        val messages = smallHistory()
+        assertTrue(AUTO_PRESSURE > requestTokens(messages) * 10)
+        var summaries = 0
+        val events = mutableListOf<AgentEvent>()
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }),
+            listOf(AgentTokenUsage(inputTokens = AUTO_PRESSURE, cachedTokens = AUTO_PRESSURE - 100)))
+        assertEquals("done", runLoop(messages, provider, events,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(1, summaries)
+        assertTrue(events.any { it is AgentEvent.AutoCompactWaiting })
+    }
+
+    @Test fun cacheHitWithinTheRequestStillCompactsAtEightyPercent() {
+        val messages = smallHistory()
+        // A cache read no larger than the request we sent is an ordinary hit.
+        val cached = requestTokens(messages)
+        var summaries = 0
+        val events = mutableListOf<AgentEvent>()
+        val provider = ScriptedProvider(listOf({ _, _ -> assistant() }),
+            listOf(AgentTokenUsage(inputTokens = AUTO_PRESSURE, cachedTokens = cached)))
+        assertEquals("done", runLoop(messages, provider, events,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
         assertEquals(1, summaries)
         assertTrue(events.any { it is AgentEvent.AutoCompactWaiting })
     }
@@ -545,6 +852,211 @@ class AgentAutomaticCompactionTest {
         assertFalse(events.filterIsInstance<AgentEvent.ContextCompacted>().any { it.applied })
     }
 
+    // --- Explicit permission for unknown contexts -----------------------------------------------
+
+    @Test fun permittedUnknownContextSendsFullOversizedHistoryAndUsageLessToolRounds() {
+        val messages = oversizedUnknownHistory()
+        val originalWire = wireJson(messages)
+        val events = mutableListOf<AgentEvent>()
+        val executions = mutableListOf<String>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { request, _ ->
+                assertEquals(originalWire, request.messages.toString())
+                toolReply("first")
+            },
+            { request, _ ->
+                assertTrue(requestTokens(request.messages) > UNKNOWN_WINDOW)
+                assertEquals(0, summaries)
+                toolReply("second")
+            },
+            { request, _ ->
+                assertTrue(requestTokens(request.messages) > UNKNOWN_WINDOW)
+                assertEquals(0, summaries)
+                assistant()
+            },
+        ))
+        assertEquals("done", runLoop(messages, provider, events,
+            config = modelConfig().copy(contextWindow = UNKNOWN_WINDOW),
+            allowUnmeasuredContextSend = true,
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                executions += call.id
+                AgentModelClient.ToolResult("ok")
+            },
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(listOf("first", "second"), executions)
+        assertEquals(3, provider.requests.size)
+        assertEquals(0, summaries)
+        assertTrue(events.none { it is AgentEvent.ContextCompactionStarted ||
+            it is AgentEvent.AutoCompactWaiting || it is AgentEvent.ContextCompacted && it.blocked })
+    }
+
+    @Test fun permissionDoesNotExemptAValidSeedOrDefaultUnknownRequest() {
+        // A low valid seed has no target receipt/cloud value, but remains calibrated.
+        for ((allowed, seed) in listOf(false to null, true to 50_000)) {
+            val messages = oversizedUnknownHistory()
+            val original = messages.toString()
+            val events = mutableListOf<AgentEvent>()
+            val provider = ScriptedProvider(emptyList())
+            assertThrows(AgentRunCancelledException::class.java) {
+                runLoop(messages, provider, events,
+                    config = modelConfig().copy(contextWindow = UNKNOWN_WINDOW), enabled = false,
+                    calibratedInputTokens = seed, allowUnmeasuredContextSend = allowed)
+            }
+            assertTrue(provider.requests.isEmpty())
+            assertEquals(original, messages.toString())
+            assertTrue(events.filterIsInstance<AgentEvent.ContextCompacted>().single().blocked)
+        }
+    }
+
+    @Test fun acceptedRunReceiptRestoresHardGuardEvenBelowAutomaticPressure() {
+        val messages = oversizedUnknownHistory()
+        val events = mutableListOf<AgentEvent>()
+        val provider = ScriptedProvider(listOf({ _, _ ->
+            toolReply("measured").put("usage", JSONObject().put("prompt_tokens", 200_000))
+        }))
+        val output = "中".repeat(40_000) // +60k local growth makes the anchored next request too large.
+        assertTrue(200_000 < AgentContextCompactor.autoPressureTokens(UNKNOWN_WINDOW))
+        assertTrue(200_000 + AgentContextBudget.countTokens(output) > AgentCompressionBoundary.inputLimit(
+            UNKNOWN_WINDOW, AgentCompressionBoundary.outputReserve(modelConfig()), calibrated = true))
+        assertThrows(AgentRunCancelledException::class.java) {
+            runLoop(messages, provider, events,
+                config = modelConfig().copy(contextWindow = UNKNOWN_WINDOW), enabled = false,
+                allowUnmeasuredContextSend = true,
+                toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult(output) })
+        }
+        assertEquals(1, provider.requests.size)
+        assertEquals(200_000, events.filterIsInstance<AgentEvent.UsageReceived>().single { !it.projected }.usage.inputTokens)
+        assertTrue(events.none { it is AgentEvent.AutoCompactWaiting })
+        assertTrue(events.filterIsInstance<AgentEvent.ContextCompacted>().single().blocked)
+    }
+
+    @Test fun unknown350kReceiptCompactsBeforeNextRequestAndFailureNeverSendsIt() {
+        // 350k/272k is within the unchanged 130% acceptance rule; cache is absent, not inflated.
+        assertTrue(AgentBilledPromptPlausibility.fitsWindow(350_000, UNKNOWN_WINDOW))
+        for (failSummary in listOf(false, true)) {
+            val messages = oversizedUnknownHistory()
+            val events = mutableListOf<AgentEvent>()
+            var summaries = 0
+            var protectedTail = emptyList<AgentModelClient.ConversationMessage>()
+            val provider = ScriptedProvider(listOf(
+                { request, _ ->
+                    assertTrue(requestTokens(request.messages) > UNKNOWN_WINDOW)
+                    toolReply("hot").put("usage", JSONObject().put("prompt_tokens", 350_000))
+                },
+                { request, _ ->
+                    assertEquals(1, summaries)
+                    assertTrue(events.any { it is AgentEvent.ContextCompacted && it.applied && !it.pruningOnly })
+                    assertTrue(requestTokens(request.messages) < UNKNOWN_WINDOW)
+                    assistant()
+                },
+            ))
+            val run = {
+                runLoop(messages, provider, events,
+                    config = modelConfig().copy(contextWindow = UNKNOWN_WINDOW),
+                    allowUnmeasuredContextSend = true,
+                    toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("ok") },
+                    compactHistory = { source, policy ->
+                        summaries++
+                        protectedTail = source.drop(requireNotNull(policy.keepStartOverride))
+                        if (failSummary) error("summary transport failed")
+                        summarize(source, policy)
+                    })
+            }
+            if (failSummary) {
+                assertThrows(AgentRunCancelledException::class.java) { run() }
+                assertEquals(1, provider.requests.size)
+                assertFalse(events.filterIsInstance<AgentEvent.ContextCompacted>().any { it.applied })
+                assertTrue(events.filterIsInstance<AgentEvent.ContextCompacted>().single { it.blocked }
+                    .reason.contains("summary transport failed"))
+                assertEquals(protectedTail, AgentConversationCodec.transcript(messages, 0).takeLast(protectedTail.size))
+            } else {
+                assertEquals("done", run().content)
+                assertEquals(2, provider.requests.size)
+                assertTrue(events.filterIsInstance<AgentEvent.ContextCompacted>().none { it.blocked })
+            }
+            assertEquals(1, summaries)
+            assertEquals(350_000, events.filterIsInstance<AgentEvent.UsageReceived>().single { !it.projected }.usage.inputTokens)
+            val finished = events.indexOfFirst { it is AgentEvent.ToolFinished && it.toolCallId == "hot" }
+            val started = events.indexOfFirst { it is AgentEvent.ContextCompactionStarted }
+            assertTrue(finished in 0 until started)
+            assertEquals(2, events.filterIsInstance<AgentEvent.ContextCompactionStarted>().single().round)
+        }
+    }
+
+    @Test fun committedSummaryPermitsItsUnknownOversizedProtectedTailEvenWithoutInitialPermission() {
+        val messages = oversizedUnknownHistory()
+        val protectedText = "中".repeat(200_000)
+        messages.getJSONObject(messages.length() - 1).put("content", protectedText)
+        val config = modelConfig().copy(contextWindow = UNKNOWN_WINDOW)
+        assertTrue(storedChars(messages) < UNKNOWN_WINDOW * 6L)
+        val controller = AgentRunController().also { assertTrue(it.requestCompact(1, config)) }
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf({ request, _ ->
+            assertEquals(1, summaries)
+            assertTrue(requestTokens(request.messages) > UNKNOWN_WINDOW)
+            assertEquals(protectedText, request.messages.getJSONObject(request.messages.length() - 1).getString("content"))
+            assistant()
+        }))
+        assertEquals("done", runLoop(messages, provider, events, config = config, controller = controller,
+            enabled = false, calibratedInputTokens = 50_000,
+            compactHistory = { source, policy -> summaries++; summarize(source, policy) }).content)
+        assertEquals(1, summaries)
+        assertEquals(1, provider.requests.size)
+        assertTrue(events.filterIsInstance<AgentEvent.ContextCompacted>().single().applied)
+    }
+
+    @Test fun unknownPermissionDoesNotBypassStorageCap() {
+        val messages = escapedHistory(charsPerMessage = 40_000)
+        assertTrue(storedChars(messages) > HARD_STORAGE_CAP)
+        val original = messages.toString()
+        val events = mutableListOf<AgentEvent>()
+        val provider = ScriptedProvider(emptyList())
+        assertThrows(AgentRunCancelledException::class.java) {
+            runLoop(messages, provider, events, allowUnmeasuredContextSend = true,
+                compactHistory = { _, _ -> error("storage pressure must not summarize") })
+        }
+        assertTrue(provider.requests.isEmpty())
+        assertEquals(original, messages.toString())
+        assertTrue(events.none { it is AgentEvent.ContextCompactionStarted })
+        assertTrue(events.filterIsInstance<AgentEvent.ContextCompacted>().single().reason.contains("持久化容量上限"))
+    }
+
+    @Test fun unknownPermissionStillReducesOnServerOverflowAndStopsAfterRepeatedOverflow() {
+        val messages = oversizedUnknownHistory()
+        val events = mutableListOf<AgentEvent>()
+        var summaries = 0
+        val provider = ScriptedProvider(listOf(
+            { request, _ ->
+                assertTrue(requestTokens(request.messages) > UNKNOWN_WINDOW)
+                throw overflow()
+            },
+            { request, _ ->
+                assertEquals(1, summaries)
+                assertTrue(requestTokens(request.messages) < UNKNOWN_WINDOW)
+                throw overflow()
+            },
+        ))
+        assertThrows(AgentRunCancelledException::class.java) {
+            runLoop(messages, provider, events,
+                config = modelConfig().copy(contextWindow = UNKNOWN_WINDOW),
+                allowUnmeasuredContextSend = true,
+                compactHistory = { source, policy -> summaries++; summarize(source, policy) })
+        }
+        assertEquals(1, summaries)
+        assertEquals(2, provider.requests.size)
+        assertEquals(1, events.filterIsInstance<AgentEvent.ContextCompacted>().count { it.applied })
+        assertTrue(events.filterIsInstance<AgentEvent.ContextCompacted>().single { it.blocked }
+            .reason.contains("提供方确认上下文超限"))
+    }
+
+    // Compact CJK fixture: >272k local tokens, far below the independent stored-character cap.
+    private fun oversizedUnknownHistory() = history("中".repeat(25_000), count = 8).also {
+        assertTrue(requestTokens(it) > UNKNOWN_WINDOW)
+        assertTrue(storedChars(it) < UNKNOWN_WINDOW * 6L)
+    }
+
     // --- Helpers --------------------------------------------------------------------------------
 
     // Request expectations use the same text-only wire projection as AgentLoop.
@@ -594,6 +1106,7 @@ class AgentAutomaticCompactionTest {
         onBlocked: (AgentRunController) -> Unit = { it.cancel() },
         compactHistory: (List<AgentModelClient.ConversationMessage>, AgentLoop.CompactPolicy) -> List<AgentModelClient.ConversationMessage> = ::summarize,
         calibratedInputTokens: Int? = null,
+        allowUnmeasuredContextSend: Boolean = false,
     ): AgentLoop.Result = AgentLoop(
         config = config, messages = messages, tools = tools(), provider = provider,
         toolExecutor = toolExecutor, runController = controller, traceFormatter = AgentTraceFormatter(),
@@ -605,6 +1118,7 @@ class AgentAutomaticCompactionTest {
         compactPolicy = AgentLoop.CompactPolicy(enabled, WINDOW, 2, compressor),
         compactionArchive = archive, turnId = "current-turn", compactHistory = compactHistory,
         calibratedInputTokens = calibratedInputTokens,
+        allowUnmeasuredContextSend = allowUnmeasuredContextSend,
     ).run()
 
     private fun storedChars(messages: JSONArray): Long = AgentConversationCodec.transcript(messages, 0)
@@ -614,7 +1128,7 @@ class AgentAutomaticCompactionTest {
         AgentContextBudget.estimate(messages) + AgentContextBudget.countTokens(tools().toString())
 
     // Plain latin history whose local estimate alone is above the 80% boundary.
-    private fun largeHistory() = history("x".repeat(100_000), count = 9)
+    private fun largeHistory() = history("x".repeat(93_000), count = 9)
 
     // Escaping inflates serialized size without inflating the token estimate. Explicit
     // turn IDs also prevent the persistence DTO from clipping these historical bodies.
@@ -657,6 +1171,7 @@ class AgentAutomaticCompactionTest {
     private class ScriptedProvider(
         private val responses: List<(ProviderRequest, AgentRunController) -> JSONObject>,
         private val usageFrames: List<AgentTokenUsage> = emptyList(),
+        private val afterUsage: (Int) -> Unit = {},
     ) : AgentProviderClient {
         override val id = "automatic-compaction-test"
         override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, false, false, false, false)
@@ -666,16 +1181,22 @@ class AgentAutomaticCompactionTest {
             onEvent: (ProviderEvent) -> Unit): ProviderResponse {
             val step = responses.getOrNull(requests.size) ?: error("Unexpected provider request ${requests.size + 1}")
             requests += JSONArray(request.messages.toString())
+            onEvent(ProviderEvent.RequestStarted)
+            AgentWireRequestEstimate.publish(
+                AgentWireRequestEstimate.previewBody(request.config, request.messages, request.tools),
+                AgentWireRequestEstimate.endpoint(request.config), request, onEvent)
             val reply = step(request, runController)
             reply.optJSONObject("usage")?.let {
                 onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = it.getInt("prompt_tokens"))))
             }
             usageFrames.forEach { onEvent(ProviderEvent.Usage(it)) }
+            afterUsage(requests.size)
             return ProviderResponse(reply)
         }
     }
 
     private companion object {
+        const val UNKNOWN_WINDOW = 272_000
         const val WINDOW = 260_000
         const val AUTO_PRESSURE = 208_000
         const val HARD_STORAGE_CAP = 1_560_000L

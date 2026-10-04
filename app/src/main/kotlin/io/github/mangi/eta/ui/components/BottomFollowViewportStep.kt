@@ -5,6 +5,31 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
+ * Preserve an existing row's pre-expansion top from fresh layout evidence. If that key is not
+ * measured yet, a measured row known to precede it gives only a LOWER bound on the displacement.
+ * No preceding evidence means no scroll; null is never converted into a guessed tail distance.
+ */
+internal fun resolveWorkExpansionViewportStep(
+    anchorOffsetPx: Int,
+    measuredAnchorOffsetPx: Int?,
+    measuredPrecedingBottomPx: Int?,
+): Float {
+    val observed = measuredAnchorOffsetPx ?: measuredPrecedingBottomPx ?: return 0f
+    return (observed.toLong() - anchorOffsetPx.toLong()).coerceAtLeast(0L).toFloat()
+}
+
+/** Authorization for the bounded explicit expansion only; not a general idle follow mode. */
+internal fun resolveWorkExpansionViewportOwnership(
+    keepBottomAnchored: Boolean,
+    initialBottomPositionPending: Boolean,
+    pointerDown: Boolean,
+    isUserDragging: Boolean,
+    isUserScrolling: Boolean,
+    navigationActive: Boolean,
+): Boolean = keepBottomAnchored && !initialBottomPositionPending && !pointerDown &&
+    !isUserDragging && !isUserScrolling && !navigationActive
+
+/**
  * Resolves how far the auto-follow controller should scroll the chat viewport for a single step.
  *
  * The controller already glides the viewport by [smoothStepPx]. That smooth motion is sized for

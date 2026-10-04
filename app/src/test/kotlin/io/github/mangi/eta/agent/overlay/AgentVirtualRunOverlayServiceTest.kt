@@ -17,6 +17,8 @@ import io.github.mangi.eta.agent.runtime.EntrySurfaceGuard
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AgentLogger
 import java.lang.reflect.Proxy
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,7 +71,18 @@ class AgentVirtualRunOverlayServiceTest {
             for ((index, session) in sessions.withIndex()) {
                 assertEquals(AgentTaskSurfaceMode.BACKGROUND, session.taskSurfaceMode)
                 registry(service).put(session)
-                if (index == 2) call(service, "cancelRun", session.runId)
+                if (index == 2) {
+                    // cancelRun dispatches to the stop worker, not the main looper.
+                    // Observe requestStop's cancellation before simulating worker completion.
+                    val cancelled = CountDownLatch(1)
+                    val binding = session.controller.register { cancelled.countDown() }
+                    try {
+                        call(service, "cancelRun", session.runId)
+                        assertTrue("Stop worker did not cancel the session", cancelled.await(5, TimeUnit.SECONDS))
+                    } finally {
+                        binding.close()
+                    }
+                }
                 val result = AgentRuntimeWire.RunResult(
                     session.runId, ok = index != 1, content = "done",
                     error = if (index == 1) "failed" else null,

@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
         @Suppress("DEPRECATION")
         window.setSoftInputMode(
             WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN,
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED,
         )
         updateAssistantHandoff(intent)
         consumeShareIntent(intent)

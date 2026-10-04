@@ -547,6 +547,8 @@ internal class ShellProcessSupervisor(
 }
 
 /** 写入托管进程环境块的归属标记；巡检与停止前用它防止 PID 复用误杀。 */
+internal const val ONE_SHOT_OUTPUT_MAX_BYTES = 512 * 1024
+
 internal const val ETA_PROCESS_OWNER_ENV = "ETA_PROCESS_OWNER"
 
 internal fun shellQuote(value: String): String =
@@ -606,10 +608,10 @@ internal fun runOneShotShell(
         val output = ByteArrayOutputCollector()
         val stderr = ByteArrayOutputCollector()
         val outputThread = thread(name = "agent-terminal-stdout") {
-            process.inputStream.use { input -> output.readFrom(input) }
+            process.inputStream.use { input -> output.readFrom(input, ONE_SHOT_OUTPUT_MAX_BYTES) }
         }
         val stderrThread = thread(name = "agent-terminal-stderr") {
-            process.errorStream.use { input -> stderr.readFrom(input) }
+            process.errorStream.use { input -> stderr.readFrom(input, ONE_SHOT_OUTPUT_MAX_BYTES) }
         }
         val stdinThread = thread(name = "agent-terminal-stdin") {
             process.outputStream.use { out ->

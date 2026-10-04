@@ -97,6 +97,7 @@ class EtaDatabaseMigrationTest {
             }
             assertEquals("", retainedCheckpoint?.cloudUsageJson)
             assertEquals(32, database.openHelper.readableDatabase.version)
+            assertTrue(conversations.none { it.hasCompletionMarker })
             val oversizedCheckpoint = runBlocking(Dispatchers.IO) {
                 database.conversationDao().contextCheckpoint("conv-oversized")
             }
@@ -291,7 +292,8 @@ class EtaDatabaseMigrationTest {
             val database = Room.databaseBuilder(context, EtaDatabase::class.java, name)
                 .allowMainThreadQueries()
                 .openHelperFactory(FrameworkSQLiteOpenHelperFactory())
-                .addMigrations(EtaDatabase.MIGRATION_28_29, EtaDatabase.MIGRATION_29_30, EtaDatabase.MIGRATION_30_31, EtaDatabase.MIGRATION_31_32)
+                .addMigrations(EtaDatabase.MIGRATION_28_29, EtaDatabase.MIGRATION_29_30,
+                    EtaDatabase.MIGRATION_30_31, EtaDatabase.MIGRATION_31_32)
                 .build()
             try {
                 assertEquals(32, database.openHelper.writableDatabase.version)

@@ -1,8 +1,12 @@
 package io.github.mangi.eta.ui.model
 
 import androidx.compose.runtime.Immutable
+import io.github.mangi.eta.agent.question.AgentQuestionRequest
+import io.github.mangi.eta.agent.question.AgentQuestionAnswer
+import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.agent.model.AgentFileReference
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ReasoningEffort
 
 @Immutable
@@ -12,6 +16,7 @@ internal data class AgentChatUiState(
     val input: String,
     val isStreaming: Boolean,
     val isPaused: Boolean = false,
+    val isWaitingForAnswer: Boolean = false,
     val isCompressingContext: Boolean = false,
     val compactingModelName: String = "",
     val isWaitingForCompression: Boolean = false,
@@ -26,10 +31,18 @@ internal data class AgentChatUiState(
     val pendingConversationMentions: List<PendingConversationMentionUi> = emptyList(),
     val appliedRuntimeRunIds: List<String> = emptyList(),
     val messageEdit: MessageEditUiState? = null,
-    /** 当前请求的 prompt 占用；工具循环里由 Runtime 按账单+增量投影，对齐 ST 输入。 */
+    /** Current request's cloud receipt only; runtime projections are not actual usage. */
     val livePromptTokens: Int? = null,
     val livePromptIsProjected: Boolean = false,
-    // Local snapshots paired with the valid cloud receipt. Never shown as cloud usage.
+    /** Last real receipt retained for conservative budget deltas, never displayed as actual. */
+    val contextBudgetReceiptTokens: Int? = null,
+    /** 旧显示学习字段：为兼容持久化保留，圆环已不再读取（见 contextDisplayPolicy）。 */
+    val receiptPredictionTokens: Int? = null,
+    val contextHasStarted: Boolean = false,
+    val contextAwaitingReceipt: Boolean = false,
+    val contextReceiptEvidence: ContextReceiptEvidence? = null,
+    val cloudReceiptRequestId: String? = null,
+    val cloudRouteSignature: String? = null,
     val cloudHistoryTokens: Int? = null,
     val cloudRequestOverheadTokens: Int? = null,
     /**
@@ -45,12 +58,31 @@ internal data class AgentChatUiState(
     val selectedContextTaskId: String? = null,
     /** False means metadata/preview only; persistence must not replace its stored content. */
     val conversationContentLoaded: Boolean = true,
+    /**
+     * GPT 速度档位。会话临时真值（含模型切换重置，不持久化）由 AppState 路持有，
+     * UI 只读取渲染并派发切换事件，不本地假切状态。
+     */
+    val gptSpeedMode: GptSpeedMode = GptSpeedMode.NORMAL,
 )
 
 @Immutable
 sealed interface AgentChatMessageUi {
     val id: String
 }
+
+@Immutable
+internal data class AgentQuestionMessageUi(
+    override val id: String,
+    val request: AgentQuestionRequest,
+    val status: AgentQuestionStatus = AgentQuestionStatus.Waiting,
+    val answer: AgentQuestionAnswer? = null,
+    val selectedOptionId: String? = null,
+    val answerKind: String = "option",
+    val otherText: String = "",
+    val note: String = "",
+    val submitting: Boolean = false,
+    val error: String? = null,
+) : AgentChatMessageUi
 
 @Immutable
 data class UserMessageUi(
@@ -106,7 +138,7 @@ internal fun List<AgentChatMessageUi>.stoppedDuringModelRetry(): Boolean {
     val last = lastOrNull { message ->
         when (message) {
             is UserMessageUi -> !message.isSteerSupplement()
-            is AgentMessageUi, is SystemNoticeMessageUi -> true
+            is AgentMessageUi, is SystemNoticeMessageUi, is ErrorReconnectMessageUi -> true
             else -> false
         }
     } ?: return false
@@ -126,7 +158,7 @@ internal fun lastContinuableNotice(messages: List<AgentChatMessageUi>): SystemNo
     val last = messages.lastOrNull { message ->
         when (message) {
             is UserMessageUi -> !message.isSteerSupplement()
-            is AgentMessageUi, is SystemNoticeMessageUi -> true
+            is AgentMessageUi, is SystemNoticeMessageUi, is ErrorReconnectMessageUi -> true
             else -> false
         }
     }
@@ -139,8 +171,23 @@ internal fun canContinuePausedGeneration(messages: List<AgentChatMessageUi>): Bo
 }
 
 internal fun canContinueDisconnectedRun(messages: List<AgentChatMessageUi>): Boolean {
-    val notice = lastContinuableNotice(messages) ?: return false
-    return notice.code.canContinueDisconnectedRun() || messages.stoppedDuringModelRetry()
+    val last = messages.lastOrNull { message ->
+        when (message) {
+            is UserMessageUi -> !message.isSteerSupplement()
+            is AgentMessageUi, is SystemNoticeMessageUi -> true
+            is ErrorReconnectMessageUi -> message.status != ErrorReconnectStatus.Succeeded
+            else -> false
+        }
+    }
+    if (last is ErrorReconnectMessageUi) return last.isRetryableFailure()
+    val notice = last as? SystemNoticeMessageUi ?: return false
+    if (notice.code.canContinueDisconnectedRun() || messages.stoppedDuringModelRetry()) return true
+    if (notice.code != SystemNoticeCode.Stopped) return false
+    // Manual stop retains its control notice for paused/sub-agent continuation. A stopped
+    // reconnect immediately before it still offers the disconnected-run continuation.
+    val boundary = messages.indexOfLast { it is UserMessageUi && !it.isSteerSupplement() }
+    return messages.drop(boundary + 1).filterIsInstance<ErrorReconnectMessageUi>()
+        .lastOrNull()?.let { it.isReconnect && it.isRetryableFailure() } == true
 }
 
 @Immutable
@@ -314,13 +361,17 @@ data class PendingConversationMentionUi(
 )
 
 @Immutable
-data class MessageEditUiState(
+internal data class MessageEditUiState(
     val targetMessageId: String,
     val previousInput: String,
     val previousImages: List<PendingImageUi>,
     val previousFileReferences: List<PendingFileReferenceUi>,
     val hasLaterTurns: Boolean,
     val previousConversationMentions: List<PendingConversationMentionUi> = emptyList(),
+    /** Temporary archive restoration. The conversation itself is unchanged until send. */
+    val preparedHistory: List<AgentModelClient.ConversationMessage>? = null,
+    /** Detect any intervening history rewrite before committing the prepared edit. */
+    val preparedFromHistory: List<AgentModelClient.ConversationMessage>? = null,
 )
 
 internal fun UserMessageUi.isSteerSupplement(): Boolean =

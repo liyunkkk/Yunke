@@ -71,6 +71,12 @@ class SubAgentSupervisionTest {
         }
     }
 
+    private fun awaitAtLeast(counter: java.util.concurrent.atomic.AtomicInteger, expected: Int) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (counter.get() < expected && System.nanoTime() < deadline) Thread.sleep(10)
+        assertTrue("expected at least $expected notifications, got ${counter.get()}", counter.get() >= expected)
+    }
+
     @Test fun statusNotificationsAndActualModelDoNotRevealKey() {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -86,14 +92,13 @@ class SubAgentSupervisionTest {
             assertEquals("actual-model", initial.getString("model"))
             assertFalse(initial.toString().contains("private-key"))
             assertEquals("", initial.getJSONObject("supervision").getString("checkpoint"))
+            // Delivery is asynchronous and coalesced by key; let the start notification land
+            // before completion so the two cannot merge into one.
+            awaitAtLeast(notifications, 1)
+            val beforeCompletion = notifications.get()
             release.countDown()
             assertEquals("completed", call(c, "get_task_result", JSONObject().put("task_id", id).put("wait_ms", 1000)).getString("status"))
-            // 完成回调是异步投递的：给一个有时限的等待窗口，避免与调度时序赛跑（此断言此前偶发失败）。
-            val deadline = System.currentTimeMillis() + 2_000
-            while (notifications.get() < 2 && System.currentTimeMillis() < deadline) {
-                Thread.sleep(10)
-            }
-            assertTrue(notifications.get() >= 2)
+            awaitAtLeast(notifications, beforeCompletion + 1)
         }
     }
 }

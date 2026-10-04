@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Refresh
 import io.github.mangi.eta.ui.icons.SubAgents
 import androidx.compose.material.icons.rounded.Restaurant
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Smartphone
@@ -363,6 +364,11 @@ internal fun SettingsScreen(
                         startAction = { PreferenceIcon(icon = Icons.Rounded.AutoAwesome) },
                         onClick = { onNavigate(AppRoute.TitleModel) },
                     )
+                    ArrowPreference(
+                        title = stringResource(R.string.error_reconnect_title),
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.Refresh) },
+                        onClick = { onNavigate(AppRoute.ErrorReconnectSettings) },
+                    )
                 }
             }
 
@@ -408,19 +414,9 @@ internal fun SettingsScreen(
                 SmallTitle(stringResource(R.string.settings_general))
                 Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
-                        title = stringResource(R.string.voice_mode_title),
+                        title = stringResource(R.string.voice_title),
                         startAction = { PreferenceIcon(icon = Icons.Rounded.RecordVoiceOver) },
-                        onClick = { onNavigate(AppRoute.VoiceModeSettings) },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.tts_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.VolumeUp) },
-                        onClick = { onNavigate(AppRoute.TtsSettings) },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.speech_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.Mic) },
-                        onClick = { onNavigate(AppRoute.SpeechSettings) },
+                        onClick = { onNavigate(AppRoute.VoiceSettings) },
                     )
 
                     ArrowPreference(

@@ -18,6 +18,35 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentModelClientLoopTest {
+    @Test fun completeForwardsExplicitUnknownContextPermission() {
+        val prompt = "中".repeat(190_000) // >272k local tokens, safely below the stored-character cap.
+        assertTrue(AgentContextBudget.countTokens(prompt) > 272_000)
+        for (allowed in listOf(false, true)) {
+            val controller = AgentRunController()
+            val provider = ScriptedProvider(assistant(content = "done", finishReason = "stop"))
+            val run = {
+                AgentModelClient.complete(
+                    config = modelConfig().copy(contextWindow = 272_000), prompt = prompt,
+                    provider = provider, runController = controller,
+                    allowUnmeasuredContextSend = allowed,
+                    onEvent = { event ->
+                        if (event is AgentEvent.ContextCompacted && event.blocked) controller.cancel()
+                    },
+                    toolExecutor = AgentModelClient.ToolExecutor { error("Unexpected tool") },
+                )
+            }
+            if (allowed) {
+                assertEquals("done", run().content)
+                assertEquals(1, provider.requests.size)
+                assertEquals(prompt, provider.requests.single()
+                    .getJSONObject(provider.requests.single().length() - 1).getString("content"))
+            } else {
+                assertThrows(io.github.mangi.eta.agent.runtime.AgentRunCancelledException::class.java) { run() }
+                assertTrue(provider.requests.isEmpty())
+            }
+        }
+    }
+
     @Test fun stoppingMidBatchKeepsCompletedResultsAndMarksUnconfirmedCalls() {
         val controller = AgentRunController()
         val provider = ScriptedProvider(assistant(finishReason = "tool_calls", toolCalls = listOf(
@@ -759,7 +788,7 @@ class AgentModelClientLoopTest {
         }
         val messages = JSONArray().put(AgentConversationCodec.userTextMessage("开始"))
         val loop = AgentLoop(
-            config = modelConfig().copy(supportsVision = true), messages = messages,
+            config = modelConfig().copy(supportsVision = true, errorReconnectPolicy = "continuous"), messages = messages,
             tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
             provider = provider,
             toolExecutor = AgentModelClient.ToolExecutor {
@@ -777,13 +806,18 @@ class AgentModelClientLoopTest {
         assertEquals(1, executions)
         assertEquals(3, requests.size)
         assertEquals(List(3) { "conversation-retry" }, sessions)
-        assertEquals(requests[1], requests[2])
+        val retriedHistory = JSONArray(requests[2])
+        assertEquals(requests[1], JSONArray().apply {
+            for (index in 0 until retriedHistory.length() - 1) put(retriedHistory.getJSONObject(index))
+        }.toString())
+        assertTrue(requests[2].contains("Continue the interrupted task"))
         assertTrue(requests[2].contains("data:image/png"))
         assertFalse(messages.toString().contains("data:image/png"))
         assertFalse(messages.toString().contains("半截"))
         assertEquals("先观察观察成功", result.reasoningContent)
         assertEquals(listOf(1, 2, 3), events.filterIsInstance<AgentEvent.RoundStarted>().map { it.round })
-        assertEquals(2, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().single().round)
+        assertEquals(2, events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().first().round)
+        assertEquals(1, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().size)
         assertEquals(1, events.filterIsInstance<AgentEvent.ToolStarted>().size)
     }
 
@@ -843,6 +877,10 @@ class AgentModelClientLoopTest {
         ): ProviderResponse {
             requests += JSONArray(request.messages.toString())
             requestConfigs += request.config
+            onEvent(ProviderEvent.RequestStarted)
+            AgentWireRequestEstimate.publish(
+                AgentWireRequestEstimate.previewBody(request.config, request.messages, request.tools),
+                AgentWireRequestEstimate.endpoint(request.config), request, onEvent)
             val response = responses.getOrNull(index)
                 ?: error("缺少第 ${index + 1} 个 scripted response")
             index += 1
@@ -930,6 +968,13 @@ class AgentModelClientLoopTest {
         assertTrue(secondContents.any { it.contains("摘要") || it.contains("对话摘要") })
         assertFalse(secondContents.contains("u1"))
         assertTrue((0 until second.length()).any { second.getJSONObject(it).optString("role") == "tool" })
+        val projections = events.filterIsInstance<AgentEvent.UsageReceived>().filter { it.projected }
+        assertEquals(listOf(1, 2), projections.map { it.round })
+        val secondConfig = provider.requestConfigs[1]
+        val secondBody = AgentWireRequestEstimate.previewBody(secondConfig, second,
+            AgentToolCatalog.build(terminalTools = false, browserTools = false))
+        assertEquals(AgentWireRequestEstimate.measure(secondBody,
+            AgentWireRequestEstimate.endpoint(secondConfig)).tokens, projections.last().usage.inputTokens)
     }
 
     @Test
@@ -1177,6 +1222,27 @@ class AgentModelClientLoopTest {
             controller.cancel()
             worker.join(1_000)
         }
+    }
+
+    @Test
+    fun usageLessToolRoundsDoNotReopenInitialProjectionBoundary() {
+        val events = mutableListOf<AgentEvent>()
+        val provider = ScriptedProvider(listOf(
+            { _, _ -> assistant(finishReason = "tool_calls",
+                toolCalls = listOf(toolCall("no-bill", "get_current_context", "{}"))) },
+            { _, _ -> assistant(content = "done", finishReason = "stop") },
+        ))
+        AgentLoop(config = modelConfig(),
+            messages = JSONArray().put(AgentConversationCodec.userTextMessage("task")),
+            tools = AgentToolCatalog.build(terminalTools = false, browserTools = false),
+            provider = provider,
+            toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("{}") },
+            runController = AgentRunController(), traceFormatter = AgentTraceFormatter(),
+            onEvent = events::add, compactPolicy = AgentLoop.CompactPolicy.Disabled).run()
+        val usage = events.filterIsInstance<AgentEvent.UsageReceived>()
+        assertEquals(2, provider.requests.size)
+        assertEquals(listOf(1), usage.map { it.round })
+        assertTrue(usage.all { it.projected })
     }
 
     @Test

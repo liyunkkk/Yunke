@@ -33,6 +33,7 @@
   <string name="action_open_terminal">打开终端</string>
   <string name="action_open_browser">打开浏览器</string>
   <string name="action_search_history">搜索记录</string>
+  <string name="action_interactive_mode">交互模式</string>
   <string name="search_history_hint">搜索消息</string>
   <string name="search_history_empty">输入关键词搜索对话</string>
   <string name="search_history_no_results">没有匹配的消息</string>
@@ -1510,8 +1511,24 @@
   <string name="vd_recovery_refresh">刷新状态</string>
   <string name="vd_recovery_explanation">将本会话任务交付到主屏后台，确认副屏为空后关闭。身份或状态无法验证时，保留副屏并显示错误，不会强杀应用。</string>
   <string name="vd_preview_open">网页实时预览</string>
+  <string name="vd_preview_revoke">撤销网页授权</string>
   <string name="vd_preview_stop">停止网页预览授权</string>
   <string name="vd_preview_note">只读本机画面，使用临时查看授权，需要配套新版 3070 网页。网页可见时持续刷新，不会新建或控制副屏。</string>
   <string name="vd_preview_control_open">网页预览与手动关闭</string>
   <string name="system_notice_completed">已完成</string>
+  <string name="error_reconnect_title">错误重连</string>
+  <string name="error_reconnect_description">出错后自动重试，直到成功或超时。所有模型通用。</string>
+  <string name="error_reconnect_duration">总重试时长</string>
+  <string name="error_reconnect_none">不重连</string>
+  <string name="error_reconnect_window_30s">30秒</string>
+  <string name="error_reconnect_window_1m">1分钟</string>
+  <string name="error_reconnect_window_5m">5分钟</string>
+  <string name="error_reconnect_continuous">持续重连</string>
+  <string name="error_reconnect_save_failed">无法保存重连设置，请重试。</string>
+  <string name="reconnect_running">正在重连：%1$s</string>
+  <string name="reconnect_succeeded">已重连</string>
+  <string name="reconnect_failed">重连失败</string>
+  <string name="reconnect_stopped">已停止重连</string>
+  <string name="reconnect_error_title">错误详情</string>
+  <string name="reconnect_elapsed_format">已用时 %1$s</string>
 </resources>

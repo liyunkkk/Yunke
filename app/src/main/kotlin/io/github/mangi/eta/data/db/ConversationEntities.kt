@@ -24,6 +24,8 @@ internal data class ConversationEntity(
     val folderId: String = "",
     @ColumnInfo(name = "is_pinned", defaultValue = "0")
     val isPinned: Boolean = false,
+    @ColumnInfo(name = "has_completion_marker", defaultValue = "0")
+    val hasCompletionMarker: Boolean = false,
     @ColumnInfo(name = "provider_id", defaultValue = "''")
     val providerId: String = "",
     @ColumnInfo(name = "model_id", defaultValue = "''")
@@ -42,6 +44,7 @@ internal data class ConversationMetadata(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     @ColumnInfo(name = "folder_id") val folderId: String = "",
     @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
+    @ColumnInfo(name = "has_completion_marker") val hasCompletionMarker: Boolean = false,
     @ColumnInfo(name = "provider_id") val providerId: String = "",
     @ColumnInfo(name = "model_id") val modelId: String = "",
     @ColumnInfo(name = "assistant_id") val assistantId: String = "",

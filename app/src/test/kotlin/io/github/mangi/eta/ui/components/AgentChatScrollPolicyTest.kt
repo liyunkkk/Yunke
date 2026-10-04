@@ -58,6 +58,8 @@ class AgentChatScrollPolicyTest {
     fun anchoredTailRemainsClippedAfterFastCompletion() {
         assertTrue(
             shouldClipChatTail(
+                isStreaming = false,
+                isBottomSettling = true,
                 keepBottomAnchored = true,
                 isUserScrolling = false,
                 isUserDragging = false,
@@ -67,9 +69,43 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
+    fun idleAnchoredConversationDoesNotHideContentBehindTransparentComposer() {
+        assertFalse(shouldClipChatTail(
+            isStreaming = false,
+            isBottomSettling = false,
+            keepBottomAnchored = true,
+            isUserScrolling = false,
+            isUserDragging = false,
+            navigationActive = false,
+        ))
+    }
+
+    @Test
+    fun streamingStillClipsButHistoryNeverDoes() {
+        assertTrue(shouldClipChatTail(
+            isStreaming = true,
+            isBottomSettling = false,
+            keepBottomAnchored = true,
+            isUserScrolling = false,
+            isUserDragging = false,
+            navigationActive = false,
+        ))
+        assertFalse(shouldClipChatTail(
+            isStreaming = true,
+            isBottomSettling = true,
+            keepBottomAnchored = false,
+            isUserScrolling = false,
+            isUserDragging = false,
+            navigationActive = false,
+        ))
+    }
+
+    @Test
     fun manualScrollingReleasesComposerClip() {
         assertFalse(
             shouldClipChatTail(
+                isStreaming = true,
+                isBottomSettling = false,
                 keepBottomAnchored = true,
                 isUserScrolling = true,
                 isUserDragging = false,
@@ -78,6 +114,8 @@ class AgentChatScrollPolicyTest {
         )
         assertFalse(
             shouldClipChatTail(
+                isStreaming = true,
+                isBottomSettling = false,
                 keepBottomAnchored = true,
                 isUserScrolling = false,
                 isUserDragging = true,
@@ -90,6 +128,8 @@ class AgentChatScrollPolicyTest {
     fun messageNavigationReleasesComposerClip() {
         assertFalse(
             shouldClipChatTail(
+                isStreaming = true,
+                isBottomSettling = false,
                 keepBottomAnchored = true,
                 isUserScrolling = false,
                 isUserDragging = false,

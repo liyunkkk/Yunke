@@ -172,6 +172,7 @@ internal data class OverlayMessageMutationTarget(
 
 internal sealed interface EtaVoiceStatus {
     data object InputRequest : EtaVoiceStatus
+    data object WaitingForAnswer : EtaVoiceStatus
     data object Reasoning : EtaVoiceStatus
     data object Completed : EtaVoiceStatus
     data class RunningTool(val name: String) : EtaVoiceStatus
@@ -301,6 +302,8 @@ internal fun EtaVoicePanel(
     assistantId: String,
     voiceMode: Boolean = false,
     voiceNotice: String? = null,
+    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit,
+    onSubmitQuestionAnswer: (String, String) -> Unit,
 ) {
     val colors = rememberEtaVoicePanelColors()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -445,6 +448,8 @@ internal fun EtaVoicePanel(
                 history = history,
                 autoCompressEnabled = autoCompressEnabled,
                 assistantId = assistantId,
+                onQuestionDraftChanged = onQuestionDraftChanged,
+                onSubmitQuestionAnswer = onSubmitQuestionAnswer,
             )
         }
     }
@@ -496,6 +501,8 @@ private fun BoxScope.AssistantPanel(
     voiceController: VoiceModeController,
     voiceState: VoiceModeState,
     voiceFeedback: String? = null,
+    onQuestionDraftChanged: (String, String, io.github.mangi.eta.agent.question.AgentQuestionAnswer) -> Unit,
+    onSubmitQuestionAnswer: (String, String) -> Unit,
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
@@ -733,6 +740,8 @@ private fun BoxScope.AssistantPanel(
                         // 浮窗沿用本体同一套操作栏；分支按钮按裁决不接（branchEnabled 保持 false）。
                         messageActionsEnabled = state.phase != EtaVoicePhase.PROCESSING,
                         editTargetMessageId = state.messageEdit?.targetMessageId,
+                        onQuestionDraftChanged = onQuestionDraftChanged,
+                        onSubmitQuestionAnswer = onSubmitQuestionAnswer,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -1261,6 +1270,7 @@ private fun assistantBaseHeightPx(
             is UserMessageUi -> ceil(message.content.length / 22f).toInt().coerceAtLeast(1)
             is AgentMessageUi -> ceil(message.content.length / 24f).toInt().coerceAtLeast(1)
             is ThinkingMessageUi -> 2
+            is io.github.mangi.eta.ui.model.AgentQuestionMessageUi -> 7 + message.request.options.size * 2
             is ToolActivityMessageUi -> 2
             else -> 1
         }

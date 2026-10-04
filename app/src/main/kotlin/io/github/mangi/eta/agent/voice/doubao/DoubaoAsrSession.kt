@@ -17,8 +17,9 @@ import java.util.concurrent.TimeUnit
 
 internal object DoubaoAsrSession {
     @SuppressLint("MissingPermission")
-    suspend fun recognize(onListening: suspend () -> Unit, onText: suspend (String) -> Unit, onLevel: (Float) -> Unit = {}, finishRequested: () -> Boolean = { false }): Boolean = withContext(Dispatchers.IO) {
-        val config = DoubaoVoiceConfig.state.value
+    suspend fun recognize(onListening: suspend () -> Unit, onText: suspend (String) -> Unit,
+        config: DoubaoVoiceConfig.Config = DoubaoVoiceConfig.state.value,
+        onLevel: (Float) -> Unit = {}, finishRequested: () -> Boolean = { false }): Boolean = withContext(Dispatchers.IO) {
         check(config.asrKey.isNotBlank()) { "请配置豆包 ASR API Key" }
         val opened = CompletableDeferred<Unit>()
         val results = Channel<DoubaoAsrProtocol.Result>(32)

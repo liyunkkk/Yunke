@@ -18,6 +18,7 @@ internal object AgentToolCatalog {
         capabilities: AgentToolCapabilities = AgentToolCapabilities(rootAvailable = true),
     ): JSONArray =
         filterAdvertised(capabilities.project(JSONArray().also { tools ->
+            AgentQuestionToolCatalog.appendTo(tools)
             AgentContextAppToolCatalog.appendTo(tools)
             AgentSpeechToolCatalog.appendTo(tools)
             AgentGestureToolCatalog.appendTo(tools)

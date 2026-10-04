@@ -1,9 +1,11 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentRuntimePolicy
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,6 +28,10 @@ internal class AgentLoop(
     private val onEvent: (AgentEvent) -> Unit,
     private val toolsForRound: (() -> JSONArray)? = null,
     private val modelRetry: AgentModelRetry = AgentModelRetry(),
+    private val reconnectTiming: ReconnectTiming = SystemReconnectTiming,
+    private val waitForReconnect: (AgentRunController, Long) -> Unit = { controller, delay ->
+        controller.awaitRetryDelay(delay)
+    },
     private val sessionId: String = java.util.UUID.randomUUID().toString(),
     private val compactPolicy: CompactPolicy = CompactPolicy.Disabled,
     private val systemCount: Int = 0,
@@ -39,6 +45,8 @@ internal class AgentLoop(
         List<AgentModelClient.ConversationMessage>,
         CompactPolicy,
     ) -> List<AgentModelClient.ConversationMessage>)? = null,
+    /** Explicit permission to send an unknown context; never a usage receipt or calibration. */
+    allowUnmeasuredContextSend: Boolean = false,
 ) {
     data class CompactPolicy(
         val enabled: Boolean,
@@ -67,7 +75,10 @@ internal class AgentLoop(
         val result: AgentModelClient.ToolResult,
     )
 
-    private val auxiliaryVision = AuxiliaryVision.create(config, runController, sessionId)
+    private var auxiliaryRound = 1
+    private val auxiliaryVision = AuxiliaryVision.create(config, runController, sessionId) {
+        onEvent(it.copy(round = auxiliaryRound))
+    }
 
     private var toolCallValidator = AgentToolCallValidator(tools)
     private val delegationArgumentRepair = AgentDelegationArgumentRepair()
@@ -104,8 +115,11 @@ internal class AgentLoop(
         }
     }
     private var lastUsage: AgentTokenUsage? = null
+    private var hasDisplayCloudReceipt = false
     private val requestBudget = AgentRequestBudgetPolicy()
     private val silentBudget = AgentSilentContextBudget()
+    // A committed summary starts a new unknown context epoch. Pruning or failed summaries do not.
+    private var unmeasuredContextSendAllowed = allowUnmeasuredContextSend
     private var suppressThinkingForNextRequest = false
     private val continuationBlocks = AgentContinuationBlocks()
     private val continuationReasoning = AgentContinuationReasoning()
@@ -121,6 +135,10 @@ internal class AgentLoop(
     private var overflowRecoveryAttempts = 0
     private var lastFailedCompaction: Pair<String, Int>? = null
     private var skipIneffectiveAutoCompact = false
+    private var skippedAutoChars: Long = -1L
+    private var skippedAutoCloud: Int = Int.MIN_VALUE
+    private var lastAutoLogReason: String = ""
+    private var lastAutoLogNanos: Long = 0L
     /** 圆环上的云端实测曾到过 80%。后面的回执即使变小，也在下次请求前压缩。 */
     private var autoCompactLatched = false
     private var latchedCloudTokens = 0
@@ -130,6 +148,42 @@ internal class AgentLoop(
     /** 非截断的空响应（如 finish_reason=step）在同一 round 内的重发计数，与输出上限截断分开累计。 */
     private var emptyResponseRetries = 0
     private var emptyResponseRound = 0
+    private var invalidArgumentsInBatch = 0
+    private var shellFailuresInBatch = 0
+    private var postToolReconnect: ModelErrorReconnect? = null
+    private var postToolReconnectBinding: AgentRunController.ResourceBinding? = null
+    private var postToolRetryCount = 0
+
+    private fun finishPostToolReconnect(status: String) {
+        val current = postToolReconnect ?: return
+        current.finish(status)
+        postToolReconnectBinding?.close()
+        postToolReconnectBinding = null
+        postToolReconnect = null
+        postToolRetryCount = 0
+    }
+
+    private fun retryPostToolFailure(round: Int, code: String, message: String) {
+        val failure = AgentModelFailure(code, false, message)
+        val policy = ErrorReconnectPolicy.fromPersistedValue(config.errorReconnectPolicy)
+        if (policy == ErrorReconnectPolicy.NONE) throw failure
+        val state = postToolReconnect ?: ModelErrorReconnect(round, policy.windowMillis,
+            reconnectTiming, onEvent, failure, listOf(config.apiKey)).also {
+            postToolReconnect = it
+            postToolReconnectBinding = runController.register(wakeBeforeCleanup = true) { it.finish("stopped") }
+            it.start()
+        }
+        state.updateReason(failure)
+        state.check()
+        postToolRetryCount = postToolRetryCount % 3 + 1
+        val backoff = 2_000L shl (postToolRetryCount - 1)
+        val delay = minOf(backoff, state.remainingMs() ?: backoff)
+        onEvent(AgentEvent.ModelRetryScheduled(round, postToolRetryCount, 3, delay.toInt(), code,
+            AgentHttpFailureDiagnostics.safe(message, listOf(config.apiKey), 600)))
+        waitForReconnect(runController, delay)
+        runController.throwIfCancelled()
+        state.check()
+    }
 
     fun reasoningSnapshot(): String = accumulatedReasoning.toString().trim()
 
@@ -144,11 +198,14 @@ internal class AgentLoop(
             config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
         var round = 1
 
+        try {
         roundLoop@ while (true) {
             runController.throwIfCancelled()
+            postToolReconnect?.check()
             appendPendingSteeringMessage()
             currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
             try {
+                auxiliaryRound = round
                 auxiliaryVision.prepare(messages)
             } catch (failure: Exception) {
                 runController.throwIfCancelled()
@@ -175,6 +232,7 @@ internal class AgentLoop(
                 appendPendingSteeringMessage()
                 currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
                 try {
+                    auxiliaryRound = round
                     auxiliaryVision.prepare(messages)
                 } catch (failure: Exception) {
                     runController.throwIfCancelled()
@@ -208,6 +266,8 @@ internal class AgentLoop(
             // Snapshot BEFORE callbacks can append this response to messages. Retries
             // reuse the same request; partial/output-only usage cannot move this anchor.
             val requestLocal = localRequestTokens()
+            // Raw history size at snapshot time, for the bounded request-context diagnostic only.
+            val requestMessageCount = messages.length()
             val requestHistoryTokens = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)
                 .sumOf { AgentContextBudget.countMessage(it).toLong() }
                 .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
@@ -217,16 +277,12 @@ internal class AgentLoop(
             // Reuse exactly one hydrated/filtered snapshot for projection and transport.
             val filteredMessages = AgentRequestMediaPolicy.filter(messages, config.supportsVision, config.supportsVideo)
             val publishLocalEstimate = requestBudget.consumeLocalBoundary()
-            val preparedRequestTokens = if (publishLocalEstimate) {
-                AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
-            } else null
+            // Display estimates arrive from the SAME final body serialized by the provider.
+            // Keep the silent/local boundary and cloud calibration on their original basis.
+            var preparedRequestTokens: Int? = null
             silentBudget.requestStarted(requestLocal)
-            val localEstimate = preparedRequestTokens?.takeIf { it > 0 }
             requestBudget.requestStarted()
             lastUsage = null // A new request must not inherit missing fields from the preceding bill.
-            localEstimate?.let { estimate ->
-                onEvent(AgentEvent.UsageReceived(round, AgentTokenUsage(inputTokens = estimate), projected = true))
-            }
             val completedRound = try {
                 modelRetry.complete(
                     initialRound = round,
@@ -237,6 +293,17 @@ internal class AgentLoop(
                     onEvent = onEvent,
                     onProviderEvent = { attemptRound, providerEvent ->
                         if (providerEvent is ProviderEvent.RequestStarted) lastUsage = null
+                        if (providerEvent is ProviderEvent.RequestEstimate) {
+                            preparedRequestTokens = providerEvent.tokens
+                            // Existing UI reducer keeps cloud receipts authoritative, including
+                            // receipts from previous runs. Never feed this into silentBudget.
+                            if (publishLocalEstimate && !hasDisplayCloudReceipt && providerEvent.tokens > 0) {
+                                onEvent(AgentEvent.UsageReceived(attemptRound,
+                                    AgentTokenUsage(inputTokens = providerEvent.tokens), projected = true,
+                                    requestHistoryTokens = requestHistoryTokens,
+                                    requestOverheadTokens = requestFixedTokens))
+                            }
+                        }
                         if (providerEvent is ProviderEvent.Usage) {
                             val previous = lastUsage
                             val incoming = providerEvent.usage
@@ -248,11 +315,15 @@ internal class AgentLoop(
                                 cachedTokens = incoming.cachedTokens ?: previous?.cachedTokens,
                                 cacheCreationTokens = incoming.cacheCreationTokens ?: previous?.cacheCreationTokens,
                             )
-                            // Partial fields merge only within this request. The separate
-                            // silent anchor survives a later usage-less request.
+                            if ((lastUsage?.inputTokens ?: 0) > 0) hasDisplayCloudReceipt = true
+                            // Partial fields merge only within this request. A plausible input
+                            // immediately replaces the cloud anchor; queue pressure in this callback,
+                            // never send a confirmation request or compact an open output/tool batch.
+                            // The separate silent anchor survives a later usage-less request.
                             silentBudget.measured(lastUsage?.inputTokens,
-                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
-                            noteRingPressure(round)
+                                config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
+                                cachedTokens = lastUsage?.cachedTokens)
+                            noteRingPressure(attemptRound)
                         }
                         continuationReasoning.visibleEvent(if (providerEvent is ProviderEvent.Usage) ProviderEvent.Usage(requireNotNull(lastUsage)) else providerEvent)?.let { visibleEvent ->
                             if (visibleEvent is ProviderEvent.BlockDelta &&
@@ -271,7 +342,19 @@ internal class AgentLoop(
                         }
                     },
                     discardAttemptReasoning = { accumulatedReasoning.setLength(reasoningLengthBeforeRound) },
-                )
+                    onCancelledResponse = { response ->
+                        val calls = AgentConversationCodec.parseToolCalls(response.assistantMessage)
+                        val sensitiveCalls = calls.filter { AgentSensitiveToolPolicy.isSensitive(it.name) }
+                        sensitiveCalls.forEach { sensitiveToolCallIds += it.id }
+                        if (sensitiveCalls.isNotEmpty()) {
+                            messages.put(AgentConversationCodec.assistantHistoryMessage(
+                                source = response.assistantMessage,
+                                toolCalls = calls,
+                            ).put(AgentTurnIdentity.JSON_KEY, turnId))
+                            responseStored = true
+                        }
+                    },
+                ).also { postToolReconnect?.check() }
             } catch (failure: AgentModelFailure) {
                 if (failure.code != "CONTEXT_WINDOW_EXCEEDED") throw failure
                 overflowPending = true
@@ -288,6 +371,19 @@ internal class AgentLoop(
             round = completedRound.round
             val providerResponse = completedRound.response
             toolDiagnosticAttempt = completedRound.toolDiagnosticAttempt
+            // One bounded record per successful request round. Local estimates stay labeled as
+            // estimates and sit next to the same round's cloud receipt so the gap is attributable.
+            emitRequestContext(
+                attempt = toolDiagnosticAttempt,
+                requestMessageCount = requestMessageCount,
+                requestLocal = requestLocal,
+                requestHistoryTokens = requestHistoryTokens,
+                requestFixedTokens = requestFixedTokens,
+                preparedRequestTokens = preparedRequestTokens,
+                filteredMessages = filteredMessages,
+                roundTools = roundTools,
+                usage = lastUsage,
+            )
 
             // Keep a fully returned response before observing a concurrent user stop.
             continuationText.finish().forEach { textEvent ->
@@ -380,6 +476,8 @@ internal class AgentLoop(
 
             runController.throwIfCancelled()
             if (toolCalls.isNotEmpty()) {
+                invalidArgumentsInBatch = 0
+                shellFailuresInBatch = 0
                 val finishedContent = assistantMessage.optString("content").trim()
                 val finishedNaturally = providerResponse.stopReason != AssistantStopReason.TOOL_USE &&
                     providerResponse.stopReason != AssistantStopReason.OUTPUT_LIMIT &&
@@ -394,7 +492,20 @@ internal class AgentLoop(
                 } else {
                 val outcomes = mutableListOf<ToolOutcome>()
                 try {
-                    when (providerResponse.stopReason) {
+                    val askUserCalls = toolCalls.count { it.name == AgentQuestionCoordinator.TOOL_NAME }
+                    val askUserBatchBlocked = askUserCalls > 1 ||
+                        (askUserCalls == 1 && toolCalls.any { it.name != AgentQuestionCoordinator.TOOL_NAME })
+                    if (askUserBatchBlocked) {
+                        // ask_user 只能单独出现。混合批次或多个 ask_user 全部配对拒绝，零执行。
+                        toolCalls.forEach { call ->
+                            outcomes += rejectedToolOutcome(
+                                round = round,
+                                toolCall = call,
+                                code = "ASK_USER_BATCH_BARRIER",
+                                message = "ask_user 必须是本批唯一的工具调用。本批未执行任何工具，请只保留一个 ask_user 后重试。",
+                            )
+                        }
+                    } else when (providerResponse.stopReason) {
                         AssistantStopReason.TOOL_USE ->
                             toolCalls.forEachIndexed { index, call -> outcomes += executeTool(round, call, index) }
                         AssistantStopReason.OUTPUT_LIMIT ->
@@ -420,13 +531,17 @@ internal class AgentLoop(
                 } finally {
                     appendToolOutcomes(round, outcomes)
                 }
-                // Stop only after every tool result in this batch has been paired.
-                // This is a bounded repair budget, not a limit on legitimate long tasks.
-                invalidToolArgumentsGuard.stopMessage?.let { message ->
-                    throw AgentModelFailure(AgentInvalidToolArgumentsGuard.STOP_CODE, false, message)
-                }
-                shellFailureStopMessage?.let { message ->
-                    throw AgentModelFailure(AgentShellFailureGuard.STOP_CODE, false, message)
+                // Rebuild a model request only after the entire tool batch is paired.
+                val invalidStop = invalidToolArgumentsGuard.stopMessage
+                val shellStop = shellFailureStopMessage
+                if (invalidStop != null && invalidArgumentsInBatch > 0) {
+                    retryPostToolFailure(round, AgentInvalidToolArgumentsGuard.STOP_CODE, invalidStop)
+                } else if (shellStop != null && shellFailuresInBatch > 0) {
+                    retryPostToolFailure(round, AgentShellFailureGuard.STOP_CODE, shellStop)
+                } else if (postToolReconnect != null && invalidArgumentsInBatch == 0 && shellFailuresInBatch == 0) {
+                    finishPostToolReconnect("succeeded")
+                    invalidToolArgumentsGuard.clearExhaustion()
+                    shellFailureStopMessage = null
                 }
                 interruptedTextPrefix.setLength(0)
                 round += 1
@@ -475,7 +590,7 @@ internal class AgentLoop(
                 val modelLabel = "${config.providerType}/${config.modelDisplayName.trim().ifBlank { config.model }}"
                 if (truncatedWithoutBody) {
                     val outputTokens = lastUsage?.outputTokens
-                    error(
+                    throw AgentOutputLimitException(
                         "模型接口第 $round 轮在输出上限处截断且未返回正文" +
                             "（finish_reason=${finishReason.ifBlank { "unknown" }}" +
                             "，模型=$modelLabel" +
@@ -516,12 +631,16 @@ internal class AgentLoop(
                 )
             }
 
+            finishPostToolReconnect("succeeded")
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length, generatedAtMillis = System.currentTimeMillis()))
             return Result(
                 content = (interruptedTextPrefix.toString() + assistantMessage.optString("content")).trim(),
                 reasoningContent = reasoningSnapshot(),
                 sensitiveToolCallIds = sensitiveToolCallIds.toSet(),
             )
+        }
+        } finally {
+            finishPostToolReconnect(if (runController.isCancelled) "stopped" else "failed")
         }
     }
 
@@ -538,6 +657,50 @@ internal class AgentLoop(
 
     // Compression and send limits use this silent budget, not the ring display.
     private fun requestBudgetTokens(): Int = silentBudget.tokens(localRequestTokens())
+
+    /**
+     * Bounded request-shape evidence, emitted only when [AgentToolCallDiagnostics] is already
+     * active. The pre-protocol value remains diagnostic-only, alongside the final-body estimate.
+     * Neither calculation adds a second hydration or changes the wire body.
+     */
+    private fun emitRequestContext(
+        attempt: AgentToolCallDiagnostics.Attempt?,
+        requestMessageCount: Int,
+        requestLocal: Int,
+        requestHistoryTokens: Int,
+        requestFixedTokens: Int,
+        preparedRequestTokens: Int?,
+        filteredMessages: JSONArray,
+        roundTools: JSONArray,
+        usage: AgentTokenUsage?,
+    ) {
+        val active = attempt ?: return
+        runCatching {
+            val filteredTokens = AgentRequestTokenEstimate.filtered(filteredMessages, roundTools)
+            val opaque = AgentRequestContextDiagnostics.replayedOpaque(filteredMessages, config)
+            active.emit(
+                "request_context",
+                AgentRequestContextDiagnostics.localRequestFields(
+                    AgentRequestContextDiagnostics.LocalRequest(
+                        sourceMessages = requestMessageCount,
+                        systemCount = systemCount,
+                        boundaryTokens = requestLocal,
+                        rawHistoryTokens = requestHistoryTokens,
+                        fixedTokens = requestFixedTokens,
+                        filteredTokens = filteredTokens,
+                        filteredBasis = "pre_protocol_diagnostic",
+                        requestBodyTokens = preparedRequestTokens,
+                        cloudInput = usage?.inputTokens,
+                        cloudCached = usage?.cachedTokens,
+                        cloudCacheCreation = usage?.cacheCreationTokens,
+                        cloudOutput = usage?.outputTokens,
+                        opaqueReplayItems = opaque.first,
+                        opaqueEncryptedChars = opaque.second,
+                    ),
+                ),
+            )
+        }
+    }
 
     private fun storedHistoryChars(): Long {
         val safeHistory = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)
@@ -560,26 +723,79 @@ internal class AgentLoop(
             }
             return true
         }
-        val window = config.contextWindow?.takeIf { it > 0 } ?: return false
-        // Hard send limit only: correct a measured local under-count so an uncalibrated
-        // request cannot leave above the configured window. Automatic scheduling reads
-        // cloud receipts only; this guard is the one place a local estimate may compact.
-        val tokens = silentBudget.sendLimitTokens(localRequestTokens())
-        return tokens > AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))
+        // Hard send limit only, except explicitly permitted unknown contexts. No target
+        // receipt keeps the extra 12% reserve; that reserve
+        // is not an exact guarantee, and a provider CONTEXT_WINDOW_EXCEEDED still retries once.
+        // Automatic 80% scheduling reads same-model cloud input only. Do not open the window to 100%.
+        return overHardInputLimit()
+    }
+
+    /** Frozen target window, output reserve, and whether this run has a target receipt. */
+    private fun hardInputLimit(): Int {
+        val window = config.contextWindow?.takeIf { it > 0 } ?: return 0
+        return AgentCompressionBoundary.inputLimit(
+            window,
+            AgentCompressionBoundary.outputReserve(config),
+            calibrated = silentBudget.hasTargetReceipt(),
+        )
+    }
+
+    private fun overHardInputLimit(): Boolean {
+        if ((config.contextWindow ?: 0) <= 0) return false
+        // Seeds and accepted receipts both retain the original hard guard. A stale cloud
+        // display still has an anchor; only an explicitly permitted unknown context is exempt.
+        if (unmeasuredContextSendAllowed && !silentBudget.isCalibrated()) return false
+        val local = localRequestTokens()
+        val calibrated = silentBudget.sendLimitTokens(local)
+        // A previous-run seed has no independently verified target receipt. It may tighten,
+        // but must never relax, the complete target-model request's conservative local bound.
+        val guarded = if (silentBudget.hasTargetReceipt()) calibrated else maxOf(local, calibrated)
+        return guarded > hardInputLimit()
+    }
+
+    /** Same unchanged history and same cloud receipt. Growth or a new receipt clears it. */
+    private fun ineffectiveAutoSameContext(): Boolean {
+        if (!skipIneffectiveAutoCompact) return false
+        val cloud = silentBudget.cloudTokens() ?: Int.MIN_VALUE
+        if (storedHistoryChars() == skippedAutoChars && cloud == skippedAutoCloud) return true
+        skipIneffectiveAutoCompact = false
+        return false
+    }
+
+    private fun markIneffectiveAutoCompact() {
+        skipIneffectiveAutoCompact = true
+        skippedAutoChars = storedHistoryChars()
+        skippedAutoCloud = silentBudget.cloudTokens() ?: Int.MIN_VALUE
+    }
+
+    private fun logAutoDecision(round: Int, reason: String, cloud: Int, cut: Int) {
+        val now = System.nanoTime()
+        if (reason == lastAutoLogReason && now - lastAutoLogNanos < 2_000_000_000L) return
+        lastAutoLogReason = reason
+        lastAutoLogNanos = now
+        val window = config.contextWindow ?: compactPolicy.contextWindow
+        runCatching {
+            io.github.mangi.eta.core.AndroidAgentLogger.info(
+                "auto_compact round=$round reason=$reason cloud=$cloud cut=$cut window=$window",
+            )
+        }
     }
 
     private fun noteRingPressure(round: Int) {
-        if (skipIneffectiveAutoCompact || !compactPolicy.enabled || overflowPending) return
+        if (ineffectiveAutoSameContext() || !compactPolicy.enabled || overflowPending) return
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
         val cloud = silentBudget.cloudTokens() ?: return
         val hot = cloud >= AgentContextCompactor.autoPressureTokens(window)
         if (!hot) {
-            // 同一轮后续回执把输入更正到 80% 以下时，圆环已经变小，取消这次排队。
-            releaseAutoCompactWait(round)
+            // Once this run has crossed the boundary, a later partial/corrected receipt
+            // must not lose the queued maintenance before the round reaches its safe edge.
+            return
+        }
+        if (autoCompactLatched) {
+            latchedCloudTokens = maxOf(latchedCloudTokens, cloud)
             return
         }
         latchedCloudTokens = cloud
-        if (autoCompactLatched) return
         autoCompactLatched = true
         onEvent(AgentEvent.AutoCompactWaiting(round))
     }
@@ -595,24 +811,30 @@ internal class AgentLoop(
         val forced = override != null
         if (forced) { manualBudgetAttempt = true; lastFailedCompaction = null }
         if (!forced && (!compactPolicy.enabled || overflowPending)) {
+            logAutoDecision(round, if (!compactPolicy.enabled) "disabled" else "overflow_pending", silentBudget.cloudTokens() ?: -1, -1)
             releaseAutoCompactWait(round)
             return
         }
         val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        if (!forced && skipIneffectiveAutoCompact && !requestOverBudget()) {
+        if (!forced && ineffectiveAutoSameContext() && !requestOverBudget()) {
+            logAutoDecision(round, "skip_unchanged", silentBudget.cloudTokens() ?: -1, -1)
             releaseAutoCompactWait(round)
             return
         }
         // 80% 只看圆环上的云端实测。一旦到过线，就等这次输出结束、下次请求之前再压，
         // 不因为后面一张更小的回执取消。估算不排队。硬限制仍走 tryBudgetCompaction。
         if (!forced && storedHistoryChars() > persistenceCharLimit()) {
+            logAutoDecision(round, "storage", silentBudget.cloudTokens() ?: -1, -1)
             releaseAutoCompactWait(round)
             return
         }
         val cloudTokens = silentBudget.cloudTokens()
         val dueToRing = autoCompactLatched &&
             latchedCloudTokens >= AgentContextCompactor.autoPressureTokens(window)
-        if (!forced && !dueToRing && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) return
+        if (!forced && !dueToRing && (cloudTokens == null || cloudTokens < AgentContextCompactor.autoPressureTokens(window))) {
+            logAutoDecision(round, if (cloudTokens == null) "no_cloud" else "below", cloudTokens ?: -1, -1)
+            return
+        }
         if (dueToRing) autoCompactLatched = false
         var decisionTokens = when {
             forced -> requestBudgetTokens()
@@ -625,8 +847,16 @@ internal class AgentLoop(
         )
         budgetKeepRecent = keep
         var history = historyForCompaction()
-        var cut = compactionStart(history)
+        var plan = compactionPlan(history)
+        if (plan.stopReason != null) {
+            // A missing boundary is temporary. New history/receipts must be retried.
+            compactionFailure = plan.stopReason
+            onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(), reason = plan.stopReason))
+            return
+        }
+        var cut = plan.cut
         if (cut <= 0) {
+            if (!forced) logAutoDecision(round, "no_cut", cloudTokens ?: latchedCloudTokens, cut)
             if (forced) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
                 reason = "当前保留范围内没有可压缩的完整历史单元。"))
             else if (dueToRing) onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length()))
@@ -644,43 +874,61 @@ internal class AgentLoop(
             }
             // Both the DTO and same-model JSON replay must come from this new snapshot.
             history = historyForCompaction()
-            cut = compactionStart(history)
+            plan = compactionPlan(history)
+            if (plan.stopReason != null) {
+                // Do not permanently suppress 80% checks while a batch is closing.
+                compactionFailure = plan.stopReason
+                onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(), reason = plan.stopReason))
+                return
+            }
+            cut = plan.cut
             if (!dueToRing) decisionTokens = requestBudgetTokens()
         }
         if (forced && cut <= 0) {
             onEvent(AgentEvent.ContextCompacted(round, false, messages.length(), messages.length(),
                 reason = "当前保留范围内没有可压缩的完整历史单元。"))
         }
+        if (!forced) logAutoDecision(round, "accepted", decisionTokens, cut)
         val reduced = cut > 0 && applyCompaction(round, history, cut, decisionTokens)
         if (reduced || pruned) {
             overflowPending = false
             skipIneffectiveAutoCompact = false
-            // A committed summary clears the receipt; the next one decides whether another
-            // pass is needed. The hard send limit still guards the request in between.
+            // A committed summary clears calibration and permits the new unknown context;
+            // the next accepted receipt restores the hard guard and decides further maintenance.
         } else if (!forced) {
-            skipIneffectiveAutoCompact = true
+            markIneffectiveAutoCompact()
         }
     }
 
-    private fun compactionStart(history: List<AgentModelClient.ConversationMessage>): Int {
+    private fun compactionStart(history: List<AgentModelClient.ConversationMessage>): Int = compactionPlan(history).cut
+
+    private fun compactionPlan(history: List<AgentModelClient.ConversationMessage>): AgentCompressionBoundary.RetentionPlan {
         return runCatching {
-            AgentCompressionBoundary.selectStart(history,
+            AgentCompressionBoundary.planRetention(history,
                 config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow,
                 overflowPending,
-                // Same request in both units: calibrated bill vs cheap local boundary.
-                billedTokens = requestBudgetTokens(),
-                localTokens = localRequestTokens())
-        }.getOrDefault(0)
+                // Only a target-model receipt converts units. A seed from another model does not.
+                billedTokens = if (silentBudget.hasTargetReceipt()) requestBudgetTokens() else null,
+                localTokens = if (silentBudget.hasTargetReceipt()) localRequestTokens() else null,
+                opaqueItems = ::scopedOpaqueItems)
+        }.getOrDefault(AgentCompressionBoundary.RetentionPlan(0))
     }
+
+    /** Responses transport only. Scope hash ignores endpoint mode, so Chat Completions must not opt in. */
+    private fun scopedOpaqueItems(message: AgentModelClient.ConversationMessage): Int =
+        AgentCompressionBoundary.replayedOpaqueItemCount(message, config)
 
     private fun tryBudgetCompaction(round: Int): Boolean {
         if (!compactPolicy.enabled && !manualBudgetAttempt) return false
         // Storage pressure alone is not a server context measurement.
-        val window = config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow
-        if (!manualBudgetAttempt && !overflowPending &&
-            requestBudgetTokens() <= AgentCompressionBoundary.inputLimit(window, AgentCompressionBoundary.outputReserve(config))) return false
+        if (!manualBudgetAttempt && !overflowPending && !overHardInputLimit()) return false
         val history = historyForCompaction()
-        val cut = compactionStart(history)
+        val plan = compactionPlan(history)
+        if (plan.stopReason != null) {
+            compactionFailure = plan.stopReason
+            return false
+        }
+        val cut = plan.cut
         if (cut <= 0) return false
         // Commit a pruning-only reduction first. The caller remeasures and takes a
         // fresh snapshot before attempting a summary if pressure is still high.
@@ -762,6 +1010,7 @@ internal class AgentLoop(
         runCatching { io.github.mangi.eta.core.AndroidAgentLogger.info(
             "运行中压缩开始：round=$round，选中=$cut，保留=${history.size - cut}，" +
                 "保留估算=${AgentCompressionBoundary.retainedTokens(history, cut)}/${AgentCompressionBoundary.retainedTokens(history, 0)}，" +
+                "不透明回放单元=${history.drop(cut).count { scopedOpaqueItems(it) > 0 }}（不可折算为输入 token），" +
                 "保留上限=${AgentCompressionBoundary.continuationRetentionBudget(window, overflowPending)}，决策=$decisionTokens，本地=${localRequestTokens()}") }
         val rewritten = try {
             val prefix = history.take(cut)
@@ -780,6 +1029,9 @@ internal class AgentLoop(
                     compressConfig,
                     compactionArchive = compactionArchive,
                     usageConversationId = sessionId,
+                    sourceModelConfig = config.copy(contextWindow = window),
+                    summaryTokenBudget = AgentCompressionBoundary.summaryProgressBudget(window),
+                    onErrorReconnect = { onEvent(it.copy(round = round)) },
                 ),
                 keepStartOverride = cut, controller = runController,
                 replay = if (compressConfig.providerType == config.providerType && compressConfig.baseUrl == config.baseUrl &&
@@ -798,7 +1050,11 @@ internal class AgentLoop(
             val withPointers = savedCheckpoint?.let {
                 requireNotNull(compactionArchive).attachReferences(durablePrefix, it, compressed, tail.size)
             } ?: compressed
-            require(withPointers.sumOf { AgentContextBudget.countMessage(it).toLong() } < history.sumOf { AgentContextBudget.countMessage(it).toLong() }) {
+            require(AgentCompressionBoundary.compactionReduced(
+                history, withPointers, tail.size,
+                AgentCompressionBoundary.summaryProgressBudget(window),
+                countsOpaque = { scopedOpaqueItems(it) > 0 },
+            )) {
                 "摘要及索引未减少上下文，已保留原文"
             }
             savedCheckpoint?.let { compactionArchive?.record(it, "ready") }
@@ -825,7 +1081,9 @@ internal class AgentLoop(
         keptJson.forEach(messages::put)
         lastUsage = null
         requestBudget.contextReplaced()
+        hasDisplayCloudReceipt = false
         silentBudget.contextReplaced()
+        unmeasuredContextSendAllowed = true
         autoCompactLatched = false
         compactionFailure = ""
         onHistoryCompacted()
@@ -944,6 +1202,7 @@ internal class AgentLoop(
                 declared = toolCallValidator.declares(toolCall.name),
                 validationError = validationError,
             )
+            invalidArgumentsInBatch++
             return rejectedToolOutcome(
                 round = round,
                 toolCall = toolCall,
@@ -971,6 +1230,8 @@ internal class AgentLoop(
             } else toolExecutor.execute(toolCall)
         } catch (throwable: Exception) {
             runController.throwIfCancelled()
+            if (throwable is io.github.mangi.eta.agent.question.AgentQuestionInterruptedException ||
+                throwable is io.github.mangi.eta.agent.runtime.AgentRunCancelledException) throw throwable
             AgentModelClient.ToolResult(
                 content = JSONObject()
                     .put("ok", false)
@@ -982,6 +1243,7 @@ internal class AgentLoop(
         val shellDecision = AgentShellFailureGuard.observe(shellFailureState, toolCall, rawResult)
         shellFailureState = shellDecision.state
         if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage
+        if (shellDecision.stopMessage != null) shellFailuresInBatch++
         val result = shellDecision.result
         // Record what the model actually receives, plus the pre-guard code for comparison.
         toolDiagnosticAttempt?.result(toolCall, result, toolIndex, rawResult)
@@ -1104,6 +1366,7 @@ internal class AgentLoop(
     private fun ProviderEvent.toAgentEvent(round: Int): AgentEvent? =
         when (this) {
             ProviderEvent.RequestStarted -> AgentEvent.ProviderRequestStarted(round)
+            is ProviderEvent.RequestEstimate -> null // Published above, never a cloud receipt.
             is ProviderEvent.ResponseHeaders -> AgentEvent.ProviderResponseStarted(round, httpCode)
             is ProviderEvent.BlockStart -> AgentEvent.AssistantBlockStart(
                 round = round,

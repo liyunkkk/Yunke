@@ -125,7 +125,6 @@ internal fun TopBarOverflowMenu(
                 },
                 onClick = { TouchHaptics.click(view); menuState.dismiss(); showSearchDialog = true },
             )
-            MenuSectionDivider()
             DropdownMenuItem(
                 modifier = CompactMenuItemModifier,
                 contentPadding = CompactMenuItemPadding,
