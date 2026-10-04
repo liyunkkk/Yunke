@@ -4654,13 +4654,15 @@ internal class AgentAppState(
         if (event is AgentEvent.AssistantBlockDelta) {
             if (event.kind == AgentEvent.AssistantBlockKind.TOOL_CALL || event.delta.isEmpty()) return
             runEventCoalescer.append(runId, event)?.let { ready ->
-                applyRunEvent(runId, ready)
+                StreamUiEventDiagnostics.measure("ui.flush.blockSwitch") {
+                    applyRunEvent(runId, ready)
+                }
             }
             scheduleRunDeltaFlush(runId)
             return
         }
 
-        flushPendingRunDelta(runId)
+        flushPendingRunDelta(runId, diagnosticStage = "ui.flush.nonDelta")
         applyRunEvent(runId, event)
     }
 
@@ -4722,19 +4724,27 @@ internal class AgentAppState(
 
     private fun scheduleRunDeltaFlush(runId: String) {
         if (runEventFlushJobs[runId]?.isActive == true) return
-        val scheduledAtNs = System.nanoTime()
+        val scheduledAtNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else null
         runEventFlushJobs[runId] = scope.launch {
             delay(STREAM_UI_UPDATE_INTERVAL_MS)
-            StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
+            if (scheduledAtNs != null && StreamPerformanceDiagnostics.enabled) {
+                StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
+            }
             runEventFlushJobs.remove(runId)
-            StreamPerformanceDiagnostics.measure("ui.flush") { flushPendingRunDelta(runId) }
+            StreamPerformanceDiagnostics.measure("ui.flush") {
+                flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer")
+            }
         }
     }
 
-    private fun flushPendingRunDelta(runId: String) {
+    private fun flushPendingRunDelta(runId: String, diagnosticStage: String? = null) {
         runEventFlushJobs.remove(runId)?.cancel()
         runEventCoalescer.flush(runId)?.let { event ->
-            applyRunEvent(runId, event)
+            // Only count a reason when a pending delta is actually applied. Other
+            // callers (replay/result/stop) retain their existing default flush path.
+            StreamUiEventDiagnostics.measure(diagnosticStage) {
+                applyRunEvent(runId, event)
+            }
         }
     }
 
@@ -4900,7 +4910,9 @@ internal class AgentAppState(
             "ui.runEvent",
             if (event is AgentEvent.AssistantBlockDelta) 1L else 0L,
         ) {
-            applyRunEventNow(runId, event, persistSupplement, replaying)
+            StreamUiEventDiagnostics.measureEvent(event) {
+                applyRunEventNow(runId, event, persistSupplement, replaying)
+            }
         }
     }
 
@@ -5816,21 +5828,27 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId) ?: return
         val state = conversationState(conversationId) ?: return
         StreamPerformanceDiagnostics.measure("ui.messages.apply", state.messages.size.toLong()) {
-            val projected = transform(state.messages)
+            val projected = StreamUiEventDiagnostics.measure("ui.messages.transform", state.messages.size.toLong()) {
+                transform(state.messages)
+            }
             // Text/thinking deltas only replace or append the active run block. They
             // cannot create a terminal notice; defer the cross-history terminal
             // ordering pass to the next boundary/terminal event.
             val nextMessages = if (normalizeTerminalOrder) {
-                runReplayBatch.normalize(runId, projected)
+                StreamUiEventDiagnostics.measure("ui.messages.normalize", projected.size.toLong()) {
+                    runReplayBatch.normalize(runId, projected)
+                }
             } else {
                 projected
             }
-            updateConversationProjected(
-                conversationId = conversationId,
-                state = state.copy(messages = nextMessages),
-                updateTimestamp = updateTimestamp,
-                recomputeWaitingQuestion = recomputeWaitingQuestion,
-            )
+            StreamUiEventDiagnostics.measure("ui.messages.publish", nextMessages.size.toLong()) {
+                updateConversationProjected(
+                    conversationId = conversationId,
+                    state = state.copy(messages = nextMessages),
+                    updateTimestamp = updateTimestamp,
+                    recomputeWaitingQuestion = recomputeWaitingQuestion,
+                )
+            }
         }
     }
 
@@ -5887,43 +5905,52 @@ internal class AgentAppState(
     ) {
         check(state.conversationContentLoaded) { "Conversation content must be loaded before editing" }
         val previous = conversationState(conversationId)
-        val modelChanged = previous != null &&
-            (previous.providerId != state.providerId || previous.modelId != state.modelId ||
-                (state.cloudRouteSignature != null && state.cloudRouteSignature != contextRouteSignature(state)))
-        if (modelChanged) runConversationIds.filterValues { it == conversationId }.keys.forEach { invalidatedUsageRuns.add(it) }
-        val projected = when {
-            modelChanged -> state.copy(livePromptTokens = null, livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
-                // Selecting a model is not a completed first turn or a compression boundary.
-                contextAwaitingReceipt = state.contextAwaitingReceipt || state.contextHasStarted,
-                contextReceiptEvidence = null,
-                receiptPredictionTokens = null, cloudReceiptRequestId = null, cloudRouteSignature = null)
-            state.contextAwaitingReceipt || state.cloudHistoryTokens == null || state.cloudRequestOverheadTokens == null ->
-                state.copy(contextBudgetReceiptTokens = null)
-            (state.livePromptTokens == null || state.livePromptIsProjected) && state.contextBudgetReceiptTokens == null -> state.copy(
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
-            else -> state
+        val projected = StreamUiEventDiagnostics.measure("ui.conversation.route") {
+            val modelChanged = previous != null &&
+                (previous.providerId != state.providerId || previous.modelId != state.modelId ||
+                    (state.cloudRouteSignature != null && state.cloudRouteSignature != contextRouteSignature(state)))
+            if (modelChanged) runConversationIds.filterValues { it == conversationId }.keys.forEach { invalidatedUsageRuns.add(it) }
+            when {
+                modelChanged -> state.copy(livePromptTokens = null, livePromptIsProjected = false,
+                    cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                    // Selecting a model is not a completed first turn or a compression boundary.
+                    contextAwaitingReceipt = state.contextAwaitingReceipt || state.contextHasStarted,
+                    contextReceiptEvidence = null,
+                    receiptPredictionTokens = null, cloudReceiptRequestId = null, cloudRouteSignature = null)
+                state.contextAwaitingReceipt || state.cloudHistoryTokens == null || state.cloudRequestOverheadTokens == null ->
+                    state.copy(contextBudgetReceiptTokens = null)
+                (state.livePromptTokens == null || state.livePromptIsProjected) && state.contextBudgetReceiptTokens == null -> state.copy(
+                    cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
+                else -> state
+            }
         }
         val ownerContext = ownerContexts[conversationId]
-        val view = ownerContext?.projection()
+        val view = StreamUiEventDiagnostics.measure("ui.conversation.owner") { ownerContext?.projection() }
         val questionProjected = if (recomputeWaitingQuestion) {
-            projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+            StreamUiEventDiagnostics.measure("ui.conversation.waiting", projected.messages.size.toLong()) {
+                projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+            }
         } else {
             projected
         }
-        val current = if (view == null || ownerContext == null) questionProjected else questionProjected.copy(
-            childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
-            childStatusRoster = ownerContext.roster(),
-        )
-        conversationsById = conversationsById + (conversationId to current)
-        if (conversationId !in conversationCreatedAt) {
-            conversationCreatedAt = conversationCreatedAt + (conversationId to System.currentTimeMillis())
+        // Owner projection is timed in two slices, not moved across the question scan.
+        val current = StreamUiEventDiagnostics.measure("ui.conversation.owner") {
+            if (view == null || ownerContext == null) questionProjected else questionProjected.copy(
+                childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
+                childStatusRoster = ownerContext.roster(),
+            )
         }
-        if (updateTimestamp) {
-            conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
-        }
-        if (conversationId == selectedConversationId) {
-            homeState = current
+        StreamUiEventDiagnostics.measure("ui.conversation.publish") {
+            conversationsById = conversationsById + (conversationId to current)
+            if (conversationId !in conversationCreatedAt) {
+                conversationCreatedAt = conversationCreatedAt + (conversationId to System.currentTimeMillis())
+            }
+            if (updateTimestamp) {
+                conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
+            }
+            if (conversationId == selectedConversationId) {
+                homeState = current
+            }
         }
         if (previous?.isStreaming != state.isStreaming) {
             refreshConversationSummaries()
@@ -6017,6 +6044,12 @@ internal class AgentAppState(
 
     private fun refreshConversationSummaries() {
         if (runReplayBatch.isActive) return
+        StreamUiEventDiagnostics.measure("ui.summaries.refresh", conversationsById.size.toLong()) {
+            refreshConversationSummariesNow()
+        }
+    }
+
+    private fun refreshConversationSummariesNow() {
         val summaries = conversationsById.entries
             .sortedWith(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
