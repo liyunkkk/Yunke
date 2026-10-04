@@ -1030,7 +1030,7 @@ internal fun SettingsScreen(
                                         onClick = {
                                             openExternalUrl(
                                                 context,
-                                                "https://api.123336.xyz/sign-up?aff=Wd45",
+                                                "https://st.123336.xyz/join/ZKjSNbdYUh6RbF5_Kdxjrp-_AoAVcMH9",
                                                 context.getString(R.string.about_relay_station_open_failed),
                                             )
                                         },
