@@ -190,6 +190,7 @@ class SubAgentProfileConfigDialogTest {
             FailOncePreferences(it).also { wrapped -> preferences = wrapped }
         })
         val before = fixture.snapshot()
+        val revision = fixture.repository.revision(fixture.owner).value
         val persistedBefore = preferences.all.toMap()
         val open = mutableStateOf(true)
         val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, gptProfile))
@@ -205,12 +206,25 @@ class SubAgentProfileConfigDialogTest {
             assertTrue(open.value)
             assertEquals("成功才关闭", session.name)
             assertEquals(GptSpeedMode.FAST, session.draft.gptSpeedForModel())
-            assertEquals(before, fixture.snapshot())
             assertEquals(persistedBefore, preferences.all)
-            assertNull(fixture.repository.modelDefaults(gptProfile))
+            // Even a successful best-effort rollback cannot lift the durability fence.
+            assertThrows(IllegalStateException::class.java) { fixture.snapshot() }
+            assertThrows(IllegalStateException::class.java) { fixture.repository.modelDefaults(gptProfile) }
+            assertEquals(revision, fixture.repository.revision(fixture.owner).value)
         }
         compose.onNodeWithText("未保存：配置或模型已变更", substring = true).performScrollTo().assertExists()
         compose.onNodeWithText("重试恢复配置（保留草稿）").performScrollTo().performClick()
+        compose.onNodeWithText("确认").assertIsEnabled()
+        compose.runOnIdle {
+            // Recovery restores the original config; it must not commit the retained draft.
+            assertTrue(open.value)
+            assertEquals("成功才关闭", session.name)
+            assertEquals(GptSpeedMode.FAST, session.draft.gptSpeedForModel())
+            assertEquals(before, fixture.snapshot())
+            assertEquals(persistedBefore, preferences.all)
+            assertNull(fixture.repository.modelDefaults(gptProfile))
+            assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
         compose.onNodeWithText("确认").assertIsEnabled().performClick()
         compose.waitUntil { !open.value }
         compose.runOnIdle {
