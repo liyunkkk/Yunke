@@ -10,7 +10,7 @@ import java.nio.file.LinkOption
  */
 internal class AgentLegacyArchiveDependency(private val parent: File, private val source: File) {
     private val usedScopes = linkedSetOf<File>()
-    private var inspectedEntries = 0
+    private var scopes: List<File>? = null
     private var verifiedBytes = 0L
     private var candidates = 0
 
@@ -18,6 +18,36 @@ internal class AgentLegacyArchiveDependency(private val parent: File, private va
         check(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(id))
         checkScope(source)
         var selected: ByteArray? = null
+        for (scope in indexedScopes()) {
+            interrupted()
+            // Recheck cached directory identities before touching their children.
+            check(!Files.isSymbolicLink(scope.toPath())) { "旧分支归档目录包含链接" }
+            check(Files.isDirectory(scope.toPath(), LinkOption.NOFOLLOW_LINKS)) { "原文来源不可用" }
+            val json = File(scope, "$id.json")
+            val sha = File(scope, "$id.sha256")
+            if (Files.notExists(json.toPath(), LinkOption.NOFOLLOW_LINKS) &&
+                Files.notExists(sha.toPath(), LinkOption.NOFOLLOW_LINKS)) continue
+            checkScope(scope)
+            check(++candidates <= MAX_CANDIDATES) { "旧分支归档副本数量超限" }
+            val bytes = AgentCompactionArchiveIntegrity.verifiedBytes(
+                json, sha, minOf(remainingBytes, MAX_VERIFY_BYTES - verifiedBytes),
+            )
+            verifiedBytes += bytes.size
+            // Do not silently choose the first UUID match or substitute a corrupt copy.
+            check(selected == null || selected.contentEquals(bytes)) { "旧分支归档副本不一致" }
+            selected = bytes
+            usedScopes += scope
+        }
+        recheckScopes()
+        return checkNotNull(selected) { "缺失的旧分支归档没有可验证副本" }
+    }
+
+    // Scope enumeration has its own per-operation budget, not a charge per missing UUID.
+    // The fork monitor excludes app-owned deletion; each used scope is still rechecked.
+    private fun indexedScopes(): List<File> {
+        scopes?.let { return it }
+        val result = mutableListOf<File>()
+        var inspectedEntries = 0
         Files.newDirectoryStream(parent.toPath()).use { paths ->
             for (path in paths) {
                 interrupted()
@@ -25,25 +55,10 @@ internal class AgentLegacyArchiveDependency(private val parent: File, private va
                 val scope = path.toFile()
                 if (scope == source || !Regex("[0-9a-f]{64}").matches(scope.name)) continue
                 check(!Files.isSymbolicLink(path)) { "旧分支归档目录包含链接" }
-                if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) continue
-                val json = File(scope, "$id.json")
-                val sha = File(scope, "$id.sha256")
-                if (Files.notExists(json.toPath(), LinkOption.NOFOLLOW_LINKS) &&
-                    Files.notExists(sha.toPath(), LinkOption.NOFOLLOW_LINKS)) continue
-                checkScope(scope)
-                check(++candidates <= 128) { "旧分支归档副本数量超限" }
-                val bytes = AgentCompactionArchiveIntegrity.verifiedBytes(
-                    json, sha, minOf(remainingBytes, MAX_VERIFY_BYTES - verifiedBytes),
-                )
-                verifiedBytes += bytes.size
-                // Do not silently choose the first UUID match or substitute a corrupt copy.
-                check(selected == null || selected.contentEquals(bytes)) { "旧分支归档副本不一致" }
-                selected = bytes
-                usedScopes += scope
+                if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) result += scope
             }
         }
-        recheckScopes()
-        return checkNotNull(selected) { "缺失的旧分支归档没有可验证副本" }
+        return result.toList().also { scopes = it }
     }
 
     fun recheckScopes() {
@@ -64,6 +79,7 @@ internal class AgentLegacyArchiveDependency(private val parent: File, private va
 
     private companion object {
         const val MAX_ENTRIES = 4096
+        const val MAX_CANDIDATES = 4096
         const val MAX_VERIFY_BYTES = 64L * 1024 * 1024
     }
 }

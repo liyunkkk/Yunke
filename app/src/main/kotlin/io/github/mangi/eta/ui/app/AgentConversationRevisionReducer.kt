@@ -297,7 +297,8 @@ internal object AgentConversationRevisionReducer {
         fun sameOwnedText(history: AgentModelClient.ConversationMessage, expectedText: String): Boolean {
             val text = revisionComparableText(historyText(history))
             return text == expectedText || (runId.isNotBlank() && history.turnId == runId &&
-                AgentRevisionRuntimeSuffix.matches(text, expectedText))
+                (AgentRevisionRuntimeSuffix.matches(text, expectedText) ||
+                    AgentRevisionMediaPayload.matches(history, user, ::revisionComparableText, expectedText)))
         }
         val hasSteering = state.history.any {
             it.role == "user" && (it.turnId == runId || it.turnId.isBlank()) &&

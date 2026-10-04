@@ -2334,7 +2334,12 @@ internal class AgentAppState(
                 throw cancelled
             } catch (failure: Exception) {
                 coroutineContext.ensureActive()
-                AndroidAgentLogger.warn("会话修订失败：${if (failure is BranchArchiveCopyException) "branch_archive_copy" else "revision_prepare"} ${failure.cause?.javaClass?.simpleName ?: failure.javaClass.simpleName}")
+                val reason = (failure.cause ?: failure).message.orEmpty().takeIf {
+                    it in setOf("分支归档引用层数超限", "分支归档存在循环引用", "分支根归档缺失或无效",
+                        "分支归档数量超限", "旧分支归档扫描数量超限", "旧分支归档副本数量超限",
+                        "旧分支归档副本不一致", "缺失的旧分支归档没有可验证副本")
+                }.orEmpty()
+                AndroidAgentLogger.warn("会话修订失败：${if (failure is BranchArchiveCopyException) "branch_archive_copy" else "revision_prepare"} ${failure.cause?.javaClass?.simpleName ?: failure.javaClass.simpleName} $reason")
                 if (stillCurrent()) {
                     if (failure is BranchArchiveCopyException) Toast.makeText(appContext,
                         "分支所需的历史归档或附件未能完整复制，已取消分支；原会话未修改。", Toast.LENGTH_LONG).show()
