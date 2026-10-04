@@ -74,7 +74,12 @@ class SubAgentPresetUiContractTest(unittest.TestCase):
             self.assertIn(needle, editor)
         speed = editor.split('suspend fun cycleGptSpeed(', 1)[1].split('fun saveModel(', 1)[0]
         self.assertLess(speed.index('val capturedToken = capturedConfig.presetApplicationToken'), speed.index('providerLookup('))
-        self.assertIn('if (!applicationMatches(capturedToken)) throw LostOwner()', speed)
+        self.assertIn('(state as? SubAgentEditorState.Loaded)?.config?.presetApplicationToken != capturedToken', speed)
+        self.assertIn('confirmedUpdate(id, binding)', speed)
+        self.assertIn('if (config.presetApplicationToken != capturedToken) throw LostOwner()', speed)
+        self.assertLess(speed.index('providerLookup('), speed.index('confirmedUpdate(id, binding)'))
+        self.assertLess(speed.index('confirmedUpdate(id, binding)'),
+                        speed.index('if (config.presetApplicationToken != capturedToken) throw LostOwner()'))
 
     def test_scoped_panel_observes_and_displays_explicit_error_recovery(self):
         dialog = self.source('ui/components/ConversationCollaborationDialog.kt')
