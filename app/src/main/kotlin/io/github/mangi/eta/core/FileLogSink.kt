@@ -62,7 +62,7 @@ internal class FileLogSink(
         if (output == null) {
             openCurrentLocked()
         }
-        if (currentSize > 0L && currentSize + incoming.size > maxBytes) {
+        if (incoming.size <= maxBytes && currentSize > 0L && currentSize + incoming.size > maxBytes) {
             rotateLocked()
         }
         val stream = output ?: error("日志文件未打开")
