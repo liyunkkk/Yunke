@@ -8,6 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.*
@@ -96,19 +97,35 @@ class SubAgentMaterialControlsTest {
     }
     @Test fun modelPickerHighlightsSelectionAndProviderRowsHaveNoPressRipple() {
         val selectedColor = Color(0xFFB5D8F3)
+        var selectedModelId: String? = null
+        var cleared = false
         val model = io.github.mangi.eta.ui.model.AgentModelOptionUi("m", "p", "测试提供商", "openai", "m", "测试模型", 10000)
+        val nextModel = io.github.mangi.eta.ui.model.AgentModelOptionUi("m-next", "p-next", "下一提供商", "openai", "m-next", "下一模型", 10000)
         val picker = io.github.mangi.eta.ui.model.AgentModelPickerUiState(
-            providerGroups = listOf(io.github.mangi.eta.ui.model.AgentModelProviderGroupUi("p", "测试提供商", "openai", listOf(model))),
+            providerGroups = listOf(
+                io.github.mangi.eta.ui.model.AgentModelProviderGroupUi("p", "测试提供商", "openai", listOf(model)),
+                io.github.mangi.eta.ui.model.AgentModelProviderGroupUi("p-next", "下一提供商", "openai", listOf(nextModel)),
+            ),
             selectedModel = model)
         compose.setContent {
             MaterialTheme(colorScheme = lightColorScheme(surfaceVariant = selectedColor)) {
-                io.github.mangi.eta.ui.TtsModelPickerDialog(picker, true, {}, { _, _ -> }, "选择模型",
-                    onClearSelection = {}, highlightSelection = true)
+                io.github.mangi.eta.ui.TtsModelPickerDialog(picker, true, {}, { _, id -> selectedModelId = id }, "选择模型",
+                    onClearSelection = { cleared = true }, highlightSelection = true)
             }
         }
         val selected = compose.onNode(isSelectable() and hasText("测试模型")).assertIsSelected()
         val pixels = selected.captureToImage().toPixelMap()
         assertEquals(selectedColor, pixels[pixels.width - 12, pixels.height / 2])
+        selected.assertHeightIsEqualTo(48.dp)
+        assertTrue("top selection margin missing", pixels[pixels.width / 2, 0] != selectedColor)
+        assertTrue("bottom selection margin missing", pixels[pixels.width / 2, pixels.height - 1] != selectedColor)
+        selected.performTouchInput { click(Offset(center.x, 1f)) }
+        compose.runOnIdle { assertEquals("m", selectedModelId); selectedModelId = null }
+        selected.performTouchInput { click(Offset(center.x, height - 1f)) }
+        compose.runOnIdle { assertEquals("m", selectedModelId) }
+        val none = compose.onNode(isSelectable() and hasText("无"))
+        none.assertHeightIsEqualTo(48.dp).performTouchInput { click(Offset(center.x, height - 1f)) }
+        compose.runOnIdle { assertTrue(cleared) }
         compose.onAllNodes(isSelectable()).assertCountEquals(2) // rows only; no separate radio widgets
         val header = compose.onNodeWithText("测试提供商")
         val before = header.captureToImage().toPixelMap()

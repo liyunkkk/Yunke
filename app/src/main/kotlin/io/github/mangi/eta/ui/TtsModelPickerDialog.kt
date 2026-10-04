@@ -1,10 +1,13 @@
 package io.github.mangi.eta.ui
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import androidx.compose.foundation.layout.*
@@ -56,7 +59,7 @@ internal fun TtsModelPickerDialog(
                 if (onClearSelection != null) {
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
-                            .background(if (highlightSelection && state.selectedModel == null) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+                            .modelSelectionBackground(highlightSelection && state.selectedModel == null, MaterialTheme.colorScheme.surfaceVariant)
                             .selectable(selected = state.selectedModel == null, role = Role.RadioButton,
                                 interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {
                                 TouchHaptics.click(view)
@@ -91,7 +94,7 @@ internal fun TtsModelPickerDialog(
                             val selected = state.selectedModel?.providerId == model.providerId && state.selectedModel?.id == model.id
                             Row(
                                 Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(10.dp))
-                                    .background(if (highlightSelection && selected) MaterialTheme.colorScheme.surfaceVariant else Color.Transparent)
+                                    .modelSelectionBackground(highlightSelection && selected, MaterialTheme.colorScheme.surfaceVariant)
                                     .selectable(selected = selected, role = Role.RadioButton,
                                         interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {
                                         TouchHaptics.click(view)
@@ -116,6 +119,19 @@ internal fun TtsModelPickerDialog(
     }
     }
 }
+
+/** Only inset the painted selection; row size, text and the full click target stay unchanged. */
+private fun Modifier.modelSelectionBackground(selected: Boolean, color: Color): Modifier =
+    if (!selected) this else drawBehind {
+        val inset = 2.dp.toPx()
+        val radius = 10.dp.toPx()
+        drawRoundRect(
+            color = color,
+            topLeft = Offset(0f, inset),
+            size = Size(size.width, (size.height - 2 * inset).coerceAtLeast(0f)),
+            cornerRadius = CornerRadius(radius, radius),
+        )
+    }
 
 internal data class SpeechVoiceSections(
     val female: List<io.github.mangi.eta.agent.voice.tts.SpeechVoice>,
