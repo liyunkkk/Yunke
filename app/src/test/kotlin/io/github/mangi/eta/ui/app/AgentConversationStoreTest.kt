@@ -142,6 +142,7 @@ class AgentConversationStoreTest {
                 io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
                     role = "user",
                     content = "看一下当前屏幕",
+                    turnId = "1",
                 ),
                 io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
                     role = "assistant",
@@ -190,7 +191,7 @@ class AgentConversationStoreTest {
         assertEquals("provider-1", restored.providerId)
         assertEquals("model-1", restored.modelId)
         assertEquals(conversation.messages, restored.messages)
-        assertEquals(conversation.history, restored.history)
+        assertEquals(io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(conversation.history), restored.history)
     }
 
     @Test
@@ -757,13 +758,21 @@ class AgentConversationStoreTest {
                         thinkingEnabled = false,
                     ),
                 ),
+                history = listOf(
+                    io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                        role = "user", content = "旧消息", turnId = "1",
+                    ),
+                    io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                        role = "user", content = "继续", turnId = "2",
+                    ),
+                ),
                 titles = mapOf("conv-compact" to "压缩"),
                 updatedAt = mapOf("conv-compact" to 2L),
             )
         }
         val restored = AgentConversationStore.load(context)
             .conversationsById.getValue("conv-compact").messages
-        assertEquals(listOf("u1", "compacted-1", "u2"), restored.map { it.id })
+        assertEquals(listOf("user-1", "compacted-1", "user-2"), restored.map { it.id })
         val loaded = restored[1] as ContextCompactedMessageUi
         assertEquals(6, loaded.compactedCount)
         assertEquals("用户要查 Actions，已经推送成功。", loaded.summary)
