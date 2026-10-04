@@ -108,7 +108,6 @@ import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.agent.voice.VOICE_MODE_SPEECH_OWNER_PREFIX
 import io.github.mangi.eta.data.model.ReasoningEffort
-import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.latestBilledContextTokens
@@ -243,16 +242,46 @@ internal fun AgentChatBody(
             }
             .distinctUntilChanged()
     }.collectAsState(initial = Triple(false, null, null))
-    val visibleMessages = remember(messages, messageEdit?.targetMessageId) {
-        AgentConversationRevisionReducer.visibleMessagesForEdit(
-            messages = messages,
-            targetMessageId = messageEdit?.targetMessageId,
-        ).filterNot { message ->
-            message is AgentMessageUi && message.content.isBlank()
+    val projectionContext = AgentChatProjectionContext(
+        conversationId = collaborationConversationId,
+        editTargetMessageId = messageEdit?.targetMessageId,
+        isStreaming = isStreaming,
+        isPaused = isPaused,
+        isCompressingContext = isCompressingContext,
+        isWaitingForCompression = isWaitingForCompression,
+    )
+    val timelineProjector = remember {
+        AgentChatTimelineProjector(
+            projectVisible = { source, editTarget ->
+                StreamPerformanceDiagnostics.measure("timeline.visible", source.size.toLong()) {
+                    visibleChatProjectionMessages(source, editTarget)
+                }
+            },
+            projectEntries = { visible ->
+                StreamPerformanceDiagnostics.measure("timeline.project", visible.size.toLong()) {
+                    visible.toTimelineEntries()
+                }
+            },
+            projectMetadata = { visible, entries ->
+                StreamPerformanceDiagnostics.measure("timeline.metadata", visible.size.toLong()) {
+                    timelineMetadata(visible, entries)
+                }
+            },
+        )
+    }
+    // Never advance the cache during composition: an abandoned composition must not
+    // become the base for the next delta. Only successful compositions commit it.
+    val committedProjection = remember { arrayOfNulls<AgentChatTimelineSnapshot>(1) }
+    val projection = remember(messages, projectionContext) {
+        StreamPerformanceDiagnostics.measure("timeline.snapshot", messages.size.toLong()) {
+            timelineProjector.project(messages, projectionContext, committedProjection[0])
         }
     }
+    SideEffect { committedProjection[0] = projection }
+    val visibleMessages = projection.visibleMessages
+    val timelineEntries = projection.entries
     LaunchedEffect(visibleMessages, isStreaming) {
-        val last = visibleMessages.filterIsInstance<AgentMessageUi>().lastOrNull()
+        val last = visibleMessages.lastOrNull { it is AgentMessageUi } as? AgentMessageUi
         val speechText = last?.content.orEmpty()
         voiceController.updateChat(
             VoiceChatSnapshot(
@@ -264,21 +293,12 @@ internal fun AgentChatBody(
     }
     val speechPlayback by io.github.mangi.eta.agent.voice.tts.SpeechPlayback.state.collectAsState()
     LaunchedEffect(visibleMessages, messageEdit?.targetMessageId, speechPlayback.owner) {
-        val owner = speechPlayback.owner
-        val visibleCompletedIds = visibleMessages.mapNotNull { message ->
-            (message as? AgentMessageUi)?.takeIf { !it.isStreaming }?.id
-        }.toSet()
-        if (shouldStopOrphanSpeechPlayback(owner, messageEdit != null, visibleCompletedIds)) {
+        if (shouldStopOrphanSpeechPlaybackForMessages(speechPlayback.owner, messageEdit != null, visibleMessages)) {
             io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop("orphan_reply")
         }
     }
-    // Project once for both the initial tail anchor and the rendered rows below. In
-    // particular, do not derive a second full timeline just to ask for its size: this
-    // list can contain thousands of streaming/tool messages.
-    val timelineEntries = remember(visibleMessages) {
-        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
-    }
-    val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
+    // The initial tail anchor and rendered rows consume the same complete snapshot.
+    val initialBottomItemIndex = remember(timelineEntries, isCompressingContext, isWaitingForCompression, childContexts) {
         initialTimelineItemIndex(
             timelineEntries = timelineEntries,
             isCompressingContext = isCompressingContext,
@@ -352,6 +372,7 @@ internal fun AgentChatBody(
                 collaborationConversationId = collaborationConversationId,
                 visibleMessages = visibleMessages,
                 timelineEntries = timelineEntries,
+                timelineMetadata = projection.metadata,
                 hasMessages = visibleMessages.isNotEmpty(),
                 scrollState = scrollState,
                 input = input,
@@ -440,6 +461,7 @@ internal fun AgentChatBody(
 private fun AgentChatScaffold(
     visibleMessages: List<AgentChatMessageUi>,
     timelineEntries: List<AgentTimelineEntry>,
+    timelineMetadata: AgentTimelineMetadata,
     hasMessages: Boolean,
     scrollState: LazyListState,
     input: String,
@@ -590,6 +612,7 @@ private fun AgentChatScaffold(
             AgentConversationMessages(
                 visibleMessages = visibleMessages,
                 timelineEntries = timelineEntries,
+                timelineMetadata = timelineMetadata,
                 scrollState = scrollState,
                 isStreaming = isStreaming,
                 isPaused = isPaused,
@@ -651,6 +674,7 @@ internal fun AgentConversationMessages(
     scrollToMessageId: String? = null,
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
+    timelineMetadata: AgentTimelineMetadata? = null,
 ) {
     // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
     val scrollTraceEnabled = rememberChatScrollTraceEnabled()
@@ -663,6 +687,9 @@ internal fun AgentConversationMessages(
     // panel still computes it here when it calls this renderer directly.
     val projectedTimelineEntries = timelineEntries ?: remember(visibleMessages) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
+    }
+    val projectedMetadata = timelineMetadata ?: remember(visibleMessages, projectedTimelineEntries) {
+        io.github.mangi.eta.ui.components.timelineMetadata(visibleMessages, projectedTimelineEntries)
     }
     val expansionSaver = remember {
         listSaver<Map<String, Boolean>, String>(
@@ -682,17 +709,21 @@ internal fun AgentConversationMessages(
         if (next == null) workAnimations.remove(groupKey)
         else if (next !== current) workAnimations[groupKey] = next
     }
-    LaunchedEffect(projectedTimelineEntries) {
-        val activeKeys = projectedTimelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().mapTo(mutableSetOf()) { it.key }
-        if (workExpansionOverrides.keys.any { it !in activeKeys }) {
-            workExpansionOverrides = workExpansionOverrides.filterKeys { it in activeKeys }
+    LaunchedEffect(projectedMetadata.workGroups) {
+        val groups = projectedMetadata.workGroups
+        if (workExpansionOverrides.keys.any { it !in groups }) {
+            workExpansionOverrides = workExpansionOverrides.filterKeys { it in groups }
         }
-        workAnimations.keys.toList().filter { it !in activeKeys }.forEach { workAnimations.remove(it) }
-        // A streaming update may remove a pending row without composing it again.
-        projectedTimelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().forEach { group ->
-            val animation = workAnimations[group.key] ?: return@forEach
-            val keys = group.messages.mapTo(HashSet()) { "work-step:${it.id}" }
-            (animation.pendingExitKeys - keys).forEach { finishWorkExit(group.key, it, animation.generation) }
+        // Only animated groups need step membership checks, not the entire history.
+        workAnimations.keys.toList().forEach { groupKey ->
+            val group = groups[groupKey]
+            if (group == null) {
+                workAnimations.remove(groupKey)
+            } else {
+                val animation = workAnimations[groupKey] ?: return@forEach
+                val keys = group.messages.mapTo(HashSet()) { "work-step:${it.id}" }
+                (animation.pendingExitKeys - keys).forEach { finishWorkExit(groupKey, it, animation.generation) }
+            }
         }
     }
     workAnimations.forEach { (groupKey, animation) ->
@@ -707,7 +738,9 @@ internal fun AgentConversationMessages(
     }
     val retainedWorkSteps = workAnimations.mapValues { it.value.retainedStepKeys }
     val timelineRows = remember(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps) {
-        projectedTimelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming, retainedWorkSteps)
+        StreamPerformanceDiagnostics.measure("timeline.rows", projectedTimelineEntries.size.toLong()) {
+            projectedTimelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming, retainedWorkSteps)
+        }
     }
     LaunchedEffect(scrollToMessageId, timelineRows) {
         val target = scrollToMessageId ?: return@LaunchedEffect
@@ -722,15 +755,22 @@ internal fun AgentConversationMessages(
     }
     // Project onto the EXACT rows consumed by LazyColumn. Expansion and late
     // records move only the footer anchor, never the message or callback owner.
-    val turnFooters = remember(timelineRows, isStreaming, isCompressingContext, branchEnabled) {
-        timelineRows.turnFooters(
-            isStreaming = isStreaming,
-            isCompressingContext = isCompressingContext,
-            includeOpenTurnForBranch = branchEnabled,
-        )
+    val completedTurnFooters = remember(timelineRows, isStreaming, isCompressingContext) {
+        StreamPerformanceDiagnostics.measure("timeline.footers", timelineRows.size.toLong()) {
+            timelineRows.turnFooters(isStreaming, isCompressingContext)
+        }
     }
-    val finalResultMessageIds = remember(timelineRows, isStreaming, isCompressingContext) {
-        timelineRows.turnFooters(isStreaming, isCompressingContext).values.mapTo(mutableSetOf()) { it.id }
+    // Branch opt-in only changes an open streaming turn. Idle/compression/action
+    // and final-result projections can share exactly the same footer scan.
+    val turnFooters = if (branchEnabled && isStreaming && !isCompressingContext) {
+        remember(timelineRows, isStreaming, isCompressingContext) {
+            StreamPerformanceDiagnostics.measure("timeline.branchFooters", timelineRows.size.toLong()) {
+                timelineRows.turnFooters(isStreaming, isCompressingContext, includeOpenTurnForBranch = true)
+            }
+        }
+    } else completedTurnFooters
+    val finalResultMessageIds = remember(completedTurnFooters) {
+        completedTurnFooters.values.mapTo(mutableSetOf()) { it.id }
     }
     // Reveal dependencies follow the projection's existing anchors, not a
     // second ownership heuristic. A stopped notice can own actions while an
@@ -768,9 +808,8 @@ internal fun AgentConversationMessages(
             visibleMessages.forEach { settledMessageIds.add(it.id) }
         }
     }
-    LaunchedEffect(visibleMessages, streamingMarkdownStates) {
-        val activeIds = visibleMessages.mapTo(mutableSetOf()) { it.id }
-        streamingMarkdownStates.keys.retainAll(activeIds)
+    LaunchedEffect(projectedMetadata.visibleMessageIds, streamingMarkdownStates) {
+        streamingMarkdownStates.keys.retainAll(projectedMetadata.visibleMessageIds)
     }
     val telemetry = LocalAgentContextTelemetry.current
     val compressingChildren = telemetry.children.filter { it.isCompacting }
@@ -2361,14 +2400,29 @@ private data class SuggestionItem(
     val prompt: String,
 )
 
+private fun isReplySpeechOwner(owner: String?): Boolean =
+    !owner.isNullOrBlank() && owner != "tts-preview" &&
+        owner != io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_OWNER &&
+        !owner.startsWith(VOICE_MODE_SPEECH_OWNER_PREFIX)
+
+internal fun shouldStopOrphanSpeechPlaybackForMessages(
+    owner: String?,
+    messageEditActive: Boolean,
+    visibleMessages: List<AgentChatMessageUi>,
+): Boolean {
+    if (!isReplySpeechOwner(owner)) return false
+    return messageEditActive || visibleMessages.none {
+        it is AgentMessageUi && !it.isStreaming && it.id == owner
+    }
+}
+
 internal fun shouldStopOrphanSpeechPlayback(
     owner: String?,
     messageEditActive: Boolean,
     visibleCompletedAgentIds: Set<String>,
 ): Boolean {
-    if (owner.isNullOrBlank()) return false
     // 试听、语音模式和 Agent 朗读工具都不绑定某条回复，不能按“回复不在可见列表里”收掉。
-    if (owner == "tts-preview" || owner == io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_OWNER || owner.startsWith(VOICE_MODE_SPEECH_OWNER_PREFIX)) return false
+    if (!isReplySpeechOwner(owner)) return false
     return messageEditActive || owner !in visibleCompletedAgentIds
 }
 

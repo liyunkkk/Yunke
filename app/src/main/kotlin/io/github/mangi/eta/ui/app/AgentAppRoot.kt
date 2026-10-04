@@ -70,7 +70,6 @@ import io.github.mangi.eta.ui.model.AgentSkillsAction
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import io.github.mangi.eta.ui.model.AgentToolsAction
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
-import io.github.mangi.eta.ui.model.conversationTokenUsage
 import io.github.mangi.eta.ui.model.PermissionHealthAction
 import io.github.mangi.eta.ui.navigation.AgentNavigator
 import io.github.mangi.eta.ui.navigation.AppRoute
@@ -100,7 +99,6 @@ import io.github.mangi.eta.ui.screens.tools.AgentToolsScreen
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -138,14 +136,24 @@ fun AgentAppRoot(
         }
     }
     val usageConversationId = agentState.conversationPaneState.selectedConversationId
-    val recordedUsageState by remember(usageConversationId) {
-        io.github.mangi.eta.data.repository.UsageStatsRepository.conversationUsageFlow(usageConversationId)
-            .map { usageConversationId to it }
-    }.collectAsState(initial = null)
-    val recordedUsage = recordedUsageState?.takeIf { it.first == usageConversationId }?.second
-    val cumulativeUsage = recordedUsage?.let {
-        io.github.mangi.eta.ui.model.ConversationTokenUsageUi(it.input, it.output, it.cached, it.cacheCreation)
-    } ?: conversationTokenUsage(agentState.homeState.messages)
+    // Keep State handles here; read their values only inside the relevant route/shell.
+    // Reading homeState or these State values here subscribes the root and its
+    // retained navigation entries to changes that only concern a child surface.
+    val modelBindingState = remember(agentState) {
+        homeUiProjectionState({ agentState.homeState }, ::appModelBinding)
+    }
+    val assistantIdState = remember(agentState) {
+        homeUiProjectionState({ agentState.homeState }) { it.assistantId.ifBlank { null } }
+    }
+    val shellHomeState = remember(agentState) {
+        homeUiProjectionState({ agentState.homeState }, ::appShellHomeProjection)
+    }
+    val cumulativeUsageState = rememberConversationUsageState(usageConversationId) {
+        ConversationUsageMessages(
+            agentState.conversationPaneState.selectedConversationId,
+            agentState.homeState.messages,
+        )
+    }
 
     DisposableEffect(backStack.lastOrNull(), agentState.conversationPaneState.selectedConversationId) {
         onDispose { io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stopUiBound("route_change") }
@@ -358,6 +366,7 @@ fun AgentAppRoot(
         route: AppRoute,
         content: @Composable () -> Unit,
     ) {
+        val shellHome = shellHomeState.value
         AgentAppShell(
             currentRoute = route,
             isCurrentRoute = backStack.lastOrNull() == route,
@@ -395,10 +404,7 @@ fun AgentAppRoot(
             onOpenBrowser = { pushRoute(AppRoute.Browser) },
             onOpenWorkspace = { pushRoute(AppRoute.Workspace) },
             autoCompressEnabled = agentState.autoCompressEnabled,
-            isCompressingContext = if (agentState.homeState.selectedContextTaskId == null)
-                agentState.homeState.isCompressingContext || agentState.homeState.isWaitingForCompression
-            else agentState.homeState.childContexts.any { it.taskId == agentState.homeState.selectedContextTaskId &&
-                (it.isCompacting || it.manualCompactionState == "pending") },
+            isCompressingContext = shellHome.isCompressingContext,
             onToggleAutoCompress = { agentState.updateAutoCompressEnabled(it) },
             onCompressConversation = { providerId, modelId, onFinished ->
                 agentState.compressCurrentConversation(
@@ -414,8 +420,8 @@ fun AgentAppRoot(
                 conversationPaneOpen = false
                 agentState.openHistorySearchHit(hit)
             },
-            tokenUsage = cumulativeUsage,
-            subAgentStatuses = agentState.homeState.childStatusRoster,
+            tokenUsage = cumulativeUsageState.value,
+            subAgentStatuses = shellHome.childStatusRoster,
             selectedProviderId = agentState.modelPickerState.selectedModel?.providerId,
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
             onConversationRename = { conversation ->
@@ -837,12 +843,13 @@ fun AgentAppRoot(
                 )
             }
             entry<AppRoute.Settings>(swipeDismiss = swipeDismiss) {
+                val modelBinding = modelBindingState.value
                 SettingsScreen(
                     context = context,
                     onNavigate = { route -> pushRoute(route) },
                     onBack = ::popRoute,
-                    currentProviderId = agentState.homeState.providerId,
-                    currentModelId = agentState.homeState.modelId,
+                    currentProviderId = modelBinding.providerId,
+                    currentModelId = modelBinding.modelId,
                 )
             }
             entry<AppRoute.AuxiliaryVision>(swipeDismiss = swipeDismiss) {
@@ -932,7 +939,7 @@ fun AgentAppRoot(
                 ModelProviderListScreen(
                     onNavigate = { route -> pushRoute(route) },
                     onBack = ::popRoute,
-                    currentProviderId = agentState.homeState.providerId,
+                    currentProviderId = modelBindingState.value.providerId,
                 )
             }
             entry<AppRoute.McpServers>(swipeDismiss = swipeDismiss) {
@@ -951,7 +958,7 @@ fun AgentAppRoot(
                 ModelProviderDetailScreen(
                     providerId = route.providerId,
                     onBack = ::popRoute,
-                    currentModelId = agentState.homeState.modelId,
+                    currentModelId = modelBindingState.value.modelId,
                     onSelectCurrentModel = { modelId ->
                         agentState.selectModel(modelId, route.providerId)
                     },
@@ -968,7 +975,7 @@ fun AgentAppRoot(
                     picker = route.picker,
                     onNavigate = { destination -> pushRoute(destination) },
                     onBack = ::popRoute,
-                    selectedAssistantId = agentState.homeState.assistantId.ifBlank { null },
+                    selectedAssistantId = assistantIdState.value,
                     onSelectAssistant = agentState::selectAssistant,
                 )
             }
