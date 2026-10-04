@@ -18,6 +18,7 @@ internal sealed class SubAgentConfigKey {
     abstract val value: String
     data class Conversation(override val value: String) : SubAgentConfigKey() { init { require(value.isNotBlank()) } }
     data class Draft(override val value: String) : SubAgentConfigKey() { init { require(value.isNotBlank()) } }
+    data class Preset(override val value: String) : SubAgentConfigKey() { init { require(value.isNotBlank()) } }
 }
 
 /** The legacy hash and new pool key both use provider ID + API model (not model selection ID). */
@@ -34,6 +35,9 @@ internal data class ConversationSubAgentConfig(
     val parallelLimits: Map<SubAgentParallelModel, Int> = emptyMap(),
     val diagnosticsEnabled: Boolean = false,
     val legacyParallelLimits: Map<String, Int> = emptyMap(),
+    val appliedPresetId: String? = null,
+    val appliedPresetName: String? = null,
+    val presetApplicationToken: String? = null,
 ) {
     fun detached(): ConversationSubAgentConfig = copy(
         profiles = profiles.map { it.copy(reasoningByModel = it.reasoningByModel.toMap(), gptSpeedByModel = it.gptSpeedByModel.toMap()) }.toList(),
@@ -56,11 +60,18 @@ internal data class ConversationSubAgentConfig(
                 parts.size == 2 && parts.all { it.isNotBlank() }
             }) { "Invalid GPT-speed-memory model key" }
         }
+        require(listOf(appliedPresetId, appliedPresetName, presetApplicationToken).all { it == null || it.isNotBlank() }) {
+            "Invalid preset application metadata"
+        }
         require(parallelLimits.values.all { it >= 0 })
         require(legacyParallelLimits.all { (key, limit) -> key.matches(Regex("agent_model_parallel_[0-9a-f]{64}")) && limit >= 0 })
     }
     fun poolKey(owner: SubAgentConfigKey, model: SubAgentParallelModel): String =
-        "subagent:v1:" + (if (owner is SubAgentConfigKey.Conversation) "c:" else "d:") +
+        "subagent:v1:" + when (owner) {
+            is SubAgentConfigKey.Conversation -> "c:"
+            is SubAgentConfigKey.Draft -> "d:"
+            is SubAgentConfigKey.Preset -> error("Presets cannot own runtime pools")
+        } +
             Base64.getUrlEncoder().withoutPadding().encodeToString(owner.value.toByteArray(Charsets.UTF_8)) + ":" +
             Base64.getUrlEncoder().withoutPadding().encodeToString(model.providerId.toByteArray(Charsets.UTF_8)) + ":" +
             Base64.getUrlEncoder().withoutPadding().encodeToString(model.apiModel.toByteArray(Charsets.UTF_8))
@@ -74,7 +85,7 @@ internal class ConversationSubAgentPreferences(
     companion object {
         internal const val SEED_KEY = "agent_conversation_child_seed_v1"
         internal const val OWNER_PREFIX = "agent_conversation_child_owner_v1_"
-        private const val BIND_PREFIX = "agent_conversation_child_binding_v1_"
+        internal const val BIND_PREFIX = "agent_conversation_child_binding_v1_"
         private const val VERSION = 1
         private val lock = Any()
         private class SharedState {
@@ -100,7 +111,11 @@ internal class ConversationSubAgentPreferences(
     }
     fun flow(owner: SubAgentConfigKey) = state.changes.map { snapshot(owner) }.distinctUntilChanged()
     private fun key(owner: SubAgentConfigKey): String = OWNER_PREFIX +
-        (if (owner is SubAgentConfigKey.Conversation) "c_" else "d_") +
+        when (owner) {
+            is SubAgentConfigKey.Conversation -> "c_"
+            is SubAgentConfigKey.Draft -> "d_"
+            is SubAgentConfigKey.Preset -> "p_"
+        } +
         Base64.getUrlEncoder().withoutPadding().encodeToString(owner.value.toByteArray(Charsets.UTF_8))
     private fun binding(conversation: SubAgentConfigKey.Conversation) = BIND_PREFIX + key(conversation).removePrefix(OWNER_PREFIX)
     private fun ensureClean() { check(state.pending == null) { "Sub-agent storage durability unknown; call recoverDurability() before accessing configs" } }
@@ -174,6 +189,7 @@ internal class ConversationSubAgentPreferences(
         return result.detached()
     }
     private fun initial(owner: SubAgentConfigKey, persistSeed: Boolean = true): ConversationSubAgentConfig {
+        require(owner !is SubAgentConfigKey.Preset) { "Presets have no seed fallback" }
         val base = seed(persist = persistSeed).detached()
         if (owner is SubAgentConfigKey.Conversation) {
             val old = stored("agent_collaboration_${owner.value}")
@@ -184,11 +200,110 @@ internal class ConversationSubAgentPreferences(
         }
         return base
     }
-    private fun read(owner: SubAgentConfigKey): ConversationSubAgentConfig = stored(key(owner))?.let(::decode) ?: initial(owner)
+    private fun catalog(): List<SubAgentPresetCatalog.Entry>? = stored(SubAgentPresetCatalog.KEY)?.let(SubAgentPresetCatalog::decode)
+
+    /** Missing is distinct from an explicitly empty directory. Migration never changes an existing seed. */
+    private fun catalogForWrite(): Pair<List<SubAgentPresetCatalog.Entry>, Map<String, String?>> {
+        catalog()?.let { entries ->
+            validatePresetOwners(entries)
+            return entries to emptyMap()
+        }
+        validatePresetOwners(emptyList())
+        val frozen = seed(persist = false).detached()
+        val entry = SubAgentPresetCatalog.Entry(SubAgentPresetCatalog.DEFAULT_ID, SubAgentPresetCatalog.DEFAULT_NAME)
+        val changes = mutableMapOf<String, String?>(key(SubAgentConfigKey.Preset(entry.id)) to encode(frozen))
+        if (stored(SEED_KEY) == null) changes[SEED_KEY] = encode(frozen)
+        return listOf(entry) to changes
+    }
+
+    private fun validatePresetOwners(entries: List<SubAgentPresetCatalog.Entry>) {
+        val expected = entries.map { key(SubAgentConfigKey.Preset(it.id)) }.toSet()
+        val actual = preferences.all.keys.filter { it.startsWith(OWNER_PREFIX + "p_") }.toSet()
+        require(expected == actual) { "Preset catalog and payloads disagree" }
+        expected.forEach { decode(stored(it) ?: error("Missing preset payload")) }
+    }
+
+    fun presets(): List<SubAgentPreset> = synchronized(lock) {
+        val (entries, migration) = catalogForWrite()
+        if (stored(SubAgentPresetCatalog.KEY) == null) {
+            transaction(migration + (SubAgentPresetCatalog.KEY to SubAgentPresetCatalog.encode(entries)),
+                *entries.map { SubAgentConfigKey.Preset(it.id) }.toTypedArray())
+        }
+        entries.map { SubAgentPreset(it.id, it.name, read(SubAgentConfigKey.Preset(it.id)).detached()) }
+    }
+
+    fun presetsFlow() = state.changes.map { presets() }.distinctUntilChanged()
+
+    /** Read-only existence probe: it must not initialize either the directory or frozen seed. */
+    fun presetExists(id: String): Boolean = synchronized(lock) {
+        ensureClean()
+        if (id.isBlank() || catalog()?.none { it.id == id } != false) return@synchronized false
+        val payload = stored(key(SubAgentConfigKey.Preset(id))) ?: return@synchronized false
+        decode(payload)
+        true
+    }
+
+    fun addPreset(name: String): SubAgentPreset = synchronized(lock) {
+        SubAgentPresetCatalog.validateName(name)
+        val (entries, migration) = catalogForWrite()
+        val id = UUID.randomUUID().toString()
+        val owner = SubAgentConfigKey.Preset(id)
+        val config = ConversationSubAgentConfig(profiles = emptyList())
+        val next = entries + SubAgentPresetCatalog.Entry(id, name)
+        transaction(migration + mapOf(SubAgentPresetCatalog.KEY to SubAgentPresetCatalog.encode(next), key(owner) to encode(config)),
+            *(migration.keys.filter { it.startsWith(OWNER_PREFIX) }.map { ownerFromSuffix(it.removePrefix(OWNER_PREFIX)) } + owner).toTypedArray())
+        SubAgentPreset(id, name, config.detached())
+    }
+
+    fun renamePreset(id: String, name: String): Boolean = synchronized(lock) {
+        ensureClean()
+        val entries = catalog() ?: return@synchronized false
+        if (entries.none { it.id == id }) return@synchronized false
+        SubAgentPresetCatalog.validateName(name)
+        validatePresetOwners(entries)
+        val owner = SubAgentConfigKey.Preset(id)
+        transaction(mapOf(SubAgentPresetCatalog.KEY to SubAgentPresetCatalog.encode(entries.map {
+            if (it.id == id) it.copy(name = name) else it
+        })), owner)
+        true
+    }
+
+    fun removePreset(id: String): Boolean = synchronized(lock) {
+        ensureClean()
+        val entries = catalog() ?: return@synchronized false
+        if (entries.none { it.id == id }) return@synchronized false
+        validatePresetOwners(entries)
+        val owner = SubAgentConfigKey.Preset(id)
+        transaction(mapOf(SubAgentPresetCatalog.KEY to SubAgentPresetCatalog.encode(entries.filterNot { it.id == id }),
+            key(owner) to null), owner)
+        true
+    }
+
+    fun applyPreset(owner: SubAgentConfigKey, presetId: String, canApply: () -> Boolean = { true }): WriteResult = synchronized(lock) {
+        ensureClean()
+        if (owner is SubAgentConfigKey.Preset || !canEdit(owner) || !canApply()) return@synchronized WriteResult.Rejected
+        val entry = catalog()?.firstOrNull { it.id == presetId } ?: return@synchronized WriteResult.Rejected
+        val payload = stored(key(SubAgentConfigKey.Preset(entry.id))) ?: return@synchronized WriteResult.Rejected
+        // A preset switch is not a repair operation: never hide an unreadable existing target.
+        stored(key(owner))?.let(::decode)
+        val next = decode(payload).detached().copy(appliedPresetId = entry.id, appliedPresetName = entry.name,
+            presetApplicationToken = UUID.randomUUID().toString())
+        transaction(mapOf(key(owner) to encode(next)), owner)
+        WriteResult.Saved(revision(owner).value, next.detached())
+    }
+
+    private fun read(owner: SubAgentConfigKey): ConversationSubAgentConfig {
+        if (owner is SubAgentConfigKey.Preset) {
+            require(catalog()?.any { it.id == owner.value } == true) { "Preset is absent: ${owner.value}" }
+            return decode(stored(key(owner)) ?: error("Preset payload is absent: ${owner.value}"))
+        }
+        return stored(key(owner))?.let(::decode) ?: initial(owner)
+    }
     fun snapshot(owner: SubAgentConfigKey): ConversationSubAgentConfig = synchronized(lock) { read(owner).detached() }
     /** Same owner/legacy selection as runtime, without initializing or persisting the seed. */
     fun previewSnapshot(owner: SubAgentConfigKey): ConversationSubAgentConfig = synchronized(lock) {
-        (stored(key(owner))?.let(::decode) ?: initial(owner, persistSeed = false)).detached()
+        (if (owner is SubAgentConfigKey.Preset) read(owner)
+        else stored(key(owner))?.let(::decode) ?: initial(owner, persistSeed = false)).detached()
     }
     /** No seed fallback: pointer recovery must distinguish absence from unreadable storage. */
     fun existingDraftOrNull(owner: SubAgentConfigKey.Draft): ConversationSubAgentConfig? = synchronized(lock) {
@@ -196,12 +311,14 @@ internal class ConversationSubAgentPreferences(
     }
 
     fun createConversation(owner: SubAgentConfigKey.Conversation, source: SubAgentConfigKey? = null): ConversationSubAgentConfig = synchronized(lock) {
+        require(source !is SubAgentConfigKey.Preset) { "Use applyPreset to copy presets" }
         stored(key(owner))?.let { return@synchronized decode(it).detached() }
         val config = (source?.let { read(it) } ?: initial(owner)).detached()
         transaction(mapOf(key(owner) to encode(config)), owner)
         config.detached()
     }
     fun createDraft(source: SubAgentConfigKey? = null): SubAgentConfigKey.Draft = synchronized(lock) {
+        require(source !is SubAgentConfigKey.Preset) { "Use applyPreset to copy presets" }
         val config = (source?.let { read(it) } ?: seed()).detached()
         val owner = SubAgentConfigKey.Draft(UUID.randomUUID().toString())
         transaction(mapOf(key(owner) to encode(config)), owner)
@@ -242,14 +359,17 @@ internal class ConversationSubAgentPreferences(
     }
     fun update(owner: SubAgentConfigKey, change: (ConversationSubAgentConfig) -> ConversationSubAgentConfig): WriteResult = synchronized(lock) {
         ensureClean()
-        if (!canEdit(owner)) return@synchronized WriteResult.Rejected
+        if (owner is SubAgentConfigKey.Preset && !presetExists(owner.value)) return@synchronized WriteResult.Rejected
+        if (owner !is SubAgentConfigKey.Preset && !canEdit(owner)) return@synchronized WriteResult.Rejected
         val next = change(read(owner).detached()).detached()
+        if (owner is SubAgentConfigKey.Preset && !presetExists(owner.value)) return@synchronized WriteResult.Rejected
         next.validate()
         transaction(mapOf(key(owner) to encode(next)), owner)
         WriteResult.Saved(revision(owner).value, next.detached())
     }
     fun delete(owner: SubAgentConfigKey): Boolean = synchronized(lock) {
         ensureClean()
+        if (owner is SubAgentConfigKey.Preset) return@synchronized removePreset(owner.value)
         if (owner is SubAgentConfigKey.Draft) require(bindings().values.none { it == owner.value }) { "Draft still bound" }
         if (stored(key(owner)) == null) return@synchronized false
         val names = mutableMapOf(key(owner) to null as String?)
@@ -262,6 +382,7 @@ internal class ConversationSubAgentPreferences(
     fun validateArchive(raw: String) { decode(raw) }
     fun importOwner(owner: SubAgentConfigKey, archive: String, overwrite: Boolean = false): Boolean = synchronized(lock) {
         ensureClean()
+        require(owner !is SubAgentConfigKey.Preset) { "Preset imports must not bypass the catalog" }
         val config = decode(archive)
         if (!overwrite && stored(key(owner)) != null) {
             decode(stored(key(owner))!!)
@@ -271,29 +392,47 @@ internal class ConversationSubAgentPreferences(
         true
     }
     private fun ownerFromSuffix(suffix: String): SubAgentConfigKey {
-        require(suffix.startsWith("c_") || suffix.startsWith("d_")) { "Invalid owner key" }
+        require(suffix.take(2) in setOf("c_", "d_", "p_")) { "Invalid owner key" }
         val encoded = suffix.substring(2)
         val value = String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8)
         require(value.isNotBlank() && Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray(Charsets.UTF_8)) == encoded)
-        return if (suffix.startsWith("c_")) SubAgentConfigKey.Conversation(value) else SubAgentConfigKey.Draft(value)
-    }
-    fun validateRestoredPreferences() = synchronized(lock) {
-        ensureClean()
-        stored(SEED_KEY)?.let(::decode)
-        val keys = preferences.all.keys
-        keys.filter { it.startsWith(OWNER_PREFIX) }.forEach { name ->
-            ownerFromSuffix(name.removePrefix(OWNER_PREFIX))
-            decode(stored(name) ?: error("Missing owner payload: $name"))
+        return when (suffix.take(2)) {
+            "c_" -> SubAgentConfigKey.Conversation(value)
+            "d_" -> SubAgentConfigKey.Draft(value)
+            "p_" -> SubAgentConfigKey.Preset(value)
+            else -> error("Invalid owner key")
         }
+    }
+
+    /** Raw string payloads from an archive, never the current store. Safe before destructive restore. */
+    fun validatePreferenceArchives(values: Map<String, String>) {
+        values[SEED_KEY]?.let(::decode)
+        val entries = values[SubAgentPresetCatalog.KEY]?.let(SubAgentPresetCatalog::decode).orEmpty()
+        val expected = entries.map { key(SubAgentConfigKey.Preset(it.id)) }.toSet()
+        val presets = mutableSetOf<String>()
+        values.filterKeys { it.startsWith(OWNER_PREFIX) }.forEach { (name, payload) ->
+            val owner = ownerFromSuffix(name.removePrefix(OWNER_PREFIX))
+            decode(payload)
+            if (owner is SubAgentConfigKey.Preset) presets.add(name)
+        }
+        require(expected == presets) { "Preset catalog and payloads disagree" }
         val boundDrafts = mutableSetOf<String>()
-        keys.filter { it.startsWith(BIND_PREFIX) }.forEach { name ->
+        values.filterKeys { it.startsWith(BIND_PREFIX) }.forEach { (name, draftId) ->
             val owner = ownerFromSuffix(name.removePrefix(BIND_PREFIX))
-            require(owner is SubAgentConfigKey.Conversation && stored(key(owner)) != null) { "Bound conversation missing" }
-            val draftId = stored(name)
-            require(!draftId.isNullOrBlank() && boundDrafts.add(draftId) && stored(key(SubAgentConfigKey.Draft(draftId))) != null) {
+            require(owner is SubAgentConfigKey.Conversation && values.containsKey(key(owner))) { "Bound conversation missing" }
+            require(draftId.isNotBlank() && boundDrafts.add(draftId) && values.containsKey(key(SubAgentConfigKey.Draft(draftId)))) {
                 "Invalid or shared bound draft association"
             }
         }
+        // appliedPresetId/name/token are provenance, not foreign keys into this directory.
+    }
+
+    fun validateRestoredPreferences() = synchronized(lock) {
+        ensureClean()
+        val values = preferences.all.keys.filter {
+            it == SEED_KEY || it == SubAgentPresetCatalog.KEY || it.startsWith(OWNER_PREFIX) || it.startsWith(BIND_PREFIX)
+        }.associateWith { stored(it) ?: error("Missing sub-agent value: $it") }
+        validatePreferenceArchives(values)
     }
     fun refreshAfterRestore() = synchronized(lock) {
         validateRestoredPreferences()
@@ -305,6 +444,9 @@ internal class ConversationSubAgentPreferences(
         config.validate()
         return JSONObject().put("version", VERSION).put("enabled", config.enabled)
             .put("diagnostics_enabled", config.diagnosticsEnabled)
+            .put("applied_preset_id", config.appliedPresetId ?: JSONObject.NULL)
+            .put("applied_preset_name", config.appliedPresetName ?: JSONObject.NULL)
+            .put("preset_application_token", config.presetApplicationToken ?: JSONObject.NULL)
             .put("agents", JSONArray(config.profiles.map { it.toJson() }))
             .put("parallel_limits", JSONArray(config.parallelLimits.map { (model, limit) ->
                 JSONObject().put("provider", model.providerId).put("api_model", model.apiModel).put("limit", limit)
@@ -316,6 +458,10 @@ internal class ConversationSubAgentPreferences(
     private fun string(j: JSONObject, name: String): String {
         require(j.has(name) && j.opt(name) is String) { "Invalid string: $name" }
         return j.getString(name)
+    }
+    private fun optionalString(j: JSONObject, name: String): String? {
+        if (!j.has(name) || j.isNull(name)) return null
+        return string(j, name).also { require(it.isNotBlank()) { "Invalid preset metadata: $name" } }
     }
     private fun bool(j: JSONObject, name: String): Boolean {
         require(j.has(name) && j.opt(name) is Boolean) { "Invalid boolean: $name" }
@@ -384,7 +530,10 @@ internal class ConversationSubAgentPreferences(
         val config = ConversationSubAgentConfig(
             profiles = (0 until agents.length()).map { index -> profile(agents.getJSONObject(index)) },
             enabled = bool(json, "enabled"), parallelLimits = models.toMap(),
-            diagnosticsEnabled = bool(json, "diagnostics_enabled"), legacyParallelLimits = hashes.toMap())
+            diagnosticsEnabled = bool(json, "diagnostics_enabled"), legacyParallelLimits = hashes.toMap(),
+            appliedPresetId = optionalString(json, "applied_preset_id"),
+            appliedPresetName = optionalString(json, "applied_preset_name"),
+            presetApplicationToken = optionalString(json, "preset_application_token"))
         config.validate()
         return config.detached()
     }

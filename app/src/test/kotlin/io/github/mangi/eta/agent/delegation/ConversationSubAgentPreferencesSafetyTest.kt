@@ -83,6 +83,59 @@ class ConversationSubAgentPreferencesSafetyTest {
         assertEquals(before, b.export(c("a")))
     }
 
+    @Test fun failedPresetMigrationFencesCatalogAndPayloadUntilOriginalsAreRecovered() {
+        val prefs = FalseAfterMemory(prefs())
+        val a = ConversationSubAgentPreferences(prefs)
+        val b = ConversationSubAgentPreferences(prefs)
+        val before = prefs.all.toMap()
+        val revision = a.revision.value
+        prefs.failures = 2
+        assertThrows(IllegalStateException::class.java) { a.presets() }
+        assertEquals(revision, b.revision.value)
+        assertThrows(IllegalStateException::class.java) { b.presetExists(SubAgentPresetCatalog.DEFAULT_ID) }
+        assertThrows(IllegalStateException::class.java) { b.addPreset("不能绕过") }
+        assertThrows(IllegalStateException::class.java) { b.presets() }
+        assertTrue(a.recoverDurability())
+        assertEquals(before, prefs.all)
+        assertEquals(revision, a.revision.value)
+        assertEquals(1, b.presets().size)
+        b.validateRestoredPreferences()
+    }
+
+    @Test fun failedPresetAddRenameDeleteEditAndApplyShareFenceAndKeepOriginalRevisions() {
+        val prefs = FalseAfterMemory(prefs())
+        val a = ConversationSubAgentPreferences(prefs)
+        val b = ConversationSubAgentPreferences(prefs)
+        val preset = a.addPreset("安全组")
+        val owner = c("target")
+        a.createConversation(owner)
+        val presetOwner = SubAgentConfigKey.Preset(preset.id)
+        val operations: List<() -> Unit> = listOf(
+            { a.addPreset("新组"); Unit },
+            { a.renamePreset(preset.id, "重命名"); Unit },
+            { a.removePreset(preset.id); Unit },
+            { a.update(presetOwner) { it.copy(enabled = false) }; Unit },
+            { a.applyPreset(owner, preset.id); Unit },
+        )
+        operations.forEach { operation ->
+            val before = prefs.all.toMap()
+            val revision = a.revision.value
+            val targetRevision = a.revision(owner).value
+            val presetRevision = a.revision(presetOwner).value
+            prefs.failures = 2
+            assertThrows(IllegalStateException::class.java) { operation() }
+            assertEquals(revision, b.revision.value)
+            assertEquals(targetRevision, b.revision(owner).value)
+            assertEquals(presetRevision, b.revision(presetOwner).value)
+            assertThrows(IllegalStateException::class.java) { b.presets() }
+            assertThrows(IllegalStateException::class.java) { b.applyPreset(owner, preset.id) }
+            assertTrue(b.recoverDurability())
+            assertEquals(before, prefs.all)
+            assertEquals(revision, a.revision.value)
+            a.validateRestoredPreferences()
+        }
+    }
+
     @Test fun failedBindAndConfirmNeverDeleteUniqueDraft() {
         val prefs = FalseAfterMemory(prefs())
         val repo = ConversationSubAgentPreferences(prefs)

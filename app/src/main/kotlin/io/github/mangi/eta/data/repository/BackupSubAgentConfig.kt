@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.delegation.SubAgentPresetCatalog
 import java.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
@@ -14,13 +15,17 @@ internal object BackupSubAgentConfig {
     private const val PREFIX = "agent_conversation_child_owner_v1_"
 
     /** Full backup values use Prefs' type prefix. Validate BEFORE clearing local preferences. */
+    fun containsPreferences(values: Map<String, String>): Boolean = values.keys.any(::isSubAgentPreference)
+
+    private fun isSubAgentPreference(key: String): Boolean = key == SEED || key == SubAgentPresetCatalog.KEY ||
+        key.startsWith(PREFIX) || key.startsWith(ConversationSubAgentPreferences.BIND_PREFIX)
+
     fun validatePreferences(values: Map<String, String>, store: ConversationSubAgentPreferences) {
-        values.forEach { (key, encoded) ->
-            if (key == SEED || key.startsWith(PREFIX)) {
-                require(encoded.startsWith("s:")) { "子代理配置类型无效：$key" }
-                store.validateArchive(encoded.substring(2))
-            }
+        val payloads = values.filterKeys(::isSubAgentPreference).mapValues { (key, encoded) ->
+            require(encoded.startsWith("s:")) { "子代理配置类型无效：$key" }
+            encoded.substring(2)
         }
+        store.validatePreferenceArchives(payloads)
     }
 
     /** An old conversation archive is independent of both current selection and live seed. */

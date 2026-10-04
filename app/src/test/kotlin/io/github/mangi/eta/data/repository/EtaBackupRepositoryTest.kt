@@ -123,6 +123,51 @@ class EtaBackupRepositoryTest {
         assertEquals(ModelSource.CATALOG, ProviderRepository.providerById(provider.id)?.models?.first()?.source)
     }
 
+    @Test
+    fun fullBackupRestoresPresetDirectoryPayloadAndRefreshesObservedRevisions() = runBlocking {
+        io.github.mangi.eta.config.Prefs.initLocal(context)
+        val prefs = requireNotNull(io.github.mangi.eta.config.Prefs.localAgentPreferences())
+        check(prefs.edit().clear().commit())
+        val store = io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences(prefs)
+        val preset = store.addPreset("备份预设")
+        val presetOwner = io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Preset(preset.id)
+        val owner = io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Conversation("backup-owner")
+        store.update(presetOwner) { it.copy(enabled = false, diagnosticsEnabled = true) }
+        store.applyPreset(owner, preset.id)
+        val original = store.snapshot(owner)
+        val directory = store.presets()
+        val output = ByteArrayOutputStream()
+        EtaBackupRepository.export(context, output)
+        store.removePreset(preset.id)
+        store.update(owner) { it.copy(profiles = emptyList(), enabled = true, diagnosticsEnabled = false) }
+        val ownerRevision = store.revision(owner).value
+        val presetRevision = store.revision(presetOwner).value
+        EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
+        assertEquals(original, store.snapshot(owner))
+        assertEquals(directory, store.presets())
+        assertTrue(store.revision(owner).value > ownerRevision)
+        assertTrue(store.revision(presetOwner).value > presetRevision)
+        store.validateRestoredPreferences()
+    }
+
+    @Test
+    fun catalogOnlyCorruptBackupIsRejectedBeforeClearingCurrentPreferences() = runBlocking {
+        io.github.mangi.eta.config.Prefs.initLocal(context)
+        val prefs = requireNotNull(io.github.mangi.eta.config.Prefs.localAgentPreferences())
+        check(prefs.edit().clear().putString("unrelated-current", "keep").commit())
+        val store = io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences(prefs)
+        val preset = store.addPreset("保留")
+        val before = prefs.all.toMap()
+        val revision = store.revision.value
+        val raw = org.json.JSONObject().put("format", EtaBackupDocument.FORMAT).put("schemaVersion", 4)
+            .put("exportedAt", 0).put("agentPreferences", org.json.JSONObject()
+                .put(io.github.mangi.eta.agent.delegation.SubAgentPresetCatalog.KEY, "s:{invalid")).toString()
+        assertTrue(runCatching { EtaBackupRepository.import(context, ByteArrayInputStream(raw.toByteArray())) }.isFailure)
+        assertEquals(before, prefs.all)
+        assertEquals(revision, store.revision.value)
+        assertTrue(store.presetExists(preset.id))
+    }
+
     @Test(expected = EtaBackupException::class)
     fun rejectsUnknownBackupFormatBeforeChangingData(): Unit = runBlocking {
         EtaBackupRepository.inspect(

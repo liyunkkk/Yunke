@@ -625,6 +625,7 @@ internal object EtaBackupRepository {
             // Old archives without this field retain their current prefs; our own undo snapshot is exact.
             if (exactPreferences || document.agentPreferences.isNotEmpty()) {
                 Prefs.restoreAgentPreferences(document.agentPreferences)
+                ConversationSubAgentPreferences().refreshAfterRestore()
             }
         } else {
             SettingsDataStore.setSelection(document.selectedProviderId, document.selectedModelId)
@@ -725,8 +726,7 @@ internal object EtaBackupRepository {
             }
         }
         document.assistantMemories.keys.forEach { io.github.mangi.eta.data.model.AssistantStorage.id(it) }
-        if (document.agentPreferences.keys.any { it == "agent_conversation_child_seed_v1" ||
-                it.startsWith("agent_conversation_child_owner_v1_") }) {
+        if (BackupSubAgentConfig.containsPreferences(document.agentPreferences)) {
             BackupSubAgentConfig.validatePreferences(document.agentPreferences, ConversationSubAgentPreferences())
         }
         val mcpIds = document.mcpServers.map { it.id }
