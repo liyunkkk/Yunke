@@ -473,6 +473,88 @@ class AgentConversationStoreTest {
     }
 
     @Test
+    fun loadingRepairsLegacyMessageIdsAndPersistsThemAcrossReopen() {
+        val history = listOf(
+            AgentModelClient.ConversationMessage("user", "first task", turnId = "turn-first"),
+            AgentModelClient.ConversationMessage("assistant", "first answer", turnId = "turn-first"),
+            AgentModelClient.ConversationMessage("user", "second task", turnId = "turn-second"),
+        )
+        val state = AgentChatHomeUiState(
+            messages = listOf(
+                UserMessageUi("user-run-old", "first task"),
+                AgentMessageUi("assistant-run-old", "first answer"),
+                UserMessageUi("user-run-old-supplement-7", "用户补充指令：检查结果"),
+                UserMessageUi("user-run-second", "second task"),
+            ),
+            history = history,
+            input = "",
+            isStreaming = false,
+            thinkingEnabled = false,
+        )
+        runBlocking {
+            AgentConversationStore.save(
+                context = context,
+                selectedConversationId = "conv-identity",
+                conversationsById = mapOf("conv-identity" to state),
+                titles = mapOf("conv-identity" to "identity"),
+                updatedAt = mapOf("conv-identity" to 1L),
+            )
+        }
+
+        val firstLoad = AgentConversationStore.load(context).conversationsById.getValue("conv-identity")
+        assertEquals(
+            listOf(
+                "user-turn-first",
+                "assistant-run-old",
+                "user-turn-first-supplement-7",
+                "user-turn-second",
+            ),
+            firstLoad.messages.map { it.id },
+        )
+        assertEquals(listOf("turn-first", "turn-first", "turn-second"), firstLoad.history.map { it.turnId })
+
+        val dao = EtaDatabase.get(context).conversationDao()
+        assertEquals(
+            firstLoad.messages.map { it.id },
+            dao.messagesForConversation("conv-identity").map { it.id },
+        )
+        EtaDatabase.closeForTests()
+
+        val secondLoad = AgentConversationStore.load(context).conversationsById.getValue("conv-identity")
+        assertEquals(firstLoad.messages.map { it.id }, secondLoad.messages.map { it.id })
+        assertEquals(firstLoad.history.map { it.turnId }, secondLoad.history.map { it.turnId })
+    }
+
+    @Test
+    fun loadingDoesNotRepairAmbiguousRepeatedUserText() {
+        val state = AgentChatHomeUiState(
+            messages = listOf(
+                UserMessageUi("user-old-one", "repeat"),
+                UserMessageUi("user-old-two", "repeat"),
+            ),
+            history = listOf(
+                AgentModelClient.ConversationMessage("user", "repeat", turnId = "turn-one"),
+                AgentModelClient.ConversationMessage("user", "repeat", turnId = "turn-two"),
+            ),
+            input = "",
+            isStreaming = false,
+            thinkingEnabled = false,
+        )
+        runBlocking {
+            AgentConversationStore.save(
+                context = context,
+                selectedConversationId = "conv-ambiguous",
+                conversationsById = mapOf("conv-ambiguous" to state),
+                titles = mapOf("conv-ambiguous" to "ambiguous"),
+                updatedAt = mapOf("conv-ambiguous" to 1L),
+            )
+        }
+
+        val loaded = AgentConversationStore.load(context).conversationsById.getValue("conv-ambiguous")
+        assertEquals(listOf("user-old-one", "user-old-two"), loaded.messages.map { it.id })
+    }
+
+    @Test
     fun loadingAnEmptyDatabaseDoesNotCreateAPlaceholderRecord() {
         val snapshot = AgentConversationStore.load(context)
 
