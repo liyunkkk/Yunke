@@ -128,13 +128,18 @@ class SubAgentGptSpeedButtonTest {
         }
         val button = speedNode("测试代理")
         button.assertExists().assertHasClickAction()
+        compose.runOnIdle { ShadowToast.reset() }
         // 图标 + 档位文字都可识别，而不是只有一个无文字的图标。
         compose.onNodeWithText("标准", useUnmergedTree = true).assertExists()
         assertSpeedContentCentered("测试代理", "标准")
 
         button.performClick()
         compose.waitForIdle()
-        compose.runOnIdle { assertEquals(GptSpeedMode.FAST, modeOf(fixture, gptProfile.id)) }
+        compose.runOnIdle {
+            assertEquals(GptSpeedMode.FAST, modeOf(fixture, gptProfile.id))
+            assertEquals(1, ShadowToast.shownToastCount())
+            assertEquals(gptSpeedToastMessage(GptSpeedMode.FAST), ShadowToast.getTextOfLatestToast())
+        }
         compose.onNodeWithText("快速", useUnmergedTree = true).assertExists()
         assertSpeedContentCentered("测试代理", "快速")
 
@@ -309,7 +314,7 @@ class SubAgentGptSpeedButtonTest {
     }
 
     @Test
-    fun settingsRowPlacesSpeedButtonInModelRowBeforeArrow() {
+    fun settingsRowKeepsCenteredSpeedShortcutInModelRow() {
         val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(gptProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme { SubAgentProfileRow(gptProfile, providers, enabled = true, settings = true) }
@@ -317,15 +322,16 @@ class SubAgentGptSpeedButtonTest {
         val modelRow = compose.onNodeWithContentDescription("测试代理模型").fetchSemanticsNode().boundsInRoot
         val value = compose.onNodeWithText("GPT-5", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val speed = speedNode("测试代理").fetchSemanticsNode().boundsInRoot
-        // 在“模型”行内、模型值右侧、行尾箭头左侧。
+        // The settings shortcut remains inside the model row; the compact card has a config entry.
         assertTrue(speed.top >= modelRow.top - 1f)
         assertTrue(speed.bottom <= modelRow.bottom + 1f)
         assertTrue(speed.left > value.right)
-        assertTrue(speed.right < modelRow.right)
+        assertTrue(speed.right <= modelRow.right + 1f)
+        assertSpeedContentCentered("测试代理", "标准")
     }
 
     @Test
-    fun sessionCardPlacesSpeedButtonBetweenModelInfoAndTierOrArrow() {
+    fun sessionCardPlacesCenteredSpeedBetweenModelInfoAndConfigEntryWithoutOuterTier() {
         val fixture = SubAgentUiFixture(providers = providers, profiles = listOf(implProfile, reviewProfile))
         compose.setSubAgentContent(fixture) {
             MaterialTheme {
@@ -337,15 +343,20 @@ class SubAgentGptSpeedButtonTest {
         }
         val implInfo = compose.onNodeWithContentDescription("执行代理模型").fetchSemanticsNode().boundsInRoot
         val implSpeed = speedNode("执行代理").fetchSemanticsNode().boundsInRoot
-        val tier = compose.onNodeWithContentDescription("设置执行代理任务分工").fetchSemanticsNode().boundsInRoot
+        val implConfig = compose.onNodeWithContentDescription("配置执行代理").assertHasClickAction().fetchSemanticsNode().boundsInRoot
         assertTrue(implSpeed.left >= implInfo.right - 1f)
-        assertTrue(implSpeed.right <= tier.left + 1f)
+        assertTrue(implSpeed.right <= implConfig.left + 1f)
+        assertSpeedContentCentered("执行代理", "标准")
 
         val reviewInfo = compose.onNodeWithContentDescription("审查代理模型").fetchSemanticsNode().boundsInRoot
         val reviewSpeed = speedNode("审查代理").fetchSemanticsNode().boundsInRoot
-        val arrow = compose.onNodeWithContentDescription("选择审查代理模型").fetchSemanticsNode().boundsInRoot
+        val reviewConfig = compose.onNodeWithContentDescription("配置审查代理").assertHasClickAction().fetchSemanticsNode().boundsInRoot
         assertTrue(reviewSpeed.left >= reviewInfo.right - 1f)
-        assertTrue(reviewSpeed.right <= arrow.left + 1f)
+        assertTrue(reviewSpeed.right <= reviewConfig.left + 1f)
+        assertSpeedContentCentered("审查代理", "标准")
+        compose.onNodeWithContentDescription("设置执行代理任务分工").assertDoesNotExist()
+        compose.onNodeWithContentDescription("设置审查代理任务分工").assertDoesNotExist()
+        compose.onNodeWithText("复杂任务").assertDoesNotExist()
     }
 
     @Test

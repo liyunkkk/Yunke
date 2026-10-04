@@ -13,9 +13,22 @@ class ChildGptSpeedContractTest(unittest.TestCase):
         self.assertEqual(row.count('SubAgentGptSpeedButton('), 2)
         self.assertIn('trailing = { SubAgentGptSpeedButton', row)
         card = row[row.rindex('SubAgentGptSpeedButton('):]
-        self.assertIn('SubAgentTaskTierButton(', card)
+        self.assertIn('Icon(Icons.Rounded.MoreVert, "配置${profile.name}"', card)
+        self.assertIn('SubAgentProfileDraftSession.open(editor, profile)', card)
+        self.assertNotIn('SubAgentTaskTierButton(', row)
+        self.assertNotIn('"任务分工"', row)
         settings = source('ui/components/SubAgentSettingRow.kt')
         self.assertLess(settings.index('trailing?.invoke()'), settings.index('Icon(if (dropdown)'))
+
+    def test_speed_content_stays_centered_touch_safe_and_ripple_free(self):
+        button = source('ui/components/SubAgentGptSpeedButton.kt')
+        for check in ('SubAgentGptSpeedMinTouchSize = 48.dp',
+                      '.defaultMinSize(minWidth = SubAgentGptSpeedMinTouchSize, minHeight = SubAgentGptSpeedMinTouchSize)',
+                      'verticalAlignment = Alignment.CenterVertically',
+                      'horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)',
+                      'indication = null', 'hapticFeedbackEnabled = false'):
+            self.assertIn(check, button)
+        self.assertNotIn('.offset(', button)
 
     def test_button_filters_actual_binding(self):
         button = source('ui/components/SubAgentGptSpeedButton.kt')
@@ -60,9 +73,20 @@ class ChildGptSpeedContractTest(unittest.TestCase):
     def test_editor_writes_under_owner_and_validates_live_binding(self):
         editor = source('ui/components/ConversationSubAgentEditor.kt')
         body = editor.split('fun cycleGptSpeed(', 1)[1].split('fun saveModel(', 1)[0]
-        for check in ('updateProfile(id)', 'old.providerId != providerId', 'old.modelId != modelId',
-                      'supportsGptSpeedBinding(provider, model)', 'gptSpeedByModel'):
+        for check in ('val capturedConfig = repository.snapshot(owner)',
+                      'val capturedToken = capturedConfig.presetApplicationToken',
+                      'captured.providerId != providerId', 'captured.modelId != modelId',
+                      'expected != null && captured != expected',
+                      'val binding = SubAgentParallelModel(providerId, model.modelId)',
+                      'confirmedUpdate(id, binding)', 'config.presetApplicationToken != capturedToken',
+                      'old != (expected ?: captured)', 'old.providerId != providerId', 'old.modelId != modelId',
+                      'supportsGptSpeedBinding(provider, model)', 'gptSpeedByModel',
+                      'SubAgentProfile.modelReasoningKey(providerId, modelId)'):
             self.assertIn(check, body)
+        confirmed = editor.split('private fun confirmedUpdate(', 1)[1].split('fun updateProfile(', 1)[0]
+        self.assertIn('repository.updateConfirmedProfile(owner, id, binding, { enabled })', confirmed)
+        self.assertIn('old.presetApplicationToken != token', confirmed)
+        self.assertIn('WriteResult.Saved', confirmed)
         self.assertNotIn('SubAgentPreferences.update(', body)
         self.assertNotIn('reasoning =', body)
 
@@ -78,7 +102,19 @@ class ChildGptSpeedContractTest(unittest.TestCase):
         self.assertNotIn('runBlocking', editor)
         self.assertIn('suspend fun cycleGptSpeed(', editor)
         body = editor.split('suspend fun cycleGptSpeed(', 1)[1].split('fun saveModel(', 1)[0]
-        self.assertLess(body.index('providerLookup('), body.index('updateProfile(id)'))
+        lookup = body.index('providerLookup(')
+        transaction = body.index('confirmedUpdate(id, binding)')
+        self.assertLess(body.index('val capturedConfig = repository.snapshot(owner)'), lookup)
+        self.assertLess(body.index('val capturedToken = capturedConfig.presetApplicationToken'), lookup)
+        self.assertLess(body.index('expected != null && captured != expected'), lookup)
+        self.assertLess(lookup, transaction)
+        self.assertLess(body.index('currentCoroutineContext().ensureActive()'), transaction)
+        self.assertIn('resolvedProvider?.takeIf { it.id == providerId }', body[:transaction])
+        self.assertIn('provider.models.singleOrNull { it.id == modelId }', body[:transaction])
+        self.assertIn('old != (expected ?: captured)', body[transaction:])
+        self.assertIn('config.presetApplicationToken != capturedToken', body[transaction:])
+        confirmed = editor.split('private fun confirmedUpdate(', 1)[1].split('fun updateProfile(', 1)[0]
+        self.assertNotIn('providerLookup(', confirmed)
         self.assertIn('CancellationException', editor)
 
     def test_existing_request_tier_mapping_is_unchanged(self):

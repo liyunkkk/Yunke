@@ -24,7 +24,7 @@ class SubAgentPresetSettingsTest {
 
     @Test fun settingsStartsAtGroupsAndBothBackEntrypointsLeaveDetailFirst() {
         val fixture = SubAgentUiFixture(canEdit = { false }) // A running conversation must not lock presets.
-        val group = fixture.repository.presets().first()
+        val group = fixture.createPreset()
         val before = fixture.snapshot()
         var exits = 0
         compose.setSubAgentContent(fixture) {
@@ -34,11 +34,15 @@ class SubAgentPresetSettingsTest {
         compose.onNodeWithText("添加子代理", substring = false).assertDoesNotExist()
         compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
         compose.onNodeWithText("添加子代理", substring = false).assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("名称").performTextReplacement("未确认的新代理")
+        compose.onNodeWithText("确认").assertIsNotEnabled() // New profiles require a valid model.
         compose.runOnIdle {
-            assertEquals(group.config.profiles.size + 1, fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id)).profiles.size)
+            assertEquals(group.config, fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id)))
             assertEquals(before, fixture.snapshot())
             assertEquals(0, exits)
         }
+        compose.onNodeWithText("取消").performClick()
+        compose.runOnIdle { assertEquals(group.config, fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id))) }
         compose.onNodeWithContentDescription("返回").performClick()
         compose.onNodeWithText("添加子代理组").assertExists()
         compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()

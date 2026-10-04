@@ -7,6 +7,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import io.github.mangi.eta.agent.delegation.SubAgentParallelModel
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
+import io.github.mangi.eta.agent.model.ModelFeatureSelection
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import org.junit.Assert.*
@@ -29,6 +31,11 @@ class SubAgentProfileConfigDialogTest {
     private val provider = OpenAiCompatibleProviderSetting(id = "draft-provider", name = "草稿测试提供商",
         baseUrl = "https://example.invalid", models = listOf(model))
     private val profile = SubAgentProfile("draft-existing", "草稿测试代理", providerId = provider.id, modelId = model.id)
+    // Selection IDs deliberately differ from API IDs; aliases must not share the draft speed key.
+    private val gptModel = model.copy(id = "draft-gpt-selection", modelId = "gpt-5", displayName = "GPT 草稿模型")
+    private val gptAlias = gptModel.copy(id = "draft-gpt-alias")
+    private val gptProvider = provider.copy(models = listOf(gptModel, gptAlias))
+    private val gptProfile = profile.copy(modelId = gptModel.id)
 
     private class FailOncePreferences(private val real: SharedPreferences) : SharedPreferences by real {
         var failNext = false
@@ -83,27 +90,134 @@ class SubAgentProfileConfigDialogTest {
         }
     }
 
-    @Test fun failureKeepsDraftAndExplicitRetryThenSavedCloses() {
+    @Test fun gptSpeedDraftCancelChangesOnlySelectionKeyAndIsZeroWrite() {
+        val key = SubAgentProfile.modelReasoningKey(gptProvider.id, gptModel.id)
+        val aliasKey = SubAgentProfile.modelReasoningKey(gptProvider.id, gptAlias.id)
+        val original = gptProfile.copy(gptSpeedByModel = mapOf(aliasKey to GptSpeedMode.ULTRA_FAST))
+        lateinit var preferences: SharedPreferences
+        val fixture = SubAgentUiFixture(profiles = listOf(original), providers = listOf(gptProvider),
+            preferenceTransform = { it.also { value -> preferences = value } })
+        val before = fixture.snapshot()
+        val persistedBefore = preferences.all.toMap()
+        val revision = fixture.repository.revision(fixture.owner).value
+        val rememberedBefore = fixture.repository.modelDefaults(original)
+        val open = mutableStateOf(true)
+        val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, original))
+        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+            if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(gptProvider), onDismiss = { open.value = false })
+        } }
+        compose.onNodeWithContentDescription("草稿GPT速度").performScrollTo().performClick()
+        compose.onNodeWithText("快速", useUnmergedTree = true).assertExists()
+        compose.runOnIdle {
+            assertEquals(original.copy(gptSpeedByModel = original.gptSpeedByModel + (key to GptSpeedMode.FAST)), session.draft)
+            assertEquals(before, fixture.snapshot())
+            assertEquals(rememberedBefore, fixture.repository.modelDefaults(original))
+        }
+        compose.onNodeWithText("取消").performClick()
+        compose.runOnIdle {
+            assertFalse(open.value)
+            assertEquals(before, fixture.snapshot())
+            assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+            assertEquals(persistedBefore, preferences.all)
+            assertEquals(rememberedBefore, fixture.repository.modelDefaults(original))
+            val restored = fixture.editor.changeProfileModel(original, ModelFeatureSelection(true, gptProvider.id, gptModel.id))
+            assertEquals(GptSpeedMode.NORMAL, restored.gptSpeedForModel())
+        }
+    }
+
+    @Test fun gptSpeedDraftConfirmSavesAndRestoresOnlyConfirmedSelection() {
+        val aliasKey = SubAgentProfile.modelReasoningKey(gptProvider.id, gptAlias.id)
+        val original = gptProfile.copy(gptSpeedByModel = mapOf(aliasKey to GptSpeedMode.ULTRA_FAST))
+        val fixture = SubAgentUiFixture(profiles = listOf(original), providers = listOf(gptProvider))
+        val before = fixture.snapshot()
+        val open = mutableStateOf(true)
+        val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, original))
+        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+            if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(gptProvider), onDismiss = { open.value = false })
+        } }
+        compose.onNodeWithContentDescription("草稿GPT速度").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("草稿GPT速度").performClick()
+        compose.runOnIdle {
+            assertEquals(GptSpeedMode.ULTRA_FAST, session.draft.gptSpeedForModel())
+            assertEquals(before, fixture.snapshot())
+            assertNull(fixture.repository.modelDefaults(original))
+        }
+        compose.onNodeWithText("确认").assertIsEnabled().performClick()
+        compose.waitUntil { !open.value }
+        compose.runOnIdle {
+            val saved = fixture.snapshot().profiles.single()
+            assertEquals(session.draft, saved)
+            assertEquals(GptSpeedMode.ULTRA_FAST, saved.gptSpeedForModel())
+            assertEquals(GptSpeedMode.ULTRA_FAST, saved.gptSpeedByModel[aliasKey])
+            assertEquals(GptSpeedMode.ULTRA_FAST, fixture.repository.modelDefaults(original)?.gptSpeed)
+            val restored = fixture.editor.changeProfileModel(profile, ModelFeatureSelection(true, gptProvider.id, gptModel.id))
+            assertEquals(GptSpeedMode.ULTRA_FAST, restored.gptSpeedForModel())
+            val alias = fixture.editor.changeProfileModel(original, ModelFeatureSelection(true, gptProvider.id, gptAlias.id))
+            assertEquals(GptSpeedMode.NORMAL, alias.gptSpeedForModel())
+            assertNull(fixture.repository.modelDefaults(alias))
+        }
+    }
+
+    @Test fun gptSpeedDraftRequiresEnabledRoleCompatibleActualGptBinding() {
+        // A GPT-looking display name is not capability evidence.
+        val fakeGpt = model.copy(displayName = "GPT-5")
+        val catalog = mutableStateOf(listOf(provider.copy(models = listOf(gptModel, fakeGpt))))
+        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile), providers = listOf(gptProvider))
+        val before = fixture.snapshot()
+        val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, gptProfile))
+        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+            SubAgentProfileConfigDialog(session, fixture.editor, catalog.value, onDismiss = {})
+        } }
+        compose.onNodeWithContentDescription("草稿GPT速度").assertExists()
+        compose.runOnIdle { session.selectModel(ModelFeatureSelection(true, provider.id, fakeGpt.id)) }
+        compose.onNodeWithContentDescription("草稿GPT速度").assertDoesNotExist()
+        compose.runOnIdle { session.selectModel(ModelFeatureSelection(true, gptProvider.id, gptModel.id)) }
+        compose.onNodeWithContentDescription("草稿GPT速度").assertExists()
+        compose.runOnIdle { catalog.value = listOf(gptProvider.copy(isEnabled = false)) }
+        compose.onNodeWithContentDescription("草稿GPT速度").assertDoesNotExist()
+        compose.runOnIdle { catalog.value = listOf(gptProvider.copy(models = listOf(gptModel.copy(isEnabled = false)))) }
+        compose.onNodeWithContentDescription("草稿GPT速度").assertDoesNotExist()
+        compose.runOnIdle { catalog.value = listOf(gptProvider); session.edit { it.copy(role = "image_generation") } }
+        compose.onNodeWithContentDescription("草稿GPT速度").assertDoesNotExist()
+        compose.runOnIdle { session.selectModel(ModelFeatureSelection(true, "", "")) }
+        compose.onNodeWithContentDescription("草稿GPT速度").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(before, fixture.snapshot()) }
+    }
+
+    @Test fun failureKeepsGptSpeedDraftAndExplicitRetryThenSavedCloses() {
         lateinit var preferences: FailOncePreferences
-        val fixture = SubAgentUiFixture(profiles = listOf(profile), providers = listOf(provider), preferenceTransform = {
+        val fixture = SubAgentUiFixture(profiles = listOf(gptProfile), providers = listOf(gptProvider), preferenceTransform = {
             FailOncePreferences(it).also { wrapped -> preferences = wrapped }
         })
         val before = fixture.snapshot()
+        val persistedBefore = preferences.all.toMap()
         val open = mutableStateOf(true)
-        val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, profile))
+        val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, gptProfile))
         compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
-            if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(provider), onDismiss = { open.value = false })
+            if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(gptProvider), onDismiss = { open.value = false })
         } }
         compose.onNodeWithContentDescription("名称").performTextReplacement("成功才关闭")
+        compose.onNodeWithContentDescription("草稿GPT速度").performScrollTo().performClick()
         compose.runOnIdle { preferences.failNext = true }
         compose.onNodeWithText("确认").assertIsEnabled().performClick()
         compose.waitUntil { !session.submitting }
-        compose.runOnIdle { assertTrue(open.value); assertEquals("成功才关闭", session.name); assertEquals(before, fixture.snapshot()) }
+        compose.runOnIdle {
+            assertTrue(open.value)
+            assertEquals("成功才关闭", session.name)
+            assertEquals(GptSpeedMode.FAST, session.draft.gptSpeedForModel())
+            assertEquals(before, fixture.snapshot())
+            assertEquals(persistedBefore, preferences.all)
+            assertNull(fixture.repository.modelDefaults(gptProfile))
+        }
         compose.onNodeWithText("未保存：配置或模型已变更", substring = true).performScrollTo().assertExists()
         compose.onNodeWithText("重试恢复配置（保留草稿）").performScrollTo().performClick()
         compose.onNodeWithText("确认").assertIsEnabled().performClick()
         compose.waitUntil { !open.value }
-        compose.runOnIdle { assertEquals("成功才关闭", fixture.snapshot().profiles.single().name) }
+        compose.runOnIdle {
+            assertEquals("成功才关闭", fixture.snapshot().profiles.single().name)
+            assertEquals(GptSpeedMode.FAST, fixture.snapshot().profiles.single().gptSpeedForModel())
+            assertEquals(GptSpeedMode.FAST, fixture.repository.modelDefaults(gptProfile)?.gptSpeed)
+        }
     }
 
     @Test fun ownerGateInvalidationDropsOpenDraftWithoutWriting() {

@@ -12,7 +12,7 @@ class SubAgentProfileDialogContractTest(unittest.TestCase):
     def test_draft_form_is_not_an_immediate_editor_form(self):
         text = self.source('ui/components/SubAgentProfileConfigDialog.kt')
         for forbidden in ('LocalConversationSubAgentEditor', 'SubAgentProfileRow(',
-                          '.updateProfile(', '.saveModel(', '.saveParallelLimit(', '.add()', '.remove('):
+                          '.updateProfile(', '.saveModel(', '.saveParallelLimit(', '.cycleGptSpeed(', '.add()', '.remove('):
             self.assertNotIn(forbidden, text)
         for required in ('editor.newProfileDraft()', 'editor.changeProfileModel(it, selection)',
                          'profile.withRole(requireNotNull(value))', 'AgentModelPickerProjector.project(',
@@ -20,6 +20,40 @@ class SubAgentProfileDialogContractTest(unittest.TestCase):
                          'if (draft.supportsTaskTier)', 'if (draft.role == "image_generation")'):
             self.assertIn(required, text)
         self.assertNotIn('OutlinedTextField(', text)
+
+    def test_gpt_speed_edit_is_local_and_keyed_by_current_provider_selection(self):
+        text = self.source('ui/components/SubAgentProfileConfigDialog.kt')
+        for required in ('providers.singleOrNull { it.id == draft.providerId && it.isEnabled }',
+                         'speedProvider?.models?.singleOrNull { it.id == draft.modelId && it.isEnabled }',
+                         'val canEditSpeed = boundConfig != null && supportsGptSpeedBinding(speedProvider, speedModel)',
+                         'if (canEditSpeed) SubAgentSettingRow("GPT 速度"',
+                         'gptSpeedDisplayName(draft.gptSpeedForModel())'):
+            self.assertIn(required, text)
+        edit = text.split('if (canEditSpeed) SubAgentSettingRow(', 1)[1].split('SubAgentSettingRow("职责"', 1)[0]
+        for required in ('interact {', 'session.edit { profile ->',
+                         'profile.providerId != draft.providerId', 'profile.modelId != draft.modelId',
+                         'profile.role != draft.role',
+                         'profile.copy(gptSpeedByModel = profile.gptSpeedByModel +',
+                         'SubAgentProfile.modelReasoningKey(profile.providerId, profile.modelId)',
+                         'profile.gptSpeedForModel().next()'):
+            self.assertIn(required, edit)
+        for forbidden in ('editor.', 'boundConfig.model', 'reasoning =', 'tier =', 'Toast', 'scope.launch'):
+            self.assertNotIn(forbidden, edit)
+
+    def test_user_dismiss_cannot_abandon_submitting_but_saved_and_owner_invalidation_close(self):
+        text = self.source('ui/components/SubAgentProfileConfigDialog.kt')
+        self.assertIn('val dismiss = { session.dismiss(); latestDismiss() }', text)
+        self.assertIn('val userDismiss = { if (!session.submitting) dismiss() }', text)
+        self.assertIn('onDismissRequest = userDismiss', text)
+        self.assertIn('SubAgentDraftDialogActions(ready, !session.submitting, userDismiss, onConfirm =', text)
+        saved = text.split('if (result is ConversationSubAgentPreferences.WriteResult.Saved &&', 1)[1].split('else if', 1)[0]
+        self.assertIn('session.isCurrent(latestEditor, latestEnabled)', saved)
+        self.assertIn('dismiss()', saved)
+        self.assertNotIn('userDismiss()', saved)
+        self.assertNotIn('!session.submitting', saved)
+        invalidated = text.split('LaunchedEffect(session, current)', 1)[1].split('if (!current) return', 1)[0]
+        self.assertIn('if (!current) { session.dismiss(); latestDismiss() }', invalidated)
+        self.assertNotIn('!session.submitting', invalidated)
 
     def test_every_open_is_owner_application_and_snapshot_bound(self):
         text = self.source('ui/components/SubAgentProfileConfigDialog.kt')

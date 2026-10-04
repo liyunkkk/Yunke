@@ -25,6 +25,7 @@ import io.github.mangi.eta.agent.model.ImageResolutionTier
 import io.github.mangi.eta.agent.model.MediaReasoningSettings
 import io.github.mangi.eta.agent.model.ModelFeatureSelection
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.data.model.supportsGptSpeedBinding
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.TtsModelPickerDialog
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -183,6 +184,11 @@ internal fun SubAgentProfileConfigDialog(
         if (!resolutionPending) session.bindParallel(boundConfig)
     }
     LaunchedEffect(usable) { if (!usable) { modelPicker = false; thinkingPicker = false; choices = null } }
+    // Require the resolved role-compatible binding AND the selected record's actual GPT capability.
+    // The preference key is the selection ID, never boundConfig.model (an API alias).
+    val speedProvider = providers.singleOrNull { it.id == draft.providerId && it.isEnabled }
+    val speedModel = speedProvider?.models?.singleOrNull { it.id == draft.modelId && it.isEnabled }
+    val canEditSpeed = boundConfig != null && supportsGptSpeedBinding(speedProvider, speedModel)
     val media = if (draft.isMedia && boundConfig != null) MediaReasoningSettings.resolve(boundConfig, draft.role) else null
     val canThink = boundConfig != null && (!draft.isMedia || media?.status == MediaReasoningSettings.Status.SUPPORTED)
     val effective = boundConfig?.let { SubAgentPreferences.applyReasoning(draft, it).effectiveReasoningEffort }
@@ -205,10 +211,12 @@ internal fun SubAgentProfileConfigDialog(
         if (session.canCommit(latestEditor, latestEnabled) && !session.submitting) { TouchHaptics.click(view); action() }
     }
     val dismiss = { session.dismiss(); latestDismiss() }
+    // Back/outside taps cannot abandon an in-flight commit. Saved/owner invalidation still close.
+    val userDismiss = { if (!session.submitting) dismiss() }
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
         WithoutPressRipple {
             OverlayDialog(show = true, title = if (session.expectedProfile == null) "添加子代理" else "子代理配置",
-                onDismissRequest = dismiss) {
+                onDismissRequest = userDismiss) {
                 Column(Modifier.fillMaxWidth().profileDialogScrollableBody().verticalScroll(rememberScrollState())) {
                     EtaFormTextField(session.name, { if (usable) session.name = it.take(80) }, hint = "名称",
                         singleLine = true, enabled = usable, modifier = Modifier.fillMaxWidth())
@@ -221,6 +229,14 @@ internal fun SubAgentProfileConfigDialog(
                         "草稿模型", usable, badge = boundConfig?.providerName,
                         onClick = { interact { modelPicker = true } },
                         onLongClick = { if (usable && canThink) { TouchHaptics.longPress(view); thinkingPicker = true } })
+                    if (canEditSpeed) SubAgentSettingRow("GPT 速度", gptSpeedDisplayName(draft.gptSpeedForModel()),
+                        Icons.Rounded.Speed, "草稿GPT速度", usable, onClick = { interact {
+                            session.edit { profile ->
+                                if (profile.providerId != draft.providerId || profile.modelId != draft.modelId || profile.role != draft.role) profile
+                                else profile.copy(gptSpeedByModel = profile.gptSpeedByModel +
+                                    (SubAgentProfile.modelReasoningKey(profile.providerId, profile.modelId) to profile.gptSpeedForModel().next()))
+                            }
+                        } })
                     SubAgentSettingRow("职责", draft.roleLabel, Icons.Rounded.Assignment, "草稿职责", usable,
                         onClick = { interact { choices = "role" } })
                     if (draft.supportsTaskTier) SubAgentSettingRow("任务分工", draft.tier?.label ?: "未设置分工",
@@ -244,7 +260,7 @@ internal fun SubAgentProfileConfigDialog(
                         TextButton(enabled = !session.submitting, onClick = onRetry) { Text("重试恢复配置（保留草稿）") }
                     }
                 }
-                SubAgentDraftDialogActions(ready, !session.submitting, dismiss, onConfirm = {
+                SubAgentDraftDialogActions(ready, !session.submitting, userDismiss, onConfirm = {
                     if (ready && !session.submitting && session.canCommit(latestEditor, latestEnabled)) {
                         // Snapshot every argument before suspension; callbacks never retarget another opening.
                         val capturedDraft = session.draft.copy(name = session.name.trim())
