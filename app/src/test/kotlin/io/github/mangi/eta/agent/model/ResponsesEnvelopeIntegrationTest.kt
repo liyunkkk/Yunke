@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import com.sun.net.httpserver.HttpServer
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import java.net.InetSocketAddress
 import java.io.IOException
@@ -125,11 +126,33 @@ class ResponsesEnvelopeIntegrationTest {
             assertEquals(1, calls.get())
         }
     }
-    @Test fun correctedRequestsIncludingTransientFailuresAreBounded() {
+    @Test fun correctionRegenerationsRemainBoundedAcrossTransientReconnects() {
         server({ n -> if (n == 2) 503 to "temporary" else
             500 to JSONObject().put("error", error()).toString() }) { url, calls ->
-            assertThrows(AgentModelFailure::class.java) { run(url, errorReconnectPolicy = "30s") }
+            val failure = assertThrows(AgentModelFailure::class.java) {
+                run(url, errorReconnectPolicy = ErrorReconnectPolicy.WINDOW_30S.persistedValue)
+            }
+            assertEquals(ResponsesToolEnvelopeRecovery.CODE, failure.code)
+            // Initial request, bounded correction regenerations, and one transient reconnect.
+            assertEquals(1 + ResponsesToolEnvelopeRecovery.MAX_RETRIES + 1, calls.get())
+        }
+    }
+    @Test fun transientFailureAfterCorrectionReconnectsSuccessfully() {
+        val bodies = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        server(reply = { n ->
+            when (n) {
+                1 -> 500 to JSONObject().put("error", error()).toString()
+                2 -> 503 to "temporary"
+                else -> 200 to success()
+            }
+        }, onRequest = bodies::add) { url, calls ->
+            assertEquals("done", run(
+                url,
+                errorReconnectPolicy = ErrorReconnectPolicy.WINDOW_30S.persistedValue,
+            ).response.assistantMessage.getString("content"))
             assertEquals(3, calls.get())
+            assertTrue(bodies[1].getString("instructions").contains(ResponsesToolEnvelopeRecovery.CORRECTION))
+            assertTrue(bodies[2].getString("instructions").contains(ResponsesToolEnvelopeRecovery.CORRECTION))
         }
     }
     @Test fun transientHttpErrorWithOutputForbidsRetryBeforeOrAfterCorrection() {

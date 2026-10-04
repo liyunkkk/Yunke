@@ -296,6 +296,18 @@ internal class AgentLoop(
                         }
                     },
                     discardAttemptReasoning = { accumulatedReasoning.setLength(reasoningLengthBeforeRound) },
+                    onCancelledResponse = { response ->
+                        val calls = AgentConversationCodec.parseToolCalls(response.assistantMessage)
+                        val sensitiveCalls = calls.filter { AgentSensitiveToolPolicy.isSensitive(it.name) }
+                        sensitiveCalls.forEach { sensitiveToolCallIds += it.id }
+                        if (sensitiveCalls.isNotEmpty()) {
+                            messages.put(AgentConversationCodec.assistantHistoryMessage(
+                                source = response.assistantMessage,
+                                toolCalls = calls,
+                            ).put(AgentTurnIdentity.JSON_KEY, turnId))
+                            responseStored = true
+                        }
+                    },
                 )
             } catch (failure: AgentModelFailure) {
                 if (failure.code != "CONTEXT_WINDOW_EXCEEDED") throw failure

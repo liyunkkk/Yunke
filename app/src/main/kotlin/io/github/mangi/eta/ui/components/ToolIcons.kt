@@ -114,7 +114,7 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "search_calendar_events" -> Icons.Rounded.CalendarMonth
     "search_contacts" -> Icons.Rounded.Contacts
     "search_call_history" -> Icons.Rounded.Phone
-    "search_messages" -> Icons.Rounded.ChatBubble
+    "ask_user", "search_messages" -> Icons.Rounded.ChatBubble
     "search_media", "search_qq_chat_images", "search_wechat_chat_images" ->
         Icons.Rounded.Image
     "search_audio" -> Icons.Rounded.MusicNote

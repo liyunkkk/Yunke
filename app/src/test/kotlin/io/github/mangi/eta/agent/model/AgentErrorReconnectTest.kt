@@ -51,12 +51,13 @@ class AgentErrorReconnectTest {
         events: MutableList<AgentEvent> = mutableListOf(), controller: AgentRunController = AgentRunController(),
         providerEvents: MutableList<ProviderEvent> = mutableListOf(), hosted: Boolean = false,
         wait: ((AgentRunController, Long) -> Unit)? = null,
+        onCancelledResponse: (ProviderResponse) -> Unit = {},
     ) = AgentModelRetry(
         waitBeforeRetry = { control, ms -> (wait ?: { _: AgentRunController, delay: Long -> clock.advance(delay) })(control, ms) },
         timing = clock,
     ).complete(
         1, ProviderRequest(config(policy).copy(hostedWebSearchEnabled = hosted), JSONArray(), JSONArray()), provider,
-        controller, events::add, { _, event -> providerEvents += event }, {})
+        controller, events::add, { _, event -> providerEvents += event }, {}, onCancelledResponse)
 
     @Test fun noneDoesNotHaveLegacyThreeNetworkRetries() {
         val clock = Clock()
@@ -163,13 +164,89 @@ class AgentErrorReconnectTest {
             run(clock, ErrorReconnectPolicy.CONTINUOUS, provider { _, control, emit ->
                 if (calls++ == 0) throw IOException()
                 val binding = control.register(interruptible = true) { cancelled = true }
-                try { late = emit; control.cancel(); ok() } finally { binding.close() }
+                try {
+                    late = emit
+                    control.cancel()
+                    assertTrue(cancelled)
+                    emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "late text"))
+                    ok()
+                } finally { binding.close() }
             }, events, providerEvents = delivered)
         }
         assertTrue(cancelled)
+        assertEquals(2, calls)
+        late!!(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 999)))
+        assertTrue(delivered.isEmpty())
+        val changed = events.filterIsInstance<AgentEvent.ErrorReconnectChanged>()
+        assertEquals("stopped", changed.last().status)
+        assertEquals(1, changed.count { it.status == "stopped" })
+        assertTrue(changed.none { it.status == "succeeded" })
+    }
+
+    @Test fun stoppedToolResponseIsRecordedThenCancelledWithoutReplayingOrPublishing() {
+        val events = mutableListOf<AgentEvent>()
+        val delivered = mutableListOf<ProviderEvent>()
+        val controller = AgentRunController()
+        var calls = 0
+        var cancelled = false
+        var late: ((ProviderEvent) -> Unit)? = null
+        var retained: ProviderResponse? = null
+        assertThrows(AgentRunCancelledException::class.java) {
+            run(Clock(), ErrorReconnectPolicy.CONTINUOUS, provider { _, control, emit ->
+                if (calls++ == 0) throw IOException()
+                val binding = control.register(interruptible = true) { cancelled = true }
+                try {
+                    late = emit
+                    control.cancel()
+                    ProviderResponse(JSONObject().put("role", "assistant").put("content", "")
+                        .put("finish_reason", "tool_calls").put("tool_calls", JSONArray().put(JSONObject()
+                            .put("id", "stopped-child-call").put("type", "function").put("function", JSONObject()
+                                .put("name", "delegate_task").put("arguments", "{}")))))
+                } finally { binding.close() }
+            }, events, controller, providerEvents = delivered, onCancelledResponse = { retained = it })
+        }
+        assertTrue(controller.isCancelled)
+        assertTrue(cancelled)
+        assertEquals(2, calls)
+        assertEquals("stopped-child-call", AgentConversationCodec.parseToolCalls(requireNotNull(retained).assistantMessage).single().id)
         late!!(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 999)))
         assertTrue(delivered.isEmpty())
         assertEquals("stopped", events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
+        assertTrue(events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().none { it.status == "succeeded" })
+    }
+
+    @Test fun stopBeforeFirstResponseReturnDoesNotRequireReconnectToCancel() {
+        val events = mutableListOf<AgentEvent>()
+        val delivered = mutableListOf<ProviderEvent>()
+        var calls = 0
+        var late: ((ProviderEvent) -> Unit)? = null
+        assertThrows(AgentRunCancelledException::class.java) {
+            run(Clock(), ErrorReconnectPolicy.CONTINUOUS, provider { _, control, emit ->
+                calls++
+                late = emit
+                control.cancel()
+                emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "late text"))
+                ok()
+            }, events, providerEvents = delivered, wait = { _, _ -> fail("must not retry") })
+        }
+        late!!(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 999)))
+        assertEquals(1, calls)
+        assertTrue(delivered.isEmpty())
+        assertTrue(events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().isEmpty())
+    }
+
+    @Test fun cancelledResponseObserverFailureIsPreservedAndNeverRetried() {
+        val original = IOException("cancelled response persistence failed")
+        var calls = 0
+        val thrown = assertThrows(IOException::class.java) {
+            run(Clock(), ErrorReconnectPolicy.CONTINUOUS, provider { _, control, _ ->
+                calls++
+                control.cancel()
+                ok()
+            }, wait = { _, _ -> fail("must not retry") }, onCancelledResponse = { throw original })
+        }
+        assertSame(original, thrown)
+        assertEquals(1, calls)
     }
 
     @Test fun partialTextContinuesWithDraftAndDoesNotRepeatStreamOrFinalBody() {

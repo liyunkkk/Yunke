@@ -29,6 +29,7 @@ internal class AgentModelRetry(
         onEvent: (AgentEvent) -> Unit,
         onProviderEvent: (Int, ProviderEvent) -> Unit,
         discardAttemptReasoning: () -> Unit,
+        onCancelledResponse: (ProviderResponse) -> Unit = {},
     ): Result {
         var round = initialRound
         var envelopeRetries = 0
@@ -119,10 +120,19 @@ internal class AgentModelRetry(
                     }
                     callbackFailure?.let { throw it }
                     reconnect?.check()
-                    // Let AgentLoop inspect a provider response that raced with manual stop.
-                    // It records sensitive tool-call ids before its own cancellation gate, so
-                    // durable history can redact the unexecuted delegation without publishing
-                    // generated output or running a tool.
+                    try {
+                        controller.throwIfCancelled()
+                    } catch (cancelled: AgentRunCancelledException) {
+                        // Preserve redaction evidence, never a successful response or a tool
+                        // execution. Observer failures must not become transport retries.
+                        try {
+                            onCancelledResponse(response)
+                        } catch (failure: Throwable) {
+                            callbackFailure = failure
+                            throw failure
+                        }
+                        throw cancelled
+                    }
                     if (!controller.isCancelled) textFilter.finish().forEach(::deliver)
                     if (prefix.isNotEmpty()) {
                         val tail = textFilter.normalize(response.assistantMessage.optString("content").takeUnless { it == "null" }.orEmpty())
@@ -130,7 +140,8 @@ internal class AgentModelRetry(
                     }
                     toolAttempt?.providerParsed(response.assistantMessage)
                     // An intentional steering/pause draft is NOT a recovered complete response.
-                    reconnect?.finish(if (response.stopReason == AssistantStopReason.INTERRUPTED) "stopped" else "succeeded")
+                    reconnect?.finish(if (controller.isCancelled ||
+                        response.stopReason == AssistantStopReason.INTERRUPTED) "stopped" else "succeeded")
                     return Result(round, response, toolAttempt)
                 } catch (failure: Exception) {
                     toolAttempt?.failed((failure as? AgentModelFailure)?.code ?: "PROVIDER_EXCEPTION")
