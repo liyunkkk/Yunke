@@ -204,13 +204,20 @@ internal class AgentRunController {
         finally { if (depth == 0) transportCallbackDepth.remove() else transportCallbackDepth.set(depth) }
     }
     fun awaitRetryDelay(delayMs: Long) {
-        throwIfCancelled()
+        if (cancelled) throw AgentRunCancelledException()
+        if (hasPendingImmediateSteering || paused) return
         val cancelledLatch = CountDownLatch(1)
-        val binding = register { cancelledLatch.countDown() }
-        try { cancelledLatch.await(delayMs, TimeUnit.MILLISECONDS) }
+        // Retry waits are model-request boundaries: steering/pause may wake them too.
+        val binding = register(interruptible = true, wakeBeforeCleanup = true) { cancelledLatch.countDown() }
+        try {
+            // Close the race between the first boundary check and registration.
+            if (hasPendingImmediateSteering || paused) cancelledLatch.countDown()
+            cancelledLatch.await(delayMs, TimeUnit.MILLISECONDS)
+        }
         catch (_: InterruptedException) { Thread.currentThread().interrupt(); throw AgentRunCancelledException() }
         finally { binding.close() }
-        throwIfCancelled()
+        // Let the caller preserve its draft before entering a pause checkpoint.
+        if (cancelled) throw AgentRunCancelledException()
     }
     fun register(interruptible: Boolean = false, wakeBeforeCleanup: Boolean = false, cancel: () -> Unit): ResourceBinding {
         val resource = CancellableResource(cancel, interruptible, wakeBeforeCleanup)

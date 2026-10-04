@@ -46,16 +46,42 @@ internal data class ProviderRequest(
     val toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null,
     // A transport recovery must never reissue an uncertain tool operation.
     val reconnectTextOnly: Boolean = false,
+    // Keep local function calls usable without reissuing unknown hosted operations.
+    val reconnectLocalToolsOnly: Boolean = false,
 )
 
 internal val ProviderRequest.requiresCompleteStream: Boolean
     get() = ErrorReconnectPolicy.fromPersistedValue(config.errorReconnectPolicy) != ErrorReconnectPolicy.NONE
 
 /** Apply after custom-body merging so overrides cannot re-enable tools on recovery. */
-internal fun ProviderRequest.restrictReconnectPayload(body: JSONObject): JSONObject {
-    if (reconnectTextOnly) {
+internal fun ProviderRequest.restrictReconnectPayload(
+    body: JSONObject,
+    endpoint: EndpointKind = EndpointKind.CHAT_COMPLETIONS,
+): JSONObject {
+    if (reconnectTextOnly || reconnectLocalToolsOnly) {
         listOf("tools", "tool_choice", "parallel_tool_calls", "functions", "function_call", "web_search_options",
             "mcp_servers", "previous_response_id", "conversation").forEach(body::remove)
+        if (!reconnectTextOnly) {
+            // Recreate the authoritative catalog AFTER custom-body merging. A custom
+            // payload cannot inject hosted/MCP tools or turn tool_choice into "none".
+            val functions = JSONArray()
+            for (index in 0 until tools.length()) {
+                val item = tools.optJSONObject(index) ?: continue
+                val function = item.optJSONObject("function") ?: continue
+                if (item.optString("type") == "function" && function.optString("name").isNotBlank()) {
+                    functions.put(JSONObject(item.toString()))
+                }
+            }
+            val localTools = when (endpoint) {
+                EndpointKind.CHAT_COMPLETIONS -> functions
+                EndpointKind.RESPONSES -> ResponsesRequestBuilder.buildTools(functions, false)
+                EndpointKind.ANTHROPIC_MESSAGES -> AnthropicMessagesProvider.convertTools(functions) ?: JSONArray()
+            }
+            if (localTools.length() > 0) {
+                body.put("tools", localTools)
+                if (endpoint == EndpointKind.RESPONSES && singleToolCall) body.put("parallel_tool_calls", false)
+            }
+        }
     }
     return body
 }

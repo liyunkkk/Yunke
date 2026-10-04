@@ -140,6 +140,38 @@ class AgentRunControllerTest {
     }
 
     @Test
+    fun steeringAndPauseWakeRetryWaitWithoutConsumingThemOrCancellingToolOwners() {
+        for (pause in listOf(false, true)) {
+            val controller = AgentRunController()
+            val started = CountDownLatch(1)
+            val finished = CountDownLatch(1)
+            val failure = AtomicReference<Throwable?>()
+            val toolCancellations = AtomicInteger(0)
+            val owner = controller.register { toolCancellations.incrementAndGet() }
+            val worker = thread {
+                started.countDown()
+                try { controller.awaitRetryDelay(60_000L) }
+                catch (error: Throwable) { failure.set(error) }
+                finally { finished.countDown() }
+            }
+            try {
+                assertTrue(started.await(1, TimeUnit.SECONDS))
+                if (pause) controller.pause() else assertTrue(controller.steer("new steering"))
+                assertTrue(finished.await(1, TimeUnit.SECONDS))
+                assertNull(failure.get())
+                assertEquals(0, toolCancellations.get())
+                if (pause) assertTrue(controller.isPaused)
+                else assertEquals("new steering", controller.pollSteeringMessage())
+            } finally {
+                owner.close()
+                controller.resume()
+                controller.cancel()
+                worker.join(1_000)
+            }
+        }
+    }
+
+    @Test
     fun steeringIsQueuedOneAtATimeWithoutCancellingResources() {
         val controller = AgentRunController()
         val cancellations = AtomicInteger(0)

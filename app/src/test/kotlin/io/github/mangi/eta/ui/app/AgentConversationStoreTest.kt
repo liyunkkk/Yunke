@@ -516,7 +516,7 @@ class AgentConversationStoreTest {
         val dao = EtaDatabase.get(context).conversationDao()
         assertEquals(
             firstLoad.messages.map { it.id },
-            dao.messagesForConversation("conv-identity").map { it.id },
+            runBlocking { dao.messagesForConversation("conv-identity").map { it.id } },
         )
         EtaDatabase.closeForTests()
 

@@ -33,10 +33,10 @@ internal class AgentModelRetry(
     ): Result {
         var round = initialRound
         var envelopeRetries = 0
+        var retriesInCycle = 0
         var attemptRequest = request
         val reconnectPolicy = ErrorReconnectPolicy.fromPersistedValue(request.config.errorReconnectPolicy)
         val reconnectEnabled = reconnectPolicy != ErrorReconnectPolicy.NONE
-        var reconnectTextOnly = false
         var reconnect: ModelErrorReconnect? = null
         var reconnectBinding: AgentRunController.ResourceBinding? = null
         val prefix = StringBuilder()
@@ -51,9 +51,17 @@ internal class AgentModelRetry(
                 timing, onEvent, reason, listOf(request.config.apiKey)).also {
                 reconnect = it
                 // Stop emits its terminal marker immediately, including while waiting/in flight.
-                reconnectBinding = controller.register { it.finish("stopped") }
+                reconnectBinding = controller.register(wakeBeforeCleanup = true) { it.finish("stopped") }
                 it.start()
             }
+        }
+        fun finishReconnect(status: String) {
+            val current = reconnect ?: return
+            current.finish(status)
+            reconnectBinding?.close()
+            reconnectBinding = null
+            reconnect = null
+            retriesInCycle = 0
         }
         try {
             while (true) {
@@ -105,6 +113,7 @@ internal class AgentModelRetry(
                                     if (event is ProviderEvent.Completed) sawCompleted = true
                                     callbackFailure?.let { throw it }
                                     attemptModelFailure?.let { throw it }
+                                    reconnect?.check()
                                     when {
                                         event is ProviderEvent.BlockDelta && event.kind == AssistantBlockKind.THINKING -> {
                                             if (repetitionGuard.append(event.delta)) {
@@ -117,6 +126,24 @@ internal class AgentModelRetry(
                                         event is ProviderEvent.HostedToolStarted || event is ProviderEvent.HostedToolFinished ||
                                             (event is ProviderEvent.BlockStart && event.kind == AssistantBlockKind.TOOL_CALL) ||
                                             (event is ProviderEvent.BlockDelta && event.kind != AssistantBlockKind.THINKING && event.delta.isNotBlank()) -> repetitionGuard.reset()
+                                    }
+                                    // Connection recovery is not completion of the whole response.
+                                    // Headers/usage/empty blocks are insufficient; executable local
+                                    // calls still require a complete, validated provider response.
+                                    val recovered = when (event) {
+                                        is ProviderEvent.BlockDelta -> event.delta.isNotBlank()
+                                        is ProviderEvent.BlockEnd -> event.content.isNotBlank()
+                                        else -> false
+                                    }
+                                    if (recovered && !(diagnosticRequest.reconnectTextOnly &&
+                                            (event is ProviderEvent.BlockDelta && event.kind == AssistantBlockKind.TOOL_CALL ||
+                                                event is ProviderEvent.BlockEnd && event.kind == AssistantBlockKind.TOOL_CALL))) {
+                                        try {
+                                            finishReconnect("succeeded")
+                                        } catch (failure: Throwable) {
+                                            callbackFailure = failure
+                                            throw failure
+                                        }
                                     }
                                     textFilter.map(event).forEach(::deliver)
                                 }
@@ -154,7 +181,7 @@ internal class AgentModelRetry(
                     }
                     toolAttempt?.providerParsed(response.assistantMessage)
                     // An intentional steering/pause draft is NOT a recovered complete response.
-                    reconnect?.finish(if (controller.isCancelled ||
+                    finishReconnect(if (controller.isCancelled ||
                         response.stopReason == AssistantStopReason.INTERRUPTED) "stopped" else "succeeded")
                     return Result(round, response, toolAttempt)
                 } catch (failure: Exception) {
@@ -206,39 +233,55 @@ internal class AgentModelRetry(
                         val state = beginReconnect(classified)
                         state.check()
                         if (!reconnectEnabled) throw classified
-                        // Tool evidence prevents replay, not reconnection. Recover using a request
-                        // with no executable tools or hosted operations, and retain the same deadline.
-                        if (toolDeliveryPossible || sawCompleted || unsafeHostedReplay || guarded ||
-                            (envelopeRejected && (!correctionAllowed ||
-                                envelopeRetries >= ResponsesToolEnvelopeRecovery.MAX_RETRIES))) {
-                            reconnectTextOnly = true
-                        }
-                        if (envelopeRejected && correctionAllowed && !reconnectTextOnly) {
+                        // Local tool fragments are not executions: AgentLoop runs only a
+                        // validated returned batch. Discard failed fragments, not the catalog.
+                        // Hosted operations and opaque remote continuation remain disabled.
+                        if (envelopeRejected && correctionAllowed &&
+                            envelopeRetries < ResponsesToolEnvelopeRecovery.MAX_RETRIES) {
                             envelopeRetries++
-                            attemptRequest = ResponsesToolEnvelopeRecovery.corrected(attemptRequest)
                         }
                         // No retryable whitelist: safe HTTP auth/parameter errors and transports use the same policy.
-                        val delay = minOf(1_000L, state.remainingMs() ?: 1_000L)
+                        // Reuse the original three-request backoff (2s, 4s, 8s).
+                        // Exhausting a cycle does not exhaust the user's reconnect window.
+                        retriesInCycle = retriesInCycle % MAX_RETRIES + 1
+                        val backoff = BASE_DELAY_MS shl (retriesInCycle - 1)
+                        val delay = minOf(backoff, state.remainingMs() ?: backoff)
+                        onEvent(AgentEvent.ModelRetryScheduled(round, retriesInCycle,
+                            MAX_RETRIES, delay.toInt(), classified.code,
+                            AgentHttpFailureDiagnostics.safe(classified.message.orEmpty(), listOf(request.config.apiKey), 600)))
                         waitBeforeRetry(controller, delay)
+                        if (controller.isCancelled) throw AgentRunCancelledException()
+                        if ((controller.hasPendingImmediateSteering || controller.hasPausedInterrupt || controller.isPaused) &&
+                            !toolDeliveryPossible && !sawCompleted && !unsafeHostedReplay) {
+                            textFilter.finish().forEach(::deliver)
+                            val partial = textBlocks.values.joinToString("") { it.toString() }
+                            finishReconnect("stopped")
+                            return Result(round, ProviderResponse(interruptedAssistantMessage(prefix.toString() + partial, "")))
+                        }
                         controller.throwIfCancelled()
                         state.check()
                         textFilter.finish().forEach(::deliver)
                         prefix.append(textBlocks.values.joinToString("") { it.toString() })
-                        if (prefix.isNotEmpty()) {
-                            // Fresh text-only draft: no opaque hosted items, rejected tool calls, or invented results.
-                            val messages = JSONArray(request.messages.toString())
-                                .put(JSONObject().put("role", "assistant").put("content", prefix.toString()))
-                                .put(JSONObject().put("role", "user").put("content",
-                                    "Continue the interrupted answer from exactly where it stopped. Do not repeat the previous text. Do not replay any completed tools."))
-                            attemptRequest = attemptRequest.copy(messages = messages)
-                        }
-                        if (reconnectTextOnly) {
-                            attemptRequest = attemptRequest.copy(
-                                config = attemptRequest.config.copy(hostedWebSearchEnabled = false),
-                                tools = JSONArray(),
-                                reconnectTextOnly = true,
-                            )
-                        }
+                        // Rebuild only from committed history and delivered text. Never replay
+                        // partial call arguments, opaque failed output, or fabricated tool results.
+                        val messages = JSONArray(request.messages.toString())
+                        if (prefix.isNotEmpty()) messages.put(JSONObject()
+                            .put("role", "assistant").put("content", prefix.toString()))
+                        messages.put(JSONObject().put("role", "user").put("content",
+                            "Continue the interrupted task from where it stopped without repeating delivered text. " +
+                                "Preserve completed tools and their results; do not repeat completed operations. " +
+                                "Unfinished local tool calls from the interrupted request were NOT executed; discard their fragments. " +
+                                "For further actions, issue new complete calls through the available tool channel. " +
+                                "Never print tool-call syntax or JSON as a substitute for calling a tool. " +
+                                "Hosted/remote operations are unavailable during recovery; use available local tools if needed."))
+                        attemptRequest = attemptRequest.copy(
+                            messages = messages,
+                            config = attemptRequest.config.copy(hostedWebSearchEnabled = false),
+                            tools = request.tools,
+                            reconnectLocalToolsOnly = true,
+                        )
+                        // Rebuilding history must not erase the guarded serialization hint.
+                        if (envelopeRetries > 0) attemptRequest = ResponsesToolEnvelopeRecovery.corrected(attemptRequest)
                     }
                     controller.throwIfCancelled()
                     reconnect?.check()
@@ -256,5 +299,9 @@ internal class AgentModelRetry(
         } finally {
             reconnectBinding?.close()
         }
+    }
+    companion object {
+        private const val MAX_RETRIES = 3
+        private const val BASE_DELAY_MS = 2_000L
     }
 }

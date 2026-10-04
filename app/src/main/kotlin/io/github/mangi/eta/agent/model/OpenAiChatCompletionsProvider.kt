@@ -49,7 +49,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .also { ProviderRequestHeaders.mergeInto(it, config.baseUrl, config.customHeaders, request.sessionId) }
             .build()
 
-        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools))
+        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools), capabilities.endpoint)
         val requestBody = requestJson.toString()
             .toRequestBody(JSON_MEDIA_TYPE)
 

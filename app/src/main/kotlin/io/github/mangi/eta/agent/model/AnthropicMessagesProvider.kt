@@ -42,7 +42,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 ProviderRequestHeaders.mergeInto(this, config.baseUrl, config.customHeaders, request.sessionId)
             }
             .build()
-        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools))
+        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools), capabilities.endpoint)
         val requestBody = requestJson.toString().toRequestBody(JSON_MEDIA_TYPE)
         val httpRequest = Request.Builder()
             .url(ProviderUrls.anthropicMessagesUrl(config.baseUrl))
@@ -165,7 +165,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         return content
     }
 
-    private fun convertTools(tools: JSONArray): JSONArray? {
+    internal fun convertTools(tools: JSONArray): JSONArray? {
         if (tools.length() == 0) return null
         val converted = JSONArray()
         for (index in 0 until tools.length()) {
@@ -224,7 +224,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 reasoning = reasoning,
                 onEvent = onEvent
             )
-            if (result.messageStop && (!requireTerminal || event == "message_stop")) sawMessageStop = true
+            if (result.messageStop && (!requireTerminal || payload != "[DONE]")) sawMessageStop = true
             result.finishReason?.let { finishReason = it }
             result.usage?.let {
                 usage = it

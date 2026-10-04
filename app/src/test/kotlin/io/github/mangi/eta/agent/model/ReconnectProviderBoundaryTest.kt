@@ -1,6 +1,8 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.data.model.CustomBody
+import kotlinx.serialization.json.Json
 import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import java.net.InetSocketAddress
@@ -60,9 +62,59 @@ class ReconnectProviderBoundaryTest {
                     .put("web_search_options", JSONObject()).put("mcp_servers", JSONArray())
                     .put("previous_response_id", "uncertain").put("conversation", "uncertain")
                 provider.complete(base.copy(config = base.config.copy(hostedWebSearchEnabled = true,
-                    extraBodyJson = injected.toString()), reconnectTextOnly = true), AgentRunController(), {})
+                    extraBodyJson = injected.toString(), customBody = injected.keys().asSequence().map { key ->
+                        CustomBody(key, Json.parseToJsonElement(JSONObject.valueToString(injected.get(key))))
+                    }.toList()), reconnectTextOnly = true), AgentRunController(), {})
                 val body = JSONObject(captured.get())
                 for (key in injected.keys().asSequence().toSet()) assertFalse("Recovery must strip $key", body.has(key))
+            }
+        }
+    }
+
+    @Test fun localRecoveryRestoresAuthoritativeToolsAfterCustomBodyMergingForAllProtocols() {
+        for (provider in providers) {
+            withResponse(partial(provider) + terminal(provider)) { url, captured ->
+                val base = request(url, provider, ErrorReconnectPolicy.WINDOW_30S)
+                val tools = JSONArray().put(JSONObject().put("type", "function").put("function", JSONObject()
+                    .put("name", "supervise_task").put("description", "Supervise an existing task")
+                    .put("parameters", JSONObject().put("type", "object"))))
+                val injected = JSONObject().put("tools", JSONArray().put(JSONObject().put("type", "web_search")))
+                    .put("tool_choice", "none").put("parallel_tool_calls", true)
+                    .put("functions", JSONArray()).put("function_call", "none")
+                    .put("web_search_options", JSONObject()).put("mcp_servers", JSONArray())
+                    .put("previous_response_id", "uncertain").put("conversation", "uncertain")
+                provider.complete(base.copy(tools = tools, reconnectLocalToolsOnly = true, singleToolCall = true,
+                    config = base.config.copy(hostedWebSearchEnabled = true, extraBodyJson = injected.toString(), customBody = injected.keys().asSequence().map { key ->
+                        CustomBody(key, Json.parseToJsonElement(JSONObject.valueToString(injected.get(key))))
+                    }.toList())),
+                    AgentRunController(), {})
+                val body = JSONObject(captured.get())
+                for (key in listOf("functions", "function_call", "web_search_options", "mcp_servers",
+                    "previous_response_id", "conversation", "tool_choice")) assertFalse(key, body.has(key))
+                val recovered = body.getJSONArray("tools")
+                assertEquals(1, recovered.length())
+                val tool = recovered.getJSONObject(0)
+                when (provider.capabilities.endpoint) {
+                    EndpointKind.CHAT_COMPLETIONS -> {
+                        assertEquals("function", tool.getString("type"))
+                        assertEquals("supervise_task", tool.getJSONObject("function").getString("name"))
+                        assertTrue(tool.getJSONObject("function").has("parameters"))
+                    }
+                    EndpointKind.RESPONSES -> {
+                        assertEquals("function", tool.getString("type"))
+                        assertEquals("supervise_task", tool.getString("name"))
+                        assertTrue(tool.has("parameters"))
+                        assertFalse(tool.has("function"))
+                    }
+                    EndpointKind.ANTHROPIC_MESSAGES -> {
+                        assertEquals("supervise_task", tool.getString("name"))
+                        assertTrue(tool.has("input_schema"))
+                        assertFalse(body.has("parallel_tool_calls"))
+                    }
+                }
+                if (provider.capabilities.endpoint == EndpointKind.RESPONSES) {
+                    assertFalse(body.getBoolean("parallel_tool_calls"))
+                } else assertFalse(body.has("parallel_tool_calls"))
             }
         }
     }
@@ -89,6 +141,17 @@ class ReconnectProviderBoundaryTest {
                     AgentRunController(), {})
             }
             assertEquals("RESPONSES_TOOL_CALL_INCOMPLETE", failure.code)
+        }
+    }
+
+    @Test fun anthropicExplicitMessageStopInDataDoesNotRequireAnEventHeader() {
+        withResponse(partial(AnthropicMessagesProvider) +
+            event("content_block_stop", JSONObject().put("index", 0)) +
+            event("message_delta", JSONObject().put("delta", JSONObject().put("stop_reason", "end_turn"))) +
+            "data: {\"type\":\"message_stop\"}\n\n") { url, _ ->
+            val response = AnthropicMessagesProvider.complete(request(url, AnthropicMessagesProvider,
+                ErrorReconnectPolicy.WINDOW_30S), AgentRunController(), {})
+            assertEquals("partial answer", response.assistantMessage.getString("content"))
         }
     }
 

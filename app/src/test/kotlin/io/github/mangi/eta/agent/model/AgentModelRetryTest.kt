@@ -30,7 +30,7 @@ class AgentModelRetryTest {
         })
         assertEquals(2, calls)
         assertEquals(2, result.round)
-        assertEquals(listOf(1_000L), delays)
+        assertEquals(listOf(2_000L), delays)
     }
 
     @Test
@@ -48,7 +48,7 @@ class AgentModelRetryTest {
     }
 
     @Test
-    fun callbackFailuresDoNotReplayAndHostedFailuresRecoverWithoutTools() {
+    fun callbackFailuresDoNotReplayAndHostedFailuresUseLocalOnlyRecovery() {
         val noRetry = AgentModelRetry { _, _ -> fail("不应重试") }
         val callbackFailure = IOException("checkpoint write failed")
         val thrown = assertThrows(IOException::class.java) {
@@ -64,7 +64,8 @@ class AgentModelRetryTest {
                 emit(ProviderEvent.HostedToolStarted("search-1", "web_search"))
                 throw SocketTimeoutException()
             }
-            assertTrue(request.reconnectTextOnly)
+            assertFalse(request.reconnectTextOnly)
+            assertTrue(request.reconnectLocalToolsOnly)
             assertEquals(0, request.tools.length())
             response()
         })
@@ -200,7 +201,10 @@ class AgentModelRetryTest {
                 try {
                     emit(ProviderEvent.BlockDelta(AssistantBlockKind.THINKING, 0, "Write.\n".repeat(2000)))
                 } catch (_: AgentModelFailure) { }
-            } else assertTrue(request.reconnectTextOnly)
+            } else {
+                assertFalse(request.reconnectTextOnly)
+                assertTrue(request.reconnectLocalToolsOnly)
+            }
             response()
         })
         assertEquals(2, calls)
