@@ -119,7 +119,7 @@ class AgentCloudReceiptRegressionTest {
                 messages = listOf(UserMessageUi("cloud-user", "original")),
                 history = listOf(AgentModelClient.ConversationMessage("user", "original")),
                 input = "", isStreaming = true, thinkingEnabled = false,
-                providerId = "p", modelId = "m"), false)
+                providerId = "p", modelId = "m"), false, true)
             call(app, "bindUsageRun", "cloud-r", "cloud-c")
             @Suppress("UNCHECKED_CAST")
             val windows = app.javaClass.getDeclaredField("runContextWindows")

@@ -31,7 +31,7 @@ class AgentCloudUsageRegressionTest {
             val state = AgentChatHomeUiState(messages = listOf(
                 ContextCompactedMessageUi("old-run-marker", 5, "summary", resumeRound = 9)),
                 input = "", isStreaming = true, thinkingEnabled = false, providerId = "p", modelId = "m")
-            call(app, "updateConversation", "c", state, false)
+            call(app, "updateConversation", "c", state, false, true)
             call(app, "bindUsageRun", "new-run", "c")
             fun send(event: AgentEvent) { call(app, "applyRunEvent", "new-run", event, false, true) }
             fun current() = call(app, "conversationStateForRun", "new-run") as AgentChatHomeUiState
@@ -69,9 +69,9 @@ class AgentCloudUsageRegressionTest {
             send(AgentEvent.UsageReceived(2, AgentTokenUsage(inputTokens = 888888), projected = true))
             assertEquals(4000, current().livePromptTokens)
             assertFalse(current().livePromptIsProjected)
-            call(app, "updateConversation", "c", current().copy(modelId = "other"), false)
+            call(app, "updateConversation", "c", current().copy(modelId = "other"), false, true)
             assertNull(current().livePromptTokens)
-            call(app, "updateConversation", "c", current().copy(modelId = "m"), false)
+            call(app, "updateConversation", "c", current().copy(modelId = "m"), false, true)
             send(AgentEvent.UsageReceived(3, AgentTokenUsage(inputTokens = 90000)))
             assertNull(current().livePromptTokens)
         } finally { scope.cancel(); EtaDatabase.closeForTests() }

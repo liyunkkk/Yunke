@@ -38,7 +38,7 @@ class AgentPruningUsageRegressionTest {
             call(app, "updateConversation", "prune-c", AgentChatHomeUiState(
                 messages = listOf(UserMessageUi("old-user", "original")), history = oldHistory,
                 input = "", isStreaming = true, thinkingEnabled = false,
-                providerId = "p", modelId = "m"), false)
+                providerId = "p", modelId = "m"), false, true)
             call(app, "bindUsageRun", "prune-r", "prune-c")
             fun send(event: AgentEvent) { call(app, "applyRunEvent", "prune-r", event, false, true) }
             fun state() = call(app, "conversationStateForRun", "prune-r") as AgentChatHomeUiState

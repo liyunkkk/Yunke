@@ -545,7 +545,7 @@ class AgentContextPendingRegressionTest {
         fun pending() = AgentChatHomeUiState(messages = listOf(UserMessageUi("u", "question")),
             history = listOf(AgentModelClient.ConversationMessage("user", "question")),
             input = "", isStreaming = true, thinkingEnabled = false, providerId = provider.id, modelId = "m")
-        fun put(id: String, state: AgentChatHomeUiState) { call(app, "updateConversation", id, state, false) }
+        fun put(id: String, state: AgentChatHomeUiState) { call(app, "updateConversation", id, state, false, true) }
         fun bind(run: String, id: String) { call(app, "bindUsageRun", run, id) }
         fun runScope(run: String): String? =
             (app.javaClass.getDeclaredField("runUsageRoutes").apply { isAccessible = true }.get(app) as Map<*, *>)[run] as String?
