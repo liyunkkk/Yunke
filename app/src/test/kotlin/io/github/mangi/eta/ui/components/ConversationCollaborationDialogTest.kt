@@ -310,12 +310,12 @@ class ConversationCollaborationDialogTest {
         compose.setSubAgentContent(fixture) { ConversationCollaborationDialog(true, false, {}, {}) }
         assertFooterAligned("使用当前配置")
         assertTrue("empty content must not force a tall card",
-            compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().height < 300.dp)
+            compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().height < with(compose.density) { 300.dp.toPx() })
         compose.onNodeWithText("切换子代理组").assertDoesNotExist()
         compose.onNodeWithText("使用当前配置").performClick()
         assertFooterAligned("切换子代理组")
         assertTrue("empty content must not force a tall card",
-            compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().height < 300.dp)
+            compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().height < with(compose.density) { 300.dp.toPx() })
         compose.onNodeWithText("使用当前配置").assertDoesNotExist()
         compose.onNodeWithText("自动委派").assertIsDisplayed()
         compose.runOnIdle {
