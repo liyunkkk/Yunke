@@ -101,9 +101,16 @@ internal object BackupSubAgentConfig {
         check(editor.commit()) { "Agent preferences 回滚未落盘" }
     }
 
-    /** An old conversation archive is independent of both current selection and live seed. */
-    fun archiveForImport(schemaVersion: Int, archive: String?, store: ConversationSubAgentPreferences): String {
+    /** Missing generation predates reset, even in schema 3: never decode or revive its archive. */
+    fun archiveForImport(
+        schemaVersion: Int,
+        archive: String?,
+        store: ConversationSubAgentPreferences,
+        generation: String? = null,
+    ): String {
         require(schemaVersion in 1..EtaConversationExport.SCHEMA_VERSION) { "不支持的会话备份版本" }
+        require(generation == null || generation == "1") { "不支持的会话子代理配置代际" }
+        if (generation == null) return legacyArchive()
         require(schemaVersion >= 3 || archive == null) { "旧会话备份不能包含新版本子代理配置" }
         val resolved = archive ?: legacyArchive()
         store.validateArchive(resolved)

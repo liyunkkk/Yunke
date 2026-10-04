@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.delegation.SubAgentParallelModel
+import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import java.lang.reflect.Proxy
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -56,7 +57,7 @@ class BackupSubAgentConfigTest {
         store.update(source) { it.copy(enabled = false, diagnosticsEnabled = true,
             parallelLimits = mapOf(model to 4)) }
         val archive = BackupSubAgentConfig.archiveForExport("old", store)
-        val mapped = BackupSubAgentConfig.archiveForImport(3, archive, store)
+        val mapped = BackupSubAgentConfig.archiveForImport(3, archive, store, generation = "1")
         assertFalse(BackupSubAgentConfig.hasOwner(prefs, "new"))
         assertTrue(store.importOwner(SubAgentConfigKey.Conversation("new"), mapped))
         assertEquals(store.snapshot(source), store.snapshot(SubAgentConfigKey.Conversation("new")))
@@ -142,9 +143,53 @@ class BackupSubAgentConfigTest {
         assertEquals(before, prefs.all)
     }
 
+    @Test fun schemaThreeWithoutGenerationIgnoresBothValidAndCorruptArchives() {
+        val prefs = preferences()
+        val store = ConversationSubAgentPreferences(prefs)
+        val source = SubAgentConfigKey.Conversation("old-source")
+        store.update(source) { it.copy(enabled = true, diagnosticsEnabled = true,
+            profiles = listOf(SubAgentProfile(id = "old-agent", name = "old", providerId = "provider", modelId = "model"))) }
+        val valid = BackupSubAgentConfig.archiveForExport(source.value, store)
+        listOf(valid, "{invalid", JSONObject(valid).put("version", 987).toString()).forEachIndexed { index, archive ->
+            val before = prefs.all.toMap()
+            val revision = store.revision.value
+            val resolved = BackupSubAgentConfig.archiveForImport(3, archive, store)
+            assertEquals(before, prefs.all)
+            assertEquals(revision, store.revision.value)
+            val target = SubAgentConfigKey.Conversation("old-import-$index")
+            assertTrue(store.importOwner(target, resolved))
+            val config = store.snapshot(target)
+            assertFalse(config.enabled)
+            assertFalse(config.diagnosticsEnabled)
+            assertTrue(config.profiles.isEmpty())
+            assertTrue(config.parallelLimits.isEmpty())
+            assertTrue(config.legacyParallelLimits.isEmpty())
+            assertNull(config.appliedPresetId)
+        }
+    }
+
+    @Test fun unsupportedGenerationRejectsBeforeValidationOrOwnerWrites() {
+        val prefs = preferences()
+        val store = ConversationSubAgentPreferences(prefs)
+        val fallback = BackupSubAgentConfig.archiveForImport(3, null, store)
+        val before = prefs.all.toMap()
+        val revision = store.revision.value
+        listOf("", "0", "2", "s:1", " 1").forEach { generation ->
+            listOf<String?>(null, fallback, "{invalid").forEach { archive ->
+                val failure = runCatching {
+                    BackupSubAgentConfig.archiveForImport(3, archive, store, generation = generation)
+                }.exceptionOrNull()
+                assertTrue(failure is IllegalArgumentException)
+                assertEquals("不支持的会话子代理配置代际", failure?.message)
+                assertEquals(before, prefs.all)
+                assertEquals(revision, store.revision.value)
+            }
+        }
+    }
+
     @Test fun missingNewConversationArchiveAlsoImportsEmptyAndDisabled() {
         val store = ConversationSubAgentPreferences(preferences())
-        val archive = BackupSubAgentConfig.archiveForImport(3, null, store)
+        val archive = BackupSubAgentConfig.archiveForImport(3, null, store, generation = "1")
         val target = SubAgentConfigKey.Conversation("missing")
         assertTrue(store.importOwner(target, archive))
         assertFalse(store.snapshot(target).enabled)
@@ -155,7 +200,8 @@ class BackupSubAgentConfigTest {
         val store = ConversationSubAgentPreferences(preferences())
         val valid = BackupSubAgentConfig.archiveForImport(2, null, store)
         val bad = JSONObject(valid).put("version", 987).toString()
-        assertTrue(runCatching { BackupSubAgentConfig.archiveForImport(3, bad, store) }.isFailure)
+        assertTrue(runCatching { BackupSubAgentConfig.archiveForImport(3, bad, store, generation = "1") }.isFailure)
+        assertTrue(runCatching { BackupSubAgentConfig.archiveForImport(3, "{invalid", store, generation = "1") }.isFailure)
         assertTrue(runCatching { BackupSubAgentConfig.validatePreferences(mapOf(
             "agent_conversation_child_seed_v1" to "s:{invalid"), store) }.isFailure)
         assertTrue(runCatching { BackupSubAgentConfig.validatePreferences(mapOf(

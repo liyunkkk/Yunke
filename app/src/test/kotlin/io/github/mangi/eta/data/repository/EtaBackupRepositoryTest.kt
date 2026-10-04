@@ -1,5 +1,9 @@
 package io.github.mangi.eta.data.repository
 
+import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
+import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
+import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.terminal.TerminalPrivateStorage
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.db.ConversationContextCheckpointEntity
 import io.github.mangi.eta.data.db.ConversationEntity
@@ -10,8 +14,14 @@ import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.withApiKey
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.UUID
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -229,6 +239,150 @@ class EtaBackupRepositoryTest {
         val raw = kotlinx.serialization.json.Json.encodeToString(EtaBackupDocument.serializer(), document)
         assertTrue(runCatching { EtaBackupRepository.import(context, ByteArrayInputStream(raw.toByteArray())) }.isFailure)
         assertEquals(before, prefs.all)
+    }
+
+    private val conversationJson = kotlinx.serialization.json.Json { encodeDefaults = true }
+
+    private fun conversationDocument(archive: String? = null, generation: String? = null) = EtaConversationExport(
+        exportedAt = 1,
+        conversation = ConversationEntity(id = "generation-source", title = "generation chat", createdAt = 1, updatedAt = 2),
+        messages = listOf(ConversationMessageEntity(id = "generation-message", conversationId = "generation-source",
+            sortIndex = 0, type = "user", content = "chat still imports")),
+        subAgentConfigJson = archive,
+        subAgentConfigGeneration = generation,
+    )
+
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @Test
+    fun generationIsOptionalWhenDecodingEverySupportedConversationSchema() {
+        assertEquals(3, EtaConversationExport.SCHEMA_VERSION)
+        val descriptor = EtaConversationExport.serializer().descriptor
+        val generationIndex = descriptor.getElementIndex("subAgentConfigGeneration")
+        assertTrue(descriptor.isElementOptional(generationIndex))
+        assertTrue(descriptor.getElementDescriptor(generationIndex).isNullable)
+        for (schema in 1..3) {
+            val document = conversationDocument().copy(schemaVersion = schema)
+            val raw = org.json.JSONObject(conversationJson.encodeToString(EtaConversationExport.serializer(), document))
+                .apply { remove("subAgentConfigGeneration") }.toString()
+            val decoded = conversationJson.decodeFromString(EtaConversationExport.serializer(), raw)
+            assertEquals(schema, decoded.schemaVersion)
+            assertNull(decoded.subAgentConfigGeneration)
+            assertEquals(document.conversation, decoded.conversation)
+            assertEquals(document.messages, decoded.messages)
+        }
+    }
+
+    @Test
+    fun unmarkedSchemaThreeValidAndCorruptConfigsNeverReviveButChatImports() = runBlocking {
+        val prefs = requireNotNull(io.github.mangi.eta.config.Prefs.localAgentPreferences())
+        val store = ConversationSubAgentPreferences(prefs)
+        val source = SubAgentConfigKey.Conversation("old-source-config")
+        store.update(source) { it.copy(enabled = true, diagnosticsEnabled = true,
+            profiles = listOf(SubAgentProfile(id = "old-agent", name = "old", providerId = "provider", modelId = "model"))) }
+        val original = store.snapshot(source)
+        val valid = store.export(source)
+        val dao = EtaDatabase.get(context).conversationDao()
+        listOf(valid, "{invalid", org.json.JSONObject(valid).put("version", 987).toString()).forEach { archive ->
+            val beforeIds = dao.conversationEntities().map { it.id }.toSet()
+            val beforePrefs = prefs.all.toMap()
+            val raw = org.json.JSONObject(conversationJson.encodeToString(EtaConversationExport.serializer(),
+                conversationDocument(archive))).apply { remove("subAgentConfigGeneration") }.toString()
+            val summary = EtaBackupRepository.import(context, ByteArrayInputStream(raw.toByteArray()))
+            assertEquals(1, summary.conversationCount)
+            val imported = dao.conversationEntities().single { it.id !in beforeIds }
+            assertEquals("chat still imports", dao.messagesForConversation(imported.id).single().content)
+            assertTrue(BackupSubAgentConfig.hasOwner(prefs, imported.id))
+            val config = store.snapshot(SubAgentConfigKey.Conversation(imported.id))
+            assertFalse(config.enabled)
+            assertFalse(config.diagnosticsEnabled)
+            assertTrue(config.profiles.isEmpty())
+            assertTrue(config.parallelLimits.isEmpty())
+            assertTrue(config.legacyParallelLimits.isEmpty())
+            assertNull(config.appliedPresetId)
+            beforePrefs.forEach { (key, value) -> assertEquals(value, prefs.all[key]) }
+            assertEquals(original, store.snapshot(source))
+            assertTrue(store.isConfigurationResetComplete())
+        }
+    }
+
+    @Test
+    fun newConversationExportMarksGenerationAndImportPreservesConfiguration() = runBlocking {
+        val dao = EtaDatabase.get(context).conversationDao()
+        val sourceDocument = conversationDocument()
+        dao.importAsNewConversation(sourceDocument.conversation, sourceDocument.messages, null)
+        val store = ConversationSubAgentPreferences()
+        val source = SubAgentConfigKey.Conversation(sourceDocument.conversation.id)
+        store.update(source) { it.copy(enabled = true, diagnosticsEnabled = true,
+            profiles = listOf(SubAgentProfile(id = "new-agent", name = "new", providerId = "provider", modelId = "model"))) }
+        val original = store.snapshot(source)
+        val output = ByteArrayOutputStream()
+        EtaBackupRepository.exportConversation(context, source.value, output)
+        val exported = ZipInputStream(ByteArrayInputStream(output.toByteArray())).use { zip ->
+            assertEquals(EtaConversationExport.MANIFEST_NAME, zip.nextEntry.name)
+            conversationJson.decodeFromString(EtaConversationExport.serializer(), zip.readBytes().toString(Charsets.UTF_8))
+        }
+        assertEquals("1", exported.subAgentConfigGeneration)
+        assertEquals(3, exported.schemaVersion)
+        assertEquals(store.export(source), exported.subAgentConfigJson)
+        EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
+        val imported = dao.conversationEntities().single { it.id != source.value }
+        assertEquals("chat still imports", dao.messagesForConversation(imported.id).single().content)
+        assertEquals(original, store.snapshot(SubAgentConfigKey.Conversation(imported.id)))
+        assertEquals(original, store.snapshot(source))
+    }
+
+    @Test
+    fun invalidGenerationAndMarkedCorruptArchiveRejectBeforeChatFilesOrOwnerWrites() = runBlocking {
+        val dao = EtaDatabase.get(context).conversationDao()
+        val live = conversationDocument()
+        dao.importAsNewConversation(live.conversation, live.messages, null)
+        val prefs = requireNotNull(io.github.mangi.eta.config.Prefs.localAgentPreferences())
+        val store = ConversationSubAgentPreferences(prefs)
+        val fallback = BackupSubAgentConfig.archiveForImport(3, null, store)
+        val imports = File(TerminalPrivateStorage.workspace(context.filesDir), "imports")
+        val image = File(imports, "generation-${UUID.randomUUID()}/image.jpg")
+            .apply { parentFile!!.mkdirs(); writeText("attachment must not be installed") }
+        try {
+            val withImage = conversationDocument().copy(messages = live.messages.map {
+                it.copy(imagesJson = org.json.JSONArray().put(image.absolutePath).toString())
+            })
+            val prepared = ConversationArchiveMedia.prepare(context, withImage)
+            val beforeConversations = dao.conversationEntities()
+            val beforeMessages = dao.messages()
+            val beforePrefs = prefs.all.toMap()
+            val revision = store.revision.value
+            fun attachmentFiles() = imports.walkTopDown().filter { it.isFile }
+                .associate { it.relativeTo(imports).path to BackupDurability.digest(it) }
+            val beforeFiles = attachmentFiles()
+            val invalid = listOf(
+                "" to null, "0" to "{invalid", "2" to fallback, "s:1" to fallback,
+                "1" to "{invalid", "1" to org.json.JSONObject(fallback).put("version", 987).toString(),
+            )
+            invalid.forEach { (generation, archive) ->
+                val document = prepared.document.copy(subAgentConfigGeneration = generation, subAgentConfigJson = archive)
+                val output = ByteArrayOutputStream()
+                ZipOutputStream(output).use { zip ->
+                    val writer = BackupZipWriter(zip)
+                    writer.text(EtaConversationExport.MANIFEST_NAME,
+                        conversationJson.encodeToString(EtaConversationExport.serializer(), document))
+                    document.attachments.forEach { attachment ->
+                        writer.file(attachment.entry, prepared.files.getValue(attachment.entry), attachment.sha256)
+                    }
+                }
+                val failure = runCatching {
+                    EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
+                }.exceptionOrNull()
+                assertTrue(failure != null)
+                if (generation != "1") assertEquals("不支持的会话子代理配置代际", failure?.message)
+                assertEquals(beforeConversations, dao.conversationEntities())
+                assertEquals(beforeMessages, dao.messages())
+                assertEquals(beforePrefs, prefs.all)
+                assertEquals(revision, store.revision.value)
+                assertEquals(beforeFiles, attachmentFiles())
+            }
+        } finally {
+            image.parentFile!!.deleteRecursively()
+        }
     }
 
     @Test(expected = EtaBackupException::class)

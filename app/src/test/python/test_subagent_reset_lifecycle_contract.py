@@ -73,6 +73,58 @@ class SubAgentResetLifecycleContractTest(unittest.TestCase):
         self.assertIn('exactPreferences -> document.agentPreferences', repository)
         self.assertIn('BackupSubAgentConfig.restoreExactPreferences(', repository)
 
+    def test_conversation_generation_is_serializable_optional_without_schema_bump(self):
+        repository = self.read('data/repository/EtaBackupRepository.kt')
+        self.assertIn('@Serializable\ninternal data class EtaConversationExport(', repository)
+        document = repository.split('internal data class EtaConversationExport(', 1)[1].split(
+            'internal data class EtaBackupSummary(', 1)[0]
+        # A nullable constructor property with a default is optional for generated serializers.
+        self.assertIn('val subAgentConfigGeneration: String? = null,', document)
+        self.assertIn('const val SCHEMA_VERSION = 3', document)
+        snapshot = repository.split('private suspend fun conversationSnapshot(', 1)[1].split(
+            'private suspend fun restoreMetadata(', 1)[0]
+        self.assertIn('subAgentConfigGeneration = "1",', snapshot)
+        self.assertIn('subAgentConfigJson = BackupSubAgentConfig.archiveForExport(', snapshot)
+        export = repository.split('suspend fun exportConversation(', 1)[1].split(
+            'suspend fun import(', 1)[0]
+        self.assertIn('json.encodeToString(document)', export)
+        self.assertIn('encodeDefaults = true', repository)
+
+    def test_unmarked_schema_three_ignores_archive_before_any_decode(self):
+        boundary = self.read('data/repository/BackupSubAgentConfig.kt')
+        gate = boundary.split('fun archiveForImport(', 1)[1].split('fun archiveForExport(', 1)[0]
+        self.assertIn('generation: String? = null,', gate)
+        legacy = gate.index('if (generation == null) return legacyArchive()')
+        self.assertLess(legacy, gate.index('require(schemaVersion >= 3 || archive == null)'))
+        self.assertLess(legacy, gate.index('val resolved = archive ?: legacyArchive()'))
+        self.assertLess(legacy, gate.index('store.validateArchive(resolved)'))
+        # No validation of the obsolete input on either the valid or malformed legacy path.
+        self.assertNotIn('validateArchive', gate[:legacy])
+        for forbidden in ['JSONObject(', 'decode(', 'store.snapshot(', 'store.export(',
+                          'store.importOwner(', 'store.update(', 'Prefs.']:
+            self.assertNotIn(forbidden, gate)
+
+    def test_present_generation_is_rejected_or_strictly_validated_before_import_writes(self):
+        boundary = self.read('data/repository/BackupSubAgentConfig.kt')
+        gate = boundary.split('fun archiveForImport(', 1)[1].split('fun archiveForExport(', 1)[0]
+        steps = ['require(generation == null || generation == "1")',
+                 'if (generation == null) return legacyArchive()',
+                 'val resolved = archive ?: legacyArchive()',
+                 'store.validateArchive(resolved)', 'return resolved']
+        positions = [gate.index(step) for step in steps]
+        self.assertEqual(sorted(positions), positions)
+        self.assertNotIn('runCatching', gate)
+        repository = self.read('data/repository/EtaBackupRepository.kt')
+        conversation_import = repository.split('if (conversation != null) {', 1)[1].split(
+            'val planned = linkedMapOf<File, File>()', 1)[0]
+        calls = ['BackupSubAgentConfig.archiveForImport(conversation.schemaVersion,',
+                 'generation = conversation.subAgentConfigGeneration)',
+                 'ConversationArchiveImport.prepare(', 'durableText(', 'journal.begin(',
+                 'BackupConversationOwnerImport.plan(', 'owner.begin(appContext)',
+                 'journal.replace(target, source)', 'importAsNewConversation(']
+        positions = [conversation_import.index(call) for call in calls]
+        self.assertEqual(sorted(positions), positions)
+
     def test_missing_conversation_config_is_empty_and_disabled(self):
         boundary = self.read('data/repository/BackupSubAgentConfig.kt')
         fallback = boundary.split('private fun legacyArchive()', 1)[1]

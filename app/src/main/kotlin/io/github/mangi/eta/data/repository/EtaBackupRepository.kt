@@ -105,6 +105,7 @@ internal data class EtaConversationExport(
     val attachmentCount: Int = 0,
     val attachments: List<ConversationArchiveAttachment> = emptyList(),
     val subAgentConfigJson: String? = null,
+    val subAgentConfigGeneration: String? = null,
 ) {
     companion object {
         const val FORMAT = "eta-conversation"
@@ -271,9 +272,10 @@ internal object EtaBackupRepository {
                             decodeConversation(it.readText())
                         }
                         if (conversation != null) {
-                            // Validate the entire owner archive before any Room history or preferences write.
+                            // Gate generation and validate current archives before any owner, files or Room write.
                             val config = BackupSubAgentConfig.archiveForImport(conversation.schemaVersion,
-                                conversation.subAgentConfigJson, ConversationSubAgentPreferences())
+                                conversation.subAgentConfigJson, ConversationSubAgentPreferences(),
+                                generation = conversation.subAgentConfigGeneration)
                             val plan = ConversationArchiveImport.prepare(appContext, conversation, files)
                             val newId = plan.document.conversation.id
                             check(EtaDatabase.get(appContext).conversationDao().conversationEntity(newId) == null) { "新会话 ID 冲突，未开始导入" }
@@ -586,6 +588,7 @@ internal object EtaBackupRepository {
             messages = messages,
             contextCheckpoint = checkpoint,
             subAgentConfigJson = BackupSubAgentConfig.archiveForExport(conversationId, ConversationSubAgentPreferences()),
+            subAgentConfigGeneration = "1",
             attachmentCount = 0,
         )
     }

@@ -92,7 +92,7 @@ class BackupSubAgentPresetConfigTest {
         val archive = BackupSubAgentConfig.archiveForExport(original.value, source)
         val targetPreferences = prefs()
         val target = ConversationSubAgentPreferences(targetPreferences)
-        val resolved = BackupSubAgentConfig.archiveForImport(3, archive, target)
+        val resolved = BackupSubAgentConfig.archiveForImport(3, archive, target, generation = "1")
         assertTrue(targetPreferences.all.isEmpty())
         val mapped = SubAgentConfigKey.Conversation("mapped")
         assertTrue(target.importOwner(mapped, resolved))
