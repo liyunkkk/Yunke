@@ -72,6 +72,7 @@ import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.ui.model.RequestOverheadCalibration
 import io.github.mangi.eta.ui.model.ContextEstimateDiagnostics
 import io.github.mangi.eta.config.AutoCompressPreference
+import io.github.mangi.eta.config.InteractiveModePreference
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.core.safeLogType
@@ -524,8 +525,12 @@ internal class AgentAppState(
         private set
 
     private val autoCompressPreference = AutoCompressPreference()
+    private val interactiveModePreference = InteractiveModePreference()
 
     var autoCompressEnabled by mutableStateOf(autoCompressPreference.enabled)
+        private set
+
+    var interactiveModeEnabled by mutableStateOf(interactiveModePreference.enabled)
         private set
 
     var requestOverheadTokens by mutableStateOf(0)
@@ -623,6 +628,7 @@ internal class AgentAppState(
         refreshConversationSummaries()
         observeRuntimeSelection()
         observeAutoCompressEnabled()
+        observeInteractiveModeEnabled()
         scope.launch(Dispatchers.Main.immediate) {
             conversationSubAgentPreferences.revision.collectLatest { refreshRequestOverhead() }
         }
@@ -719,6 +725,17 @@ internal class AgentAppState(
                 }
                 contextHideJobs[token] = job
                 job.start()
+            }
+        }
+    }
+
+    private fun observeInteractiveModeEnabled() {
+        scope.launch(Dispatchers.Main.immediate) {
+            val observation = interactiveModePreference.observe { interactiveModeEnabled = it }
+            try {
+                kotlinx.coroutines.awaitCancellation()
+            } finally {
+                observation.close()
             }
         }
     }
@@ -6154,6 +6171,10 @@ internal class AgentAppState(
 
     fun updateAutoCompressEnabled(enabled: Boolean) {
         autoCompressPreference.setEnabled(enabled)
+    }
+
+    fun updateInteractiveModeEnabled(enabled: Boolean) {
+        interactiveModePreference.setEnabled(enabled)
     }
 
     fun selectContextTask(taskId: String?, capturedOwnerId: String?) {

@@ -372,6 +372,8 @@ fun AgentAppRoot(
             onSearchConversations = { query -> agentState.updateSearchQuery(query) },
             onNewConversation = { createConversation() },
             onOpenTerminal = { pushRoute(AppRoute.Terminal) },
+            interactiveModeEnabled = agentState.interactiveModeEnabled,
+            onToggleInteractiveMode = { agentState.updateInteractiveModeEnabled(it) },
             onLaunchKimiWeb = {
                 requestExecutionNotifications()
                 if (appViewModel.kimiWebState.phase != KimiWebPhase.NOT_INSTALLED) {

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -52,6 +53,8 @@ private val CompactMenuItemPadding = PaddingValues(horizontal = 12.dp)
 internal fun TopBarOverflowMenu(
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
+    interactiveModeEnabled: Boolean,
+    onToggleInteractiveMode: (Boolean) -> Unit,
     onLaunchKimiWeb: () -> Unit,
     kimiWebLabel: String,
     canStopKimiWeb: Boolean,
@@ -124,6 +127,30 @@ internal fun TopBarOverflowMenu(
                     )
                 },
                 onClick = { TouchHaptics.click(view); menuState.dismiss(); showSearchDialog = true },
+            )
+            MenuSectionDivider()
+            DropdownMenuItem(
+                modifier = CompactMenuItemModifier,
+                contentPadding = CompactMenuItemPadding,
+                text = { Text(stringResource(R.string.action_interactive_mode)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.TouchApp,
+                        contentDescription = null,
+                        modifier = Modifier.size(TopBarMenuIconSize),
+                    )
+                },
+                trailingIcon = {
+                    Switch(
+                        checked = interactiveModeEnabled,
+                        onCheckedChange = null,
+                        modifier = Modifier.scale(0.72f),
+                    )
+                },
+                onClick = {
+                    TouchHaptics.click(view)
+                    onToggleInteractiveMode(!interactiveModeEnabled)
+                },
             )
             MenuSectionDivider()
             DropdownMenuItem(
