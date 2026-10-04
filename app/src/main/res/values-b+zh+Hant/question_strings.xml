@@ -13,4 +13,12 @@
     <string name="question_interrupted">提問已中斷</string>
     <string name="question_waiting">等待你回答</string>
     <string name="question_recommended">推薦</string>
+    <string name="question_selected">已選擇：%1$s</string>
+    <string name="question_view_details">展開查看原題和回答</string>
+    <string name="question_hide_details">收起原題和回答</string>
+    <string name="question_show_full_text">展開完整問題和選項說明</string>
+    <string name="question_show_less">收起長說明</string>
+    <string name="question_note_added">補充說明（已填寫）</string>
+    <string name="question_expanded">已展開</string>
+    <string name="question_collapsed">已收起</string>
 </resources>

@@ -13,4 +13,12 @@
     <string name="question_interrupted">Question interrupted</string>
     <string name="question_waiting">Waiting for your answer</string>
     <string name="question_recommended">Recommended</string>
+    <string name="question_selected">Selected: %1$s</string>
+    <string name="question_view_details">View question and answer</string>
+    <string name="question_hide_details">Hide question and answer</string>
+    <string name="question_show_full_text">Show full question and descriptions</string>
+    <string name="question_show_less">Show less</string>
+    <string name="question_note_added">Additional notes (added)</string>
+    <string name="question_expanded">Expanded</string>
+    <string name="question_collapsed">Collapsed</string>
 </resources>
