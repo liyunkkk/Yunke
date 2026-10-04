@@ -330,7 +330,7 @@ internal class AgentAppState(
         conversationCreatedAt = initialConversations.createdAt
         conversationFolderIds = initialConversations.folderIds
         conversationPinned = initialConversations.pinnedIds
-        conversationCompletionMarkers = initialConversations.completionMarkerIds - initialConversations.selectedConversationId
+        conversationCompletionMarkers = initialConversations.completionMarkerIds - listOfNotNull(initialConversations.selectedConversationId)
         conversationFolders = initialConversations.folders
     }
 
@@ -1209,7 +1209,7 @@ internal class AgentAppState(
             conversationCreatedAt = snapshot.createdAt
             conversationFolderIds = snapshot.folderIds
             conversationPinned = snapshot.pinnedIds
-            conversationCompletionMarkers = snapshot.completionMarkerIds - snapshot.selectedConversationId
+            conversationCompletionMarkers = snapshot.completionMarkerIds - listOfNotNull(snapshot.selectedConversationId)
             conversationFolders = snapshot.folders
             selectedFolderId = null
             pendingNewConversationFolderId = null
