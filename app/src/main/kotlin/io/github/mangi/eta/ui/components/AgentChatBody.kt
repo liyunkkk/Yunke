@@ -272,8 +272,19 @@ internal fun AgentChatBody(
             io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stop("orphan_reply")
         }
     }
+    // Project once for both the initial tail anchor and the rendered rows below. In
+    // particular, do not derive a second full timeline just to ask for its size: this
+    // list can contain thousands of streaming/tool messages.
+    val timelineEntries = remember(visibleMessages) {
+        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
+    }
     val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
-        visibleMessages.toTimelineEntries().size + if (isCompressingContext || isWaitingForCompression || childContexts.any { it.isCompacting }) 1 else 0
+        initialTimelineItemIndex(
+            timelineEntries = timelineEntries,
+            isCompressingContext = isCompressingContext,
+            isWaitingForCompression = isWaitingForCompression,
+            hasCompactingChildContext = childContexts.any { it.isCompacting },
+        )
     }
     // A default one-item prefetch is too shallow for mixed short tool rows and tall Markdown.
     // Keep one viewport on both sides: ahead prepares incoming rows; behind prevents
@@ -340,6 +351,7 @@ internal fun AgentChatBody(
             AgentChatScaffold(
                 collaborationConversationId = collaborationConversationId,
                 visibleMessages = visibleMessages,
+                timelineEntries = timelineEntries,
                 hasMessages = visibleMessages.isNotEmpty(),
                 scrollState = scrollState,
                 input = input,
@@ -427,6 +439,7 @@ internal fun AgentChatBody(
 @OptIn(ExperimentalLayoutApi::class)
 private fun AgentChatScaffold(
     visibleMessages: List<AgentChatMessageUi>,
+    timelineEntries: List<AgentTimelineEntry>,
     hasMessages: Boolean,
     scrollState: LazyListState,
     input: String,
@@ -576,6 +589,7 @@ private fun AgentChatScaffold(
         } else {
             AgentConversationMessages(
                 visibleMessages = visibleMessages,
+                timelineEntries = timelineEntries,
                 scrollState = scrollState,
                 isStreaming = isStreaming,
                 isPaused = isPaused,
@@ -613,6 +627,7 @@ private fun AgentChatScaffold(
 internal fun AgentConversationMessages(
     visibleMessages: List<AgentChatMessageUi>,
     scrollState: LazyListState,
+    timelineEntries: List<AgentTimelineEntry>? = null,
     isStreaming: Boolean,
     isPaused: Boolean = false,
     isCompressingContext: Boolean = false,
@@ -643,7 +658,10 @@ internal fun AgentConversationMessages(
     traceChatListOwnerExecution(chatListTrace, scrollTraceEnabled)
     // Retain successful parses beyond individual lazy-row compositions.
     val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
-    val timelineEntries = remember(visibleMessages) {
+    // AgentChatBody supplies this projection so the initial tail anchor and the
+    // rendered rows share one remembered full-list derivation. The standalone voice
+    // panel still computes it here when it calls this renderer directly.
+    val projectedTimelineEntries = timelineEntries ?: remember(visibleMessages) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
     }
     val expansionSaver = remember {
@@ -664,14 +682,14 @@ internal fun AgentConversationMessages(
         if (next == null) workAnimations.remove(groupKey)
         else if (next !== current) workAnimations[groupKey] = next
     }
-    LaunchedEffect(timelineEntries) {
-        val activeKeys = timelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().mapTo(mutableSetOf()) { it.key }
+    LaunchedEffect(projectedTimelineEntries) {
+        val activeKeys = projectedTimelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().mapTo(mutableSetOf()) { it.key }
         if (workExpansionOverrides.keys.any { it !in activeKeys }) {
             workExpansionOverrides = workExpansionOverrides.filterKeys { it in activeKeys }
         }
         workAnimations.keys.toList().filter { it !in activeKeys }.forEach { workAnimations.remove(it) }
         // A streaming update may remove a pending row without composing it again.
-        timelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().forEach { group ->
+        projectedTimelineEntries.filterIsInstance<AgentTimelineEntry.WorkProcess>().forEach { group ->
             val animation = workAnimations[group.key] ?: return@forEach
             val keys = group.messages.mapTo(HashSet()) { "work-step:${it.id}" }
             (animation.pendingExitKeys - keys).forEach { finishWorkExit(group.key, it, animation.generation) }
@@ -688,8 +706,8 @@ internal fun AgentConversationMessages(
         }
     }
     val retainedWorkSteps = workAnimations.mapValues { it.value.retainedStepKeys }
-    val timelineRows = remember(timelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps) {
-        timelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming, retainedWorkSteps)
+    val timelineRows = remember(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps) {
+        projectedTimelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming, retainedWorkSteps)
     }
     LaunchedEffect(scrollToMessageId, timelineRows) {
         val target = scrollToMessageId ?: return@LaunchedEffect

@@ -62,6 +62,14 @@ internal fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEnt
 }
 
 /** Use projected list indices, not raw message indices (work steps are grouped). */
+internal fun initialTimelineItemIndex(
+    timelineEntries: List<AgentTimelineEntry>,
+    isCompressingContext: Boolean,
+    isWaitingForCompression: Boolean,
+    hasCompactingChildContext: Boolean,
+): Int = timelineEntries.size +
+    if (isCompressingContext || isWaitingForCompression || hasCompactingChildContext) 1 else 0
+
 internal fun List<AgentTimelineEntry>.userMessageIndices(): List<Int> = mapIndexedNotNull { index, entry ->
     val user = (entry as? AgentTimelineEntry.Message)?.message as? UserMessageUi
     index.takeIf { user != null && !user.isResumeAfterCompress() }

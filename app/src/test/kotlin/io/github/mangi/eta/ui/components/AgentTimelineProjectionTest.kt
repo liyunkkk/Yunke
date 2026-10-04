@@ -43,6 +43,27 @@ class AgentTimelineProjectionTest {
     }
 
     @Test
+    fun initialTailIndexUsesProjectedRowsAndAddsAtMostOneCompressionFooter() {
+        val retry = SystemNoticeMessageUi("retry", SystemNoticeCode.ModelRetry)
+        val hiddenResume = UserMessageUi("resume", "hidden resume")
+        val entries = listOf(
+            UserMessageUi("user", "task"),
+            workMessage(0),
+            retry,
+            hiddenResume,
+        ).toTimelineEntries()
+
+        // The initial anchor follows rendered timeline rows, not raw messages:
+        // retry and resume records do not create LazyColumn items.
+        assertEquals(2, entries.size)
+        assertEquals(2, initialTimelineItemIndex(entries, false, false, false))
+        assertEquals(3, initialTimelineItemIndex(entries, true, false, false))
+        assertEquals(3, initialTimelineItemIndex(entries, false, true, false))
+        assertEquals(3, initialTimelineItemIndex(entries, false, false, true))
+        assertEquals(3, initialTimelineItemIndex(entries, true, true, true))
+    }
+
+    @Test
     fun appendAndStreamingUpdatesKeepExistingGroupKeysAndProjectionSnapshots() {
         val messages = List(97, ::workMessage)
         var previous = emptyList<AgentTimelineEntry>()
