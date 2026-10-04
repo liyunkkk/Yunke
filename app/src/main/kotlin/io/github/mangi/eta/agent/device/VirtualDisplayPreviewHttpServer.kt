@@ -56,6 +56,7 @@ internal class VirtualDisplayPreviewHttpServer(
             Thread(task, "eta-vd-preview-reader").apply { isDaemon = true }
         })
     @Volatile private var listener: ServerSocket? = null
+    @Volatile private var listenerThread: Thread? = null
     @Volatile private var running = false
 
     @Synchronized fun start(): Ticket {
@@ -64,14 +65,20 @@ internal class VirtualDisplayPreviewHttpServer(
         val server = ServerSocket(resumeTicket?.port ?: 0, 4, InetAddress.getByName("127.0.0.1"))
         listener = server
         running = true
-        Thread({
+        val acceptThread = Thread({
             while (running) {
                 val socket = try { server.accept() } catch (_: Exception) { running = false; break }
+                if (!running) {
+                    runCatching { socket.close() }
+                    break
+                }
                 clients.add(socket)
                 try { workers.execute { serve(socket, server.localPort) } }
                 catch (_: Exception) { clients.remove(socket); runCatching { socket.close() } }
             }
-        }, "eta-vd-preview-listener").apply { isDaemon = true }.start()
+        }, "eta-vd-preview-listener").apply { isDaemon = true }
+        listenerThread = acceptThread
+        acceptThread.start()
         return Ticket(server.localPort, token, controlToken)
     }
 
@@ -84,6 +91,18 @@ internal class VirtualDisplayPreviewHttpServer(
         clients.forEach { runCatching { it.close() } }
         // Do not interrupt an operation sharing the authenticated owner transport.
         workers.shutdown()
+        // A blocked accept can retain the bound descriptor after close() returns.
+        // Finish only after that listener exits; never wait for owner operations.
+        val acceptThread = listenerThread
+        if (acceptThread != null && acceptThread !== Thread.currentThread()) {
+            try {
+                acceptThread.join(2_000L)
+            } catch (ex: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IllegalStateException("Preview listener stop interrupted", ex)
+            }
+            check(!acceptThread.isAlive) { "Preview listener did not stop" }
+        }
     }
 
     private fun serve(socket: Socket, port: Int) {
