@@ -55,9 +55,14 @@ class SubAgentPresetSettingsTest {
         compose.setSubAgentContent(fixture) {
             MiuixTheme(colors = lightColorScheme()) { MaterialTheme { SubAgentSettingsScreen({}, { fixture.repository }) } }
         }
-        compose.onNodeWithText("添加子代理组").performClick()
-        compose.onNode(hasSetTextAction()).performTextInput("新组")
-        compose.onNodeWithText("保存").performClick()
+        withNameDialogClock {
+            compose.onNodeWithText("添加子代理组").performClick()
+            compose.mainClock.advanceTimeBy(300)
+            compose.onNode(hasSetTextAction()).performTextInput("新组")
+            compose.mainClock.advanceTimeByFrame()
+            compose.onNodeWithText("保存").performClick()
+            compose.mainClock.advanceTimeBy(300)
+        }
         compose.onNodeWithContentDescription("编辑子代理组新组").performScrollTo().performClick()
         compose.onNodeWithText("添加子代理", substring = false).assertExists()
         compose.runOnIdle {
@@ -65,9 +70,14 @@ class SubAgentPresetSettingsTest {
         }
         compose.onNodeWithContentDescription("返回").performClick()
         compose.onNodeWithContentDescription("新组组更多操作").performScrollTo().performClick()
-        compose.onNodeWithText("重命名组").performClick()
-        compose.onNode(hasSetTextAction()).performTextReplacement("改名组")
-        compose.onNodeWithText("保存").performClick()
+        withNameDialogClock {
+            compose.onNodeWithText("重命名组").performClick()
+            compose.mainClock.advanceTimeBy(300)
+            compose.onNode(hasSetTextAction()).performTextReplacement("改名组")
+            compose.mainClock.advanceTimeByFrame()
+            compose.onNodeWithText("保存").performClick()
+            compose.mainClock.advanceTimeBy(300)
+        }
         compose.onNodeWithContentDescription("改名组组更多操作").performScrollTo().performClick()
         compose.onNodeWithText("删除组").performClick()
         compose.onNodeWithText("删除", substring = false).performClick()
@@ -77,4 +87,13 @@ class SubAgentPresetSettingsTest {
             assertEquals(before, fixture.snapshot())
         }
     }
+
+    // Keep focused-field animation from monopolizing Robolectric's auto-idle loop.
+    // Only the name dialog uses a manual clock; all business assertions still idle normally.
+    private fun withNameDialogClock(block: () -> Unit) {
+        val previous = compose.mainClock.autoAdvance
+        compose.mainClock.autoAdvance = false
+        try { block() } finally { compose.mainClock.autoAdvance = previous }
+    }
+
 }
