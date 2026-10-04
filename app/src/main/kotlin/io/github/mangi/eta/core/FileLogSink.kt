@@ -4,6 +4,8 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -127,8 +129,11 @@ internal class FileLogSink(
     private fun moveFile(source: File, target: File) {
         if (!source.exists()) return
         if (source.renameTo(target)) return
-        source.copyTo(target, overwrite = true)
-        check(source.delete()) { "无法轮转日志文件：" }
+        runCatching { Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+            .getOrElse {
+                source.copyTo(target, overwrite = true)
+                check(source.delete()) { "无法轮转日志文件：" }
+            }
     }
 
     private fun rotatedFile(index: Int): File = File(directory, rotatedName(index))

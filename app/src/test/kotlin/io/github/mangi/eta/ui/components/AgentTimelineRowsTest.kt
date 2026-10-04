@@ -209,7 +209,7 @@ class AgentTimelineRowsTest {
     @Test
     fun streamingAutoExpansionAndBatchBoundaryStayDistinctFromUserOverrides() {
         // 33 consecutive work messages cross the 32-message batch boundary into two groups.
-        val entries = List(33) { tool(it) }.toTimelineEntries()
+        val entries = List(33) { tool(it, running = it == 32) }.toTimelineEntries()
         assertEquals(2, entries.size)
         val leadingKey = "work-tool-0"
         val trailingKey = "work-tool-32"
