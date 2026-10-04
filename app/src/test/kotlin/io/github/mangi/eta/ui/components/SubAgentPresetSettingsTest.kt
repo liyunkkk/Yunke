@@ -105,7 +105,8 @@ class SubAgentPresetSettingsTest {
         compose.onNodeWithContentDescription("启用执行代理 1").performTouchInput { click() }
         compose.onNodeWithContentDescription("执行代理 1更多操作").performClick()
         compose.onNodeWithText("重命名", substring = false).performClick()
-        compose.onNode(hasSetTextAction()).performTextReplacement("预设代理新名")
+        compose.onNodeWithText("重命名代理").assertIsDisplayed()
+        compose.onNodeWithContentDescription("名称").assertIsDisplayed().performTextReplacement("预设代理新名")
         compose.onNodeWithText("保存").performClick()
         compose.runOnIdle {
             val saved = fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id))

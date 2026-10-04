@@ -268,6 +268,7 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
         rename?.let { profile ->
             if (editable) SubAgentPresetNameDialog(
                 title = "重命名代理",
+                fieldHint = "名称",
                 name = name,
                 onNameChange = { if (editor.enabled) name = it },
                 saveEnabled = name.trim().isNotBlank(),

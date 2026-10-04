@@ -27,6 +27,7 @@ internal fun SubAgentPresetNameDialog(
     saveEnabled: Boolean,
     onDismiss: () -> Unit,
     onSave: () -> Unit,
+    fieldHint: String = "组名称",
 ) {
     WindowDialog(
         show = true,
@@ -37,7 +38,7 @@ internal fun SubAgentPresetNameDialog(
             EtaFormTextField(
                 value = name,
                 onValueChange = { onNameChange(it.take(80)) },
-                hint = "组名称",
+                hint = fieldHint,
                 singleLine = true,
             )
             Row(

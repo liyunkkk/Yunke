@@ -161,7 +161,10 @@ internal object AppFileLogger {
             if (throwable != null) {
                 builder.append('\n').append(Log.getStackTraceString(throwable).trimEnd())
             }
-            runCatching { sink.append(builder.toString()) }
+            runCatching { sink.append(builder.toString()) }.onFailure { failure ->
+                // Report only the type: paths and message contents may contain private data.
+                runCatching { Log.w(ModuleConfig.TAG, "diagnostic append failed: ${failure.safeLogType()}") }
+            }
         }
     }
 

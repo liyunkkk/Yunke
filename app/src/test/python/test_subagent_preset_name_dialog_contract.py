@@ -13,7 +13,7 @@ class SubAgentPresetNameDialogContractTest(unittest.TestCase):
         self.assertIn('import top.yukonga.miuix.kmp.window.WindowDialog', form)
         for needle in ('WindowDialog(', 'show = true', 'Column(Modifier.fillMaxWidth())',
                        'EtaFormTextField(', 'value = name', 'onNameChange(it.take(80))',
-                       'hint = "组名称"', 'singleLine = true', 'onDismissRequest = onDismiss',
+                       'fieldHint: String = "组名称"', 'hint = fieldHint', 'singleLine = true', 'onDismissRequest = onDismiss',
                        'TextButton(onClick = onDismiss) { Text("取消") }',
                        'TextButton(enabled = saveEnabled, onClick = onSave) { Text("保存") }'):
             self.assertIn(needle, form)

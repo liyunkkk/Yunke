@@ -122,7 +122,16 @@ class SubAgentDiagnosticLoggingTest {
             AppFileLogger.info("x".repeat(FileLogSink.DEFAULT_MAX_BYTES.toInt()))
             diagnostics.mark("after_rotation")
             AppFileLogger.flush()
-            assertTrue(File(logsDir(), "eta-app.1.log").isFile)
+            val loggerDirectory = AppFileLogger::class.java.getDeclaredField("logsDir").apply {
+                isAccessible = true
+            }.get(null) as File
+            val rotationEvidence = "expected=${logsDir()}, actual=$loggerDirectory, " +
+                "files=" + loggerDirectory.listFiles().orEmpty().joinToString { "${it.name}:${it.length()}" } +
+                ", errors=" + ShadowLog.getLogsForTag(ModuleConfig.TAG).filter {
+                    it.msg.startsWith("diagnostic append failed:")
+                }.joinToString { it.msg }
+            assertEquals(rotationEvidence, logsDir().canonicalFile, loggerDirectory.canonicalFile)
+            assertTrue(rotationEvidence, File(logsDir(), "eta-app.1.log").isFile)
             setLogging(false)
             val zip = ByteArrayOutputStream()
             assertTrue(AppFileLogger.export(zip) >= 2)
