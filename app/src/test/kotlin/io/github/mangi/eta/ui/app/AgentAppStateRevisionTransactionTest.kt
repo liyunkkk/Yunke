@@ -237,11 +237,69 @@ class AgentAppStateRevisionTransactionTest {
             val before = f.state()
             f.app.beginMessageEdit("user-h")
             f.app.deleteMessageTurn("assistant-h-1")
-            f.app.branchConversation("assistant-h-1")
             assertEquals(before, f.state())
             assertFalse(f.busy())
             assertEquals(setOf(f.id), f.conversationIds())
         }
+    }
+
+    @Test fun runningBranchUsesClickSnapshotAndLetsSourceContinue() = fixture { f ->
+        val clicking = f.state().copy(isStreaming = true, childContextRunId = "h", selectedContextTaskId = "child",
+            activeRunContextWindow = 100000)
+        call(f.app, "updateConversation", f.id, clicking, false)
+        f.app.branchConversation("assistant-h-1")
+        assertTrue(f.busy())
+        val advanced = clicking.copy(messages = clicking.messages + AgentMessageUi("assistant-later-1", "after click"))
+        call(f.app, "updateConversation", f.id, advanced, false)
+        f.settle()
+        assertTrue(f.selected() != f.id)
+        assertEquals(advanced, f.state(f.id))
+        val branch = f.state(f.selected()!!)
+        assertFalse(branch.isStreaming)
+        assertFalse(branch.isPaused)
+        assertEquals(listOf(f.aSummary, f.hUser, f.hReply), branch.history)
+        assertFalse(branch.messages.any { it.id.endsWith("assistant-later-1") })
+        assertTrue(branch.childContexts.isEmpty())
+        assertTrue(branch.childStatusRoster.isEmpty())
+        assertEquals("", branch.childContextRunId)
+        assertNull(branch.selectedContextTaskId)
+        assertNull(branch.activeRunContextWindow)
+    }
+
+    @Test fun runtimeBoundaryBranchesPartialTextWithoutStoppingItsSource() = fixture { f ->
+        val source = f.state().copy(messages = listOf(UserMessageUi("user-h", "question"),
+            AgentMessageUi("assistant-h-1-0", "click text", isStreaming = true)),
+            history = emptyList(), isStreaming = true)
+        call(f.app, "updateConversation", f.id, source, false)
+        @Suppress("UNCHECKED_CAST")
+        val owners = get(f.app, "runConversationIds") as MutableMap<String, String>
+        owners["h"] = f.id
+        val job = kotlinx.coroutines.Job()
+        @Suppress("UNCHECKED_CAST")
+        (get(f.app, "runJobs") as MutableMap<String, kotlinx.coroutines.Job>)["h"] = job
+        call(f.app, "applyRunEventBody", "h", io.github.mangi.eta.agent.runtime.AgentEvent.RoundStarted(1, 1, "snapshot"), false, false)
+        val model = listOf(f.hUser)
+        set(f.app, "branchHistorySnapshotLoader", { owner: String, run: String, token: String ->
+            assertEquals(f.id, owner); assertEquals("h", run); assertEquals("snapshot", token)
+            io.github.mangi.eta.agent.runtime.AgentRuntimeSession.HistorySnapshot(token, 1, model)
+        })
+        // RoundStarted precedes current output; no consumed text baseline for the first request.
+        call(f.app, "updateConversation", f.id, source.copy(messages = listOf(UserMessageUi("user-h", "question"))), false)
+        call(f.app, "applyRunEventBody", "h", io.github.mangi.eta.agent.runtime.AgentEvent.RoundStarted(1, 1, "snapshot"), false, false)
+        call(f.app, "updateConversation", f.id, source, false)
+        f.app.branchConversation("assistant-h-1-0")
+        assertTrue(f.busy())
+        val advanced = source.copy(messages = source.messages.map {
+            if (it is AgentMessageUi) it.copy(content = it.content + " later") else it
+        })
+        call(f.app, "updateConversation", f.id, advanced, false)
+        f.settle()
+        assertTrue(f.selected() != f.id)
+        assertEquals(advanced, f.state(f.id))
+        assertTrue(job.isActive)
+        assertEquals(f.id, owners["h"])
+        assertEquals(model + ConversationMessage("assistant", "click text", turnId = "h"), f.state(f.selected()!!).history)
+        job.cancel()
     }
 
     private class Fixture(val context: Context, val app: AgentAppState) {

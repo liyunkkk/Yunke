@@ -107,6 +107,7 @@ internal object AgentModelClient {
         turnId: String = java.util.UUID.randomUUID().toString(),
         calibratedInputTokens: Int? = null,
         allowUnmeasuredContextSend: Boolean = false,
+        onHistorySnapshot: ((Int, List<ConversationMessage>) -> String)? = null,
     ): ModelResponse.Text {
         config.validate()
         val initialCapabilities = capabilitiesProvider()
@@ -122,6 +123,14 @@ internal object AgentModelClient {
             supportsVision = imageInput,
             supportsVideo = config.supportsVideo,
         )
+        // Provider hydration must never erase durable media in a read-only branch snapshot.
+        // Match the exact sanitized DTO, not a bare turn id (supplements share turn ids).
+        val snapshotMedia = if (onHistorySnapshot == null) null else runCatching {
+            trimmedHistory.zip(outboundHistory).filter { (durable, _) ->
+                AgentConversationCodec.persistedImageSources(durable).isNotEmpty()
+            }.groupBy({ (_, outbound) -> AgentConversationCodec.durableMessage(AgentConversationCodec.toJsonObject(outbound)) },
+                { (durable, _) -> durable })
+        }.getOrNull()
         val delegationAvailable = AgentPromptBuilder.delegationToolsAvailable(additionalTools)
         val messages = AgentPromptBuilder.buildInitialMessages(
             config,
@@ -196,6 +205,17 @@ internal object AgentModelClient {
             calibratedInputTokens = calibratedInputTokens,
             allowUnmeasuredContextSend = allowUnmeasuredContextSend,
             onHistoryCompacted = { transcriptStartIndex = messages.length() },
+            onHistorySnapshot = onHistorySnapshot?.let { publish ->
+                snapshot@ { round, snapshot ->
+                    val media = snapshotMedia ?: return@snapshot ""
+                    val restored = snapshot.map { message ->
+                        val originals = media[message].orEmpty().distinct()
+                        if (originals.size > 1) return@snapshot ""
+                        originals.singleOrNull() ?: message
+                    }
+                    publish(round, restored)
+                }
+            },
             toolsForRound = {
                 val capabilities = capabilitiesProvider()
                 val nextSkillContext = skillContextProvider()

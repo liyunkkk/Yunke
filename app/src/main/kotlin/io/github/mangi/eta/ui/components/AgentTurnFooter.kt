@@ -49,12 +49,12 @@ internal fun AgentTurnFooter(
     messageActionsEnabled: Boolean,
     branchEnabled: Boolean,
     speechPreface: String = "",
+    isRunActive: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    if (revealPending) return
     val content = when (message) {
         is AgentMessageUi -> {
-            if (message.isStreaming || message.content.isBlank()) return
+            if (message.content.isBlank()) return
             message.content
         }
         is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> errorReconnectLabel(message)
@@ -72,14 +72,17 @@ internal fun AgentTurnFooter(
         }
         else -> return
     }
+    val contentActionsReady = !isRunActive && !revealPending &&
+        (message !is AgentMessageUi || !message.isStreaming)
     AgentMessageActionRow(
         messageId = message.id,
         content = content,
-        allowSpeech = message is AgentMessageUi,
+        allowSpeech = message is AgentMessageUi && contentActionsReady,
+        showCopyAction = contentActionsReady,
         speechPreface = speechPreface,
         generatedAtMillis = (message as? AgentMessageUi)?.generatedAtMillis,
         showMessageActions = true,
-        messageActionsEnabled = messageActionsEnabled,
+        messageActionsEnabled = messageActionsEnabled && contentActionsReady,
         branchEnabled = branchEnabled,
         onDelete = { actions.onDeleteMessage(message.id) },
         onRegenerate = { actions.onRegenerateMessage(message.id) },
@@ -105,6 +108,7 @@ internal fun AgentMessageActionRow(
     onRegenerate: () -> Unit,
     onBranch: () -> Unit,
     modifier: Modifier = Modifier,
+    showCopyAction: Boolean = true,
 ) {
     @Suppress("DEPRECATION")
     val clipboardManager = LocalClipboardManager.current
@@ -125,7 +129,7 @@ internal fun AgentMessageActionRow(
         modifier = modifier.fillMaxWidth().padding(top = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(
+        if (showCopyAction) IconButton(
             onClick = {
                 TouchHaptics.click(view)
                 @Suppress("DEPRECATION")

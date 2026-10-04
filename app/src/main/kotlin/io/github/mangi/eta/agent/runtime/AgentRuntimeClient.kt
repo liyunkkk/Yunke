@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionReceipt
 import io.github.mangi.eta.agent.question.AgentQuestionStatus
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -232,6 +233,66 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             })
             service.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_QUESTION).apply { data = payload; replyTo = reply })
             if (latch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) snapshot.get() else null
+        }
+    }
+
+    /** Strict read-only IPC. Main accepts the descriptor; only the caller's IO thread decodes it. */
+    fun queryHistory(conversationId: String, runId: String, snapshotId: String): AgentRuntimeSession.HistorySnapshot? {
+        if (Looper.myLooper() == Looper.getMainLooper() || snapshotId.isBlank()) return null
+        return withRuntimeMessenger<AgentRuntimeSession.HistorySnapshot?>(null) { service ->
+            val queryId = java.util.UUID.randomUUID().toString()
+            fun release() {
+                runCatching { service.send(Message.obtain(null, AgentRuntimeWire.MSG_RELEASE_HISTORY).apply {
+                    data = Bundle().apply { putString("history_query_id", queryId) }
+                }) }
+            }
+            val lock = Any()
+            var accepting = true
+            var received: Bundle? = null
+            val latch = CountDownLatch(1)
+            val reply = Messenger(Handler(Looper.getMainLooper()) { response ->
+                if (response.what == AgentRuntimeWire.MSG_QUERY_HISTORY_RESPONSE) {
+                    val data = response.data
+                    synchronized(lock) {
+                        val matching = AgentRuntimeWire.runIdFromBundle(data) == runId &&
+                            data.getString("history_snapshot_id") == snapshotId &&
+                            data.getString("conversation_id") == conversationId &&
+                            data.getString("history_query_id") == queryId
+                        if (accepting && matching && received == null) { received = data; latch.countDown() }
+                        else {
+                            data.getParcelable(AgentRuntimeWire.KEY_HISTORY_FD, android.os.ParcelFileDescriptor::class.java)?.close()
+                            if (matching) release()
+                        }
+                    }
+                }
+                true
+            })
+            try {
+                service.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_HISTORY).apply {
+                    data = AgentRuntimeWire.ackBundle(runId).apply {
+                        putString("conversation_id", conversationId)
+                        putString("history_snapshot_id", snapshotId)
+                        putString("history_query_id", queryId)
+                    }
+                    replyTo = reply
+                })
+                latch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                val data = synchronized(lock) { accepting = false; received.also { received = null } }
+                data?.let {
+                    try {
+                        if (!it.getBoolean("history_available")) null else AgentRuntimeSession.HistorySnapshot(
+                            snapshotId, it.getInt("snapshot_round"), AgentRuntimeHistoryTransfer.readSnapshotFromBundle(it),
+                        )
+                    } finally { it.getParcelable(AgentRuntimeWire.KEY_HISTORY_FD, android.os.ParcelFileDescriptor::class.java)?.close() }
+                }
+            } finally {
+                synchronized(lock) {
+                    accepting = false
+                    received?.getParcelable(AgentRuntimeWire.KEY_HISTORY_FD, android.os.ParcelFileDescriptor::class.java)?.close()
+                    received = null
+                }
+                release()
+            }
         }
     }
 

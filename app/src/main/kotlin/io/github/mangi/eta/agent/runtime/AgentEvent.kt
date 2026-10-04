@@ -27,7 +27,8 @@ internal sealed interface AgentEvent {
 
     data class RoundStarted(
         val round: Int,
-        val messageCount: Int
+        val messageCount: Int,
+        val historySnapshotId: String = "",
     ) : AgentEvent {
         override fun toLogLine(): String =
             "round_started round=$round, messages=$messageCount"

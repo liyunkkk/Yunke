@@ -23,7 +23,7 @@ class RevisionEntryWiringContract(unittest.TestCase):
     def test_all_three_entries_share_scoped_archive_preparation(self):
         for name in ("beginMessageEdit", "deleteMessageTurn", "branchConversation"):
             with self.subTest(name=name):
-                self.assertIn("launchConversationRevision(messageId)", method(self.app, name))
+                self.assertIn("launchConversationRevision(messageId", method(self.app, name))
         body = method(self.app, "launchConversationRevision")
         self.assertIn("runInterruptible(Dispatchers.IO)", body)
         self.assertIn("archive::restoreHistory", body)

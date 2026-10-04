@@ -18,6 +18,58 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentModelClientLoopTest {
+    @Test fun historyBoundaryIsPublishedBeforeEventsAndOnlyAfterCompleteToolBatch() {
+        val snapshots = mutableListOf<List<AgentModelClient.ConversationMessage>>()
+        val provider = ScriptedProvider(
+            assistant(content = "doing work", finishReason = "tool_calls", toolCalls = listOf(
+                toolCall("one", "get_current_context", "{}"), toolCall("two", "get_current_context", "{}"))),
+            assistant(content = "done", finishReason = "stop"))
+        var finished = 0
+        AgentModelClient.complete(config = modelConfig(), prompt = "task", provider = provider, turnId = "turn",
+            onHistorySnapshot = { round, history ->
+                assertEquals(round - 1, snapshots.size)
+                if (round == 2) assertEquals(2, finished)
+                snapshots += history
+                "snapshot-$round"
+            },
+            onEvent = { event -> if (event is AgentEvent.RoundStarted) {
+                assertEquals("snapshot-${event.round}", event.historySnapshotId)
+                assertEquals(event.round, snapshots.size)
+            } },
+            toolExecutor = AgentModelClient.ToolExecutor { finished++; AgentModelClient.ToolResult("result") })
+        assertEquals(2, snapshots.size)
+        assertEquals(listOf("user"), snapshots.first().map { it.role })
+        assertEquals(listOf("user", "assistant", "tool", "tool"), snapshots.last().map { it.role })
+        assertEquals(setOf("one", "two"), snapshots.last().filter { it.role == "tool" }.map { it.toolCallId }.toSet())
+        assertEquals(setOf("turn"), snapshots.last().map { it.turnId }.toSet())
+    }
+
+    @Test fun snapshotRestoresDurableMediaAfterProviderHydration() {
+        val user = AgentModelClient.ConversationMessage("user", contentJson =
+            """[{"type":"text","text":"old media"},{"type":"image_file","path":"/nonexistent/image.jpg","mime":"image/jpeg","name":"image"},{"type":"video_file","path":"/nonexistent/video.mp4","mime":"video/mp4","name":"video"}]""",
+            turnId = "old")
+        var captured: List<AgentModelClient.ConversationMessage>? = null
+        AgentModelClient.complete(config = modelConfig().copy(supportsVision = false), prompt = "task",
+            history = listOf(user), provider = ScriptedProvider(assistant(content = "done", finishReason = "stop")),
+            onHistorySnapshot = { _, history -> captured = history; "snapshot" },
+            toolExecutor = AgentModelClient.ToolExecutor { error("unexpected tool") })
+        assertEquals(user, captured!!.first())
+        assertEquals(listOf("/nonexistent/image.jpg", "/nonexistent/video.mp4"),
+            AgentConversationCodec.persistedImageSources(captured!!.first()))
+    }
+
+    @Test fun failingSnapshotPublisherCannotAbortTheOriginalRun() {
+        val provider = ScriptedProvider(assistant(content = "done", finishReason = "stop"))
+        val tokens = mutableListOf<String>()
+        val result = AgentModelClient.complete(config = modelConfig(), prompt = "task", provider = provider,
+            onHistorySnapshot = { _, _ -> error("snapshot unavailable") },
+            onEvent = { event -> if (event is AgentEvent.RoundStarted) tokens += event.historySnapshotId },
+            toolExecutor = AgentModelClient.ToolExecutor { error("unexpected tool") })
+        assertEquals("done", result.content)
+        assertEquals(listOf(""), tokens)
+        assertEquals(1, provider.requests.size)
+    }
+
     @Test fun completeForwardsExplicitUnknownContextPermission() {
         val prompt = "中".repeat(190_000) // >272k local tokens, safely below the stored-character cap.
         assertTrue(AgentContextBudget.countTokens(prompt) > 272_000)
