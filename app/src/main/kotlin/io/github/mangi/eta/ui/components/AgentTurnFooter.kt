@@ -52,9 +52,10 @@ internal fun AgentTurnFooter(
     isRunActive: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    if (revealPending || isRunActive) return
     val content = when (message) {
         is AgentMessageUi -> {
-            if (message.content.isBlank()) return
+            if (message.isStreaming || message.content.isBlank()) return
             message.content
         }
         is io.github.mangi.eta.ui.model.ErrorReconnectMessageUi -> errorReconnectLabel(message)
@@ -72,17 +73,14 @@ internal fun AgentTurnFooter(
         }
         else -> return
     }
-    val contentActionsReady = !isRunActive && !revealPending &&
-        (message !is AgentMessageUi || !message.isStreaming)
     AgentMessageActionRow(
         messageId = message.id,
         content = content,
-        allowSpeech = message is AgentMessageUi && contentActionsReady,
-        showCopyAction = contentActionsReady,
+        allowSpeech = message is AgentMessageUi,
         speechPreface = speechPreface,
         generatedAtMillis = (message as? AgentMessageUi)?.generatedAtMillis,
         showMessageActions = true,
-        messageActionsEnabled = messageActionsEnabled && contentActionsReady,
+        messageActionsEnabled = messageActionsEnabled,
         branchEnabled = branchEnabled,
         onDelete = { actions.onDeleteMessage(message.id) },
         onRegenerate = { actions.onRegenerateMessage(message.id) },

@@ -138,34 +138,67 @@ class AgentTurnFooterRenderingTest {
         // exact-source completion signal that AgentMessageBlock normally emits.
         showConversation(messages, states = states, paused = true)
         footer(oldAnswer.id).assertIsDisplayed()
-        footer(stopped.id).assertIsDisplayed()
-        footerAction(stopped.id, R.string.ui_branch_conversation).assertIsEnabled()
+        footer(stopped.id).assertDoesNotExist()
         compose.runOnIdle { retained.revealedContent = "Older content" }
-        footer(stopped.id).assertIsDisplayed()
+        footer(stopped.id).assertDoesNotExist()
         compose.runOnIdle { retained.revealedContent = answer.content }
         footer(stopped.id).assertIsDisplayed()
     }
 
-    @Test fun streamingAssistantCanBranchButCannotDeleteOrRegenerate() {
+    @Test fun streamingTurnHasNoFooterButPreviousCompletedAnswerCanBranch() {
         val streaming = mutableStateOf(true)
         val messages = mutableStateOf<List<AgentChatMessageUi>>(listOf(
+            UserMessageUi("old-user", "Previous question"),
+            AgentMessageUi("old-answer", "Completed answer", renderMarkdown = false),
             UserMessageUi("user", "Question"),
+            // This text block has ended, but the same turn is still executing a tool.
             AgentMessageUi("answer", "Intermediate answer", renderMarkdown = false),
             tool("step", "Work after the answer"),
         ))
         showConversation(messages, streaming = streaming)
-        footer("answer").assertIsDisplayed()
-        footerAction("answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
-        footerAction("answer", R.string.ui_regenerate_reply_84a7d9)
-            .assertIsDisplayed().assertHasNoClickAction().performTouchInput { click() }
-        footerAction("answer", R.string.ui_delete_this_conversation_3f351b)
-            .assertIsDisplayed().assertHasNoClickAction().performTouchInput { click() }
-        compose.onAllNodesWithContentDescription(text(R.string.copy_answer)).assertCountEquals(0)
-        assertEquals(listOf("branch:answer"), callbacks)
+        footer("answer").assertDoesNotExist()
+        footerAction("old-answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
+        assertEquals(listOf("branch:old-answer"), callbacks)
+        compose.onNodeWithContentDescription(text(R.string.work_expand)).performClick()
+        footer("answer").assertDoesNotExist()
+        footer("old-answer").assertIsDisplayed()
         compose.runOnIdle { streaming.value = false }
         footer("answer").assertIsDisplayed()
-        compose.onNodeWithContentDescription(text(R.string.work_expand)).performClick()
         assertBelow(footer("answer"), compose.onNodeWithText("Work after the answer"))
+    }
+
+    @Test fun partialStreamingAnswerHasNoFooterUntilTextAndRunBothFinish() {
+        val streaming = mutableStateOf(true)
+        val partial = AgentMessageUi("answer", "Partial reply", isStreaming = true, renderMarkdown = false)
+        val messages = mutableStateOf<List<AgentChatMessageUi>>(listOf(
+            UserMessageUi("old-user", "Previous question"),
+            AgentMessageUi("old-answer", "Completed answer", renderMarkdown = false),
+            UserMessageUi("user", "Question"), partial,
+        ))
+        showConversation(messages, streaming = streaming)
+        footer("answer").assertDoesNotExist()
+        footerAction("old-answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
+        assertEquals(listOf("branch:old-answer"), callbacks)
+        compose.runOnIdle { streaming.value = false }
+        footer("answer").assertDoesNotExist()
+        compose.runOnIdle { messages.value = messages.value.dropLast(1) + partial.copy(isStreaming = false) }
+        footer("answer").assertIsDisplayed()
+    }
+
+    @Test fun pausedTurnHasNoFooterButPreviousCompletedAnswerCanBranch() {
+        val messages = mutableStateOf<List<AgentChatMessageUi>>(listOf(
+            UserMessageUi("old-user", "Previous question"),
+            AgentMessageUi("old-answer", "Completed answer", renderMarkdown = false),
+            UserMessageUi("user", "Question"),
+            AgentMessageUi("answer", "Intermediate answer", renderMarkdown = false),
+            tool("step", "Work after the answer"),
+        ))
+        showConversation(messages, paused = true)
+        footer("answer").assertDoesNotExist()
+        footerAction("old-answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
+        assertEquals(listOf("branch:old-answer"), callbacks)
+        compose.onNodeWithContentDescription(text(R.string.work_expand)).performClick()
+        footer("answer").assertDoesNotExist()
     }
 
     private fun showConversation(

@@ -19,6 +19,19 @@ class RunningBranchSnapshotContract(unittest.TestCase):
         self.assertIn("(runningBranch || (homeState == snapshot", app)
         self.assertIn("branchHistorySnapshotLoader(conversationId, branchBoundary.runId, branchBoundary.snapshotId)", app)
 
+    def test_unfinished_reply_guard_precedes_the_branch_transaction(self):
+        app = self.text("ui/app/AgentAppState.kt")
+        branch = app.split("fun branchConversation(messageId:", 1)[1].split("private fun publishPreparedBranch", 1)[0]
+        self.assertLess(branch.index("if (isUnfinishedAssistantBranchTarget(messageId)) return"),
+                        branch.index("launchConversationRevision(messageId, allowActiveSource = true)"))
+        guard = app.split("private fun isUnfinishedAssistantBranchTarget", 1)[1].split("fun branchConversation", 1)[0]
+        self.assertIn("if (target.isStreaming) return true", guard)
+        self.assertIn("conversation == owner && run in runJobs", guard)
+        self.assertIn("!homeState.isStreaming && !homeState.isPaused && activeRuns.isEmpty()", guard)
+        self.assertIn("target.id.substringAfterLast(':')", guard)
+        self.assertIn('id == "assistant-$run" || id.startsWith("assistant-$run-")', guard)
+        self.assertNotIn("isTextForRound", guard)
+
     def test_query_is_owned_correlated_read_only_and_explicitly_released(self):
         service = self.text("agent/runtime/AgentRuntimeService.kt")
         query = service.split("AgentRuntimeWire.MSG_QUERY_HISTORY ->", 1)[1].split("AgentRuntimeWire.MSG_QUERY_QUESTION ->", 1)[0]
@@ -67,15 +80,25 @@ class RunningBranchSnapshotContract(unittest.TestCase):
         self.assertNotIn("argumentsSummary", snapshot)
         self.assertIn("modelHistory.take(end) + additions", snapshot)
 
-    def test_active_footer_does_not_promote_partial_markdown_to_final(self):
+    def test_only_completed_turns_show_actions_during_generation(self):
         body = self.text("ui/components/AgentChatBody.kt")
-        self.assertIn("includeOpenTurnForBranch = branchEnabled", body)
-        self.assertIn("timelineRows.turnFooters(isStreaming, isCompressingContext).values", body)
-        self.assertIn("owner.id !in finalResultMessageIds", body)
+        projection_call = body.split("val turnFooters =", 1)[1].split("val finalResultMessageIds =", 1)[0]
+        self.assertIn("isStreaming, isPaused, isCompressingContext", projection_call)
+        self.assertIn("isPaused = isPaused", projection_call)
+        self.assertNotIn("branchEnabled", projection_call)
+        self.assertNotIn("includeOpenTurnForBranch", body)
+        final_ids = body.split("val finalResultMessageIds =", 1)[1].split("val footerRevealMessages", 1)[0]
+        self.assertIn("remember(turnFooters)", final_ids)
+        self.assertIn("turnFooters.values.mapTo", final_ids)
+        projection = self.text("ui/components/AgentTurnFooterProjection.kt")
+        self.assertIn("isPaused: Boolean = false", projection)
+        self.assertIn("!isStreaming && !isPaused && !isCompressingContext", projection)
+        self.assertNotIn("includeOpenTurnForBranch", projection)
         footer = self.text("ui/components/AgentTurnFooter.kt")
+        self.assertIn("if (revealPending || isRunActive) return", footer)
+        self.assertIn("if (message.isStreaming || message.content.isBlank()) return", footer)
         self.assertIn("branchEnabled = branchEnabled", footer)
-        self.assertIn("messageActionsEnabled && contentActionsReady", footer)
-        self.assertNotIn("if (revealPending) return", footer)
+        self.assertIn("messageActionsEnabled = messageActionsEnabled", footer)
 
 
 if __name__ == "__main__":

@@ -2507,7 +2507,22 @@ internal class AgentAppState(
     }
 
     private class BranchArchiveCopyException(cause: Exception) : Exception(cause)
+
+    /** Old completed replies may branch while a different run generates, but not that run's partial text. */
+    private fun isUnfinishedAssistantBranchTarget(messageId: String): Boolean {
+        val target = homeState.messages.singleOrNull { it.id == messageId } as? AgentMessageUi ?: return false
+        if (target.isStreaming) return true
+        val owner = selectedConversationId ?: return false
+        val activeRuns = runConversationIds.filter { (run, conversation) -> conversation == owner && run in runJobs }.keys
+        if (!homeState.isStreaming && !homeState.isPaused && activeRuns.isEmpty()) return false
+        // A run can finish several text/provider rounds before the reply itself finishes.
+        // Branch-copied message IDs retain the execution ID after their conversation prefix.
+        val id = target.id.substringAfterLast(':')
+        return activeRuns.any { run -> id == "assistant-$run" || id.startsWith("assistant-$run-") }
+    }
+
     fun branchConversation(messageId: String) {
+        if (isUnfinishedAssistantBranchTarget(messageId)) return
         launchConversationRevision(messageId, allowActiveSource = true) { sourceId, snapshot, prepared, stillCurrent ->
             val prefix = AgentConversationRevisionReducer.branchPrefix(prepared, messageId) ?: run {
                 showRevisionHistoryUnavailableNotice()
