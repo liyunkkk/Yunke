@@ -14,13 +14,11 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,7 +28,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.DpOffset
@@ -53,8 +50,6 @@ private val CompactMenuItemPadding = PaddingValues(horizontal = 12.dp)
 internal fun TopBarOverflowMenu(
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
-    interactiveModeEnabled: Boolean,
-    onToggleInteractiveMode: (Boolean) -> Unit,
     onLaunchKimiWeb: () -> Unit,
     kimiWebLabel: String,
     canStopKimiWeb: Boolean,
@@ -81,11 +76,6 @@ internal fun TopBarOverflowMenu(
     var showSearchDialog by remember { mutableStateOf(false) }
     var showTokenUsageDialog by remember { mutableStateOf(false) }
     var showSubAgentStatusDialog by remember { mutableStateOf(false) }
-
-    fun toggleInteractiveMode(enabled: Boolean) {
-        TouchHaptics.click(view)
-        onToggleInteractiveMode(enabled)
-    }
 
     androidx.compose.foundation.layout.Box {
         IconButton(
@@ -133,28 +123,6 @@ internal fun TopBarOverflowMenu(
                 },
                 onClick = { TouchHaptics.click(view); menuState.dismiss(); showSearchDialog = true },
             )
-            MenuSectionDivider()
-            DropdownMenuItem(
-                modifier = CompactMenuItemModifier,
-                contentPadding = CompactMenuItemPadding,
-                text = { Text(stringResource(R.string.action_interactive_mode)) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.TouchApp,
-                        contentDescription = null,
-                        modifier = Modifier.size(TopBarMenuIconSize),
-                    )
-                },
-                trailingIcon = {
-                    Switch(
-                        checked = interactiveModeEnabled,
-                        onCheckedChange = ::toggleInteractiveMode,
-                        modifier = Modifier.scale(0.72f),
-                    )
-                },
-                onClick = { toggleInteractiveMode(!interactiveModeEnabled) },
-            )
-            MenuSectionDivider()
             DropdownMenuItem(
                 modifier = CompactMenuItemModifier,
                 contentPadding = CompactMenuItemPadding,

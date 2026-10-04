@@ -123,9 +123,9 @@ internal class AgentRuntimeRunExecutor(
                 }
             }
             val runSurface = session.taskSurfaceMode
-            // ASK 选定前也要让界面工具可见；选了前台后按真实无障碍状态收起。
+            // 副屏工具只在明确选择后台后暴露；ASK 首轮由执行位置弹窗决定后续轮次。
             val runVirtualDisplay = {
-                session.taskSurfaceMode != io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND
+                session.taskSurfaceMode == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
             }
             val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
             val executor = AgentLocalTools(

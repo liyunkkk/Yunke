@@ -51,12 +51,19 @@ internal data class AgentToolCapabilities(
             for (index in 0 until rootProjected.length()) {
                 val tool = rootProjected.getJSONObject(index)
                 val name = tool.getJSONObject("function").getString("name")
+                if (!virtualDisplay && name in VIRTUAL_DISPLAY_TOOLS) continue
                 if (unavailableCode(name) == null) visible.put(tool)
             }
         }
     }
 
     companion object {
+        private val VIRTUAL_DISPLAY_TOOLS = setOf(
+            "start_virtual_session",
+            "keep_virtual_result",
+            "finish_virtual_session",
+            "inspect_virtual_backend",
+        )
         fun isColorOsDevice(): Boolean = Build.MANUFACTURER.lowercase(Locale.ROOT) in
             setOf("oppo", "oneplus", "realme")
 

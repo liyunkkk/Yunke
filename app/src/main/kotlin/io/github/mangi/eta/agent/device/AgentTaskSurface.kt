@@ -133,11 +133,9 @@ internal object AgentTaskSurface {
         AgentTaskSurfaceMode.ASK -> R.string.agent_task_surface_ask_summary
     }
 
-    /** 本次 run 是否还需要先问用户：只有界面与副屏生命周期工具才需要定下执行位置。 */
+    /** 本次 run 是否还需要先问用户：只对普通屏幕操作走执行位置弹窗。 */
     fun needsSurfaceChoice(toolName: String): Boolean =
-        isTraditionalScreenGuiTool(toolName) || toolName.trim() in virtualLifecycleTools
-
-    private val virtualLifecycleTools = setOf("start_virtual_session", "keep_virtual_result", "finish_virtual_session")
+        isTraditionalScreenGuiTool(toolName)
 
     fun handoffPromptClause(): String {
         val storedMode = runCatching { stored() }.getOrDefault(AgentTaskSurfaceMode.BACKGROUND)
@@ -152,7 +150,7 @@ internal object AgentTaskSurface {
         AgentTaskSurfaceMode.FOREGROUND -> ""
         AgentTaskSurfaceMode.BACKGROUND -> BACKGROUND_CLAUSE
         AgentTaskSurfaceMode.ASK ->
-            "本次执行位置为“每次询问”：第一次调用屏幕或应用操作工具（含 launch_app、observe_screen、tap 与副屏会话工具）时，" +
+            "本次执行位置为“每次询问”：第一次调用屏幕或应用操作工具（如 launch_app、observe_screen、tap）时，" +
                 "手机会弹窗请用户选择前台或后台；工具会等用户选完才返回，不要因为等待而重复调用。" +
                 "结果里的 task_surface=foreground 表示之后都在主屏直接操作；" +
                 "task_surface=background 表示之后都在后台副屏操作，并遵守：" + BACKGROUND_CLAUSE +
