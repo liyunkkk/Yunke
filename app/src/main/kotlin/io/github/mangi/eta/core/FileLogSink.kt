@@ -56,32 +56,21 @@ internal class FileLogSink(
 
     private fun appendLocked(payload: String) {
         if (!directory.exists() && !directory.mkdirs()) {
-            error("无法创建日志目录")
+            error("无法创建日志目录：${directory.absolutePath}")
         }
         val incoming = payload.toByteArray(Charsets.UTF_8)
-        var offset = 0
-        while (offset < incoming.size) {
-            if (output == null) {
-                openCurrentLocked()
-            }
-            if (currentSize >= maxBytes ||
-                (offset == 0 && currentSize > 0L && currentSize + incoming.size > maxBytes)
-            ) {
-                rotateLocked()
-            }
-            val stream = output ?: error("日志文件未打开")
-            val writable = minOf(maxBytes - currentSize, (incoming.size - offset).toLong()).toInt()
-            if (writable <= 0) {
-                rotateLocked()
-                continue
-            }
-            stream.write(incoming, offset, writable)
-            stream.flush()
-            currentSize += writable
-            offset += writable
-            if (offset < incoming.size && currentSize >= maxBytes) {
-                rotateLocked()
-            }
+        if (output == null) {
+            openCurrentLocked()
+        }
+        if (currentSize > 0L && currentSize + incoming.size > maxBytes) {
+            rotateLocked()
+        }
+        val stream = output ?: error("日志文件未打开")
+        stream.write(incoming)
+        stream.flush()
+        currentSize += incoming.size
+        if (currentSize > maxBytes) {
+            rotateLocked()
         }
     }
 
@@ -139,12 +128,12 @@ internal class FileLogSink(
 
     private fun moveFile(source: File, target: File) {
         if (!source.exists()) return
-        runCatching {
-            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }.recoverCatching {
-            Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            Files.delete(source.toPath())
-        }.getOrThrow()
+        if (source.renameTo(target)) return
+        runCatching { Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+            .getOrElse {
+                Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                Files.delete(source.toPath())
+            }
     }
 
     private fun rotatedFile(index: Int): File = File(directory, rotatedName(index))

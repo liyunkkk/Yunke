@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.cancelAndJoin
@@ -35,6 +36,19 @@ class SubAgentDiagnosticLoggingTest {
     private suspend fun withLogging(block: suspend (suspend (Boolean) -> Unit) -> Unit) = coroutineScope {
         val context = RuntimeEnvironment.getApplication()
         SettingsDataStore.init(context)
+        // Robolectric reuses Kotlin singletons but replaces Application/filesDir per test.
+        // Tear down the previous logger before binding this test's real application directory.
+        AppFileLogger.setEnabled(false)
+        AppFileLogger.clear()
+        val loggerClass = AppFileLogger::class.java
+        val installed = loggerClass.getDeclaredField("installed").apply { isAccessible = true }
+            .get(null) as AtomicBoolean
+        if (installed.getAndSet(false)) {
+            val previousHandler = loggerClass.getDeclaredField("previousCrashHandler").apply {
+                isAccessible = true
+            }.get(null) as Thread.UncaughtExceptionHandler?
+            Thread.setDefaultUncaughtExceptionHandler(previousHandler)
+        }
         AppFileLogger.install(context)
         val before = SettingsDataStore.settings()
         val applied = Channel<Boolean>(Channel.UNLIMITED)
