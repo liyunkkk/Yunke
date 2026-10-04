@@ -271,25 +271,100 @@ class AgentErrorReconnectTest {
         assertEquals(listOf("running", "running", "succeeded"), events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().map { it.status })
     }
 
-    @Test fun localToolAndHostedEvidenceNeverReplayAndUnknownHostedStateFailsClosed() {
+    @Test fun toolEvidenceRecoversWithToolsDisabledRatherThanFailingImmediately() {
         for (event in listOf<ProviderEvent>(ProviderEvent.HostedToolStarted("h", "remote"),
             ProviderEvent.BlockDelta(AssistantBlockKind.TOOL_CALL, 0, "{}"))) {
             var calls = 0
             val events = mutableListOf<AgentEvent>()
-            val failure = assertThrows(AgentModelFailure::class.java) {
-                run(Clock(), ErrorReconnectPolicy.CONTINUOUS, provider { _, _, emit -> calls++; emit(event); throw IOException() }, events,
-                    wait = { _, _ -> fail("must not replay tools") })
-            }
-            assertEquals(1, calls)
-            assertEquals("UNSAFE_TOOL_REPLAY", failure.code)
-            assertEquals("failed", events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
+            val result = run(Clock(), ErrorReconnectPolicy.CONTINUOUS, provider { request, _, emit ->
+                if (calls++ == 0) { emit(event); throw IOException() }
+                assertTrue(request.reconnectTextOnly)
+                assertEquals(0, request.tools.length())
+                assertFalse(request.config.hostedWebSearchEnabled)
+                ok()
+            }, events)
+            assertEquals(2, calls)
+            assertEquals("done", result.response.assistantMessage.getString("content"))
+            assertEquals("succeeded", events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
         }
         var calls = 0
-        assertThrows(AgentModelFailure::class.java) {
-            run(Clock(), ErrorReconnectPolicy.CONTINUOUS, provider { _, _, _ -> calls++; throw IOException() }, hosted = true,
-                wait = { _, _ -> fail("remote side effect is unknown") })
+        run(Clock(), ErrorReconnectPolicy.CONTINUOUS, provider { request, _, _ ->
+            if (calls++ == 0) throw IOException()
+            assertTrue(request.reconnectTextOnly)
+            assertFalse(request.config.hostedWebSearchEnabled)
+            ok()
+        }, hosted = true)
+        assertEquals(2, calls)
+    }
+
+    @Test fun repeatedToolEvidenceAndUnknownHostedFailuresOnlyFailAtDeadline() {
+        for (policy in listOf(ErrorReconnectPolicy.WINDOW_30S, ErrorReconnectPolicy.WINDOW_1M,
+            ErrorReconnectPolicy.WINDOW_5M)) {
+            val clock = Clock()
+            val events = mutableListOf<AgentEvent>()
+            var calls = 0
+            val failure = assertThrows(AgentModelFailure::class.java) {
+                run(clock, policy, provider { request, _, emit ->
+                    if (calls++ == 0) emit(ProviderEvent.HostedToolStarted("h", "remote"))
+                    else assertTrue(request.reconnectTextOnly)
+                    throw IOException("offline")
+                }, events, hosted = true)
+            }
+            assertEquals("ERROR_RECONNECT_DEADLINE", failure.code)
+            assertTrue(calls > 2)
+            assertEquals(policy.windowMillis, clock.now)
+            val markers = events.filterIsInstance<AgentEvent.ErrorReconnectChanged>()
+            assertEquals(1, markers.map { it.reconnectId }.distinct().size)
+            assertEquals(1, markers.count { it.status == "failed" })
+            assertEquals(policy.windowMillis, markers.last().elapsedMs)
         }
-        assertEquals(1, calls)
+    }
+
+    @Test fun textOnlyRecoveryRejectsNewToolCallsAndStillUsesOriginalDeadline() {
+        val clock = Clock()
+        var calls = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            run(clock, ErrorReconnectPolicy.WINDOW_30S, provider { request, _, emit ->
+                calls++
+                if (!request.reconnectTextOnly) {
+                    emit(ProviderEvent.BlockDelta(AssistantBlockKind.TOOL_CALL, 0, "{}"))
+                    throw IOException()
+                }
+                ProviderResponse(JSONObject().put("role", "assistant").put("content", "")
+                    .put("tool_calls", JSONArray().put(JSONObject().put("id", "unsafe"))))
+            })
+        }
+        assertEquals("ERROR_RECONNECT_DEADLINE", failure.code)
+        assertEquals(30_000L, clock.now)
+        assertTrue(calls > 2)
+    }
+
+    @Test fun incompleteArgumentsAndProviderParsingErrorsRetryUntilDeadline() {
+        for (error in listOf<Exception>(
+            AgentModelFailure("RESPONSES_TOOL_ARGUMENTS_INCOMPLETE", false, "arguments incomplete"),
+            org.json.JSONException("gateway returned truncated JSON"))) {
+            val clock = Clock()
+            val events = mutableListOf<AgentEvent>()
+            var calls = 0
+            val failure = assertThrows(AgentModelFailure::class.java) {
+                run(clock, ErrorReconnectPolicy.WINDOW_30S, provider { _, _, _ -> calls++; throw error }, events)
+            }
+            assertEquals("ERROR_RECONNECT_DEADLINE", failure.code)
+            assertEquals(30_000L, clock.now)
+            assertTrue(calls > 2)
+            assertEquals(1, events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().count { it.status == "failed" })
+        }
+    }
+
+    @Test fun customPayloadCannotReenableToolsOnTextOnlyReconnect() {
+        val request = ProviderRequest(config(ErrorReconnectPolicy.WINDOW_30S), JSONArray(), JSONArray(),
+            reconnectTextOnly = true)
+        val body = JSONObject().put("model", "test").put("tools", JSONArray())
+            .put("tool_choice", "required").put("parallel_tool_calls", true)
+            .put("web_search_options", JSONObject()).put("mcp_servers", JSONArray())
+            .put("previous_response_id", "remote").put("conversation", "remote")
+        request.restrictReconnectPayload(body)
+        assertEquals(setOf("model"), body.keySet())
     }
 
     @Test fun cancellationErrorAndContextMaintenanceAreNotNetworkRetryLoops() {

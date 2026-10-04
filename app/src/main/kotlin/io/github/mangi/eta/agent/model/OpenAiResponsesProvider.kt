@@ -35,7 +35,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             "当前 Provider 未配置为 Responses API"
         }
         val prepared = ResponsesToolEnvelopeRecovery.prepare(request)
-        val requestJson = buildRequestJson(config, prepared.messages, prepared.tools, prepared.sessionId, prepared.singleToolCall)
+        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, prepared.messages, prepared.tools, prepared.sessionId, prepared.singleToolCall))
         val body = requestJson.toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         val headers = okhttp3.Headers.Builder()
@@ -69,6 +69,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 onEvent = deliver,
                 deliveryGuard = deliveryGuard,
                 toolDiagnosticAttempt = request.toolDiagnosticAttempt,
+                requireTerminal = request.requiresCompleteStream,
             )
             callbackFailure?.let { throw it }
             ResponsesReasoningState.capture(assistant, config)
@@ -100,6 +101,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         onEvent: (ProviderEvent) -> Unit,
         deliveryGuard: ResponsesToolEnvelopeRecovery.DeliveryGuard,
         toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null,
+        requireTerminal: Boolean,
     ): JSONObject {
         val streamedText = StringBuilder()
         val streamedReasoning = StringBuilder()
@@ -425,9 +427,8 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 if (terminal != null) finish()
             },
             shouldIgnoreFailure = {
-                // Route a disconnect after tool evidence through the non-retryable
-                // completeness check below, never through the network retry path.
-                streamedText.isNotBlank() || streamedReasoning.isNotBlank() || sawFunctionCall
+                terminal != null || (!requireTerminal &&
+                    (streamedText.isNotBlank() || streamedReasoning.isNotBlank() || sawFunctionCall))
             },
         )
 
@@ -439,9 +440,13 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             throw AgentModelFailure(
                 code = "RESPONSES_TOOL_CALL_INCOMPLETE",
                 retryable = false,
-                message = "模型接口 Responses 工具调用缺少响应终止事件；已拒绝执行，且不会自动重试。",
+                message = "模型接口 Responses 工具调用缺少响应终止事件；已拒绝执行，按所选重连策略处理。",
             )
         }
+        if (requireTerminal && terminal == null) {
+            throw AgentModelFailure.incompleteStream("Responses 响应缺少结束事件；保留正文并按重连策略继续请求。")
+        }
+
         if (!sawEvent) throw AgentModelFailure.incompleteStream("模型接口未返回 SSE data chunk")
         val recoveredFromStream = terminal == null && !sawFunctionCall &&
             (streamedText.isNotBlank() || streamedReasoning.isNotBlank())

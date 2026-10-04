@@ -42,7 +42,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 ProviderRequestHeaders.mergeInto(this, config.baseUrl, config.customHeaders, request.sessionId)
             }
             .build()
-        val requestJson = buildRequestJson(config, request.messages, request.tools)
+        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools))
         val requestBody = requestJson.toString().toRequestBody(JSON_MEDIA_TYPE)
         val httpRequest = Request.Builder()
             .url(ProviderUrls.anthropicMessagesUrl(config.baseUrl))
@@ -54,7 +54,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
             AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength())
-            val assistant = readStreamingAssistantMessage(httpRequest, runController, onEvent)
+            val assistant = readStreamingAssistantMessage(httpRequest, runController, onEvent, request.requiresCompleteStream)
             onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistant)
         } catch (throwable: Throwable) {
@@ -205,7 +205,8 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
     private fun readStreamingAssistantMessage(
         request: Request,
         runController: AgentRunController,
-        onEvent: (ProviderEvent) -> Unit
+        onEvent: (ProviderEvent) -> Unit,
+        requireTerminal: Boolean,
     ): JSONObject {
         val content = StringBuilder()
         val reasoning = StringBuilder()
@@ -223,7 +224,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 reasoning = reasoning,
                 onEvent = onEvent
             )
-            if (result.messageStop) sawMessageStop = true
+            if (result.messageStop && (!requireTerminal || event == "message_stop")) sawMessageStop = true
             result.finishReason?.let { finishReason = it }
             result.usage?.let {
                 usage = it
@@ -276,13 +277,17 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             },
             shouldIgnoreFailure = {
                 val hasToolCalls = blocks.values.any { it.type == "tool_use" && it.name.isNotBlank() }
-                content.isNotBlank() || reasoning.isNotBlank() || hasToolCalls
+                sawMessageStop || (!requireTerminal &&
+                    (content.isNotBlank() || reasoning.isNotBlank() || hasToolCalls))
             },
         )
 
-        if (!sawMessageStop && finishReason.isNullOrBlank() &&
-            (runController.hasPendingSteering || runController.hasPausedInterrupt)) {
+        if (!sawMessageStop && (runController.hasPendingSteering || runController.hasPausedInterrupt)) {
             return interruptedAssistantMessage(content.toString(), reasoning.toString())
+        }
+
+        if (requireTerminal && !sawMessageStop) {
+            throw AgentModelFailure.incompleteStream("Anthropic 响应缺少结束事件；保留正文并按重连策略继续请求。")
         }
 
         if (!sawMessageStop) {

@@ -49,7 +49,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .also { ProviderRequestHeaders.mergeInto(it, config.baseUrl, config.customHeaders, request.sessionId) }
             .build()
 
-        val requestJson = buildRequestJson(config, request.messages, request.tools)
+        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools))
         val requestBody = requestJson.toString()
             .toRequestBody(JSON_MEDIA_TYPE)
 
@@ -63,7 +63,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
             AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength())
-            val assistantMessage = readStreamingAssistantMessage(httpRequest, runController, onEvent)
+            val assistantMessage = readStreamingAssistantMessage(httpRequest, runController, onEvent, request.requiresCompleteStream)
             onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistantMessage)
         } catch (throwable: Throwable) {
@@ -111,7 +111,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
     private fun readStreamingAssistantMessage(
         request: Request,
         runController: AgentRunController,
-        onEvent: (ProviderEvent) -> Unit
+        onEvent: (ProviderEvent) -> Unit,
+        requireTerminal: Boolean,
     ): JSONObject {
         val content = StringBuilder()
         val reasoningContent = StringBuilder()
@@ -290,7 +291,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
                 sawDone = true
             },
             shouldIgnoreFailure = {
-                recoveredFinishReason(finishReason, content, reasoningContent, toolCalls) != null
+                (!requireTerminal || sawDone || !finishReason.isNullOrBlank()) &&
+                    recoveredFinishReason(finishReason, content, reasoningContent, toolCalls) != null
             },
         )
 
@@ -298,6 +300,10 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         if (finishReason.isNullOrBlank() && (runController.hasPendingSteering || runController.hasPausedInterrupt)) {
             finishActiveVisibleBlock()
             return interruptedAssistantMessage(content.toString(), reasoningContent.toString())
+        }
+
+        if (requireTerminal && !sawDone && finishReason.isNullOrBlank()) {
+            throw AgentModelFailure.incompleteStream("模型响应尚未完成，连接已中断；保留正文并按重连策略继续请求。")
         }
 
         if (!sawStreamData) throw AgentModelFailure.incompleteStream("模型接口未返回 SSE data chunk")

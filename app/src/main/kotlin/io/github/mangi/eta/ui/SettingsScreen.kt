@@ -344,7 +344,6 @@ internal fun SettingsScreen(
                     )
                     ArrowPreference(
                         title = stringResource(R.string.error_reconnect_title),
-                        summary = stringResource(errorReconnectPolicyLabel(appSettings.errorReconnectPolicy)),
                         startAction = { PreferenceIcon(icon = Icons.Rounded.Refresh) },
                         onClick = { onNavigate(AppRoute.ErrorReconnectSettings) },
                     )

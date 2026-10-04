@@ -49,13 +49,6 @@ internal fun ErrorReconnectSettingsScreen(onBack: () -> Unit) {
         title = stringResource(R.string.error_reconnect_title),
         onBack = onBack,
     ) {
-        item(key = "error_reconnect_description") {
-            Text(
-                text = stringResource(R.string.error_reconnect_description),
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 12.dp),
-            )
-        }
         item(key = "error_reconnect_policy") {
             SmallTitle(stringResource(R.string.error_reconnect_duration))
             Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {

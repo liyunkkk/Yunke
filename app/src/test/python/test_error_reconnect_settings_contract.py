@@ -16,7 +16,7 @@ class ErrorReconnectSettingsContractTest(unittest.TestCase):
         between = settings[title_entry:reconnect_entry]
         self.assertEqual(1, between.count("ArrowPreference("))
         self.assertIn("R.string.error_reconnect_title", between)
-        self.assertIn("appSettings.errorReconnectPolicy", between)
+        self.assertNotIn("summary =", between)
         root = (UI / "app/AgentAppRoot.kt").read_text()
         reconnect = root.split("entry<AppRoute.ErrorReconnectSettings>", 1)[1].split("\n            entry<", 1)[0]
         self.assertIn("swipeDismiss = swipeDismiss", reconnect)
@@ -42,6 +42,23 @@ class ErrorReconnectSettingsContractTest(unittest.TestCase):
             self.assertNotIn(forbidden, page)
         for name in ("none", "window_30s", "window_1m", "window_5m", "continuous"):
             self.assertEqual(1, page.count("R.string.error_reconnect_" + name))
+
+    def test_page_does_not_show_the_removed_top_description(self):
+        page = (UI / "ErrorReconnectSettingsScreen.kt").read_text()
+        self.assertNotIn("error_reconnect_description", page)
+        self.assertIn('item(key = "error_reconnect_policy")', page)
+
+    def test_reconnect_marker_has_equal_lines_and_an_unweighted_center(self):
+        divider = (UI / "components/ErrorReconnectDivider.kt").read_text()
+        row = divider.split("    Row(", 1)[1].split("    if (showDetails)", 1)[0]
+        self.assertIn("modifier.fillMaxWidth()", row)
+        self.assertIn("padding(horizontal = 20.dp, vertical = 10.dp)", row)
+        self.assertEqual(2, row.count("Box(Modifier.weight(1f).height(0.5.dp).background(lineColor))"))
+        center = row.split("        Text(", 1)[1].split("        Box(", 1)[0]
+        self.assertNotIn(".weight(", center)
+        self.assertIn("textAlign = TextAlign.Center", center)
+        self.assertIn(".clickable", center)
+        self.assertIn("ContextCompactedSummarySheet(", divider)
 
     def test_english_simplified_and_traditional_resources_match(self):
         keys = {

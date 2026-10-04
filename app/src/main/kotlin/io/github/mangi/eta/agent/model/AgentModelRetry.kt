@@ -34,6 +34,9 @@ internal class AgentModelRetry(
         var round = initialRound
         var envelopeRetries = 0
         var attemptRequest = request
+        val reconnectPolicy = ErrorReconnectPolicy.fromPersistedValue(request.config.errorReconnectPolicy)
+        val reconnectEnabled = reconnectPolicy != ErrorReconnectPolicy.NONE
+        var reconnectTextOnly = false
         var reconnect: ModelErrorReconnect? = null
         var reconnectBinding: AgentRunController.ResourceBinding? = null
         val prefix = StringBuilder()
@@ -44,7 +47,7 @@ internal class AgentModelRetry(
                 return current
             }
             return ModelErrorReconnect(initialRound,
-                ErrorReconnectPolicy.fromPersistedValue(request.config.errorReconnectPolicy).windowMillis,
+                reconnectPolicy.windowMillis,
                 timing, onEvent, reason, listOf(request.config.apiKey)).also {
                 reconnect = it
                 // Stop emits its terminal marker immediately, including while waiting/in flight.
@@ -59,6 +62,7 @@ internal class AgentModelRetry(
                 onEvent(AgentEvent.RoundStarted(round, attemptRequest.messages.length()))
                 var toolDeliveryPossible = false
                 var callbackFailure: Throwable? = null
+                var attemptModelFailure: AgentModelFailure? = null
                 var sawCompleted = false
                 val textBlocks = linkedMapOf<Int, StringBuilder>()
                 val textFilter = AgentContinuationTextEvents(prefix.toString())
@@ -78,7 +82,12 @@ internal class AgentModelRetry(
                         (event.replaceContent || textBlocks[event.index].isNullOrEmpty())) {
                         textBlocks[event.index] = StringBuilder(event.content)
                     }
-                    onProviderEvent(round, event)
+                    try {
+                        onProviderEvent(round, event)
+                    } catch (failure: Throwable) {
+                        callbackFailure = failure
+                        throw failure
+                    }
                 }
                 try {
                     val response = try {
@@ -94,23 +103,22 @@ internal class AgentModelRetry(
                                             else -> false
                                         }) toolDeliveryPossible = true
                                     if (event is ProviderEvent.Completed) sawCompleted = true
-                                    try {
-                                        callbackFailure?.let { throw it }
-                                        when {
-                                            event is ProviderEvent.BlockDelta && event.kind == AssistantBlockKind.THINKING -> {
-                                                if (repetitionGuard.append(event.delta)) throw AgentModelFailure(
-                                                    "MODEL_REPETITIVE_REASONING", false,
-                                                    "检测到模型思考持续高度重复，已中止本次请求，且不会自动重试；此前工具结果已保留。")
+                                    callbackFailure?.let { throw it }
+                                    attemptModelFailure?.let { throw it }
+                                    when {
+                                        event is ProviderEvent.BlockDelta && event.kind == AssistantBlockKind.THINKING -> {
+                                            if (repetitionGuard.append(event.delta)) {
+                                                val failure = AgentModelFailure("MODEL_REPETITIVE_REASONING", false,
+                                                    "检测到模型思考持续高度重复，已中止本次请求；按所选重连策略处理，此前工具结果已保留。")
+                                                attemptModelFailure = failure
+                                                throw failure
                                             }
-                                            event is ProviderEvent.HostedToolStarted || event is ProviderEvent.HostedToolFinished ||
-                                                (event is ProviderEvent.BlockStart && event.kind == AssistantBlockKind.TOOL_CALL) ||
-                                                (event is ProviderEvent.BlockDelta && event.kind != AssistantBlockKind.THINKING && event.delta.isNotBlank()) -> repetitionGuard.reset()
                                         }
-                                        textFilter.map(event).forEach(::deliver)
-                                    } catch (failure: Throwable) {
-                                        callbackFailure = failure
-                                        throw failure
+                                        event is ProviderEvent.HostedToolStarted || event is ProviderEvent.HostedToolFinished ||
+                                            (event is ProviderEvent.BlockStart && event.kind == AssistantBlockKind.TOOL_CALL) ||
+                                            (event is ProviderEvent.BlockDelta && event.kind != AssistantBlockKind.THINKING && event.delta.isNotBlank()) -> repetitionGuard.reset()
                                     }
+                                    textFilter.map(event).forEach(::deliver)
                                 }
                             }
                         }
@@ -119,6 +127,7 @@ internal class AgentModelRetry(
                         reconnect?.detach(scope)
                     }
                     callbackFailure?.let { throw it }
+                    attemptModelFailure?.let { throw it }
                     reconnect?.check()
                     try {
                         controller.throwIfCancelled()
@@ -132,6 +141,11 @@ internal class AgentModelRetry(
                             throw failure
                         }
                         throw cancelled
+                    }
+                    if (attemptRequest.reconnectTextOnly && (toolDeliveryPossible ||
+                        (response.assistantMessage.optJSONArray("tool_calls")?.length() ?: 0) > 0)) {
+                        throw AgentModelFailure("RECONNECT_TOOL_CALL_BLOCKED", false,
+                            "重连请求只允许续写正文，未执行返回的工具调用；将继续请求直到恢复或期限结束。")
                     }
                     if (!controller.isCancelled) textFilter.finish().forEach(::deliver)
                     if (prefix.isNotEmpty()) {
@@ -156,17 +170,20 @@ internal class AgentModelRetry(
                         reconnect?.finish("stopped")
                         return Result(round, ProviderResponse(interruptedAssistantMessage(prefix.toString() + partial, "")))
                     }
-                    val classified = AgentModelFailure.transport(failure) ?: throw failure
+                    val classified = attemptModelFailure ?: AgentModelFailure.transport(failure)
+                        ?: if (reconnectEnabled) AgentModelFailure("PROVIDER_EXCEPTION", false,
+                            "模型请求发生异常；保留已有结果并按所选重连策略继续请求。", failure)
+                        else throw failure
                     if (classified.code == "CONTEXT_WINDOW_EXCEEDED") throw classified
                     val envelopeRejected = classified.code == ResponsesToolEnvelopeRecovery.CODE
                     val correctionAllowed = envelopeRejected && classified.envelopeCorrectionAllowed &&
                         provider.capabilities.endpoint == EndpointKind.RESPONSES
-                    val unsafeHostedReplay = request.config.hostedWebSearchEnabled &&
-                        !classified.code.startsWith("HTTP_")
+                    // A gateway HTTP error cannot prove a hosted operation never ran.
+                    val unsafeHostedReplay = request.config.hostedWebSearchEnabled && !correctionAllowed
                     val guarded = classified.code in setOf("MODEL_REPETITIVE_REASONING",
                         "RESPONSES_TOOL_CALL_INCOMPLETE", "RESPONSES_TOOL_ARGUMENTS_INCOMPLETE")
-                    if (toolDeliveryPossible || sawCompleted || unsafeHostedReplay || guarded ||
-                        (envelopeRejected && !correctionAllowed)) {
+                    if (!reconnectEnabled && (toolDeliveryPossible || sawCompleted || unsafeHostedReplay || guarded ||
+                        (envelopeRejected && !correctionAllowed))) {
                         val protected = if (!guarded && (toolDeliveryPossible || unsafeHostedReplay)) AgentModelFailure(
                             "UNSAFE_TOOL_REPLAY", false,
                             "请求中已有工具证据或远端工具执行状态未知，未重发以免重复副作用；已保留此前正文和工具证据。", classified)
@@ -174,7 +191,7 @@ internal class AgentModelRetry(
                         beginReconnect(protected).finish("failed")
                         throw protected
                     }
-                    if (envelopeRejected) {
+                    if (envelopeRejected && !reconnectEnabled) {
                         if (envelopeRetries >= ResponsesToolEnvelopeRecovery.MAX_RETRIES) throw AgentModelFailure(
                             classified.code, false,
                             "工具封装 JSON 校验连续失败，停止纠错；未执行被拒绝的工具调用。", classified)
@@ -187,8 +204,19 @@ internal class AgentModelRetry(
                         waitBeforeRetry(controller, minOf(delay, reconnect?.remainingMs() ?: delay))
                     } else {
                         val state = beginReconnect(classified)
-                        if (state.remainingMs() == 0L) throw classified
                         state.check()
+                        if (!reconnectEnabled) throw classified
+                        // Tool evidence prevents replay, not reconnection. Recover using a request
+                        // with no executable tools or hosted operations, and retain the same deadline.
+                        if (toolDeliveryPossible || sawCompleted || unsafeHostedReplay || guarded ||
+                            (envelopeRejected && (!correctionAllowed ||
+                                envelopeRetries >= ResponsesToolEnvelopeRecovery.MAX_RETRIES))) {
+                            reconnectTextOnly = true
+                        }
+                        if (envelopeRejected && correctionAllowed && !reconnectTextOnly) {
+                            envelopeRetries++
+                            attemptRequest = ResponsesToolEnvelopeRecovery.corrected(attemptRequest)
+                        }
                         // No retryable whitelist: safe HTTP auth/parameter errors and transports use the same policy.
                         val delay = minOf(1_000L, state.remainingMs() ?: 1_000L)
                         waitBeforeRetry(controller, delay)
@@ -202,7 +230,14 @@ internal class AgentModelRetry(
                                 .put(JSONObject().put("role", "assistant").put("content", prefix.toString()))
                                 .put(JSONObject().put("role", "user").put("content",
                                     "Continue the interrupted answer from exactly where it stopped. Do not repeat the previous text. Do not replay any completed tools."))
-                            attemptRequest = request.copy(messages = messages)
+                            attemptRequest = attemptRequest.copy(messages = messages)
+                        }
+                        if (reconnectTextOnly) {
+                            attemptRequest = attemptRequest.copy(
+                                config = attemptRequest.config.copy(hostedWebSearchEnabled = false),
+                                tools = JSONArray(),
+                                reconnectTextOnly = true,
+                            )
                         }
                     }
                     controller.throwIfCancelled()

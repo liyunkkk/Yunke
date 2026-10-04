@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -43,7 +44,21 @@ internal data class ProviderRequest(
     // Local-only diagnostic handles. Request builders never serialize these fields.
     val toolDiagnostics: AgentToolCallDiagnostics? = null,
     val toolDiagnosticAttempt: AgentToolCallDiagnostics.Attempt? = null,
+    // A transport recovery must never reissue an uncertain tool operation.
+    val reconnectTextOnly: Boolean = false,
 )
+
+internal val ProviderRequest.requiresCompleteStream: Boolean
+    get() = ErrorReconnectPolicy.fromPersistedValue(config.errorReconnectPolicy) != ErrorReconnectPolicy.NONE
+
+/** Apply after custom-body merging so overrides cannot re-enable tools on recovery. */
+internal fun ProviderRequest.restrictReconnectPayload(body: JSONObject): JSONObject {
+    if (reconnectTextOnly) {
+        listOf("tools", "tool_choice", "parallel_tool_calls", "functions", "function_call", "web_search_options",
+            "mcp_servers", "previous_response_id", "conversation").forEach(body::remove)
+    }
+    return body
+}
 
 internal data class ProviderResponse(
     val assistantMessage: JSONObject

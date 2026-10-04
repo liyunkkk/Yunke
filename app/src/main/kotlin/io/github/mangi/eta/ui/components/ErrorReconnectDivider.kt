@@ -66,7 +66,7 @@ internal fun ErrorReconnectDivider(message: ErrorReconnectMessageUi, modifier: M
         Box(Modifier.weight(1f).height(0.5.dp).background(lineColor))
         Text(
             text = label,
-            modifier = Modifier.weight(3f, fill = false).clip(RoundedCornerShape(8.dp))
+            modifier = Modifier.clip(RoundedCornerShape(8.dp))
                 .clickable { TouchHaptics.click(view); showDetails = true }
                 .semantics { contentDescription = "$label. $title" }
                 .padding(horizontal = 8.dp, vertical = 2.dp),

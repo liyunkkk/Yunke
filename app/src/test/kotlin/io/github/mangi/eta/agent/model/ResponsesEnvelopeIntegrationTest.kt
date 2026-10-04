@@ -32,8 +32,10 @@ class ResponsesEnvelopeIntegrationTest {
     private fun run(
         url: String,
         errorReconnectPolicy: String = "none",
+        timing: ReconnectTiming = SystemReconnectTiming,
+        wait: (AgentRunController, Long) -> Unit = { _, _ -> },
         callback: (Int, ProviderEvent) -> Unit = { _, _ -> },
-    ) = AgentModelRetry { _, _ -> }.complete(
+    ) = AgentModelRetry(timing = timing, waitBeforeRetry = wait).complete(
         1, request(url, errorReconnectPolicy), OpenAiResponsesProvider, AgentRunController(), {}, callback, {},
     )
     @Test fun httpAndFlattenedSseRejectionsRegenerateOnce() {
@@ -126,15 +128,23 @@ class ResponsesEnvelopeIntegrationTest {
             assertEquals(1, calls.get())
         }
     }
-    @Test fun correctionRegenerationsRemainBoundedAcrossTransientReconnects() {
-        server({ n -> if (n == 2) 503 to "temporary" else
-            500 to JSONObject().put("error", error()).toString() }) { url, calls ->
+    @Test fun correctionLimitDoesNotEndReconnectBeforeTheSelectedDeadline() {
+        val clock = object : ReconnectTiming {
+            var now = 0L
+            override fun nowMs() = now
+            override fun schedule(delayMs: Long, action: () -> Unit): AutoCloseable = AutoCloseable { }
+        }
+        val bodies = java.util.Collections.synchronizedList(mutableListOf<JSONObject>())
+        server(reply = { n -> if (n == 2) 503 to "temporary" else
+            500 to JSONObject().put("error", error()).toString() }, onRequest = bodies::add) { url, calls ->
             val failure = assertThrows(AgentModelFailure::class.java) {
-                run(url, errorReconnectPolicy = ErrorReconnectPolicy.WINDOW_30S.persistedValue)
+                run(url, errorReconnectPolicy = ErrorReconnectPolicy.WINDOW_30S.persistedValue,
+                    timing = clock, wait = { _, ms -> clock.now += ms })
             }
-            assertEquals(ResponsesToolEnvelopeRecovery.CODE, failure.code)
-            // Initial request, bounded correction regenerations, and one transient reconnect.
-            assertEquals(1 + ResponsesToolEnvelopeRecovery.MAX_RETRIES + 1, calls.get())
+            assertEquals("ERROR_RECONNECT_DEADLINE", failure.code)
+            assertEquals(30_000L, clock.now)
+            assertTrue(calls.get() > 1 + ResponsesToolEnvelopeRecovery.MAX_RETRIES + 1)
+            assertTrue(bodies.drop(4).all { !it.has("tools") && !it.has("parallel_tool_calls") })
         }
     }
     @Test fun transientFailureAfterCorrectionReconnectsSuccessfully() {
