@@ -167,7 +167,7 @@ class EtaBackupRepositoryTest {
         val preset = store.addPreset("备份预设")
         val presetOwner = io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Preset(preset.id)
         val owner = io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Conversation("backup-owner")
-        store.update(presetOwner) { it.copy(enabled = false, diagnosticsEnabled = true, profiles = listOf(
+        store.update(presetOwner) { it.copy(enabled = false, profiles = listOf(
             io.github.mangi.eta.agent.delegation.SubAgentProfile(
                 id = "remembered-model", name = "模型记忆", providerId = "provider", modelId = "selection",
                 reasoningByModel = mapOf("provider\u0000selection" to io.github.mangi.eta.data.model.ReasoningEffort.HIGH),
@@ -179,7 +179,7 @@ class EtaBackupRepositoryTest {
         val output = ByteArrayOutputStream()
         EtaBackupRepository.export(context, output)
         store.removePreset(preset.id)
-        store.update(owner) { it.copy(profiles = emptyList(), enabled = true, diagnosticsEnabled = false) }
+        store.update(owner) { it.copy(profiles = emptyList(), enabled = true) }
         val ownerRevision = store.revision(owner).value
         val presetRevision = store.revision(presetOwner).value
         EtaBackupRepository.import(context, ByteArrayInputStream(output.toByteArray()))
@@ -378,7 +378,7 @@ class EtaBackupRepositoryTest {
         val prefs = requireNotNull(io.github.mangi.eta.config.Prefs.localAgentPreferences())
         val store = ConversationSubAgentPreferences(prefs)
         val source = SubAgentConfigKey.Conversation("old-source-config")
-        store.update(source) { it.copy(enabled = true, diagnosticsEnabled = true,
+        store.update(source) { it.copy(enabled = true,
             profiles = listOf(SubAgentProfile(id = "old-agent", name = "old", providerId = "provider", modelId = "model"))) }
         val original = store.snapshot(source)
         val valid = store.export(source)
@@ -395,7 +395,6 @@ class EtaBackupRepositoryTest {
             assertTrue(BackupSubAgentConfig.hasOwner(prefs, imported.id))
             val config = store.snapshot(SubAgentConfigKey.Conversation(imported.id))
             assertFalse(config.enabled)
-            assertFalse(config.diagnosticsEnabled)
             assertTrue(config.profiles.isEmpty())
             assertTrue(config.parallelLimits.isEmpty())
             assertTrue(config.legacyParallelLimits.isEmpty())
@@ -413,7 +412,7 @@ class EtaBackupRepositoryTest {
         dao.importAsNewConversation(sourceDocument.conversation, sourceDocument.messages, null)
         val store = ConversationSubAgentPreferences()
         val source = SubAgentConfigKey.Conversation(sourceDocument.conversation.id)
-        store.update(source) { it.copy(enabled = true, diagnosticsEnabled = true,
+        store.update(source) { it.copy(enabled = true,
             profiles = listOf(SubAgentProfile(id = "new-agent", name = "new", providerId = "provider", modelId = "model"))) }
         val original = store.snapshot(source)
         val output = ByteArrayOutputStream()

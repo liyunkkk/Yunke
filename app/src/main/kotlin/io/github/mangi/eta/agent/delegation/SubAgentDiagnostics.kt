@@ -1,12 +1,17 @@
 package io.github.mangi.eta.agent.delegation
 
+import io.github.mangi.eta.core.AppFileLogger
 import java.security.MessageDigest
 import org.json.JSONObject
 
-/** Allowlisted metadata only. Never accepts prompt, arguments, result bodies, URLs or headers. */
+/**
+ * Allowlisted metadata only. Never accepts prompt, arguments, result bodies, URLs or headers.
+ * The production sink checks the global diagnostic switch on every delivery; no per-agent gate.
+ * An explicit sink is only an injection point for isolated diagnostics tests.
+ */
 internal class SubAgentDiagnostics(
     private val parentRunId: String = "",
-    private val sink: (String) -> Unit = {},
+    private val sink: (String) -> Unit = AppFileLogger::diagnosticInfo,
 ) {
     fun mark(stage: String, taskId: String = "", agentId: String = "", providerId: String = "", model: String = "",
         role: String = "", status: String = "", errorCode: String = "", failure: Throwable? = null,
@@ -17,13 +22,21 @@ internal class SubAgentDiagnostics(
                 .put("agent_ref",reference(agentId)).put("provider_ref",reference(providerId)).put("model_ref",reference(model))
                 .put("role",if(role in roles) role else "").put("status",if(status in statuses) status else "")
             if(errorCode.isNotBlank()) data.put("error_code", if(errorCode.matches(Regex("[A-Z][A-Z0-9_]{0,79}"))) errorCode else "UNCLASSIFIED")
-            failure?.let { data.put("exception_type",token(it.javaClass.simpleName)); data.put("origin",it.stackTrace.firstOrNull { f -> f.className.startsWith("io.github.mangi.eta.") }?.let { f -> "${f.className}:${f.lineNumber}" }.orEmpty()) }
+            failure?.let { data.put("exception_type",token(it.javaClass.simpleName)); data.put("origin",it.stackTrace.firstOrNull { f -> f.className.startsWith("io.github.mangi.eta.") }?.let { f -> "${f.className.take(160).replace(Regex("[^A-Za-z0-9_.$]"), "_")}:${f.lineNumber}" }.orEmpty()) }
             failure?.message?.let { message ->
                 Regex("\\bHTTP\\s+(\\d{3})\\b",RegexOption.IGNORE_CASE).find(message)?.groupValues?.get(1)?.toIntOrNull()
                     ?.takeIf { it in 100..599 }?.let { data.put("http_status",it) }
             }
             if(toolName.isNotBlank()) data.put("tool",if(SubAgentTools.allows(toolName) || toolName == "workspace_file") toolName else reference(toolName))
-            metrics.filterKeys { it in metricKeys }.forEach { (key,value) -> data.put(key,value) }
+            metrics.filterKeys { it in metricKeys }.forEach { (key,value) ->
+                // Only bounded primitive numbers: arbitrary Number.toString() may contain a body.
+                val number = when (value) {
+                    is Byte, is Short, is Int, is Long -> value.toLong()
+                    is Float, is Double -> value.toDouble().takeIf { it.isFinite() }
+                    else -> null
+                }
+                if (number != null) data.put(key, number)
+            }
             sink("SubAgentDiag $data")
         }
     }

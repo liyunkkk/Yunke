@@ -187,7 +187,7 @@ class SubAgentModelDefaultsEditorTest {
         repo.update(presetOwner) { it.copy(profiles = listOf(SubAgentProfile("source", "Source", providerId = "p", modelId = "selection"))) }
         val payload = repo.export(presetOwner)
         val editor = ConversationSubAgentEditor(owner, repo, { provider }) { true }
-        editor.applyPreset(preset.id); editor.setEnabled(true); editor.setDiagnosticsEnabled(true); repo.presets()
+        editor.applyPreset(preset.id); editor.setEnabled(true); repo.presets()
         assertFalse(storage.contains(SubAgentModelDefaults.KEY))
         val old = repo.snapshot(owner).profiles.single(); val token = repo.snapshot(owner).presetApplicationToken
         assertTrue(editor.commitProfileDraft(old.copy(reasoning = ReasoningEffort.LOW), old, token, null)

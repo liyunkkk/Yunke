@@ -148,6 +148,6 @@ internal object BackupSubAgentConfig {
         Base64.getUrlEncoder().withoutPadding().encodeToString(id.toByteArray(Charsets.UTF_8))
 
     private fun legacyArchive(): String = JSONObject().put("version", 1).put("enabled", false)
-        .put("diagnostics_enabled", false).put("agents", JSONArray())
+        .put("agents", JSONArray())
         .put("parallel_limits", JSONArray()).put("legacy_parallel_limits", JSONArray()).toString()
 }

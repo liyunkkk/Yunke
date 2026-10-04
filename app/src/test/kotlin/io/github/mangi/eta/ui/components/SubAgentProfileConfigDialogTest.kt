@@ -56,7 +56,7 @@ class SubAgentProfileConfigDialogTest {
             ConversationCollaborationDialog(true, false, {}, {})
         }
         compose.runOnIdle { assertTrue(fixture.repository.presets().isEmpty()) }
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("添加子代理").performScrollTo()
             .assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp).performClick()
         compose.onNodeWithContentDescription("名称").performTextReplacement("尚未保存")

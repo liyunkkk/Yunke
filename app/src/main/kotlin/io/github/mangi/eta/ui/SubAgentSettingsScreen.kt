@@ -26,6 +26,7 @@ import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.delegation.SubAgentPreset
 import io.github.mangi.eta.ui.components.ConversationSubAgentEditor
 import io.github.mangi.eta.ui.components.SubAgentPresetCard
+import io.github.mangi.eta.ui.components.SubAgentPresetActionsSheet
 import io.github.mangi.eta.ui.components.SubAgentPresetNameDialog
 import io.github.mangi.eta.ui.components.SubAgentPresetDirectoryStatus
 import io.github.mangi.eta.ui.components.rememberSubAgentPresetDirectory
@@ -75,6 +76,7 @@ internal fun SubAgentSettingsScreen(
     var add by remember { mutableStateOf(false) }
     var rename by remember { mutableStateOf<SubAgentPreset?>(null) }
     var delete by remember { mutableStateOf<SubAgentPreset?>(null) }
+    var actionsPreset by remember { mutableStateOf<SubAgentPreset?>(null) }
     var name by remember { mutableStateOf("") }
     val view = LocalView.current
     val editable = !directory.loading && directory.error == null
@@ -100,29 +102,28 @@ internal fun SubAgentSettingsScreen(
                         SubAgentPresetDirectoryStatus(directory)
                     }
                     items(directory.entries, key = { it.id }) { preset ->
-                        var expanded by remember(preset.id) { mutableStateOf(false) }
                         SubAgentPresetCard(preset, editable, "编辑子代理组${preset.name}",
                             onClick = { if (editable) directory.change {
                                 check(repository.presetExists(preset.id)) { "子代理组不存在，请重试" }
                                 selectedId = preset.id
                             } },
                             trailing = {
-                                Box(Modifier.padding(end = 8.dp)) {
-                                    IconButton(enabled = editable, onClick = { TouchHaptics.click(view); expanded = true }) {
-                                        Icon(Icons.Rounded.MoreVert, "${preset.name}组更多操作")
-                                    }
-                                    SubAgentDropdownMenu(expanded && editable, { expanded = false }) {
-                                        DropdownMenuItem(text = { Text("重命名组") }, onClick = {
-                                            name = preset.name; rename = preset; expanded = false
-                                        })
-                                        DropdownMenuItem(text = { Text("删除组", color = MaterialTheme.colorScheme.error) }, onClick = {
-                                            delete = preset; expanded = false
-                                        })
-                                    }
-                                }
+                                IconButton(modifier = Modifier.padding(end = 8.dp).size(48.dp), enabled = editable, onClick = {
+                                    if (editable) { TouchHaptics.click(view); actionsPreset = preset }
+                                }) { Icon(Icons.Rounded.MoreVert, "${preset.name}组更多操作") }
                             })
                     }
                 }
+            }
+            actionsPreset?.takeIf { editable }?.let { preset ->
+                SubAgentPresetActionsSheet(preset, onDismiss = { actionsPreset = null },
+                    onRename = {
+                        if (editable) { name = preset.name; rename = preset }
+                        actionsPreset = null
+                    }, onDelete = {
+                        if (editable) delete = preset
+                        actionsPreset = null
+                    })
             }
             if (add || rename != null) SubAgentPresetNameDialog(
                 title = if (add) "添加子代理组" else "重命名子代理组",
@@ -202,26 +203,7 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                         if (state is SubAgentEditorState.Error) TextButton(onClick = { editor?.retry() }) { Text("重试恢复配置") }
                     }
                     if (config != null) {
-                        item {
-                            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("自动委派", style = MaterialTheme.typography.bodyLarge)
-                                    Text("按职责自动分配任务", style = MaterialTheme.typography.bodySmall)
-                                }
-                                Switch(checked = config.enabled, enabled = editable,
-                                    onCheckedChange = { if (editor?.enabled == true) editor.setEnabled(it) })
-                            }
-                        }
-                        item {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("子代理诊断日志", style = MaterialTheme.typography.bodyLarge)
-                                    Text("保存本配置的诊断开关；运行日志接线由运行层处理。", style = MaterialTheme.typography.bodySmall)
-                                }
-                                Switch(checked = config.diagnosticsEnabled, enabled = editable,
-                                    onCheckedChange = { if (editor?.enabled == true) editor.setDiagnosticsEnabled(it) })
-                            }
-                        }
+                        // Editing a preset does not change its saved automatic-delegation value.
                         items(profiles, key = { it.id }) { profile ->
                             Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp).alpha(if (editable) 1f else 0.38f)) {
                                 Column(Modifier.padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {

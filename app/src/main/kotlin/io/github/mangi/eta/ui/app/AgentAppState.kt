@@ -75,10 +75,12 @@ import io.github.mangi.eta.config.AutoCompressPreference
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.core.safeLogType
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.supportsGptSpeedBinding
+import io.github.mangi.eta.data.model.withModels
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.EtaBackupExportOptions
 import io.github.mangi.eta.data.repository.EtaBackupRepository
@@ -88,6 +90,7 @@ import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.data.repository.ModelRepository
+import io.github.mangi.eta.data.repository.MainAgentSpeedDefaultsRepository
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 
@@ -184,6 +187,13 @@ internal class AgentAppState(
     private val conversationDrafts = ConversationDrafts(
         appContext.getSharedPreferences("conversation_input_drafts", Context.MODE_PRIVATE), scope,
     )
+
+    // Separate main-agent namespace; the existing full preferences backup includes this scalar.
+    private val mainAgentSpeedDefaults by lazy {
+        MainAgentSpeedDefaultsRepository(requireNotNull(Prefs.localAgentPreferences()) {
+            "Agent preferences 未初始化"
+        })
+    }
 
     fun currentDraftField() = conversationDrafts.field(selectedConversationId)
 
@@ -872,8 +882,8 @@ internal class AgentAppState(
             val state = conversationIdForRun(runId)?.let(::conversationState)
             if (state != null && route != contextRouteSignature(state)) invalidatedUsageRuns.add(runId)
         }
-        // Reset every loaded binding, including background conversations without a usage receipt.
-        // Once a binding becomes ineligible, changing settings back must not resurrect its old tier.
+        // Project every loaded binding, including background conversations without a usage receipt.
+        // Ineligible bindings display NORMAL without erasing their independent GPT memory.
         conversationsById.toList().forEach { (id, state) ->
             val next = state.withCurrentGptSpeedBinding()
             if (state.conversationContentLoaded && (next != state ||
@@ -885,8 +895,16 @@ internal class AgentAppState(
     }
 
     private fun AgentChatHomeUiState.withCurrentGptSpeedBinding(): AgentChatHomeUiState = copy(
-        gptSpeedMode = GptSpeedModePolicy.forSelection(gptSpeedMode, providerId, modelId, selectionProviders),
+        gptSpeedMode = rememberedGptSpeedMode(providerId, modelId),
     )
+
+    private fun rememberedGptSpeedMode(providerId: String, modelId: String): GptSpeedMode {
+        val provider = selectionProviders.singleOrNull { it.id == providerId }?.takeIf { it.isEnabled }
+        val model = provider?.models?.singleOrNull { it.id == modelId }?.takeIf { it.isEnabled }
+        // Do not read/write memory for non-GPT or missing selections, including startup placeholders.
+        if (!supportsGptSpeedBinding(provider, model)) return GptSpeedMode.NORMAL
+        return mainAgentSpeedDefaults.modeFor(providerId, modelId)
+    }
 
     private fun observeRuntimeSelection() {
         scope.launch {
@@ -912,10 +930,15 @@ internal class AgentAppState(
             updateCurrentConversation(homeState.copy(providerId = defaultProviderId.orEmpty(), modelId = defaultModelId.orEmpty()))
             if (selectedConversationId != null) persistConversations()
         }
-        val provider = selectionProviders.firstOrNull { it.id == homeState.providerId && it.isEnabled }
-        val model = provider?.models?.firstOrNull { it.id == homeState.modelId && it.isEnabled }
+        val provider = selectionProviders.singleOrNull { it.id == homeState.providerId }?.takeIf { it.isEnabled }
+        val model = provider?.models?.singleOrNull { it.id == homeState.modelId }?.takeIf { it.isEnabled }
         val projected = AgentModelPickerProjector.project(selectionProviders, homeState.providerId, homeState.modelId)
-        modelPickerState = projected.copy(selectedModel = projected.selectedModel?.takeIf {
+        // The shared picker deduplicates API aliases for listing. An already bound selection must
+        // still project ITS exact model ID, not lose its speed action to another entry's alias.
+        val boundOption = if (provider != null && model != null) {
+            AgentModelPickerProjector.project(listOf(provider.withModels(listOf(model))), provider.id, model.id).selectedModel
+        } else null
+        modelPickerState = projected.copy(selectedModel = boundOption?.takeIf {
             provider != null && model != null && it.providerId == provider.id && it.id == model.id
         }, isChanging = false)
         currentReasoningCapabilities = if (provider != null && model != null)
@@ -931,12 +954,9 @@ internal class AgentAppState(
                 cloudRequestOverheadTokens = null, cloudRouteSignature = null, cloudReceiptRequestId = null,
                 contextReceiptEvidence = null, receiptPredictionTokens = null, contextAwaitingReceipt = true,
                 contextHasStarted = true) else next
-        // Re-evaluate the actual binding, not a display name or a remembered provider logo.
-        // A missing/deleted/non-GPT model clears the transient choice; returning to GPT stays normal.
-        val speedNext = scopedNext.copy(gptSpeedMode = GptSpeedModePolicy.forBinding(
-            scopedNext.gptSpeedMode, model?.modelId.orEmpty(),
-            supportsGptSpeedBinding(provider, model),
-        ))
+        // Restore by provider ID + model selection ID, never copy the previous model's tier.
+        // Unavailable/non-GPT projections are NORMAL and never overwrite remembered GPT choices.
+        val speedNext = scopedNext.withCurrentGptSpeedBinding()
         if (speedNext != homeState) {
             val conversationId = selectedConversationId
             if (conversationId == null) homeState = speedNext else updateConversation(conversationId, speedNext, updateTimestamp = false)
@@ -1395,7 +1415,7 @@ internal class AgentAppState(
                 withContext(Dispatchers.Main) {
                     // Do not overwrite a concurrent edit/delete while Room was being read.
                     if (conversationsById[id] === cached) {
-                        conversationsById = conversationsById + (id to loaded)
+                        conversationsById = conversationsById + (id to loaded.withCurrentGptSpeedBinding())
                     }
                 }
             }
@@ -1654,14 +1674,26 @@ internal class AgentAppState(
         if (modelPickerState.isChanging) return
         val selected = modelPickerState.selectedModel ?: return
         if (selected.id != homeState.modelId || selected.providerId != homeState.providerId) return
-        val provider = selectionProviders.firstOrNull { it.id == selected.providerId && it.isEnabled } ?: return
-        val model = provider.models.firstOrNull { it.id == selected.id && it.isEnabled } ?: return
+        val provider = selectionProviders.singleOrNull { it.id == selected.providerId }?.takeIf { it.isEnabled } ?: return
+        val model = provider.models.singleOrNull { it.id == selected.id }?.takeIf { it.isEnabled } ?: return
         val eligible = supportsGptSpeedBinding(provider, model)
-        val next = GptSpeedModePolicy.cycle(homeState.gptSpeedMode, model.modelId, eligible)
-        if (next == homeState.gptSpeedMode) return
+        if (!eligible) return
+        val next = GptSpeedModePolicy.cycle(rememberedGptSpeedMode(provider.id, model.id), model.modelId, eligible)
+        val saved = runCatching { mainAgentSpeedDefaults.remember(provider, model, next) }.getOrElse {
+            Toast.makeText(appContext, "主代理模型速度保存失败，原设置未更改。", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!saved) return
         val replacedRun = activeRunIdForSelectedConversation().takeIf { homeState.isPaused }
         updateCurrentConversation(homeState.copy(gptSpeedMode = next))
-        // Session UI state only; never rewrite a provider's custom body or reasoning preference.
+        // Refresh other loaded conversations bound to this exact selection. Runtime configs remain frozen.
+        conversationsById.toList().forEach { (id, state) ->
+            if (id != selectedConversationId && state.conversationContentLoaded &&
+                state.providerId == provider.id && state.modelId == model.id) {
+                updateConversation(id, state.copy(gptSpeedMode = next), updateTimestamp = false)
+            }
+        }
+        // Never rewrite provider custom bodies, reasoning preferences, child defaults or presets.
         replacedRun?.let { stopRun(it, reason = AgentChildControlPolicy.Reason.SETTINGS_CHANGED) }
     }
 
@@ -1669,7 +1701,8 @@ internal class AgentAppState(
         if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.isStreaming && !homeState.isPaused) return
         val provider = selectionProviders.filter { it.isEnabled && (providerId.isBlank() || it.id == providerId) && it.models.any { m -> m.id == modelId && m.isEnabled } }.singleOrNull() ?: return
-        val model = provider.models.first { it.id == modelId && it.isEnabled }
+        if (selectionProviders.count { it.id == provider.id } != 1) return
+        val model = provider.models.singleOrNull { it.id == modelId }?.takeIf { it.isEnabled } ?: return
         if (homeState.providerId == provider.id && homeState.modelId == model.id) return
         val replacedRun = activeRunIdForSelectedConversation().takeIf { homeState.isPaused }
         modelBindingGeneration++
@@ -1677,8 +1710,7 @@ internal class AgentAppState(
         val requestedEffort = rememberedModelReasoningEffort(provider.id, model.id, model.preferredReasoningEffort)
         val nextEffort = ConversationReasoningPolicy.resolve(requestedEffort, config.reasoningCapabilities)
         updateCurrentConversation(homeState.copy(providerId = provider.id, modelId = model.id,
-            gptSpeedMode = GptSpeedModePolicy.forBinding(homeState.gptSpeedMode, model.modelId,
-                supportsGptSpeedBinding(provider, model)),
+            gptSpeedMode = rememberedGptSpeedMode(provider.id, model.id),
             reasoningEffort = nextEffort, thinkingEnabled = nextEffort.enablesReasoning,
             livePromptTokens = null, livePromptIsProjected = false))
         billedOverheadTokens = null
@@ -3005,8 +3037,8 @@ internal class AgentAppState(
         logicalTurnId: String = runId,
         consumeDraft: Boolean = false,
     ) {
-        val runProvider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled }
-        val runModel = runProvider?.models?.firstOrNull { it.id == state.modelId && it.isEnabled }
+        val runProvider = selectionProviders.singleOrNull { it.id == state.providerId }?.takeIf { it.isEnabled }
+        val runModel = runProvider?.models?.singleOrNull { it.id == state.modelId }?.takeIf { it.isEnabled }
         if (runProvider == null || runModel == null) {
             Toast.makeText(appContext, "绑定模型已不可用，未发送。请重新选择。", Toast.LENGTH_LONG).show()
             return
@@ -3017,11 +3049,11 @@ internal class AgentAppState(
         }
         if (consumeDraft) conversationDrafts.replace(conversationId, "")
         val runAssistant = requestOverheadAssistant(state)
-        // Freeze the mode with THIS submitted state's binding before launching any coroutine.
+        // Resolve and freeze the remembered mode for THIS submitted binding before any coroutine.
         // Later UI toggles must not mutate an in-flight request or affect a different model.
         val runConfig = GptSpeedModePolicy.snapshot(
             RuntimeConfigRepository.buildRuntimeConfig(runProvider, runModel, runAssistant),
-            state.gptSpeedMode,
+            rememberedGptSpeedMode(state.providerId, state.modelId),
             supportsGptSpeedBinding(runProvider, runModel),
         )
         val runModelOption = AgentModelPickerProjector.project(listOf(runProvider), runProvider.id, runModel.id).selectedModel
@@ -5837,7 +5869,7 @@ internal class AgentAppState(
             providerId = currentBoundProviderId(),
             modelId = currentBoundModelId(),
             assistantId = currentBoundAssistantId(),
-        )
+        ).withCurrentGptSpeedBinding()
         conversationPaneState = conversationPaneState.copy(selectedConversationId = null)
     }
 
@@ -5961,7 +5993,8 @@ internal class AgentAppState(
         if (id == null) return null
         val cached = conversationsById[id] ?: return null
         if (cached.conversationContentLoaded) return cached
-        val loaded = AgentConversationStore.loadConversation(appContext, id)?.let(::orderedTerminalState) ?: return null
+        val loaded = AgentConversationStore.loadConversation(appContext, id)?.let(::orderedTerminalState)
+            ?.withCurrentGptSpeedBinding() ?: return null
         val current = conversationsById[id] ?: return null
         if (current !== cached) return conversationState(id)
         conversationsById = conversationsById + (id to loaded)
@@ -6238,7 +6271,7 @@ internal class AgentAppState(
                 reasoningEffort = homeState.reasoningEffort,
                 thinkingEnabled = homeState.reasoningEffort.enablesReasoning,
                 availableReasoningEfforts = currentReasoningCapabilities?.selectableEfforts.orEmpty(),
-            )
+            ).withCurrentGptSpeedBinding()
 
     private fun restoreConversationRuntimeModel() {
         modelBindingGeneration++

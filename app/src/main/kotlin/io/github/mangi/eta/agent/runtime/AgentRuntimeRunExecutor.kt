@@ -251,7 +251,7 @@ internal class AgentRuntimeRunExecutor(
                         modelParallelLimits = frozenParallelLimits,
                         poolScope = poolScope,
                         allowTimeoutContinuation = true,
-                        diagnostics = if (childConfig.diagnosticsEnabled) SubAgentDiagnostics(request.runId, AndroidAgentLogger::info) else SubAgentDiagnostics(),
+                        diagnostics = SubAgentDiagnostics(request.runId),
                         workspace = workspace,
                         onTaskChanged = { generationForCallback?.let(AgentChildTaskGroups::onTaskChanged) },
                         prepareManualCompactor = { config -> io.github.mangi.eta.agent.model.AgentCompressionEndpoint.apply(

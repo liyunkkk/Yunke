@@ -220,7 +220,6 @@ internal class ConversationSubAgentEditor(
         old.copy(profiles = old.profiles.filterNot { profile -> profile.id == id })
     }
     fun setEnabled(value: Boolean) = update { it.copy(enabled = value) }
-    fun setDiagnosticsEnabled(value: Boolean) = update { it.copy(diagnosticsEnabled = value) }
     fun saveParallelLimit(id: String, providerId: String, modelId: String, apiModel: String, limit: Int): ConversationSubAgentPreferences.WriteResult {
         if (limit < 0 || providerId.isBlank() || apiModel.isBlank()) return ConversationSubAgentPreferences.WriteResult.Rejected
         val binding = SubAgentParallelModel(providerId, apiModel)

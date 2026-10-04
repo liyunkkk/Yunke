@@ -78,6 +78,19 @@ internal object AppFileLogger {
 
     fun info(message: String) = write("I", message, null)
 
+    /**
+     * Optional redacted diagnostics share the global file-logging switch, including logcat output.
+     * Check at delivery time (not when a run starts), under the same lock as setEnabled/clear,
+     * so retained child tasks cannot emit after logging has been disabled.
+     */
+    fun diagnosticInfo(message: String) {
+        lock.withLock {
+            if (!enabled.get()) return
+            runCatching { Log.i(ModuleConfig.TAG, message) }
+            write("I", message, null)
+        }
+    }
+
     fun warn(message: String) = write("W", message, null)
 
     fun error(message: String, throwable: Throwable? = null) = write("E", message, throwable)

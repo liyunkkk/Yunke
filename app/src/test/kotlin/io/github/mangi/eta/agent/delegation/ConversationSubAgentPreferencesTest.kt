@@ -80,7 +80,7 @@ class ConversationSubAgentPreferencesTest {
         val memory = mutableMapOf("p\u0000selection" to ReasoningEffort.HIGH)
         val profiles = mutableListOf(profile().copy(reasoningByModel = memory))
         val limits = mutableMapOf(pool to 2)
-        repo.update(source) { it.copy(profiles = profiles, parallelLimits = limits, diagnosticsEnabled = true, enabled = true) }
+        repo.update(source) { it.copy(profiles = profiles, parallelLimits = limits, enabled = true) }
         val draft = repo.createDraft(source)
         val second = repo.createDraft(source)
         profiles.clear(); memory.clear(); limits.clear()
@@ -106,9 +106,9 @@ class ConversationSubAgentPreferencesTest {
         val owner = c("same")
         a.update(owner) { it.copy(enabled = false) }
         assertEquals(a.revision.value, b.revision.value)
-        b.update(owner) { it.copy(diagnosticsEnabled = true) }
+        b.update(owner) { it.copy(parallelLimits = mapOf(pool to 3)) }
         assertFalse(a.snapshot(owner).enabled)
-        assertTrue(a.snapshot(owner).diagnosticsEnabled)
+        assertEquals(3, a.snapshot(owner).parallelLimit(pool))
     }
     @Test fun rejectionAndRevisionAreOwnerScoped() = runBlocking {
         val repo = ConversationSubAgentPreferences(prefs()) { it != c("running") }
@@ -143,6 +143,39 @@ class ConversationSubAgentPreferencesTest {
         repo.refreshAfterRestore()
         assertTrue(repo.revision.value > revision)
     }
+    @Test fun retiredDiagnosticKeyIsIgnoredAcrossReadWriteImportAndExport() {
+        val prefs = prefs()
+        val repo = ConversationSubAgentPreferences(prefs)
+        val source = c("diagnostic-source")
+        repo.update(source) { it.copy(enabled = true, profiles = listOf(profile()), parallelLimits = mapOf(pool to 2)) }
+        val archive = repo.export(source)
+        assertFalse(JSONObject(archive).has("diagnostics_enabled"))
+        val expected = repo.snapshot(source)
+        listOf<Any?>(null, true, false, "not-a-switch", JSONObject.NULL).forEachIndexed { index, legacyValue ->
+            val legacy = JSONObject(archive)
+            if (legacyValue != null) legacy.put("diagnostics_enabled", legacyValue)
+            repo.validateArchive(legacy.toString())
+            val target = c("diagnostic-import-$index")
+            assertTrue(repo.importOwner(target, legacy.toString()))
+            assertEquals(expected, repo.snapshot(target))
+            assertFalse(JSONObject(repo.export(target)).has("diagnostics_enabled"))
+            repo.update(target) { it.copy(enabled = false) }
+            assertFalse(JSONObject(repo.export(target)).has("diagnostics_enabled"))
+        }
+        // Old owner/seed values stay readable without a diagnostic migration or reset.
+        val legacy = JSONObject(archive).put("diagnostics_enabled", true).toString()
+        val ownerKey = ConversationSubAgentPreferences.OWNER_PREFIX + "c_" +
+            java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(source.value.toByteArray(Charsets.UTF_8))
+        prefs.edit().putString(ownerKey, legacy).putString(ConversationSubAgentPreferences.SEED_KEY, legacy).commit()
+        val before = prefs.all.toMap()
+        assertEquals(expected, repo.snapshot(source))
+        assertEquals(expected, repo.snapshot(c("diagnostic-seed")))
+        assertEquals(before, prefs.all)
+        val draft = repo.createDraft(source)
+        assertEquals(expected, repo.snapshot(draft))
+        assertFalse(JSONObject(repo.export(draft)).has("diagnostics_enabled"))
+    }
+
     @Test fun obsoleteListIsNotMigratedAndDraftsNeverShareNullKey() {
         val prefs = prefs()
         prefs.edit().putString(SubAgentPreferences.PROFILES_KEY, "garbage").commit()

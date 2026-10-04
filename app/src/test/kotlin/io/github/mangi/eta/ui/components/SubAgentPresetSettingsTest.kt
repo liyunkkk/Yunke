@@ -6,6 +6,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.ui.SubAgentSettingsScreen
 import org.junit.Assert.*
@@ -53,6 +54,75 @@ class SubAgentPresetSettingsTest {
         compose.runOnIdle { assertEquals(0, exits) }
         compose.onNodeWithContentDescription("返回").performClick()
         compose.runOnIdle { assertEquals(1, exits) }
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h480dp")
+    fun presetMoreOpensBottomActionsOnSmallScreenWithoutEditingOrCopyAction() {
+        val fixture = SubAgentUiFixture(enabled = false)
+        val group = fixture.createPreset("一个较长的子代理组名称用于窄屏面板")
+        val before = fixture.snapshot()
+        compose.setSubAgentContent(fixture) { SubAgentSettingsScreen({}, { fixture.repository }) }
+        compose.onNodeWithContentDescription("${group.name}组更多操作").performScrollTo()
+            .assertHeightIsAtLeast(48.dp).performClick()
+        compose.onNodeWithContentDescription("子代理组操作面板").assertIsDisplayed()
+            .assertWidthIsAtLeast(280.dp)
+        val rename = compose.onNodeWithText("重命名组").assertIsDisplayed().assertHasClickAction()
+        val delete = compose.onNodeWithText("删除组").assertIsDisplayed().assertHasClickAction()
+        val renameBounds = rename.fetchSemanticsNode().boundsInRoot
+        val deleteBounds = delete.fetchSemanticsNode().boundsInRoot
+        assertTrue("actions must stack vertically", deleteBounds.top >= renameBounds.bottom)
+        assertTrue("icons and labels must align", kotlin.math.abs(deleteBounds.left - renameBounds.left) < 1f)
+        compose.onNodeWithText("复制").assertDoesNotExist()
+        compose.onNodeWithText("配置").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(before, fixture.snapshot())
+            assertEquals(group.config, fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id)))
+        }
+        rename.performClick()
+        compose.onNodeWithContentDescription("子代理组操作面板").assertDoesNotExist()
+        compose.onNodeWithContentDescription("组名称").assertIsDisplayed()
+        compose.onNodeWithText("取消").performClick()
+        compose.onNodeWithContentDescription("${group.name}组更多操作").performScrollTo().performClick()
+        compose.onNodeWithText("删除组").performClick()
+        compose.onNodeWithContentDescription("子代理组操作面板").assertDoesNotExist()
+        compose.onNodeWithText("删除子代理组？").assertIsDisplayed()
+        compose.onNodeWithText("取消").performClick()
+        compose.runOnIdle {
+            assertEquals(group.config, fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id)))
+            assertEquals(before, fixture.snapshot())
+        }
+    }
+
+    @Test fun presetDetailHidesGlobalSwitchesAndProfileEditsPreserveAutomaticDelegation() {
+        val fixture = SubAgentUiFixture(enabled = false)
+        val group = fixture.createPreset()
+        val before = fixture.snapshot()
+        compose.setSubAgentContent(fixture) { SubAgentSettingsScreen({}, { fixture.repository }) }
+        compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
+        compose.onNodeWithText("自动委派", substring = false).assertDoesNotExist()
+        compose.onNodeWithText("子代理诊断日志").assertDoesNotExist()
+        compose.onNodeWithContentDescription("启用执行代理 1").performTouchInput { click() }
+        compose.onNodeWithContentDescription("执行代理 1更多操作").performClick()
+        compose.onNodeWithText("重命名", substring = false).performClick()
+        compose.onNode(hasSetTextAction()).performTextReplacement("预设代理新名")
+        compose.onNodeWithText("保存").performClick()
+        compose.runOnIdle {
+            val saved = fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id))
+            assertFalse("removing the switch must not replace the stored enabled value", saved.enabled)
+            assertFalse(saved.profiles.first().enabled)
+            assertEquals("预设代理新名", saved.profiles.first().name)
+            assertEquals(before, fixture.snapshot())
+            assertTrue(fixture.repository.update(SubAgentConfigKey.Preset(group.id)) { it.copy(enabled = true) }
+                is io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences.WriteResult.Saved)
+        }
+        compose.onNodeWithContentDescription("启用预设代理新名").performTouchInput { click() }
+        compose.runOnIdle {
+            val saved = fixture.repository.snapshot(SubAgentConfigKey.Preset(group.id))
+            assertTrue("profile edits must also preserve an enabled preset", saved.enabled)
+            assertTrue(saved.profiles.first().enabled)
+            assertEquals(before, fixture.snapshot())
+        }
     }
 
     @Test fun addNamedEmptyGroupRenameAndDeleteDoNotChangeConversation() {

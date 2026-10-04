@@ -358,6 +358,9 @@ class AgentAppStateRevisionTransactionTest {
             (get(app, "runtimeRecoveryInProgress") as AtomicBoolean).set(false)
             val provider = OpenAiCompatibleProviderSetting("revision-provider", "Test", "https://example.org/v1",
                 models = listOf(Model("m", "gpt-5", "Model", contextWindow = 100000)))
+            io.github.mangi.eta.data.repository.MainAgentSpeedDefaultsRepository(
+                requireNotNull(Prefs.localAgentPreferences()),
+            ).remember(provider, provider.models.single(), GptSpeedMode.FAST)
             call(app, "updateSelectionProviders", listOf(provider))
             set(app, "selectedConversationId", id)
             set(app, "conversationCreatedAt", mapOf(id to 1234L))

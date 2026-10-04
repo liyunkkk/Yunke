@@ -10,7 +10,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GptSpeedModePolicyTest {
-    @Test fun switchingAwayAndBackDoesNotRestoreSpeed() {
+    @Test fun eligibilityProjectionAloneDoesNotCarrySpeedIntoNonGpt() {
         for (active in listOf(GptSpeedMode.FAST, GptSpeedMode.ULTRA_FAST)) {
             val away = GptSpeedModePolicy.forBinding(active, "deepseek-chat")
             assertEquals(GptSpeedMode.NORMAL, away)
@@ -18,7 +18,7 @@ class GptSpeedModePolicyTest {
         }
     }
 
-    @Test fun missingModelUnsupportedProtocolAndNonTextModelsReset() {
+    @Test fun missingOrIneligibleModelsProjectNormalWhileAnyGptIdSupportsSpeed() {
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, ""))
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, "claude-opus"))
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.forBinding(GptSpeedMode.FAST, "gpt-6-astra", false))
@@ -49,7 +49,7 @@ class GptSpeedModePolicyTest {
         assertEquals(GptSpeedMode.NORMAL, GptSpeedModePolicy.snapshot(config(), GptSpeedMode.NORMAL).gptSpeedMode)
     }
 
-    @Test fun backgroundBindingCannotRecoverItsOldModeAfterSettingsReturn() {
+    @Test fun eligibilityProjectionClearsOnlyDisplayedModeWithoutOwningMemory() {
         val model = Model(id = "m", modelId = "gpt-6-astra", displayName = "GPT")
         val provider = OpenAiCompatibleProviderSetting(id = "p", name = "relay",
             baseUrl = "https://example.invalid", models = listOf(model))

@@ -158,7 +158,7 @@ class ConversationSubAgentPreferencesSafetyTest {
         val prefs = prefs()
         val repo = ConversationSubAgentPreferences(prefs)
         val untouched = prefs.all.toMap()
-        val base = JSONObject().put("version", 1).put("enabled", true).put("diagnostics_enabled", false)
+        val base = JSONObject().put("version", 1).put("enabled", true)
             .put("agents", org.json.JSONArray().put(SubAgentProfile("id", "name").toJson()))
             .put("parallel_limits", org.json.JSONArray()).put("legacy_parallel_limits", org.json.JSONArray())
         repo.validateArchive(base.toString())

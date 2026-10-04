@@ -39,7 +39,7 @@ class GptSpeedContractTest(unittest.TestCase):
         for gate in ("providerType", "endpointMode", "supportsImageGeneration", "outputModalities"):
             self.assertNotIn(gate, policy)
 
-    def test_provider_updates_reset_background_and_draft_before_picker(self):
+    def test_provider_updates_project_background_and_draft_before_picker(self):
         body = between(source("ui/app/AgentAppState.kt"), "private fun updateSelectionProviders(",
                        "private fun observeRuntimeSelection()")
         self.assertIn("conversationsById.toList().forEach", body)
@@ -52,7 +52,7 @@ class GptSpeedContractTest(unittest.TestCase):
     def test_run_snapshot_is_frozen_before_prepare_coroutine(self):
         state = source("ui/app/AgentAppState.kt")
         tail = state.split("val runConfig = GptSpeedModePolicy.snapshot(", 1)[1]
-        self.assertLess(tail.index("state.gptSpeedMode"), tail.index("scope.launch"))
+        self.assertLess(tail.index("rememberedGptSpeedMode(state.providerId, state.modelId)"), tail.index("scope.launch"))
         policy = source("ui/app/GptSpeedModePolicy.kt")
         self.assertIn("config.copy(", policy)
         self.assertIn("isGptSpeedModel(config.model)", policy)

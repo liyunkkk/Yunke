@@ -76,7 +76,7 @@ class ConversationCollaborationDialogTest {
         }
         compose.onNodeWithText("本会话协作").assertExists()
         compose.onNodeWithText("选择子代理组").assertExists()
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         listOf("执行代理 1", "执行代理 2", "执行代理 3", "审查／总结代理").forEach {
             compose.onNodeWithText(it).assertExists()
         }
@@ -93,7 +93,7 @@ class ConversationCollaborationDialogTest {
         compose.setSubAgentContent(fixture) {
             ConversationCollaborationDialog(true, true, {}, {})
         }
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { longClick() }
         compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
         compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { click() }
@@ -117,7 +117,7 @@ class ConversationCollaborationDialogTest {
         compose.setSubAgentContent(fixture) {
             ConversationCollaborationDialog(true, true, { changes++ }, { dismissals++ }, taskRunning = running.value)
         }
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("执行代理 1模型").performClick()
         compose.onNodeWithText("选择执行代理 1模型").assertExists()
         compose.runOnIdle { running.value = true }
@@ -161,7 +161,7 @@ class ConversationCollaborationDialogTest {
         compose.setSubAgentContent(fixture) {
             ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
         }
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("设置执行代理 1任务分工").assertDoesNotExist()
         compose.onNodeWithContentDescription("配置执行代理 1").performClick()
         compose.onNodeWithContentDescription("名称").assertIsDisplayed().performTextReplacement("运行前未确认草稿")
@@ -182,7 +182,7 @@ class ConversationCollaborationDialogTest {
         compose.setSubAgentContent {
             ConversationCollaborationDialog(true, true, {}, {})
         }
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         val info = compose.onNodeWithContentDescription("执行代理 1模型").fetchSemanticsNode().boundsInRoot
         val more = compose.onNodeWithContentDescription("配置执行代理 1").fetchSemanticsNode().boundsInRoot
         org.junit.Assert.assertTrue("config must be to the right of the model column", more.left >= info.right)
@@ -199,7 +199,7 @@ class ConversationCollaborationDialogTest {
         compose.setSubAgentContent {
             ConversationCollaborationDialog(true, true, {}, {})
         }
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("配置执行代理 1")
             .assertHeightIsAtLeast(48.dp)
             .assertWidthIsAtLeast(48.dp)
@@ -221,7 +221,7 @@ class ConversationCollaborationDialogTest {
             org.junit.Assert.assertEquals(before, fixture.snapshot())
             org.junit.Assert.assertEquals(revision, fixture.repository.revision(fixture.owner).value)
         }
-        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().performClick()
         compose.onNodeWithText("切换子代理组").assertExists()
         compose.onNodeWithContentDescription("执行代理 1模型").assertExists()
         compose.runOnIdle {
@@ -276,13 +276,99 @@ class ConversationCollaborationDialogTest {
         }
         compose.onNodeWithContentDescription("应用子代理组${group.name}").assertIsNotEnabled()
             .performTouchInput { click() }
-        compose.onNodeWithText("使用当前配置").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed().assertIsNotEnabled()
         compose.runOnIdle {
             org.junit.Assert.assertEquals(before, fixture.snapshot())
             running.value = false
         }
         compose.onNodeWithContentDescription("应用子代理组${group.name}").performScrollTo().assertIsEnabled().performClick()
         compose.onNodeWithText("切换子代理组").assertExists()
+    }
+
+    private fun assertFooterAligned(leftLabel: String) {
+        compose.onAllNodesWithText(leftLabel).assertCountEquals(1)
+        val left = compose.onNodeWithText(leftLabel).assertIsDisplayed()
+            .assert(hasAnyAncestor(hasTestTag("subagent-collaboration-footer"))).fetchSemanticsNode().boundsInRoot
+        val done = compose.onNodeWithText("完成").assertIsDisplayed()
+            .assert(hasAnyAncestor(hasTestTag("subagent-collaboration-footer"))).fetchSemanticsNode().boundsInRoot
+        val footer = compose.onNodeWithTag("subagent-collaboration-footer").fetchSemanticsNode().boundsInRoot
+        val body = compose.onNodeWithTag("subagent-collaboration-body").fetchSemanticsNode().boundsInRoot
+        val card = compose.onNodeWithTag("subagent-collaboration-card").fetchSemanticsNode().boundsInRoot
+        assertTrue("footer actions must not overlap", left.right <= done.left)
+        assertTrue("footer actions must be horizontally aligned", kotlin.math.abs(left.center.y - done.center.y) < 1f)
+        assertTrue("scrolling body must end above footer", body.bottom <= footer.top)
+        assertTrue("left action must remain in the card", left.left >= card.left && left.bottom <= card.bottom)
+        assertTrue("done action must remain in the card", done.right <= card.right && done.bottom <= card.bottom)
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h480dp")
+    fun emptyChooserAndEmptyCurrentConfigWrapHeightAndAlignFooterWithoutWrites() {
+        val fixture = SubAgentUiFixture(profiles = emptyList(), enabled = false)
+        val before = fixture.snapshot()
+        val revision = fixture.repository.revision(fixture.owner).value
+        compose.setSubAgentContent(fixture) { ConversationCollaborationDialog(true, false, {}, {}) }
+        assertFooterAligned("使用当前配置")
+        assertTrue("empty content must not force a tall card",
+            compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().height < 300.dp)
+        compose.onNodeWithText("切换子代理组").assertDoesNotExist()
+        compose.onNodeWithText("使用当前配置").performClick()
+        assertFooterAligned("切换子代理组")
+        assertTrue("empty content must not force a tall card",
+            compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().height < 300.dp)
+        compose.onNodeWithText("使用当前配置").assertDoesNotExist()
+        compose.onNodeWithText("自动委派").assertIsDisplayed()
+        compose.runOnIdle {
+            org.junit.Assert.assertEquals(before, fixture.snapshot())
+            org.junit.Assert.assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h480dp")
+    fun longChooserAndAppliedPanelKeepBothFooterActionsFixedDuringScroll() {
+        val profiles = (1..12).map { io.github.mangi.eta.agent.delegation.SubAgentProfile("worker-$it", "代理 $it") }
+        val fixture = SubAgentUiFixture(profiles = profiles)
+        val groups = (1..8).map { fixture.createPreset("子代理组 $it") }
+        compose.setSubAgentContent(fixture) { ConversationCollaborationDialog(true, true, {}, {}) }
+        assertFooterAligned("使用当前配置")
+        val chooserFooter = compose.onNodeWithTag("subagent-collaboration-footer").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithContentDescription("应用子代理组${groups.last().name}").performScrollTo().assertIsDisplayed()
+        assertFooterAligned("使用当前配置")
+        org.junit.Assert.assertEquals(chooserFooter,
+            compose.onNodeWithTag("subagent-collaboration-footer").fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithContentDescription("应用子代理组${groups.last().name}").performClick()
+        compose.onNodeWithText("已应用：${groups.last().name}").assertExists()
+        assertFooterAligned("切换子代理组")
+        val panelFooter = compose.onNodeWithTag("subagent-collaboration-footer").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithContentDescription("代理 12模型").performScrollTo().assertIsDisplayed()
+        assertFooterAligned("切换子代理组")
+        org.junit.Assert.assertEquals(panelFooter,
+            compose.onNodeWithTag("subagent-collaboration-footer").fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithText("切换子代理组").performClick()
+        assertFooterAligned("使用当前配置")
+        compose.onNodeWithContentDescription("代理 12模型").assertDoesNotExist()
+    }
+
+    @Test fun retainedFooterCallbacksCannotOperateAReopenedChooserOrReappliedPanel() {
+        val fixture = SubAgentUiFixture()
+        val preset = fixture.createPreset()
+        compose.setSubAgentContent(fixture) { ConversationCollaborationDialog(true, true, {}, {}) }
+        val oldUseCurrent = compose.onNodeWithText("使用当前配置").fetchSemanticsNode()
+            .config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
+        compose.onNodeWithText("使用当前配置").performClick()
+        compose.onNodeWithText("切换子代理组").performClick()
+        compose.runOnIdle { oldUseCurrent() }
+        compose.onNodeWithText("选择子代理组").assertExists()
+        compose.onNodeWithText("使用当前配置").assertIsDisplayed()
+        compose.onNodeWithContentDescription("应用子代理组${preset.name}").performScrollTo().performClick()
+        val oldSwitch = compose.onNodeWithText("切换子代理组").fetchSemanticsNode()
+            .config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
+        compose.runOnIdle { fixture.editor.applyPreset(preset.id) }
+        compose.onNodeWithText("切换子代理组").assertIsDisplayed()
+        compose.runOnIdle { oldSwitch() }
+        compose.onNodeWithText("选择子代理组").assertDoesNotExist()
+        compose.onNodeWithText("切换子代理组").assertIsDisplayed()
     }
 
     @Test fun ownerLossWhileChoosingDismissesOldCardsWithoutApplying() {

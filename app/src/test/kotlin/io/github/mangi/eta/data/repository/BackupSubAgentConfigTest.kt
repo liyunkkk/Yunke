@@ -42,12 +42,12 @@ class BackupSubAgentConfigTest {
         val prefs = preferences()
         val store = ConversationSubAgentPreferences(prefs)
         val active = SubAgentConfigKey.Conversation("active")
-        store.update(active) { it.copy(enabled = false, profiles = emptyList(), diagnosticsEnabled = true) }
+        store.update(active) { it.copy(enabled = false, profiles = emptyList()) }
         val archive = BackupSubAgentConfig.archiveForImport(2, null, store)
         val target = SubAgentConfigKey.Conversation("new")
         assertTrue(store.importOwner(target, archive))
         assertFalse(store.snapshot(target).enabled)
-        assertFalse(store.snapshot(target).diagnosticsEnabled)
+        assertFalse(JSONObject(store.export(target)).has("diagnostics_enabled"))
         assertTrue(store.snapshot(target).profiles.isEmpty())
         assertTrue(store.snapshot(active).profiles.isEmpty())
     }
@@ -57,7 +57,7 @@ class BackupSubAgentConfigTest {
         val store = ConversationSubAgentPreferences(prefs)
         val source = SubAgentConfigKey.Conversation("old")
         val model = SubAgentParallelModel("provider", "api-model")
-        store.update(source) { it.copy(enabled = false, diagnosticsEnabled = true,
+        store.update(source) { it.copy(enabled = false,
             parallelLimits = mapOf(model to 4)) }
         val archive = BackupSubAgentConfig.archiveForExport("old", store)
         val mapped = BackupSubAgentConfig.archiveForImport(3, archive, store, generation = "1")
@@ -92,7 +92,7 @@ class BackupSubAgentConfigTest {
         val profile = SubAgentProfile(id = "current-agent", name = "当前配置",
             providerId = model.providerId, modelId = "current-selection")
         assertTrue(store.updateConfirmedProfile(presetOwner, profile.id, model) {
-            it.copy(profiles = listOf(profile), diagnosticsEnabled = true, parallelLimits = mapOf(model to 4))
+            it.copy(profiles = listOf(profile), parallelLimits = mapOf(model to 4))
         } is ConversationSubAgentPreferences.WriteResult.Saved)
         val owner = SubAgentConfigKey.Conversation("current")
         store.applyPreset(owner, preset.id)
@@ -195,7 +195,7 @@ class BackupSubAgentConfigTest {
         val store = ConversationSubAgentPreferences(prefs)
         store.resetLegacyConfigurationOnce()
         val owner = SubAgentConfigKey.Conversation("live")
-        store.update(owner) { it.copy(diagnosticsEnabled = true) }
+        store.update(owner) { it.copy(enabled = true) }
         val incoming = mapOf(ConversationSubAgentPreferences.RESET_MARKER_KEY to "s:1", "other" to "i:2")
         val restored = BackupSubAgentConfig.preferencesForRestore(incoming, encoded(prefs), store)
         assertEquals("i:2", restored["other"])
@@ -263,7 +263,7 @@ class BackupSubAgentConfigTest {
         val prefs = preferences()
         val store = ConversationSubAgentPreferences(prefs)
         val source = SubAgentConfigKey.Conversation("old-source")
-        store.update(source) { it.copy(enabled = true, diagnosticsEnabled = true,
+        store.update(source) { it.copy(enabled = true,
             profiles = listOf(SubAgentProfile(id = "old-agent", name = "old", providerId = "provider", modelId = "model"))) }
         val valid = BackupSubAgentConfig.archiveForExport(source.value, store)
         listOf(valid, "{invalid", JSONObject(valid).put("version", 987).toString()).forEachIndexed { index, archive ->
@@ -276,7 +276,6 @@ class BackupSubAgentConfigTest {
             assertTrue(store.importOwner(target, resolved))
             val config = store.snapshot(target)
             assertFalse(config.enabled)
-            assertFalse(config.diagnosticsEnabled)
             assertTrue(config.profiles.isEmpty())
             assertTrue(config.parallelLimits.isEmpty())
             assertTrue(config.legacyParallelLimits.isEmpty())

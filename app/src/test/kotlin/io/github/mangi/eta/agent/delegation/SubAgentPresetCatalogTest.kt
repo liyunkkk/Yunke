@@ -43,7 +43,6 @@ class SubAgentPresetCatalogTest {
         ),
         enabled = false,
         parallelLimits = mutableMapOf(model to 0, SubAgentParallelModel("other", "api-model-2") to 5),
-        diagnosticsEnabled = true,
         legacyParallelLimits = mutableMapOf(model.legacyKey() to 3),
         appliedPresetId = "old-source", appliedPresetName = "old-name", presetApplicationToken = "old-token",
     )
@@ -94,7 +93,7 @@ class SubAgentPresetCatalogTest {
         val before = repo.snapshot(owner)
         val draftBefore = repo.snapshot(draft)
         val ownerRevision = repo.revision(owner).value
-        repo.update(p(preset.id)) { it.copy(enabled = true, profiles = emptyList(), diagnosticsEnabled = false) }
+        repo.update(p(preset.id)) { it.copy(enabled = true, profiles = emptyList()) }
         assertTrue(repo.renamePreset(preset.id, "新名"))
         assertEquals("新名", repo.presets().first { it.id == preset.id }.name)
         assertEquals(before, repo.snapshot(owner))
@@ -157,9 +156,9 @@ class SubAgentPresetCatalogTest {
     @Test fun presetEditorIgnoresConversationGateButStillRequiresLiveDirectory() {
         val repo = ConversationSubAgentPreferences(prefs()) { false }
         val preset = repo.addPreset("独立编辑")
-        assertTrue(repo.update(p(preset.id)) { it.copy(diagnosticsEnabled = true) }
+        assertTrue(repo.update(p(preset.id)) { it.copy(enabled = false) }
             is ConversationSubAgentPreferences.WriteResult.Saved)
-        assertTrue(repo.snapshot(p(preset.id)).diagnosticsEnabled)
+        assertFalse(repo.snapshot(p(preset.id)).enabled)
         assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected, repo.applyPreset(c("blocked"), preset.id))
         assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected, repo.update(p(preset.id)) {
             repo.removePreset(preset.id)

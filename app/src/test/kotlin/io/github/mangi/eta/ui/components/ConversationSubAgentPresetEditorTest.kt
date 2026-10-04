@@ -74,9 +74,10 @@ class ConversationSubAgentPresetEditorTest {
         val owner = repo.createDraft()
         val root = ConversationSubAgentEditor(owner, repo) { true }
         val preset = repo.addPreset("Team")
-        assertTrue(repo.update(owner) { it.copy(diagnosticsEnabled = true) } is ConversationSubAgentPreferences.WriteResult.Saved)
+        val externalProfile = SubAgentProfile("external", "Externally added")
+        assertTrue(repo.update(owner) { it.copy(profiles = listOf(externalProfile)) } is ConversationSubAgentPreferences.WriteResult.Saved)
         assertTrue(root.setEnabled(false) is ConversationSubAgentPreferences.WriteResult.Saved)
-        assertTrue(repo.snapshot(owner).diagnosticsEnabled)
+        assertEquals(listOf(externalProfile), repo.snapshot(owner).profiles)
         repo.applyPreset(owner, preset.id)
         val before = repo.export(owner)
         assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected, root.setEnabled(true))

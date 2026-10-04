@@ -33,7 +33,6 @@ internal data class ConversationSubAgentConfig(
     val profiles: List<SubAgentProfile>,
     val enabled: Boolean = true,
     val parallelLimits: Map<SubAgentParallelModel, Int> = emptyMap(),
-    val diagnosticsEnabled: Boolean = false,
     val legacyParallelLimits: Map<String, Int> = emptyMap(),
     val appliedPresetId: String? = null,
     val appliedPresetName: String? = null,
@@ -553,7 +552,6 @@ internal class ConversationSubAgentPreferences(
     private fun encode(config: ConversationSubAgentConfig): String {
         config.validate()
         return JSONObject().put("version", VERSION).put("enabled", config.enabled)
-            .put("diagnostics_enabled", config.diagnosticsEnabled)
             .put("applied_preset_id", config.appliedPresetId ?: JSONObject.NULL)
             .put("applied_preset_name", config.appliedPresetName ?: JSONObject.NULL)
             .put("preset_application_token", config.presetApplicationToken ?: JSONObject.NULL)
@@ -640,7 +638,9 @@ internal class ConversationSubAgentPreferences(
         val config = ConversationSubAgentConfig(
             profiles = (0 until agents.length()).map { index -> profile(agents.getJSONObject(index)) },
             enabled = bool(json, "enabled"), parallelLimits = models.toMap(),
-            diagnosticsEnabled = bool(json, "diagnostics_enabled"), legacyParallelLimits = hashes.toMap(),
+            // Retired diagnostics_enabled is deliberately ignored, including absent/wrong-typed
+            // legacy values. Only the global diagnostic logger controls child diagnostics.
+            legacyParallelLimits = hashes.toMap(),
             appliedPresetId = optionalString(json, "applied_preset_id"),
             appliedPresetName = optionalString(json, "applied_preset_name"),
             presetApplicationToken = optionalString(json, "preset_application_token"))
