@@ -27,7 +27,7 @@ class ModelRetrySettingsTest {
     }
 
     @Test
-    fun jitterDefaultsToEnabled() {
-        assertTrue(ModelRetrySettings.jitterEnabled())
+    fun jitterDefaultsToDisabled() {
+        assertFalse(ModelRetrySettings.jitterEnabled())
     }
 }
