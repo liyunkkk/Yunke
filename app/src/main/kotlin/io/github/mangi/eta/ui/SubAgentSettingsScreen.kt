@@ -156,7 +156,7 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
     val state = editor.observe()
     var lastLoadedConfig by remember(editor) { mutableStateOf<io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig?>(null) }
     val loadedConfig = (state as? SubAgentEditorState.Loaded)?.config
-    SideEffect { if (loadedConfig != null) lastLoadedConfig = loadedConfig }
+    LaunchedEffect(loadedConfig) { if (loadedConfig != null) lastLoadedConfig = loadedConfig }
     val config = loadedConfig ?: lastLoadedConfig
     val profiles = config?.profiles.orEmpty()
     val editable = editor?.enabled == true

@@ -62,7 +62,7 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
         profile.isMedia && effective !in efforts -> "原档位不可用，请重选"
         else -> effective?.displayName ?: "未启用"
     }
-    LaunchedEffect(profile.providerId, profile.modelId, config) { thinkingPicker = false }
+    LaunchedEffect(profile.providerId, profile.modelId) { thinkingPicker = false }
     Column(verticalArrangement = Arrangement.spacedBy(if (settings) 0.dp else 12.dp)) {
         if (settings) {
             SubAgentSettingRow("模型", config?.let { it.modelDisplayName.ifBlank { it.model } }
