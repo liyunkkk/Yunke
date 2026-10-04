@@ -25,12 +25,11 @@ import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
-import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 
 @Composable
-internal fun VoiceModeSettingsScreen(onBack: () -> Unit, onOpenReadAloud: () -> Unit) {
+internal fun VoiceModeSettingsScreen(onBack: () -> Unit) {
     val config by DoubaoVoiceConfig.state.collectAsState()
     var providerPicker by remember { mutableStateOf(false) }
     var voicePicker by remember { mutableStateOf(false) }
@@ -67,27 +66,7 @@ internal fun VoiceModeSettingsScreen(onBack: () -> Unit, onOpenReadAloud: () -> 
         io.github.mangi.eta.agent.voice.doubao.PersonalVoices.account(provider?.apiKey.orEmpty()) }
         .map { io.github.mangi.eta.agent.voice.tts.SpeechVoice(it.id, it.name, personal = true) }
 
-    MiuixScaffoldPage(title = stringResource(R.string.voice_mode_title), onBack = onBack) {
-        item(key = "universal") {
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                SwitchPreference(
-                    title = stringResource(R.string.voice_mode_universal_enable),
-                    checked = config.conversationEnabled,
-                    onCheckedChange = { DoubaoVoiceConfig.save(context, config.copy(conversationEnabled = it)) },
-                    insideMargin = PaddingValues(16.dp),
-                )
-                ArrowPreference(
-                    title = stringResource(R.string.voice_mode_universal),
-                    summary = stringResource(R.string.voice_mode_universal_settings_summary),
-                    insideMargin = PaddingValues(16.dp),
-                    onClick = onOpenReadAloud,
-                )
-                Text(
-                    text = stringResource(R.string.voice_mode_universal_settings_hint),
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                )
-            }
-        }
+    VoiceSettingsSectionPage(title = stringResource(R.string.voice_section_realtime), onBack = onBack) {
         item(key = "doubao") {
             Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 SwitchPreference(
@@ -135,10 +114,6 @@ internal fun VoiceModeSettingsScreen(onBack: () -> Unit, onOpenReadAloud: () -> 
                     minLines = 2,
                     maxLines = 5,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-                )
-                Text(
-                    text = stringResource(R.string.voice_mode_doubao_settings_hint),
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                 )
             }
         }

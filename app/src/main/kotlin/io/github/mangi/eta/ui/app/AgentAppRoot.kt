@@ -859,17 +859,20 @@ fun AgentAppRoot(
             entry<AppRoute.ErrorReconnectSettings>(swipeDismiss = swipeDismiss) {
                 ErrorReconnectSettingsScreen(onBack = ::popRoute)
             }
+            entry<AppRoute.VoiceSettings>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.ui.VoiceSettingsScreen(onBack = ::popRoute)
+            }
+            // Retain serialized legacy routes, but show the same unified voice surface.
             entry<AppRoute.TtsSettings>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.TtsSettingsScreen(onBack = ::popRoute)
+                io.github.mangi.eta.ui.VoiceSettingsScreen(onBack = ::popRoute,
+                    initialSection = io.github.mangi.eta.ui.VoiceSettingsSection.READ_ALOUD)
             }
             entry<AppRoute.SpeechSettings>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.SpeechSettingsScreen(onBack = ::popRoute)
+                io.github.mangi.eta.ui.VoiceSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.VoiceModeSettings>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.VoiceModeSettingsScreen(
-                    onBack = ::popRoute,
-                    onOpenReadAloud = { pushRoute(AppRoute.TtsSettings) },
-                )
+                io.github.mangi.eta.ui.VoiceSettingsScreen(onBack = ::popRoute,
+                    initialSection = io.github.mangi.eta.ui.VoiceSettingsSection.CONVERSATION)
             }
             entry<AppRoute.AppearanceSettings>(swipeDismiss = swipeDismiss) {
                 AppearanceSettingsScreen(onBack = ::popRoute)

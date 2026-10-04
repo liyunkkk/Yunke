@@ -49,6 +49,9 @@ sealed interface AppRoute : NavKey {
     data object TtsSettings : AppRoute
 
     @Serializable
+    data object VoiceSettings : AppRoute
+
+    @Serializable
     data object AuxiliaryVision : AppRoute
 
     @Serializable

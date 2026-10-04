@@ -10,6 +10,7 @@ import io.github.mangi.eta.agent.voice.offline.OfflineSpeechPack
 import io.github.mangi.eta.agent.voice.offline.OfflineSpeechSession
 import io.github.mangi.eta.agent.voice.tts.DoubaoSpeech
 import io.github.mangi.eta.agent.voice.tts.SpeechPlayback
+import io.github.mangi.eta.agent.voice.tts.SpeechPlaybackProfile
 import io.github.mangi.eta.agent.voice.tts.SpeechSpeakableText
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
@@ -110,11 +111,14 @@ internal class VoiceModeController(
             mutableState.value = VoiceModeState(
                 VoiceEntryMode.UNIVERSAL,
                 VoiceModePhase.Error,
-                error = "请在语音转文字设置中配置豆包 ASR 或启用离线语音包",
+                error = "请在语音 → 语音对话中配置识别方式，或下载离线语音包",
             )
             return
         }
         stop()
+        // Snapshot each feature's own choices once; read-aloud/dictation changes cannot leak in.
+        val recognitionSettings = SpeechInputSession.configFor(VoiceEntryMode.UNIVERSAL)
+        val playbackSettings = SpeechPlaybackProfile.CONVERSATION.snapshot()
         val trace = VoiceDiagnostics("universal")
         diagnostic = trace
         trace.mark("session.begin")
@@ -129,6 +133,7 @@ internal class VoiceModeController(
                         SpeechInputSession.recognize(
                             app,
                             mode = VoiceEntryMode.UNIVERSAL,
+                            settings = recognitionSettings,
                             onListening = {
                                 trace.mark("recognition.listening")
                                 mutableState.value = mutableState.value.copy(phase = VoiceModePhase.Listening)
@@ -182,7 +187,7 @@ internal class VoiceModeController(
                                     reply = snap.lastAgentText,
                                 )
                                 for (utterance in utterances) {
-                                    SpeechPlayback.speak(app, owner, utterance, trace)
+                                    SpeechPlayback.speak(app, owner, utterance, trace, settings = playbackSettings)
                                     val playback = SpeechPlayback.state.first { it.owner != owner }
                                     trace.mark("tts.await_done", "error" to if (playback.error != null) 1 else 0)
                                     playback.error?.let { error(it) }
@@ -228,7 +233,7 @@ internal class VoiceModeController(
                 val providerId = Prefs.getString(Prefs.Keys.AGENT_VOICE_DOUBAO_PROVIDER_ID)
                 val provider = ProviderRepository.providerById(providerId)
                     ?.takeIf(io.github.mangi.eta.data.model.SpeechSynthesisModels::isRealtimeVoiceProvider)
-                    ?: error("请先在语音对话设置中选择豆包语音提供商")
+                    ?: error("请先在语音 → 豆包实时通话中选择提供商")
                 check(DoubaoSpeech.isOpenspeech(provider.baseUrl)) { "实时通话只能使用豆包语音提供商" }
                 val apiKey = provider.apiKey.trim()
                 check(apiKey.isNotBlank()) { "豆包语音提供商尚未配置 API Key" }

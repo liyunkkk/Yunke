@@ -9,7 +9,6 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
 import androidx.core.content.ContextCompat
-import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
@@ -147,6 +146,7 @@ internal object SpeechPlayback {
         markdown: String,
         diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts"),
         listener: SpeechPlaybackListener? = null,
+        settings: SpeechPlaybackSettings = SpeechPlaybackProfile.READ_ALOUD.snapshot(),
     ) {
         if (recordingToken != null) {
             diagnostic.mark("tts.blocked_recording")
@@ -154,13 +154,14 @@ internal object SpeechPlayback {
             return
         }
         stop("superseded")
-        start(context, owner, markdown, diagnostic, listener = listener)
+        start(context, owner, markdown, diagnostic, listener = listener, settings = settings)
     }
 
-    fun toggle(context: Context, owner: String, markdown: String) {
+    fun toggle(context: Context, owner: String, markdown: String,
+        settings: SpeechPlaybackSettings = SpeechPlaybackProfile.READ_ALOUD.snapshot()) {
         if (recordingToken != null) return
         if (state.value.owner == owner) { stop("toggle"); return }
-        start(context, owner, markdown)
+        start(context, owner, markdown, settings = settings)
     }
 
     fun previewMimo(context: Context, voice: io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.Voice, text: String) {
@@ -177,6 +178,7 @@ internal object SpeechPlayback {
         diagnostic: io.github.mangi.eta.agent.voice.VoiceDiagnostics = io.github.mangi.eta.agent.voice.VoiceDiagnostics("tts"),
         overrideVoice: io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices.Voice? = null,
         listener: SpeechPlaybackListener? = null,
+        settings: SpeechPlaybackSettings = SpeechPlaybackProfile.READ_ALOUD.snapshot(),
     ) {
         stop("superseded")
         val token = epoch.next()
@@ -184,11 +186,11 @@ internal object SpeechPlayback {
         session = playback
         val app = context.applicationContext
         // Capture preferences once: settings changed while loading must not mix provider/model/voice.
-        val cloud = overrideVoice != null || Prefs.getString(Prefs.Keys.AGENT_TTS_MODE) == "cloud"
+        val cloud = overrideVoice != null || settings.cloud
         diagnostic.mark("tts.begin", "chars" to markdown.length, "cloud" to if (cloud) 1 else 0)
-        val providerId = overrideVoice?.providerId ?: Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID)
-        val modelId = Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_ID)
-        val voiceId = overrideVoice?.id ?: Prefs.getString(Prefs.Keys.AGENT_TTS_VOICE).trim()
+        val providerId = overrideVoice?.providerId ?: settings.providerId
+        val modelId = settings.modelId
+        val voiceId = overrideVoice?.id ?: settings.voiceId
         mutableState.value = SpeechPlaybackState(owner, preparing = true)
         job = scope.launch {
             // A new player cannot overlap the previous player's finally/shutdown.

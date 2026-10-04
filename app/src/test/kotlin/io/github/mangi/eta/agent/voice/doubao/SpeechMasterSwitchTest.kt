@@ -23,6 +23,7 @@ class SpeechMasterSwitchTest {
         DoubaoVoiceConfig.save(context, DoubaoVoiceConfig.Config(
             cloudAsr = true, asrKey = "test", inputEnabled = false,
             conversationEnabled = true, duplexEnabled = false,
+            conversationCloudAsr = true, conversationAsrKey = "conversation-test",
         ))
         DoubaoVoiceConfig.load(context)
         assertFalse(SpeechInputSession.ready())

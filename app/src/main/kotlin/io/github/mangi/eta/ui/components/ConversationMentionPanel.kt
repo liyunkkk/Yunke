@@ -62,8 +62,6 @@ internal fun ConversationMentionPanel(
         state.pending.map { it.conversationId }.toSet())
     Column(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
         .clip(RoundedCornerShape(14.dp)).background(MiuixTheme.colorScheme.surfaceContainerHigh)) {
-        Text("引用其他会话 · 只放引用，需要时再读", modifier = Modifier.padding(12.dp), style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
         if (state.pending.size >= ConversationMention.MAX_ATTACHED) {
             Text("最多引用 3 个会话，请先移除一个。", modifier = Modifier.padding(12.dp))
         } else if (candidates.isEmpty()) {

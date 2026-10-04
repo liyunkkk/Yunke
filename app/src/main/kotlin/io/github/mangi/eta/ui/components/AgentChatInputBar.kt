@@ -115,6 +115,8 @@ import io.github.mangi.eta.agent.voice.VoiceEntryMode
 import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.agent.voice.VoiceModePhase
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
+import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.config.Prefs
@@ -129,6 +131,7 @@ import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.liveContextUsage
 import io.github.mangi.eta.ui.model.shouldBlockSendForContextWindow
 import io.github.mangi.eta.ui.model.ConversationMentionInputUi
+import io.github.mangi.eta.ui.model.SkillSlashMention
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
 import kotlin.math.roundToInt
@@ -212,6 +215,19 @@ internal fun AgentChatInputBar(
     val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }
     val draftText = textFieldState.text.toString()
+    val skillAppContext = LocalContext.current.applicationContext
+    val assistantProfiles by AssistantRepository.profiles.collectAsState()
+    val repositoryActiveId by AssistantRepository.activeId.collectAsState()
+    val availableSkills = remember(assistantId, skillAppContext, assistantProfiles, repositoryActiveId) {
+        val profile = assistantProfiles.firstOrNull { it.id == assistantId }
+            ?: assistantProfiles.firstOrNull { it.id == repositoryActiveId }
+            ?: AssistantRepository.active()
+        val enabledIds = profile.enabledSkillIds.toSet()
+        SkillRuntime.createIndexService(skillAppContext)
+            .listSkillsForManagement()
+            .filter { it.installed && it.id in enabledIds }
+            .filter { SkillCompatibilityChecker.evaluate(it).available }
+    }
     // 原始历史计数只服务静默发送/压缩预算；显示（圆环）不再消费任何本地计数。
     val historyTokenCount = remember(history) { history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) } }
     val supportsVision = modelPickerState.selectedModel?.supportsVision == true
@@ -285,6 +301,24 @@ internal fun AgentChatInputBar(
     ) {
         val mentionQuery = ConversationMention.queryAtCursor(draftText, textFieldState.selection.end)
             .takeIf { textFieldState.selection.collapsed }
+        val skillQuery = SkillSlashMention.queryAtCursor(draftText, textFieldState.selection.end)
+            .takeIf { textFieldState.selection.collapsed }
+        SkillSlashMentionPanel(
+            skills = availableSkills,
+            query = skillQuery?.query,
+            selectedIds = SkillSlashMention.selectedIds(draftText),
+            onSelect = { skill ->
+                val query = skillQuery
+                if (query != null) {
+                    val end = textFieldState.selection.end
+                    textFieldState.edit {
+                        replace(query.start, end, SkillSlashMention.token(skill.id))
+                        selection = TextRange(query.start + SkillSlashMention.token(skill.id).length)
+                    }
+                    focusRequester.requestFocus()
+                }
+            },
+        )
         ConversationMentionPanel(
             state = conversationMentions,
             query = mentionQuery?.query,
