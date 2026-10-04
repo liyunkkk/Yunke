@@ -131,8 +131,8 @@ internal class FileLogSink(
         if (source.renameTo(target)) return
         runCatching { Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
             .getOrElse {
-                source.copyTo(target, overwrite = true)
-                check(source.delete()) { "无法轮转日志文件：" }
+                Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                Files.delete(source.toPath())
             }
     }
 

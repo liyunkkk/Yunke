@@ -266,14 +266,17 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
             })
         }
         rename?.let { profile ->
-            if (editable) AlertDialog(onDismissRequest = { rename = null }, title = { Text("重命名代理") },
-                text = { OutlinedTextField(name, { if (editor?.enabled == true) name = it.take(80) }, label = { Text("名称") },
-                    singleLine = true, enabled = editable, modifier = Modifier.fillMaxWidth()) },
-                dismissButton = { TextButton(onClick = { rename = null }) { Text("取消") } },
-                confirmButton = { TextButton(enabled = editable && name.trim().isNotBlank(), onClick = {
-                    if (editor?.enabled == true && editor.updateProfile(profile.id) { it.copy(name = name.trim()) } is ConversationSubAgentPreferences.WriteResult.Saved)
+            if (editable) SubAgentPresetNameDialog(
+                title = "重命名代理",
+                name = name,
+                onNameChange = { if (editor.enabled) name = it },
+                saveEnabled = name.trim().isNotBlank(),
+                onDismiss = { rename = null },
+                onSave = {
+                    if (editor.enabled && editor.updateProfile(profile.id) { it.copy(name = name.trim()) } is ConversationSubAgentPreferences.WriteResult.Saved)
                         rename = null
-                }) { Text("保存") } })
+                },
+            )
         }
         delete?.let { profile ->
             if (editable) AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除代理？") },

@@ -209,7 +209,7 @@ class AgentTimelineRowsTest {
     @Test
     fun streamingAutoExpansionAndBatchBoundaryStayDistinctFromUserOverrides() {
         // 33 consecutive work messages cross the 32-message batch boundary into two groups.
-        val entries = List(33) { tool(it, running = it == 32) }.toTimelineEntries()
+        val entries = List(33) { tool(it) }.toTimelineEntries()
         assertEquals(2, entries.size)
         val leadingKey = "work-tool-0"
         val trailingKey = "work-tool-32"
@@ -217,19 +217,11 @@ class AgentTimelineRowsTest {
         assertEquals(32, (entries[0] as AgentTimelineEntry.WorkProcess).messages.size)
         assertEquals(1, (entries[1] as AgentTimelineEntry.WorkProcess).messages.size)
 
-        // Streaming only auto-expands the trailing batch; the earlier batch stays collapsed by default.
+        // Completed work groups do not auto-expand merely because another message is streaming.
         val streaming = entries.toLazyTimelineRows(emptyMap(), true)
-        assertEquals(3, streaming.size)
-        val leadingHeader = streaming[0] as AgentTimelineRow.WorkHeader
-        assertEquals(leadingKey, leadingHeader.key)
-        assertFalse(leadingHeader.expanded)
-        val trailingHeader = streaming[1] as AgentTimelineRow.WorkHeader
-        assertEquals(trailingKey, trailingHeader.key)
-        assertTrue(trailingHeader.expanded)
-        val streamingStep = streaming.filterIsInstance<AgentTimelineRow.WorkStep>().single()
-        assertEquals("work-step:tool-32", streamingStep.key)
-        assertEquals(trailingKey, streamingStep.groupKey)
-        assertTrue(streamingStep.isFirst && streamingStep.isLast)
+        assertEquals(listOf(leadingKey, trailingKey), streaming.map { it.key })
+        assertTrue(streaming.all { it is AgentTimelineRow.WorkHeader })
+        assertTrue(streaming.filterIsInstance<AgentTimelineRow.WorkHeader>().none { it.expanded })
 
         // A user override collapses the streaming trailing batch; the leading batch key stays put.
         val collapsedTrailing = entries.toLazyTimelineRows(mapOf(trailingKey to false), true)
