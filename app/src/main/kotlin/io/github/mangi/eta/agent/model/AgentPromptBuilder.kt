@@ -227,6 +227,7 @@ internal object AgentPromptBuilder {
             append(
                 "只把上面的索引当作目录；需要某个 skill 的具体步骤、脚本或引用时，先调用 skills_read 读取对应 SKILL.md，" +
                     "正文引用其他文本资源时再调用 skills_read_resource。" +
+                    "如果用户消息中出现 /skill:<id> 标记，先把它当作用户明确选择的技能，优先调用 skills_read 读取该技能的 SKILL.md，再按技能要求处理本轮任务。" +
                     "Linux 中仅 /var/minis/skills 下当前助手已开启的技能可用；不要读取 App 私有 skills 目录或已关闭的技能。"
             )
         }
