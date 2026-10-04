@@ -94,7 +94,7 @@ class StreamUiEventDiagnosticsContractTest(unittest.TestCase):
             labels = set(re.findall(r'"ui\.event\.([A-Za-z.]+)"', mapping[branch.start():stop]))
             self.assertEqual(labels, groups[branch.group(1)])
         # Only finite enum/boolean discriminants may be read; never names/IDs/payloads.
-        self.assertEqual(set(re.findall(r'\bevent\.(\w+)', mapping)), {'kind', 'projected'})
+        self.assertEqual(set(re.findall(r'(?<![\w.])event\.(\w+)', mapping)), {'kind', 'projected'})
         self.assertNotIn('$', mapping)
         self.assertNotRegex(masked(mapping), r'\belse\s*->|javaClass|::class|toLogLine|toString')
 
