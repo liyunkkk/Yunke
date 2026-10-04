@@ -10,10 +10,10 @@ class ModelPickerSelectionInsetContractTest(unittest.TestCase):
     def setUp(self):
         self.source = (UI / 'TtsModelPickerDialog.kt').read_text(encoding='utf-8')
 
-    def test_only_selected_background_is_inset_by_two_dp(self):
+    def test_only_selected_background_is_inset_by_one_dp(self):
         drawing = self.source.split('private fun Modifier.modelSelectionBackground', 1)[1].split('internal data class SpeechVoiceSections', 1)[0]
         self.assertIn('if (!selected) this else drawBehind', drawing)
-        self.assertIn('val inset = 2.dp.toPx()', drawing)
+        self.assertIn('val inset = 1.dp.toPx()', drawing)
         self.assertIn('topLeft = Offset(0f, inset)', drawing)
         self.assertIn('Size(size.width, (size.height - 2 * inset).coerceAtLeast(0f))', drawing)
         self.assertIn('val radius = 10.dp.toPx()', drawing)

@@ -123,7 +123,7 @@ internal fun TtsModelPickerDialog(
 /** Only inset the painted selection; row size, text and the full click target stay unchanged. */
 private fun Modifier.modelSelectionBackground(selected: Boolean, color: Color): Modifier =
     if (!selected) this else drawBehind {
-        val inset = 2.dp.toPx()
+        val inset = 1.dp.toPx()
         val radius = 10.dp.toPx()
         drawRoundRect(
             color = color,
