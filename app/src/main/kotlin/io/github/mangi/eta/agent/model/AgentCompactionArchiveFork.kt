@@ -30,6 +30,7 @@ internal object AgentCompactionArchiveFork {
         archiveLimit: Int = 128,
         byteLimit: Long = 64L * 1024 * 1024,
         depthLimit: Int = 64,
+        recoverLegacyDependencies: Boolean = false,
         rewriteAttachmentPath: ((String) -> String)? = null,
     ) {
         require(sourceSessionId.isNotBlank() && targetSessionId.isNotBlank() && sourceSessionId != targetSessionId)
@@ -60,12 +61,23 @@ internal object AgentCompactionArchiveFork {
         val toolOriginals = mutableMapOf<String, AgentModelClient.ConversationMessage>()
         var count = 0
         var total = 0L
+        // Opt-in only for a user-created branch. Ordinary archive reads stay session scoped.
+        val legacy = if (recoverLegacyDependencies) AgentLegacyArchiveDependency(parent, source) else null
         try {
             fun visit(reference: Reference, depth: Int) {
                 val id = reference.id
                 checkScopes()
                 check(depth <= depthLimit) { "分支归档引用层数超限" }
                 check(id !in visiting) { "分支归档存在循环引用" }
+                if (depth == 1) {
+                    // A recovered dependency cannot later masquerade as a local root via dedup.
+                    val rootJson = File(source, "$id.json")
+                    val rootSha = File(source, "$id.sha256")
+                    check(rootJson.isFile && rootSha.isFile &&
+                        !Files.isSymbolicLink(rootJson.toPath()) && !Files.isSymbolicLink(rootSha.toPath())) {
+                        "分支根归档缺失或无效"
+                    }
+                }
                 if (id in completed) {
                     reference.toolSource?.let { validateToolReference(it, toolOriginals[id]) }
                     return
@@ -74,11 +86,15 @@ internal object AgentCompactionArchiveFork {
                 visiting += id
                 val json = File(source, "$id.json")
                 val sha = File(source, "$id.sha256")
-                check(json.isFile && sha.isFile && !Files.isSymbolicLink(json.toPath()) &&
-                    !Files.isSymbolicLink(sha.toPath())) { "缺失或无效的分支原文归档" }
-                val length = json.length()
-                check(length in 1..MAX_FILE_BYTES.toLong() && length <= byteLimit - total) { "分支原文容量超限" }
-                val bytes = AgentCompactionArchiveIntegrity.verifiedBytes(json, sha, byteLimit - total)
+                val absent = Files.notExists(json.toPath(), LinkOption.NOFOLLOW_LINKS) &&
+                    Files.notExists(sha.toPath(), LinkOption.NOFOLLOW_LINKS)
+                // A top-level pointer alone is not authority to search another conversation.
+                // Only dependencies reached through a verified local archive can be recovered.
+                val bytes = if (absent && depth > 1 && legacy != null) {
+                    legacy.read(id, byteLimit - total)
+                } else {
+                    AgentCompactionArchiveIntegrity.verifiedBytes(json, sha, byteLimit - total)
+                }
                 val expected = hash(bytes)
                 total += bytes.size
                 val array = JSONArray(bytes.toString(Charsets.UTF_8))
@@ -138,6 +154,7 @@ internal object AgentCompactionArchiveFork {
                 }
             }
             checkScopes()
+            legacy?.recheckScopes()
             BackupDurability.syncDirectory(staging)
             // No REPLACE_EXISTING: an existing branch must never be overwritten.
             // Same-parent move publishes the fully prepared directory before the conversation is published.

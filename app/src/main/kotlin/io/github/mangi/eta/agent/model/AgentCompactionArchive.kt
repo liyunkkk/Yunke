@@ -156,10 +156,11 @@ internal class AgentCompactionArchive(filesDir: File, sessionId: String) {
     }
 
     /** Called only after conversation deletion has committed; a tombstone prevents an old run from recreating it. */
-    fun delete() {
+    fun delete() = synchronized(AgentCompactionArchiveFork) {
+        // Serialize tombstones with fork validation/publication (including approved legacy donors).
         io.github.mangi.eta.data.repository.BackupDurability.mkdirs(root.parentFile!!)
         io.github.mangi.eta.data.repository.durableText(File(root.parentFile, "$scope.deleted"), "deleted")
-        if (!root.exists()) return
+        if (!root.exists()) return@synchronized
         require(!Files.isSymbolicLink(root.toPath()))
         require(root.deleteRecursively()) { "压缩原文清理失败" }
         io.github.mangi.eta.data.repository.BackupDurability.syncDirectory(root.parentFile!!)

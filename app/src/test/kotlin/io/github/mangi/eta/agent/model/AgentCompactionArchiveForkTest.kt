@@ -24,6 +24,154 @@ class AgentCompactionArchiveForkTest {
     private fun fork(history: List<AgentModelClient.ConversationMessage>, limit: Int = 128, bytes: Long = 64L * 1024 * 1024) =
         AgentCompactionArchiveFork.copyReferenced(temporary.root, "source", "branch", history, limit, bytes)
 
+    private fun recover(history: List<AgentModelClient.ConversationMessage>) =
+        AgentCompactionArchiveFork.copyReferenced(temporary.root, "source", "branch", history,
+            recoverLegacyDependencies = true)
+
+    @Test fun legacyMissingAncestorIsRecoveredIntoIndependentBranchOnly() {
+        val older = archive("legacy").save(listOf(user("original ancestor")))
+        val a = archive("source").save(listOf(summary(older), user("retained")))
+        val history = listOf(summary(a), user("new message"))
+        assertTrue(runCatching { fork(history) }.isFailure) // Ordinary scoped copy remains strict.
+        recover(history)
+        assertFalse(File(scope("source"), "$older.json").exists())
+        archive("legacy").delete()
+        archive("source").delete()
+        assertEquals("original ancestor", archive("branch").restoreHistory(older).single().content)
+        assertEquals(summary(older), archive("branch").restoreHistory(a).first())
+    }
+
+    @Test fun legacyRecoveryCannotSearchForAnUnverifiedRootReference() {
+        archive("source").save(listOf(user("local")))
+        val id = archive("legacy").save(listOf(user("unrelated")))
+        assertTrue(runCatching { recover(listOf(summary(id))) }.isFailure)
+        assertFalse(scope("branch").exists())
+    }
+
+    @Test fun legacyRecoveryDoesNotSubstituteCorruptOrPartiallyMissingLocalArchive() {
+        val id = archive("legacy").save(listOf(user("original")))
+        val a = archive("source").save(listOf(summary(id)))
+        File(scope("source"), "$id.json").writeText("corrupt")
+        assertTrue(runCatching { recover(listOf(summary(a))) }.isFailure)
+        assertFalse(scope("branch").exists())
+    }
+
+    @Test fun legacyRecoveryRejectsConflictingValidCopies() {
+        val id = archive("legacy").save(listOf(user("first")))
+        archive("other").save(listOf(user("initialize")))
+        val file = File(scope("other"), "$id.json")
+        file.writeText(JSONArray().put(AgentConversationCodec.toJsonObject(user("different"))).toString())
+        File(scope("other"), "$id.sha256").writeText(BackupDurability.digest(file))
+        val a = archive("source").save(listOf(summary(id)))
+        assertTrue(runCatching { recover(listOf(summary(a))) }.isFailure)
+        assertFalse(scope("branch").exists())
+    }
+
+    @Test fun legacyRecoveryAcceptsOnlyIdenticalVerifiedCopies() {
+        val id = archive("legacy").save(listOf(user("same bytes")))
+        archive("other").save(listOf(user("initialize")))
+        for (extension in listOf("json", "sha256")) {
+            File(scope("legacy"), "$id.$extension").copyTo(File(scope("other"), "$id.$extension"))
+        }
+        val a = archive("source").save(listOf(summary(id)))
+        recover(listOf(summary(a)))
+        assertEquals("same bytes", archive("branch").restoreHistory(id).single().content)
+    }
+
+    @Test fun legacyRecoveryRejectsCorruptDonorAndDeletedDonor() {
+        val id = archive("legacy").save(listOf(user("original")))
+        val a = archive("source").save(listOf(summary(id)))
+        val sha = File(scope("legacy"), "$id.sha256")
+        val originalHash = sha.readText()
+        sha.writeText("0".repeat(64))
+        assertTrue(runCatching { recover(listOf(summary(a))) }.isFailure)
+        sha.writeText(originalHash)
+        File(scope("legacy").parentFile, scope("legacy").name + ".deleted").writeText("deleted")
+        assertTrue(runCatching { recover(listOf(summary(a))) }.isFailure)
+        assertFalse(scope("branch").exists())
+    }
+
+    @Test fun legacyRecoveryStillRejectsWrongToolIdentity() {
+        val original = AgentModelClient.ConversationMessage("tool", "head ORIGINAL tail", toolCallId = "call", turnId = "turn")
+        val id = archive("legacy").save(listOf(original))
+        val bad = original.copy(toolCallId = "wrong", content =
+            "head\n[Eta tool output pruned; original: context-checkpoint:$id; read_compacted_history]\ntail")
+        val a = archive("source").save(listOf(bad))
+        assertTrue(runCatching { recover(listOf(summary(a))) }.isFailure)
+        assertFalse(scope("branch").exists())
+    }
+
+    @Test fun legacyRecoveryRetainsClosureBudgetAndCleansStaging() {
+        val id = archive("legacy").save(listOf(user("original")))
+        val a = archive("source").save(listOf(summary(id)))
+        assertTrue(runCatching {
+            AgentCompactionArchiveFork.copyReferenced(temporary.root, "source", "branch", listOf(summary(a)),
+                archiveLimit = 1, recoverLegacyDependencies = true)
+        }.isFailure)
+        assertFalse(scope("branch").exists())
+        assertTrue(scope("source").parentFile.listFiles().orEmpty().none { it.name.startsWith(".fork-") })
+    }
+
+    @Test fun recoveredDependencyCannotBypassMissingRootViaDeduplication() {
+        val id = archive("legacy").save(listOf(user("original")))
+        val a = archive("source").save(listOf(summary(id)))
+        assertTrue(runCatching { recover(listOf(summary(a), summary(id))) }.isFailure)
+        assertFalse(scope("branch").exists())
+    }
+
+    @Test fun legacyRecoveryFollowsDeepSummaryChainWithoutExpandingIt() {
+        val id = archive("legacy").save(listOf(user("original")))
+        var head = id
+        repeat(7) { head = archive("source").save(listOf(summary(head), user("turn-$it"))) }
+        recover(listOf(summary(head), user("new user")))
+        assertEquals("original", archive("branch").restoreHistory(id).single().content)
+        assertFalse(File(scope("source"), "$id.json").exists())
+        assertTrue(runCatching { archive("source").restoreHistory(id) }.isFailure)
+    }
+
+    @Test fun legacyRecoveryRejectsSymlinkAndScanBudgetOverflow() {
+        val id = archive("legacy").save(listOf(user("original")))
+        val a = archive("source").save(listOf(summary(id)))
+        java.nio.file.Files.createSymbolicLink(scope("linked").toPath(), scope("legacy").toPath())
+        assertTrue(runCatching { recover(listOf(summary(a))) }.isFailure)
+        java.nio.file.Files.delete(scope("linked").toPath())
+        repeat(4097) { File(scope("source").parentFile, "entry-$it").createNewFile() }
+        assertTrue(runCatching { recover(listOf(summary(a))) }.isFailure)
+        assertFalse(scope("branch").exists())
+    }
+
+    @Test fun defaultScopedCopyRejectsMissingDependencyWithoutPublishing() {
+        val id = archive("legacy").save(listOf(user("private original")))
+        val a = archive("source").save(listOf(summary(id)))
+        val failure = runCatching { fork(listOf(summary(a))) }.exceptionOrNull()
+        assertNotNull(failure)
+        assertFalse(scope("branch").exists())
+        assertFalse(File(scope("source"), "$id.json").exists())
+    }
+
+    @Test fun archiveDeletionWaitsForForkMonitorBeforeWritingTombstone() {
+        archive("source").save(listOf(user("original")))
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val done = java.util.concurrent.CountDownLatch(1)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        lateinit var worker: Thread
+        synchronized(AgentCompactionArchiveFork) {
+            worker = Thread {
+                entered.countDown()
+                try { archive("source").delete() } catch (error: Throwable) { failure.set(error) }
+                finally { done.countDown() }
+            }
+            worker.start()
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(done.await(100, java.util.concurrent.TimeUnit.MILLISECONDS))
+            assertFalse(File(scope("source").parentFile, scope("source").name + ".deleted").exists())
+        }
+        assertTrue(done.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        worker.join()
+        assertNull(failure.get())
+        assertFalse(scope("source").exists())
+    }
+
     @Test fun retainedAncestorClosureIsIndependentAndDoesNotCopyRemovedSummary() {
         val source = archive("source")
         val older = source.save(listOf(user("old original")))

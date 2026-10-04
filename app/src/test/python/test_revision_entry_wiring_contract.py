@@ -95,6 +95,41 @@ class RevisionEntryWiringContract(unittest.TestCase):
         self.assertIn("hash(relocated)", fork)
         self.assertIn("byteLimit - targetBytes", fork)
 
+    def test_legacy_dependency_recovery_is_branch_only_and_opt_in(self):
+        branch = method(self.app, "branchConversation")
+        self.assertIn("recoverLegacyDependencies = true", branch)
+        self.assertEqual(1, self.app.count("recoverLegacyDependencies = true"))
+        self.assertNotIn("pendingBranchRecovery", self.app)
+        self.assertNotIn("LegacyDependencyApprovalRequired", self.app)
+        prepare = method(self.app, "launchConversationRevision")
+        self.assertIn("archive::restoreHistory", prepare)
+        self.assertNotIn("recoverLegacyDependencies", prepare)
+        fork = (SRC / "agent/model/AgentCompactionArchiveFork.kt").read_text()
+        self.assertIn("recoverLegacyDependencies: Boolean = false", fork)
+        self.assertIn("absent && depth > 1 && legacy != null", fork)
+        self.assertIn("Files.notExists(json.toPath(), LinkOption.NOFOLLOW_LINKS)", fork)
+        self.assertLess(fork.index("if (depth == 1)"), fork.index("if (id in completed)"))
+        self.assertLess(fork.index("legacy?.recheckScopes()"), fork.index("Files.move("))
+        helper = (SRC / "agent/model/AgentLegacyArchiveDependency.kt").read_text()
+        for guard in ("MAX_ENTRIES", "MAX_VERIFY_BYTES", "selected.contentEquals(bytes)",
+                      "AgentCompactionArchiveIntegrity.verifiedBytes", "Thread.currentThread().isInterrupted"):
+            self.assertIn(guard, helper)
+        archive = (SRC / "agent/model/AgentCompactionArchive.kt").read_text()
+        self.assertNotIn("AgentLegacyArchiveDependency", archive)
+        self.assertIn("fun delete() = synchronized(AgentCompactionArchiveFork)", archive)
+
+    def test_branch_copy_error_is_not_misreported_as_anchor_failure(self):
+        branch = method(self.app, "branchConversation")
+        self.assertIn("throw BranchArchiveCopyException(failure)", branch)
+        self.assertIn("throw cancelled", branch)
+        self.assertIn("throw interrupted", branch)
+        self.assertIn("if (!published)", branch)
+        prepare = method(self.app, "launchConversationRevision")
+        self.assertIn("failure is BranchArchiveCopyException", prepare)
+        self.assertIn("branch_archive_copy", prepare)
+        self.assertIn("历史归档或附件未能完整复制", prepare)
+        self.assertIn("else showRevisionHistoryUnavailableNotice()", prepare)
+
     def test_stop_controls_and_history_protection_both_survive_integration(self):
         guard = method(self.app, "rejectConversationArchiveMutation")
         self.assertIn("protectStoppingRun: Boolean = true", guard)

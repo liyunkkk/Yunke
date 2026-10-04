@@ -2333,8 +2333,13 @@ internal class AgentAppState(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
-                AndroidAgentLogger.warn("会话修订准备失败：${failure.javaClass.simpleName}")
-                if (stillCurrent()) showRevisionHistoryUnavailableNotice()
+                coroutineContext.ensureActive()
+                AndroidAgentLogger.warn("会话修订失败：${if (failure is BranchArchiveCopyException) "branch_archive_copy" else "revision_prepare"} ${failure.cause?.javaClass?.simpleName ?: failure.javaClass.simpleName}")
+                if (stillCurrent()) {
+                    if (failure is BranchArchiveCopyException) Toast.makeText(appContext,
+                        "分支所需的历史归档或附件未能完整复制，已取消分支；原会话未修改。", Toast.LENGTH_LONG).show()
+                    else showRevisionHistoryUnavailableNotice()
+                }
             } finally {
                 withContext(NonCancellable + Dispatchers.Main.immediate) { conversationRevisionBusy = false }
             }
@@ -2469,6 +2474,7 @@ internal class AgentAppState(
         persistConversations()
     }
 
+    private class BranchArchiveCopyException(cause: Exception) : Exception(cause)
     fun branchConversation(messageId: String) {
         launchConversationRevision(messageId) { sourceId, snapshot, prepared, stillCurrent ->
             val prefix = AgentConversationRevisionReducer.branchPrefix(prepared, messageId) ?: run {
@@ -2481,11 +2487,20 @@ internal class AgentAppState(
             try {
                 runInterruptible(Dispatchers.IO) {
                     // Retained A and its tool/checkpoint closure must be independent of the source.
-                    io.github.mangi.eta.agent.model.AgentCompactionArchiveFork.copyReferenced(
-                        appContext.filesDir, sourceId, newId, prefix.history,
-                        rewriteAttachmentPath = { value -> chatImageCache.rewriteCachedPath(value, sourceId, newId) },
-                    )
-                    chatImageCache.copyConversation(sourceId, newId)
+                    try {
+                        io.github.mangi.eta.agent.model.AgentCompactionArchiveFork.copyReferenced(
+                            appContext.filesDir, sourceId, newId, prefix.history,
+                            rewriteAttachmentPath = { value -> chatImageCache.rewriteCachedPath(value, sourceId, newId) },
+                            recoverLegacyDependencies = true,
+                        )
+                        chatImageCache.copyConversation(sourceId, newId)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (interrupted: InterruptedException) {
+                        throw interrupted
+                    } catch (failure: Exception) {
+                        throw BranchArchiveCopyException(failure)
+                    }
                 }
                 coroutineContext.ensureActive()
                 if (!stillCurrent()) return@launchConversationRevision
