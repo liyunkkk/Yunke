@@ -33,12 +33,6 @@ internal fun SkillSlashMentionPanel(
             .clip(RoundedCornerShape(14.dp))
             .background(MiuixTheme.colorScheme.surfaceContainerHigh),
     ) {
-        Text(
-            text = "选择 Skill",
-            modifier = Modifier.padding(12.dp),
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
         if (candidates.isEmpty()) {
             Text(
                 text = "没有匹配的可用 Skill",
