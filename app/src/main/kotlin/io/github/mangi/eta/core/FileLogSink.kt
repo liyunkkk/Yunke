@@ -56,21 +56,32 @@ internal class FileLogSink(
 
     private fun appendLocked(payload: String) {
         if (!directory.exists() && !directory.mkdirs()) {
-            error("无法创建日志目录：${directory.absolutePath}")
+            error("无法创建日志目录")
         }
         val incoming = payload.toByteArray(Charsets.UTF_8)
-        if (output == null) {
-            openCurrentLocked()
-        }
-        if (incoming.size <= maxBytes && currentSize > 0L && currentSize + incoming.size > maxBytes) {
-            rotateLocked()
-        }
-        val stream = output ?: error("日志文件未打开")
-        stream.write(incoming)
-        stream.flush()
-        currentSize += incoming.size
-        if (currentSize > maxBytes) {
-            rotateLocked()
+        var offset = 0
+        while (offset < incoming.size) {
+            if (output == null) {
+                openCurrentLocked()
+            }
+            if (currentSize >= maxBytes ||
+                (offset == 0 && currentSize > 0L && currentSize + incoming.size > maxBytes)
+            ) {
+                rotateLocked()
+            }
+            val stream = output ?: error("日志文件未打开")
+            val writable = minOf(maxBytes - currentSize, (incoming.size - offset).toLong()).toInt()
+            if (writable <= 0) {
+                rotateLocked()
+                continue
+            }
+            stream.write(incoming, offset, writable)
+            stream.flush()
+            currentSize += writable
+            offset += writable
+            if (offset < incoming.size && currentSize >= maxBytes) {
+                rotateLocked()
+            }
         }
     }
 
