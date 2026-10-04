@@ -165,7 +165,7 @@ class SubAgentPresetUiContractTest(unittest.TestCase):
                        'emptyChooserAndEmptyCurrentConfigWrapHeightAndAlignFooterWithoutWrites',
                        'longChooserAndAppliedPanelKeepBothFooterActionsFixedDuringScroll',
                        'retainedFooterCallbacksCannotOperateAReopenedChooserOrReappliedPanel',
-                       'getUnclippedBoundsInRoot().height < 300.dp'):
+                       'getUnclippedBoundsInRoot().height < with(compose.density) { 300.dp.toPx() }'):
             self.assertIn(needle, collaboration)
         settings = (tests / 'SubAgentPresetSettingsTest.kt').read_text()
         for needle in ('@Config(qualifiers = "w320dp-h480dp")',
