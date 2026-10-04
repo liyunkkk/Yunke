@@ -63,7 +63,7 @@ class ReconnectProviderBoundaryTest {
                     .put("previous_response_id", "uncertain").put("conversation", "uncertain")
                 provider.complete(base.copy(config = base.config.copy(hostedWebSearchEnabled = true,
                     extraBodyJson = injected.toString(), customBody = injected.keys().asSequence().map { key ->
-                        CustomBody(key, Json.parseToJsonElement(JSONObject.valueToString(injected.get(key))))
+                        CustomBody(key, jsonElement(injected.get(key)))
                     }.toList()), reconnectTextOnly = true), AgentRunController(), {})
                 val body = JSONObject(captured.get())
                 for (key in injected.keys().asSequence().toSet()) assertFalse("Recovery must strip $key", body.has(key))
@@ -85,7 +85,7 @@ class ReconnectProviderBoundaryTest {
                     .put("previous_response_id", "uncertain").put("conversation", "uncertain")
                 provider.complete(base.copy(tools = tools, reconnectLocalToolsOnly = true, singleToolCall = true,
                     config = base.config.copy(hostedWebSearchEnabled = true, extraBodyJson = injected.toString(), customBody = injected.keys().asSequence().map { key ->
-                        CustomBody(key, Json.parseToJsonElement(JSONObject.valueToString(injected.get(key))))
+                        CustomBody(key, jsonElement(injected.get(key)))
                     }.toList())),
                     AgentRunController(), {})
                 val body = JSONObject(captured.get())
@@ -195,6 +195,14 @@ class ReconnectProviderBoundaryTest {
 
     private fun event(type: String, body: JSONObject): String =
         "event: $type\ndata: ${body.put("type", type)}\n\n"
+
+    private fun jsonElement(value: Any): kotlinx.serialization.json.JsonElement = when (value) {
+        JSONObject.NULL -> Json.parseToJsonElement("null")
+        is JSONObject, is JSONArray -> Json.parseToJsonElement(value.toString())
+        is String -> Json.parseToJsonElement(JSONObject.quote(value))
+        is Boolean, is Number -> Json.parseToJsonElement(value.toString())
+        else -> error("Unsupported JSON test value: ${value::class.java.name}")
+    }
 
     private fun withResponse(body: String, disconnect: Boolean = false,
         block: (String, AtomicReference<String>) -> Unit) {
