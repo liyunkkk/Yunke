@@ -34,20 +34,13 @@ internal fun PersonalVoicesScreen(onBack: () -> Unit) {
     if (page == "mimo") { MimoVoicesScreen(onBack = { page = "" }); return }
     val view = LocalView.current
     BackHandler(onBack = onBack)
-    Scaffold(topBar = {
-        TopAppBar(title = { Text("我的声音") }, navigationIcon = {
-            IconButton(onClick = { TouchHaptics.click(view); onBack() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
-        })
-    }) { padding ->
-        Column(Modifier.padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            listOf(Triple("doubao", "豆包语音", "导入音色名额、制作和试听声音"),
-                Triple("mimo", "MiMo 语音", "导入参考录音、复刻试听和朗读")).forEach { (id, title, detail) ->
-                OutlinedCard(onClick = { TouchHaptics.click(view); page = id }, modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(title, style = MaterialTheme.typography.titleMedium)
-                        Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
+    VoiceSettingsSectionPage(title = androidx.compose.ui.res.stringResource(io.github.mangi.eta.R.string.voice_section_personal), onBack = onBack) {
+        item {
+            top.yukonga.miuix.kmp.basic.Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                top.yukonga.miuix.kmp.preference.ArrowPreference(title = "豆包语音",
+                    onClick = { TouchHaptics.click(view); page = "doubao" })
+                top.yukonga.miuix.kmp.preference.ArrowPreference(title = "MiMo 语音",
+                    onClick = { TouchHaptics.click(view); page = "mimo" })
             }
         }
     }

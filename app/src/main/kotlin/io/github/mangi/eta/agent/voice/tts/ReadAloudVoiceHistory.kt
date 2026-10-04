@@ -6,26 +6,25 @@ import org.json.JSONArray
 
 /** Local selection history, scoped by provider + configured model entry. No credentials or audio. */
 internal object ReadAloudVoiceHistory {
-    private const val FILE = "read_aloud_voice_history"
     private fun key(provider: String, model: String) = JSONArray().put(provider).put(model).toString()
 
-    fun remember(context: Context, provider: String, model: String, voice: String) {
+    fun remember(context: Context, provider: String, model: String, voice: String, profile: SpeechPlaybackProfile = SpeechPlaybackProfile.READ_ALOUD) {
         if (provider.isBlank() || model.isBlank() || voice.isBlank()) return
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
+        context.getSharedPreferences(profile.historyFile, Context.MODE_PRIVATE).edit()
             .putString(key(provider, model), voice).apply()
     }
 
-    fun restore(context: Context, provider: String, model: String): String {
+    fun restore(context: Context, provider: String, model: String, profile: SpeechPlaybackProfile = SpeechPlaybackProfile.READ_ALOUD): String {
         if (provider.isBlank() || model.isBlank()) return ""
-        return context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        return context.getSharedPreferences(profile.historyFile, Context.MODE_PRIVATE)
             .getString(key(provider, model), "").orEmpty()
     }
 
     /** Also migrates the pre-history current selection before another screen changes it. */
-    fun rememberCurrent(context: Context) {
+    fun rememberCurrent(context: Context, profile: SpeechPlaybackProfile = SpeechPlaybackProfile.READ_ALOUD) {
         remember(context,
-            Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_PROVIDER_ID),
-            Prefs.getString(Prefs.Keys.AGENT_TTS_MODEL_ID),
-            Prefs.getString(Prefs.Keys.AGENT_TTS_VOICE))
+            Prefs.getString(profile.providerKey),
+            Prefs.getString(profile.modelKey),
+            Prefs.getString(profile.voiceKey), profile)
     }
 }

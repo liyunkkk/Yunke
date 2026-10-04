@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="stats_model_cache_hit_rate">Cache hit rate</string>
+    <string name="voice_title">Voice</string>
+    <string name="voice_section_speech">Speech to text</string>
+    <string name="voice_section_tts">Read aloud</string>
+    <string name="voice_section_conversation">Voice conversation</string>
+    <string name="voice_section_realtime">Doubao realtime call</string>
+    <string name="voice_section_personal">My voices</string>
+    <string name="voice_section_choose">Choose voice setting</string>
     <string name="voice_mode_title">Voice conversation</string>
     <string name="voice_mode_open">Open voice modes</string>
     <string name="voice_mode_stop">End voice conversation</string>
@@ -13,13 +20,12 @@
     <string name="voice_mode_transcribing">Finishing transcription…</string>
     <string name="voice_mode_thinking">Daiyu is thinking…</string>
     <string name="voice_mode_speaking">Daiyu is speaking</string>
-    <string name="voice_mode_universal_settings_summary">Offline speech recognition · current chat model · configured read-aloud voice</string>
-    <string name="voice_mode_universal_settings_hint">Configure speech recognition and read-aloud in their existing settings. Voice conversation sends recognized text to the current chat and listens again after playback.</string>
     <string name="voice_mode_doubao_provider">Realtime call provider</string>
     <string name="voice_mode_doubao_provider_missing">Add and configure a Doubao Voice provider first</string>
     <string name="voice_mode_doubao_voice">Realtime voice ID</string>
     <string name="voice_mode_doubao_instructions">Realtime assistant instructions</string>
-    <string name="voice_mode_doubao_settings_hint">Independent provider, voice and instructions. Read-aloud settings are not inherited. Changes apply to the next call. Choose a realtime voice from the list above.</string>
     <string name="voice_mode_universal_enable">Enable voice conversation</string>
     <string name="voice_mode_doubao_enable">Enable Doubao realtime calls</string>
+    <string name="voice_conversation_cloud_asr">Doubao speech recognition</string>
+    <string name="voice_conversation_asr_resource">Recognition service</string>
 </resources>
