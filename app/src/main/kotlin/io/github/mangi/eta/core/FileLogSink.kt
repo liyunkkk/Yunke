@@ -128,12 +128,12 @@ internal class FileLogSink(
 
     private fun moveFile(source: File, target: File) {
         if (!source.exists()) return
-        if (source.renameTo(target)) return
-        runCatching { Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
-            .getOrElse {
-                Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                Files.delete(source.toPath())
-            }
+        runCatching {
+            Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }.recoverCatching {
+            Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Files.delete(source.toPath())
+        }.getOrThrow()
     }
 
     private fun rotatedFile(index: Int): File = File(directory, rotatedName(index))
