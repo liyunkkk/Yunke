@@ -37,6 +37,7 @@ import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.isSteerSupplement
 import io.github.mangi.eta.ui.model.attachUserImageSources
 import io.github.mangi.eta.ui.model.decodeUserMessageImages
 import io.github.mangi.eta.ui.model.encodeUserMessageImages
