@@ -23,6 +23,9 @@ class SubAgentPresetUiContractTest(unittest.TestCase):
                        'updateProfile(profile.id)', 'editor.remove(profile.id)', '自动委派'):
             self.assertIn(needle, detail)
         self.assertNotIn('taskRunning', shell)
+        self.assertNotIn('editor.add()', detail)
+        self.assertIn('SubAgentProfileDraftSession.open(editor)', detail)
+        self.assertIn('SubAgentProfileConfigDialog(session, editor, providers', detail)
 
     def test_catalog_supports_named_empty_add_rename_delete_and_explicit_retry(self):
         settings = self.source('ui/SubAgentSettingsScreen.kt')
@@ -80,8 +83,10 @@ class SubAgentPresetUiContractTest(unittest.TestCase):
                        'val panelEnabled = canChange && panelEditor.enabled && panelConfig != null',
                        'when (panelState)', '本会话配置保存或读取失败', '重试本会话配置',
                        'editor.retry()', 'panelEditor.retry()',
-                       'panelConfig?.profiles.orEmpty().forEach',
-                       'SubAgentProfileRow(profile, providers, enabled = panelEnabled)',
+                       '(panelConfig ?: current).profiles.forEach',
+                       'SubAgentProfileRow(profile, providers, enabled = panelEnabled,',
+                       'SubAgentProfileDraftSession.open(panelEditor)',
+                       'SubAgentProfileConfigDialog(session, panelEditor, providers',
                        'Switch(checked = panelConfig?.enabled ?: current.enabled, enabled = panelEnabled'):
             self.assertIn(needle, panel)
         self.assertNotIn('SubAgentProfileRow(profile, providers, enabled = canChange)', panel)

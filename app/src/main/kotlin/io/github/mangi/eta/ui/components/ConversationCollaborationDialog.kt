@@ -5,6 +5,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,7 +51,11 @@ internal fun ConversationCollaborationDialog(
     // Never rebind an already opened dialog to a different editor during asynchronous loading.
     val editor = LocalConversationSubAgentEditor.current?.takeIf { ownerMatches() }
     val state = editor?.observe()
-    val current = (state as? SubAgentEditorState.Loaded)?.config
+    var lastLoadedConfig by remember(editor) { mutableStateOf<io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig?>(null) }
+    val loadedConfig = (state as? SubAgentEditorState.Loaded)?.config
+    SideEffect { if (loadedConfig != null) lastLoadedConfig = loadedConfig }
+    // A failed save must not unmount a configuration draft; explicit retry preserves it.
+    val current = loadedConfig ?: lastLoadedConfig
     val canChange = editor?.enabled == true && !taskRunning && ownerMatches()
     // Opening the chooser never writes: legacy conversations keep their original configuration.
     var chooserOverride by remember(editor) { mutableStateOf<Boolean?>(null) }
@@ -127,6 +133,7 @@ internal fun ConversationCollaborationDialog(
                                     val panelState = panelEditor.observe()
                                     val panelConfig = (panelState as? SubAgentEditorState.Loaded)?.config
                                     val panelEnabled = canChange && panelEditor.enabled && panelConfig != null
+                                    var addedDraft by remember(panelEditor) { mutableStateOf<SubAgentProfileDraftSession?>(null) }
                                     CompositionLocalProvider(LocalConversationSubAgentEditor provides panelEditor) {
                                         when (panelState) {
                                             is SubAgentEditorState.Error -> {
@@ -162,14 +169,35 @@ internal fun ConversationCollaborationDialog(
                                             Switch(checked = panelConfig?.enabled ?: current.enabled, enabled = panelEnabled, onCheckedChange = null)
                                         }
                                         HorizontalDivider(Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-                                        panelConfig?.profiles.orEmpty().forEach { profile ->
+                                        (panelConfig ?: current).profiles.forEach { profile ->
                                             key(panelEditor, profile.id) {
-                                                SubAgentProfileRow(profile, providers, enabled = panelEnabled)
+                                                SubAgentProfileRow(profile, providers, enabled = panelEnabled,
+                                                    draftAllowed = latestOwnerMatches() && !latestTaskRunning && !latestChoosing,
+                                                    draftRetry = { editor.retry(); panelEditor.retry() })
                                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
                                             }
                                         }
-                                        Text("点按模型切换 · 长按调整思考", style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp))
+                                        Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically) {
+                                            Text("点按模型切换 · 长按调整思考", style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+                                            IconButton(enabled = panelEnabled, onClick = {
+                                                if (panelEnabled && panelEditor.enabled) {
+                                                    SubAgentProfileDraftSession.open(panelEditor)?.let {
+                                                        TouchHaptics.click(view)
+                                                        addedDraft = it
+                                                    }
+                                                }
+                                            }) { Icon(Icons.Rounded.Add, "添加子代理") }
+                                        }
+                                        addedDraft?.let { session ->
+                                            SubAgentProfileConfigDialog(session, panelEditor, providers,
+                                                enabled = latestOwnerMatches() && !latestTaskRunning && !latestChoosing,
+                                                onDismiss = {
+                                                    session.dismiss()
+                                                    if (addedDraft === session) addedDraft = null
+                                                }, onRetry = { editor.retry(); panelEditor.retry() })
+                                        }
                                     }
                                 }
                             }

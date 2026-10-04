@@ -42,6 +42,13 @@ internal class SubAgentUiFixture(
         }, canEdit)
     }
     fun snapshot(): ConversationSubAgentConfig = repository.snapshot(owner)
+    /** Tests opt in to a catalog entry; the product's missing catalog stays empty. */
+    fun createPreset(name: String = "测试子代理组"): io.github.mangi.eta.agent.delegation.SubAgentPreset {
+        val preset = repository.addPreset(name)
+        check(repository.update(SubAgentConfigKey.Preset(preset.id)) { snapshot().detached() }
+            is ConversationSubAgentPreferences.WriteResult.Saved)
+        return repository.presets().single { it.id == preset.id }
+    }
 }
 
 internal fun ComposeContentTestRule.setSubAgentContent(

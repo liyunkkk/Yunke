@@ -45,7 +45,7 @@ class ConversationCollaborationDialogTest {
         val fixture = SubAgentUiFixture(preferenceTransform = {
             FailOncePreferences(it).also { wrapped -> prefs = wrapped }
         })
-        val preset = fixture.repository.presets().first()
+        val preset = fixture.createPreset()
         compose.setSubAgentContent(fixture) {
             MiuixTheme(colors = lightColorScheme()) {
                 ConversationCollaborationDialog(true, true, {}, {})
@@ -164,7 +164,7 @@ class ConversationCollaborationDialogTest {
         compose.runOnIdle { org.junit.Assert.assertEquals(0, dismissals) }
     }
 
-    @Test fun taskTierMenuHasThreeChoicesAndClosesWhenTaskStarts() {
+    @Test fun fullConfigShowsTierChoicesAndClosesWhenTaskStarts() {
         val running = mutableStateOf(false)
         compose.setSubAgentContent {
             MiuixTheme(colors = lightColorScheme()) {
@@ -172,7 +172,9 @@ class ConversationCollaborationDialogTest {
             }
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
-        compose.onNodeWithContentDescription("设置执行代理 1任务分工").performClick()
+        compose.onNodeWithContentDescription("设置执行代理 1任务分工").assertDoesNotExist()
+        compose.onNodeWithContentDescription("配置执行代理 1").performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().performClick()
         listOf("简单任务", "常规任务", "复杂任务").forEach { compose.onNodeWithText(it).assertExists() }
         compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
         compose.runOnIdle { running.value = true }
@@ -180,7 +182,7 @@ class ConversationCollaborationDialogTest {
         compose.onNodeWithText("执行代理 1").assertIsNotEnabled()
     }
 
-    @Test fun agentModelAndNameShareLeftColumnAndTierLivesOnRight() {
+    @Test fun agentModelAndNameShareLeftColumnAndConfigLivesOnRight() {
         compose.setSubAgentContent {
             androidx.compose.material3.MaterialTheme {
                 ConversationCollaborationDialog(true, true, {}, {})
@@ -188,8 +190,8 @@ class ConversationCollaborationDialogTest {
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         val info = compose.onNodeWithContentDescription("执行代理 1模型").fetchSemanticsNode().boundsInRoot
-        val tier = compose.onNodeWithContentDescription("设置执行代理 1任务分工").fetchSemanticsNode().boundsInRoot
-        org.junit.Assert.assertTrue("tier must be to the right of the model column", tier.left >= info.right)
+        val more = compose.onNodeWithContentDescription("配置执行代理 1").fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue("config must be to the right of the model column", more.left >= info.right)
         org.junit.Assert.assertTrue("name and model belong to the same column", compose
             .onNodeWithContentDescription("执行代理 1模型").fetchSemanticsNode().config
             .contains(androidx.compose.ui.semantics.SemanticsProperties.Text))
@@ -199,14 +201,14 @@ class ConversationCollaborationDialogTest {
 
     @Test
     @Config(qualifiers = "w320dp-h480dp")
-    fun compactTierKeepsAccessibleTouchTargetAndDoneStaysVisible() {
+    fun compactConfigKeepsAccessibleTouchTargetAndDoneStaysVisible() {
         compose.setSubAgentContent {
             androidx.compose.material3.MaterialTheme {
                 ConversationCollaborationDialog(true, true, {}, {})
             }
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
-        compose.onNodeWithContentDescription("设置执行代理 1任务分工")
+        compose.onNodeWithContentDescription("配置执行代理 1")
             .assertHeightIsAtLeast(androidx.compose.ui.unit.Dp(48f))
             .assertWidthIsAtLeast(androidx.compose.ui.unit.Dp(48f))
         compose.onNodeWithText("完成").assertIsDisplayed()
@@ -275,7 +277,7 @@ class ConversationCollaborationDialogTest {
     @Test fun runningTaskLocksPresetCardsAndCurrentConfigEntry() {
         val running = mutableStateOf(true)
         val fixture = SubAgentUiFixture(canEdit = { !running.value })
-        val group = fixture.repository.presets().first()
+        val group = fixture.createPreset()
         val before = fixture.snapshot()
         compose.setSubAgentContent(fixture) {
             androidx.compose.material3.MaterialTheme {

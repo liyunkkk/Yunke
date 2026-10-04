@@ -33,6 +33,8 @@ import io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor
 import io.github.mangi.eta.ui.components.SubAgentEditorState
 import io.github.mangi.eta.ui.components.SubAgentDropdownMenu
 import io.github.mangi.eta.ui.components.SubAgentProfileRow
+import io.github.mangi.eta.ui.components.SubAgentProfileDraftSession
+import io.github.mangi.eta.ui.components.SubAgentProfileConfigDialog
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
@@ -64,7 +66,7 @@ internal fun SubAgentSettingsScreen(
             val detailBack = { editor.dispose(); selectedId = null }
             BackHandler(enabled = isCurrentRoute, onBack = detailBack)
             CompositionLocalProvider(LocalConversationSubAgentEditor provides editor) {
-                SubAgentPresetDetail(editor, group.name, detailBack)
+                SubAgentPresetDetail(editor, group.name, detailBack, isCurrentRoute)
             }
         }
         return
@@ -145,12 +147,16 @@ internal fun SubAgentSettingsScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: String, onBack: () -> Unit) {
+private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: String, onBack: () -> Unit, isCurrentRoute: Boolean) {
     val state = editor.observe()
-    val config = (state as? SubAgentEditorState.Loaded)?.config
+    var lastLoadedConfig by remember(editor) { mutableStateOf<io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig?>(null) }
+    val loadedConfig = (state as? SubAgentEditorState.Loaded)?.config
+    SideEffect { if (loadedConfig != null) lastLoadedConfig = loadedConfig }
+    val config = loadedConfig ?: lastLoadedConfig
     val profiles = config?.profiles.orEmpty()
     val editable = editor?.enabled == true
     val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
+    var addedDraft by remember(editor) { mutableStateOf<SubAgentProfileDraftSession?>(null) }
     var rename by remember(editor) { mutableStateOf<SubAgentProfile?>(null) }
     var delete by remember(editor) { mutableStateOf<SubAgentProfile?>(null) }
     var name by remember(editor) { mutableStateOf("") }
@@ -164,7 +170,12 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
             floatingActionButtonPosition = FabPosition.Center,
             floatingActionButton = {
-                FilledTonalButton(onClick = { if (editor?.enabled == true) { TouchHaptics.click(view); editor.add() } },
+                FilledTonalButton(onClick = {
+                    if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
+                        TouchHaptics.click(view)
+                        addedDraft = it
+                    }
+                },
                     enabled = editable, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
                     shape = RoundedCornerShape(50),
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -235,6 +246,14 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                                                 Icon(Icons.Rounded.MoreVert, "${profile.name}更多操作")
                                             }
                                             if (editable) SubAgentDropdownMenu(expanded, { expanded = false }) {
+                                                DropdownMenuItem(text = { Text("配置") }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
+                                                    onClick = {
+                                                        if (editor.enabled) SubAgentProfileDraftSession.open(editor, profile)?.let {
+                                                            TouchHaptics.click(view)
+                                                            addedDraft = it
+                                                        }
+                                                        expanded = false
+                                                    })
                                                 DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) },
                                                     onClick = { if (editor?.enabled == true) { name = profile.name; rename = profile }; expanded = false })
                                                 DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) },
@@ -243,7 +262,7 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                                             }
                                         }
                                     }
-                                    SubAgentProfileRow(profile, providers, enabled = editable, settings = true)
+                                    SubAgentProfileRow(profile, providers, enabled = editable, settings = true, draftAllowed = true)
                                 }
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                             }
@@ -251,6 +270,12 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                     }
                 }
             }
+        }
+        addedDraft?.let { session ->
+            SubAgentProfileConfigDialog(session, editor, providers, enabled = isCurrentRoute, onDismiss = {
+                session.dismiss()
+                if (addedDraft === session) addedDraft = null
+            })
         }
         rename?.let { profile ->
             if (editable) AlertDialog(onDismissRequest = { rename = null }, title = { Text("重命名代理") },

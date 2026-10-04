@@ -51,15 +51,15 @@ class SubAgentMaterialControlsTest {
         compose.runOnIdle { assertTrue(clicked) }
     }
 
-    @Test fun onlyImplementationShowsTierControlsInSettings() {
+    @Test fun externalSettingsNeverShowsTierControls() {
         val role = mutableStateOf("implementation")
         compose.setContent {
             MaterialTheme {
                 SubAgentProfileRow(SubAgentProfile("test", "测试代理", role = role.value), emptyList(), settings = true)
             }
         }
-        compose.onNodeWithContentDescription("设置测试代理任务分工").assertExists()
-        for (next in listOf("review", "image_generation", "video_generation")) {
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
+        for (next in listOf("implementation", "review", "image_generation", "video_generation")) {
             compose.runOnIdle { role.value = next }
             compose.onNodeWithText("任务分工").assertDoesNotExist()
             compose.onNodeWithText("未设置分工").assertDoesNotExist()
@@ -154,15 +154,13 @@ class SubAgentMaterialControlsTest {
         assertTrue(value.left > label.right)
         val model = compose.onNodeWithContentDescription("测试代理模型").fetchSemanticsNode().boundsInRoot
         val role = compose.onNodeWithContentDescription("选择测试代理职责").fetchSemanticsNode().boundsInRoot
-        val tier = compose.onNodeWithContentDescription("设置测试代理任务分工").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
         assertTrue(role.top >= model.bottom)
-        assertTrue(tier.top >= role.bottom)
         val thinking = compose.onNodeWithContentDescription("调整测试代理思考深度").fetchSemanticsNode().boundsInRoot
         val parallel = compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsNotEnabled().fetchSemanticsNode().boundsInRoot
         assertTrue(parallel.top >= thinking.bottom)
         compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
-        compose.onNodeWithContentDescription("设置测试代理任务分工").performClick()
-        compose.onNode(isSelectable() and hasText("复杂任务")).assertIsSelected()
+        compose.onNodeWithText("任务分工").assertDoesNotExist()
     }
 
     @Test fun iconsAndLabelsUseOnSurfaceLikeTheApprovedSettingsShot() {
@@ -218,7 +216,7 @@ class SubAgentMaterialControlsTest {
     @Config(qualifiers = "w320dp-h480dp")
     fun settingsAddActionStaysVisibleWhileAgentListScrolls() {
         val fixture = SubAgentUiFixture()
-        val group = fixture.repository.presets().first()
+        val group = fixture.createPreset()
         compose.setSubAgentContent(fixture) {
             MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}, { fixture.repository }) }
         }
