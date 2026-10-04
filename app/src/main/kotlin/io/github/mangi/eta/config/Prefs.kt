@@ -100,7 +100,7 @@ internal object Prefs {
             AGENT_THINKING_ENABLED to true,
             AGENT_AUTO_COMPRESS_ENABLED to false,
             SUBAGENT_POLL_GUARD to false,
-            MODEL_RETRY_JITTER to true,
+            MODEL_RETRY_JITTER to false,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
             KIMI_WEB_USE_BUILTIN_BROWSER to true,
             HAPTIC_TOUCH_FEEDBACK to true,

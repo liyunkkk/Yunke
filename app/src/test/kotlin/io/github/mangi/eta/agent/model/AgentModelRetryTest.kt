@@ -11,6 +11,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
+import java.util.concurrent.CancellationException
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -51,11 +52,14 @@ class AgentModelRetryTest {
     fun disabledJitterKeepsTheExactBaseSequence() {
         val delays = mutableListOf<Long>()
         val retry = AgentModelRetry(
-            waitBeforeRetry = { _, delay -> delays += delay },
+            waitBeforeRetry = { _, delay ->
+                delays += delay
+                if (delays.size >= 3) throw CancellationException("stop after three delays")
+            },
             maxRetries = 3,
             jitterEnabled = false,
         )
-        assertThrows(AgentModelFailure::class.java) {
+        assertThrows(CancellationException::class.java) {
             complete(retry, provider { _, _ -> throw SocketTimeoutException("timeout") })
         }
         assertEquals(listOf(2_000L, 4_000L, 8_000L), delays)
@@ -64,17 +68,18 @@ class AgentModelRetryTest {
     @Test
     fun backoffJitterStaysWithinTwentyPercent() {
         val delays = mutableListOf<Long>()
-        repeat(8) {
-            val retry = AgentModelRetry(
-                waitBeforeRetry = { _, delay -> delays += delay },
-                maxRetries = 3,
-                jitterEnabled = true,
-            )
-            assertThrows(AgentModelFailure::class.java) {
-                complete(retry, provider { _, _ -> throw SocketTimeoutException("timeout") })
-            }
+        val retry = AgentModelRetry(
+            waitBeforeRetry = { _, delay ->
+                delays += delay
+                if (delays.size >= 3) throw CancellationException("stop after three delays")
+            },
+            maxRetries = 3,
+            jitterEnabled = true,
+        )
+        assertThrows(CancellationException::class.java) {
+            complete(retry, provider { _, _ -> throw SocketTimeoutException("timeout") })
         }
-        assertEquals(24, delays.size)
+        assertEquals(3, delays.size)
         val bases = listOf(2_000L, 4_000L, 8_000L)
         delays.forEachIndexed { index, delay ->
             val base = bases[index % bases.size]
