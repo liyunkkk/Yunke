@@ -239,37 +239,55 @@ private const val SPIKE_MAX_PER_SESSION = 40
 private const val SPIKE_LOOKBACK_NS = 200_000_000L
 internal const val NOTE_MAX_PER_SESSION = 120
 internal const val SLOW_STAGE_NS = 16_000_000L
+internal const val STREAM_DIAGNOSTIC_STAGE_LIMIT = 128
 
 /** One visible chat window. Logging is on its worker; hot paths only update bounded counters. */
 internal object StreamPerformanceDiagnostics {
-    private class Session {
+    internal class Session {
         val id = UUID.randomUUID().toString().take(8)
         val started = System.nanoTime()
         val stats = linkedMapOf<String, StreamTimingStats>()
         var closed = false
         private var lastDeltaNs = 0L
+        private var droppedStageRecords = 0L
         @Synchronized fun record(stage: String, ns: Long, value: Long) {
-            if (closed || (stage !in stats && stats.size >= 64)) return
+            if (closed) return
             if (stage == "ui.delta.received") {
                 val now = System.nanoTime()
-                if (lastDeltaNs != 0L) stats.getOrPut("ui.delta.gap") { StreamTimingStats() }.add(now - lastDeltaNs, 0)
+                if (lastDeltaNs != 0L) add("ui.delta.gap", now - lastDeltaNs, 0)
                 lastDeltaNs = now
             }
-            stats.getOrPut(stage) { StreamTimingStats() }.add(ns, value)
+            add(stage, ns, value)
+        }
+        // Caller holds the session lock. Saturation never hides updates to known stages.
+        private fun add(stage: String, ns: Long, value: Long) {
+            val existing = stats[stage]
+            if (existing != null) {
+                existing.add(ns, value)
+            } else if (stats.size < STREAM_DIAGNOSTIC_STAGE_LIMIT) {
+                stats[stage] = StreamTimingStats().also { it.add(ns, value) }
+            } else {
+                droppedStageRecords++
+            }
         }
         fun report(final: Boolean): List<String> {
-            val snapshot = synchronized(this) {
-                val snapshot = stats.toMap()
+            val (snapshot, dropped) = synchronized(this) {
+                val snapshot = stats.toMap() to droppedStageRecords
                 stats.clear()
+                droppedStageRecords = 0
                 if (final) closed = true
                 snapshot
             }
-            // Format outside the lock, and keep each line below logcat's entry limit.
+            // Format outside the lock; overflow is one bounded line, never a payload label.
             val prefix = "StreamDiag id=$id final=$final elapsedMs=${(System.nanoTime()-started)/1_000_000}"
-            return snapshot.map { (stage, stats) -> "$prefix stage=$stage ${stats.summary()}" }
-                .ifEmpty { listOf("$prefix empty=1") }
+            return buildList {
+                snapshot.forEach { (stage, stats) -> add("$prefix stage=$stage ${stats.summary()}") }
+                if (dropped > 0) add("$prefix stage=diagnostic.stageOverflow droppedRecords=$dropped")
+                if (isEmpty()) add("$prefix empty=1")
+            }
         }
     }
+
     @Volatile private var active: Session? = null
     @Volatile private var probe: ToggleProbe? = null
     private var probeReporter: ((ToggleProbe) -> Unit)? = null

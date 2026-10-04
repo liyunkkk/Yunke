@@ -6,6 +6,33 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamPerformanceDiagnosticsTest {
+    @Test fun stageLimitKeepsKnownCountersAndReportsOverflowWithoutPayloadNames() {
+        val session = StreamPerformanceDiagnostics.Session()
+        repeat(STREAM_DIAGNOSTIC_STAGE_LIMIT) { session.record("test.$it", 1000, 1) }
+        repeat(3) { session.record("not-retained-secret", 1000, 1) }
+        session.record("test.0", 2000, 2)
+        val lines = session.report(final = false)
+        assertEquals(STREAM_DIAGNOSTIC_STAGE_LIMIT + 1, lines.size)
+        assertTrue(lines.single { "stage=test.0 " in it }.contains("n=2"))
+        assertTrue(lines.last().contains("stage=diagnostic.stageOverflow droppedRecords=3"))
+        assertTrue(lines.none { "not-retained-secret" in it })
+        session.record("next.window", 1000, 0)
+        assertTrue(session.report(final = false).single().contains("stage=next.window"))
+    }
+
+    @Test fun derivedDeltaGapRespectsStageLimitAndClosedSessionStaysClosed() {
+        val session = StreamPerformanceDiagnostics.Session()
+        repeat(STREAM_DIAGNOSTIC_STAGE_LIMIT - 1) { session.record("test.$it", 1, 0) }
+        session.record("ui.delta.received", 0, 1)
+        session.record("ui.delta.received", 0, 1)
+        val lines = session.report(final = true)
+        assertEquals(STREAM_DIAGNOSTIC_STAGE_LIMIT + 1, lines.size)
+        assertTrue(lines.single { "stage=ui.delta.received " in it }.contains("n=2"))
+        assertTrue(lines.last().contains("droppedRecords=1"))
+        session.record("after.close", 1, 0)
+        assertTrue(session.report(final = true).single().contains("empty=1"))
+    }
+
     @Test fun unaccountedIsTotalMinusNonOverlappingParts() {
         assertEquals(10L, frameUnaccountedNs(
             total = 100, unknown = 40, input = 5, animation = 5,
