@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.SystemNoticeCode
+import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
@@ -42,6 +44,10 @@ internal fun List<AgentChatMessageUi>.toTimelineEntries(): List<AgentTimelineEnt
 
     this@toTimelineEntries.withTerminalBodiesInOrder().forEach { message ->
         if (message is UserMessageUi && message.isResumeAfterCompress()) {
+            return@forEach
+        }
+        // Keep retry records for continuation logic, but never render a retry bubble.
+        if (message is SystemNoticeMessageUi && message.code == SystemNoticeCode.ModelRetry) {
             return@forEach
         }
         if (message.isWorkProcessMessage()) {
