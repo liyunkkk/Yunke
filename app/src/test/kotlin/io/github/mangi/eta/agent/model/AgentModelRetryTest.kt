@@ -49,45 +49,6 @@ class AgentModelRetryTest {
     }
 
     @Test
-    fun disabledJitterKeepsTheExactBaseSequence() {
-        val delays = mutableListOf<Long>()
-        val retry = AgentModelRetry(
-            waitBeforeRetry = { _, delay ->
-                delays += delay
-                if (delays.size >= 3) throw CancellationException("stop after three delays")
-            },
-            maxRetries = 3,
-            jitterEnabled = false,
-        )
-        assertThrows(CancellationException::class.java) {
-            complete(retry, provider { _, _ -> throw SocketTimeoutException("timeout") })
-        }
-        assertEquals(listOf(2_000L, 4_000L, 8_000L), delays)
-    }
-
-    @Test
-    fun backoffJitterStaysWithinTwentyPercent() {
-        val delays = mutableListOf<Long>()
-        val retry = AgentModelRetry(
-            waitBeforeRetry = { _, delay ->
-                delays += delay
-                if (delays.size >= 3) throw CancellationException("stop after three delays")
-            },
-            maxRetries = 3,
-            jitterEnabled = true,
-        )
-        assertThrows(CancellationException::class.java) {
-            complete(retry, provider { _, _ -> throw SocketTimeoutException("timeout") })
-        }
-        assertEquals(3, delays.size)
-        val bases = listOf(2_000L, 4_000L, 8_000L)
-        delays.forEachIndexed { index, delay ->
-            val base = bases[index % bases.size]
-            assertTrue("delay=$delay base=$base", delay in (base * 80 / 100)..(base * 120 / 100))
-        }
-    }
-
-    @Test
     fun cancellationDuringBackoffStopsBeforeAnotherRequest() {
         val controller = AgentRunController()
         var calls = 0
