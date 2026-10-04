@@ -26,7 +26,7 @@ class PrefsDefaultsTest {
                 Prefs.Keys.AGENT_THINKING_ENABLED to true,
                 Prefs.Keys.AGENT_AUTO_COMPRESS_ENABLED to false,
                 Prefs.Keys.SUBAGENT_POLL_GUARD to false,
-                Prefs.Keys.MODEL_RETRY_JITTER to true,
+                Prefs.Keys.MODEL_RETRY_JITTER to false,
                 Prefs.Keys.AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
                 Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER to true,
                 Prefs.Keys.HAPTIC_TOUCH_FEEDBACK to true,
