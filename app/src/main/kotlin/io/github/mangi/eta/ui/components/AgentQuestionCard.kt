@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -40,13 +41,13 @@ internal fun AgentQuestionCard(
     val draft = AgentQuestionAnswer(message.answerKind, message.selectedOptionId,
         message.otherText, message.note)
     val valid = AgentQuestionCodec.validateAnswer(request, AgentQuestionProjection.draftAnswer(message)).accepted
-    Surface(modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp),
+    Surface(modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
         tonalElevation = 2.dp) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(stringResource(R.string.question_heading), style = MaterialTheme.typography.labelLarge,
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.question_heading), style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary)
-            Text(request.title, style = MaterialTheme.typography.titleMedium)
-            Text(request.question, style = MaterialTheme.typography.bodyMedium)
+            Text(request.title, style = MaterialTheme.typography.bodyLarge)
+            Text(request.question, style = MaterialTheme.typography.bodySmall)
             request.options.forEach { option ->
                 QuestionOptionRow(label = option.label, description = option.description,
                     selected = displayed.kind == "option" && displayed.optionId == option.id,
@@ -62,7 +63,7 @@ internal fun AgentQuestionCard(
                     OutlinedTextField(value = if (message.answer != null) displayed.otherText else message.otherText,
                         onValueChange = { onDraftChanged(draft.copy(kind = "other", optionId = null, otherText = it.take(2000))) },
                         enabled = editable, modifier = Modifier.fillMaxWidth(),
-                        label = { Text(stringResource(R.string.question_other_hint)) }, maxLines = 5)
+                        label = { Text(stringResource(R.string.question_other_hint)) }, maxLines = 3)
                 }
             }
             if (request.allowDelegation) QuestionOptionRow(stringResource(R.string.question_delegate),
@@ -72,7 +73,7 @@ internal fun AgentQuestionCard(
             if (request.allowNote) OutlinedTextField(
                 value = if (message.answer != null) displayed.note else message.note,
                 onValueChange = { onDraftChanged(draft.copy(note = it.take(2000))) }, enabled = editable,
-                modifier = Modifier.fillMaxWidth(), label = { Text(stringResource(R.string.question_note)) }, maxLines = 5)
+                modifier = Modifier.fillMaxWidth(), label = { Text(stringResource(R.string.question_note)) }, maxLines = 3)
             message.error?.let { Text(it, color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall) }
             if (message.status == AgentQuestionStatus.Waiting) {
@@ -94,12 +95,12 @@ private fun QuestionOptionRow(label: String, description: String, selected: Bool
     enabled: Boolean, recommended: Boolean, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().border(1.dp,
         if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-        RoundedCornerShape(12.dp)).clickable(enabled = enabled, onClick = onClick).padding(8.dp),
+        RoundedCornerShape(9.dp)).clickable(enabled = enabled, onClick = onClick).padding(5.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected = selected, onClick = null, enabled = enabled)
-        Column(Modifier.weight(1f).padding(start = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(label, style = MaterialTheme.typography.bodyLarge)
-            if (description.isNotBlank()) Text(description, style = MaterialTheme.typography.bodySmall,
+        RadioButton(selected = selected, onClick = null, enabled = enabled, modifier = Modifier.size(22.dp))
+        Column(Modifier.weight(1f).padding(start = 6.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            if (description.isNotBlank()) Text(description, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (recommended) Text(stringResource(R.string.question_recommended),
