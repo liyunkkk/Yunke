@@ -62,7 +62,7 @@ class ReconnectProviderBoundaryTest {
                 provider.complete(base.copy(config = base.config.copy(hostedWebSearchEnabled = true,
                     extraBodyJson = injected.toString()), reconnectTextOnly = true), AgentRunController(), {})
                 val body = JSONObject(captured.get())
-                for (key in injected.keySet()) assertFalse("Recovery must strip $key", body.has(key))
+                for (key in injected.keys().asSequence().toSet()) assertFalse("Recovery must strip $key", body.has(key))
             }
         }
     }

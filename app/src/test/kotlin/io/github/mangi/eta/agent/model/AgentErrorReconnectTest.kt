@@ -364,7 +364,7 @@ class AgentErrorReconnectTest {
             .put("web_search_options", JSONObject()).put("mcp_servers", JSONArray())
             .put("previous_response_id", "remote").put("conversation", "remote")
         request.restrictReconnectPayload(body)
-        assertEquals(setOf("model"), body.keySet())
+        assertEquals(setOf("model"), body.keys().asSequence().toSet())
     }
 
     @Test fun cancellationErrorAndContextMaintenanceAreNotNetworkRetryLoops() {
