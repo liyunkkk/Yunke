@@ -4972,7 +4972,12 @@ internal class AgentAppState(
             }
 
             is AgentEvent.AssistantBlockDelta -> {
-                updateMessages(runId, updateTimestamp = false) { messages ->
+                updateMessages(
+                    runId = runId,
+                    updateTimestamp = false,
+                    normalizeTerminalOrder = false,
+                    recomputeWaitingQuestion = false,
+                ) { messages ->
                     when (event.kind) {
                         AgentEvent.AssistantBlockKind.TEXT ->
                             runMessageProjector.appendTextDelta(
@@ -5717,16 +5722,27 @@ internal class AgentAppState(
     private fun updateMessages(
         runId: String,
         updateTimestamp: Boolean = true,
+        normalizeTerminalOrder: Boolean = true,
+        recomputeWaitingQuestion: Boolean = true,
         transform: (List<AgentChatMessageUi>) -> List<AgentChatMessageUi>,
     ) {
         val conversationId = conversationIdForRun(runId) ?: return
         val state = conversationState(conversationId) ?: return
         StreamPerformanceDiagnostics.measure("ui.messages.apply", state.messages.size.toLong()) {
-            val nextMessages = runReplayBatch.normalize(runId, transform(state.messages))
+            val projected = transform(state.messages)
+            // Text/thinking deltas only replace or append the active run block. They
+            // cannot create a terminal notice; defer the cross-history terminal
+            // ordering pass to the next boundary/terminal event.
+            val nextMessages = if (normalizeTerminalOrder) {
+                runReplayBatch.normalize(runId, projected)
+            } else {
+                projected
+            }
             updateConversation(
                 conversationId = conversationId,
                 state = state.copy(messages = nextMessages),
                 updateTimestamp = updateTimestamp,
+                recomputeWaitingQuestion = recomputeWaitingQuestion,
             )
         }
     }
@@ -5774,6 +5790,7 @@ internal class AgentAppState(
         conversationId: String,
         state: AgentChatHomeUiState,
         updateTimestamp: Boolean = true,
+        recomputeWaitingQuestion: Boolean = true,
     ) {
         check(state.conversationContentLoaded) { "Conversation content must be loaded before editing" }
         val previous = conversationState(conversationId)
@@ -5796,7 +5813,11 @@ internal class AgentAppState(
         }
         val ownerContext = ownerContexts[conversationId]
         val view = ownerContext?.projection()
-        val questionProjected = projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+        val questionProjected = if (recomputeWaitingQuestion) {
+            projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+        } else {
+            projected
+        }
         val current = if (view == null || ownerContext == null) questionProjected else questionProjected.copy(
             childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
             childStatusRoster = ownerContext.roster(),

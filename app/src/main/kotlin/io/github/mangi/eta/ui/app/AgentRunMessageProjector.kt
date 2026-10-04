@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import android.os.SystemClock
+import java.lang.ref.WeakReference
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
@@ -31,6 +32,8 @@ internal class AgentRunMessageProjector(
         var lastToolSequence: Long? = null,
     )
 
+    private data class VisibleBlock(val kind: AgentEvent.AssistantBlockKind, val index: Int)
+
     private data class PendingThinkingBlock(
         val afterMessageId: String?,
         var message: ThinkingMessageUi,
@@ -45,6 +48,13 @@ internal class AgentRunMessageProjector(
     // Message-list position is not event order: a resumed text block can stay before an old tool.
     // Keep the ordering evidence separately so an old tool cannot unlock a later late-thinking block.
     private val roundEventStates = mutableMapOf<RoundEventKey, RoundEventState>()
+    // Once a block was projected by this instance, a tail delta can update it
+    // without rechecking every historical row. Missing state deliberately falls
+    // back to the original transition pass for restored or externally-built lists.
+    private val visibleBlocks = mutableMapOf<RoundEventKey, VisibleBlock>()
+    // Only an unchanged, already-validated snapshot is eligible for the tail shortcut.
+    private var lastDeltaProjection: WeakReference<List<AgentChatMessageUi>>? = null
+    private var lastDeltaKey: RoundEventKey? = null
     private val textSegments = mutableMapOf<RoundEventKey, String>()
 
     fun requestQuestion(conversationId: String, runId: String, event: AgentEvent.QuestionRequested,
@@ -62,6 +72,9 @@ internal class AgentRunMessageProjector(
         discardPendingThinking(runId)
         thinkingBlockAnchors.keys.removeAll { it.runId == runId }
         roundEventStates.keys.removeAll { it.runId == runId }
+        visibleBlocks.keys.removeAll { it.runId == runId }
+        lastDeltaProjection = null
+        lastDeltaKey = null
     }
 
     /** 回放从该 run 的空轨迹重建；仅重排有回放事件的补充输入，旧 handoff 独有的输入必须保留。 */
@@ -216,13 +229,15 @@ internal class AgentRunMessageProjector(
             }
             rememberThinkingBlock(key, messages)
         }
-        return transitionVisibleBlock(
+        val transitioned = transitionVisibleBlock(
             runId = runId,
             round = event.round,
             kind = event.kind,
             index = event.index,
             messages = messages,
         )
+        visibleBlocks[RoundEventKey(runId, event.round)] = VisibleBlock(event.kind, event.index)
+        return transitioned
     }
 
     fun appendTextDelta(
@@ -234,36 +249,61 @@ internal class AgentRunMessageProjector(
     ): List<AgentChatMessageUi> {
         if (delta.isEmpty() || isSealed(runId)) return messages
         recordTextEvent(runId, round)
+        finishPendingThinking(runId, round)
 
-        val transitioned = transitionVisibleBlock(
-            runId = runId,
-            round = round,
-            kind = AgentEvent.AssistantBlockKind.TEXT,
-            index = index,
-            messages = messages,
-        )
+        val eventKey = RoundEventKey(runId, round)
         val assistantId = assistantMessageId(runId, round, index)
         var updated = false
-        val next = transitioned.map { message ->
-            if (message is AgentMessageUi && message.id == assistantId) {
-                updated = true
-                message.copy(
-                    content = message.content + delta,
+        // Keep the boundary transition and the delta append in one pass. Streaming
+        // updates are frequent; two full-history maps here doubled the cost before
+        // publication even when the active bubble was already at the tail.
+        val last = messages.lastOrNull()
+        if (last is AgentMessageUi && last.id == assistantId &&
+            visibleBlocks[eventKey] == VisibleBlock(AgentEvent.AssistantBlockKind.TEXT, index) &&
+            lastDeltaKey == eventKey && lastDeltaProjection?.get() === messages
+        ) {
+            return messages.replaceLast(
+                last.copy(
+                    content = last.content + delta,
                     isStreaming = true,
                     renderMarkdown = false,
-                )
-            } else {
-                message
+                ),
+            ).rememberDeltaProjection(eventKey)
+        }
+        val next = messages.map { message ->
+            when {
+                message is AgentMessageUi && message.id == assistantId -> {
+                    updated = true
+                    message.copy(
+                        content = message.content + delta,
+                        isStreaming = true,
+                        renderMarkdown = false,
+                    )
+                }
+                message is AgentMessageUi &&
+                    message.isStreaming &&
+                    isAssistantMessageForRound(message.id, runId, round) ->
+                    message.copy(
+                        content = message.content.trimEnd(),
+                        isStreaming = false,
+                        renderMarkdown = true,
+                    )
+                message is ThinkingMessageUi &&
+                    message.isStreaming &&
+                    isThinkingMessageForRound(message.id, runId, round) ->
+                    message.finished()
+                else -> message
             }
         }
-        if (updated) return next
+        visibleBlocks[eventKey] = VisibleBlock(AgentEvent.AssistantBlockKind.TEXT, index)
+        if (updated) return next.rememberDeltaProjection(eventKey)
 
-        return next + AgentMessageUi(
+        return (next + AgentMessageUi(
             id = assistantId,
             content = delta,
             isStreaming = true,
             renderMarkdown = false,
-        )
+        )).rememberDeltaProjection(eventKey)
     }
 
     fun appendReasoningDelta(
@@ -288,30 +328,55 @@ internal class AgentRunMessageProjector(
         }
         rememberThinkingBlock(key, messages)
 
-        val transitioned = transitionVisibleBlock(
-            runId = runId,
-            round = round,
-            kind = AgentEvent.AssistantBlockKind.THINKING,
-            index = index,
-            messages = messages,
-        )
+        finishPendingThinking(runId, round, except = key)
+        val eventKey = RoundEventKey(runId, round)
         val thinkingId = thinkingMessageId(runId, round, index)
         val elapsedSeconds = elapsedSeconds(thinkingId)
         var updated = false
-        val next = transitioned.map { message ->
-            if (message is ThinkingMessageUi && message.id == thinkingId) {
-                updated = true
-                message.copy(
-                    content = message.content + delta,
+        // As with text, finish the previous visible block and append this delta in
+        // one history pass. Pending blocks are handled above without touching history.
+        val last = messages.lastOrNull()
+        if (last is ThinkingMessageUi && last.id == thinkingId &&
+            visibleBlocks[eventKey] == VisibleBlock(AgentEvent.AssistantBlockKind.THINKING, index) &&
+            lastDeltaKey == eventKey && lastDeltaProjection?.get() === messages
+        ) {
+            return messages.replaceLast(
+                last.copy(
+                    content = last.content + delta,
                     isStreaming = true,
                     elapsedSeconds = elapsedSeconds,
                     collapsed = false,
-                )
-            } else {
-                message
+                ),
+            ).rememberDeltaProjection(eventKey)
+        }
+        val next = messages.map { message ->
+            when {
+                message is ThinkingMessageUi && message.id == thinkingId -> {
+                    updated = true
+                    message.copy(
+                        content = message.content + delta,
+                        isStreaming = true,
+                        elapsedSeconds = elapsedSeconds,
+                        collapsed = false,
+                    )
+                }
+                message is AgentMessageUi &&
+                    message.isStreaming &&
+                    isAssistantMessageForRound(message.id, runId, round) ->
+                    message.copy(
+                        content = message.content.trimEnd(),
+                        isStreaming = false,
+                        renderMarkdown = true,
+                    )
+                message is ThinkingMessageUi &&
+                    message.isStreaming &&
+                    isThinkingMessageForRound(message.id, runId, round) ->
+                    message.finished()
+                else -> message
             }
         }
-        if (updated) return next
+        visibleBlocks[eventKey] = VisibleBlock(AgentEvent.AssistantBlockKind.THINKING, index)
+        if (updated) return next.rememberDeltaProjection(eventKey)
 
         return next.insertAfterThinkingAnchor(
             thinkingBlockAnchors[key],
@@ -322,7 +387,7 @@ internal class AgentRunMessageProjector(
                 elapsedSeconds = elapsedSeconds,
                 collapsed = false,
             ),
-        )
+        ).rememberDeltaProjection(eventKey)
     }
 
     fun ensureCompletedThinking(
@@ -606,8 +671,17 @@ internal class AgentRunMessageProjector(
         discardPendingThinking(runId)
         thinkingBlockAnchors.keys.removeAll { it.runId == runId }
         roundEventStates.keys.removeAll { it.runId == runId }
+        visibleBlocks.keys.removeAll { it.runId == runId }
+        lastDeltaProjection = null
+        lastDeltaKey = null
         thinkingStartedAt.keys.removeAll { it.startsWith("$runId-thinking-") }
         textSegments.keys.removeAll { it.runId == runId }
+    }
+
+    private fun List<AgentChatMessageUi>.rememberDeltaProjection(eventKey: RoundEventKey): List<AgentChatMessageUi> {
+        lastDeltaKey = eventKey
+        lastDeltaProjection = WeakReference(this)
+        return this
     }
 
     private fun recordTextEvent(runId: String, round: Int) {
@@ -869,6 +943,15 @@ internal class AgentRunMessageProjector(
                 messageId.startsWith(assistantMessagePrefix(runId))
     }
 
+}
+
+/** Replace a tail message without invoking a predicate for every historical row. */
+private fun List<AgentChatMessageUi>.replaceLast(message: AgentChatMessageUi): List<AgentChatMessageUi> {
+    if (size == 1) return listOf(message)
+    return ArrayList<AgentChatMessageUi>(size).also {
+        it.addAll(subList(0, lastIndex))
+        it.add(message)
+    }
 }
 
 private const val MAX_TOOL_RESULT_PREVIEW_CHARS = 48
