@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.PushPin
@@ -291,6 +293,17 @@ private fun ManageChatRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
+                if (conversation.isActiveRun || conversation.hasCompletionMarker) {
+                    Box(
+                        modifier = Modifier.size(6.dp).clip(CircleShape).then(
+                            if (conversation.isActiveRun) {
+                                Modifier.background(MiuixTheme.colorScheme.primary)
+                            } else {
+                                Modifier.border(1.dp, MiuixTheme.colorScheme.primary, CircleShape)
+                            },
+                        ),
+                    )
+                }
             }
             Text(
                 text = conversation.timeLabel,

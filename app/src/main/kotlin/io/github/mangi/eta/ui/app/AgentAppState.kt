@@ -316,6 +316,7 @@ internal class AgentAppState(
     private var conversationCreatedAt: Map<String, Long>
     private var conversationFolderIds: Map<String, String>
     private var conversationPinned: Set<String>
+    private var conversationCompletionMarkers: Set<String>
     private var conversationFolders: List<ConversationFolderUi>
 
     init {
@@ -329,6 +330,7 @@ internal class AgentAppState(
         conversationCreatedAt = initialConversations.createdAt
         conversationFolderIds = initialConversations.folderIds
         conversationPinned = initialConversations.pinnedIds
+        conversationCompletionMarkers = initialConversations.completionMarkerIds - initialConversations.selectedConversationId
         conversationFolders = initialConversations.folders
     }
 
@@ -1207,6 +1209,7 @@ internal class AgentAppState(
             conversationCreatedAt = snapshot.createdAt
             conversationFolderIds = snapshot.folderIds
             conversationPinned = snapshot.pinnedIds
+            conversationCompletionMarkers = snapshot.completionMarkerIds - snapshot.selectedConversationId
             conversationFolders = snapshot.folders
             selectedFolderId = null
             pendingNewConversationFolderId = null
@@ -1315,6 +1318,12 @@ internal class AgentAppState(
                         updateTimestamp = !recovery.alreadyApplied,
                     )
                     stateChanged = true
+                    if (ConversationCompletionMarker.shouldMark(
+                            result, isSelected = conversationId == selectedConversationId,
+                            alreadyApplied = recovery.alreadyApplied,
+                        )) {
+                        markConversationCompleted(conversationId)
+                    }
                     if (!recovery.alreadyApplied && VirtualCompletionNotice.confirmed(result)) {
                         Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
                     }
@@ -1764,6 +1773,9 @@ internal class AgentAppState(
         check(state.conversationContentLoaded)
         fileAttachmentOwnerVersion += 1
         selectedConversationId = conversationId
+        if (conversationId in conversationCompletionMarkers) {
+            conversationCompletionMarkers = conversationCompletionMarkers - conversationId
+        }
         val owner = ownerContext(conversationId)
         val view = owner.projection()
         val ordered = orderedTerminalState(state.withCurrentGptSpeedBinding()).copy(
@@ -1776,6 +1788,7 @@ internal class AgentAppState(
         billedOverheadTokens = null
         syncBilledOverhead(conversationId, ordered.messages)
         conversationPaneState = conversationPaneState.copy(selectedConversationId = conversationId)
+        refreshConversationSummaries()
         persistConversations()
         restoreConversationRuntimeModel()
         requestOwnerContext(conversationId)
@@ -1925,6 +1938,7 @@ internal class AgentAppState(
                             conversationCreatedAt = emptyMap()
                             conversationFolderIds = emptyMap()
                             conversationPinned = emptySet()
+                            conversationCompletionMarkers = emptySet()
                             fileAttachmentOwnerVersion += 1
                             beginNewSubAgentDraft()
                             selectedConversationId = null
@@ -1965,12 +1979,14 @@ internal class AgentAppState(
         conversationCreatedAt = conversationCreatedAt - conversationId
         conversationFolderIds = conversationFolderIds - conversationId
         conversationPinned = conversationPinned - conversationId
+        conversationCompletionMarkers = conversationCompletionMarkers - conversationId
         scope.launch(Dispatchers.IO) { chatImageCache.deleteConversation(conversationId) }
         if (wasSelected) {
             fileAttachmentOwnerVersion += 1
             val nextId = conversationsById.keys.firstOrNull()
             if (nextId != null) {
                 selectedConversationId = nextId
+                conversationCompletionMarkers = conversationCompletionMarkers - nextId
                 homeState = requireNotNull(conversationState(nextId))
                 conversationsById = conversationsById + (nextId to homeState)
             } else {
@@ -2437,6 +2453,7 @@ internal class AgentAppState(
         conversationCreatedAt = conversationCreatedAt - conversationId
             conversationFolderIds = conversationFolderIds - conversationId
             conversationPinned = conversationPinned - conversationId
+            conversationCompletionMarkers = conversationCompletionMarkers - conversationId
             scope.launch(Dispatchers.IO) { chatImageCache.deleteConversation(conversationId) }
             fileAttachmentOwnerVersion += 1
             beginNewSubAgentDraft()
@@ -5376,6 +5393,10 @@ internal class AgentAppState(
         }
     }
 
+    private fun markConversationCompleted(conversationId: String) {
+        conversationCompletionMarkers = conversationCompletionMarkers + conversationId
+    }
+
     private fun applyRunResult(
         runId: String,
         result: AgentRuntimeWire.RunResult,
@@ -5423,6 +5444,12 @@ internal class AgentAppState(
         revokeContextActual(runId)
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
+        if (conversationId != null && ConversationCompletionMarker.shouldMark(
+                result, wasStopped = stoppedDuringRetry != null,
+                isSelected = conversationId == selectedConversationId,
+            )) {
+            markConversationCompleted(conversationId)
+        }
         conversationId?.let(pendingInRunCompactConversationIds::remove)
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
@@ -5913,6 +5940,7 @@ internal class AgentAppState(
                     mode = ConversationModeUi.Chat,
                     isPinned = id in conversationPinned,
                     isActiveRun = state.isStreaming,
+                    hasCompletionMarker = id in conversationCompletionMarkers,
                     folderId = conversationFolderIds[id],
                 )
             }
@@ -5955,6 +5983,7 @@ internal class AgentAppState(
         val timestamps: Map<String, Long>,
         val folderIds: Map<String, String>,
         val pinnedIds: Set<String>,
+        val completionMarkerIds: Set<String>,
         val folders: List<ConversationFolderUi>,
         val retired: ConversationTokenUsageUi,
         val retiredConversations: Int,
@@ -5985,7 +6014,7 @@ internal class AgentAppState(
         return synchronized(persistenceLock) {
             val snapshot = ConversationSaveSnapshot(
                 selectedConversationId, conversationsById, conversationTitles, conversationUpdatedAt,
-                conversationFolderIds, conversationPinned, conversationFolders,
+                conversationFolderIds, conversationPinned, conversationCompletionMarkers, conversationFolders,
                 pendingRetiredUsage, pendingRetiredConversations, pendingRetiredMessages, pendingRetiredHeatmap,
             )
             pendingRetiredUsage = ConversationTokenUsageUi()
@@ -6004,7 +6033,8 @@ internal class AgentAppState(
                     context = appContext, selectedConversationId = snapshot.selected,
                     conversationsById = snapshot.conversations, titles = snapshot.titles,
                     updatedAt = snapshot.timestamps, folderIds = snapshot.folderIds,
-                    pinnedIds = snapshot.pinnedIds, folders = snapshot.folders,
+                    pinnedIds = snapshot.pinnedIds, completionMarkerIds = snapshot.completionMarkerIds,
+                    folders = snapshot.folders,
                 )
                 SettingsDataStore.addRetiredUsage(
                     inputTokens = snapshot.retired.inputTokens,

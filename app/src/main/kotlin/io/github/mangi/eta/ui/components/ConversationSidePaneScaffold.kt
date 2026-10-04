@@ -5,6 +5,7 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -897,13 +898,19 @@ private fun ConversationTextRow(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            if (conversation.isActiveRun) {
+            if (conversation.isActiveRun || conversation.hasCompletionMarker) {
                 Box(
                     modifier = Modifier
                         .padding(start = if (conversation.isPinned) 0.dp else DrawerMetrics.ActiveDotGap)
                         .size(DrawerMetrics.ActiveDotSize)
                         .clip(CircleShape)
-                        .background(MiuixTheme.colorScheme.primary),
+                        .then(
+                            if (conversation.isActiveRun) {
+                                Modifier.background(MiuixTheme.colorScheme.primary)
+                            } else {
+                                Modifier.border(1.dp, MiuixTheme.colorScheme.primary, CircleShape)
+                            },
+                        ),
                 )
             }
             if (conversation.isPinned) {
@@ -911,7 +918,7 @@ private fun ConversationTextRow(
                     imageVector = Icons.Rounded.PushPin,
                     contentDescription = null,
                     modifier = Modifier.padding(
-                        start = if (conversation.isActiveRun) DrawerMetrics.ActiveDotGap else 0.dp,
+                        start = if (conversation.isActiveRun || conversation.hasCompletionMarker) DrawerMetrics.ActiveDotGap else 0.dp,
                     ).size(14.dp),
                     tint = MiuixTheme.colorScheme.primary,
                 )

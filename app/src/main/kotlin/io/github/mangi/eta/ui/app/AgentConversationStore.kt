@@ -64,6 +64,7 @@ internal object AgentConversationStore {
         val createdAt: Map<String, Long> = emptyMap(),
         val folderIds: Map<String, String> = emptyMap(),
         val pinnedIds: Set<String> = emptySet(),
+        val completionMarkerIds: Set<String> = emptySet(),
         val folders: List<ConversationFolderUi> = emptyList(),
     )
 
@@ -84,6 +85,7 @@ internal object AgentConversationStore {
         updatedAt: Map<String, Long>,
         folderIds: Map<String, String> = emptyMap(),
         pinnedIds: Set<String> = emptySet(),
+        completionMarkerIds: Set<String> = emptySet(),
         folders: List<ConversationFolderUi> = emptyList(),
     ) {
         val appContext = context.applicationContext
@@ -108,6 +110,7 @@ internal object AgentConversationStore {
                         updatedAt = updatedAt[id] ?: now,
                         folderId = folderIds[id].orEmpty(),
                         isPinned = id in pinnedIds,
+                        hasCompletionMarker = id in completionMarkerIds,
                         providerId = state.providerId,
                         modelId = state.modelId,
                         assistantId = state.assistantId,
@@ -134,7 +137,7 @@ internal object AgentConversationStore {
                     dao.updateConversationMetadata(metadata.map { row ->
                         ConversationMetadata(row.id, row.title, row.thinkingEnabled, row.reasoningEffort,
                             row.appliedRuntimeRunIdsJson, row.createdAt, row.updatedAt, row.folderId,
-                            row.isPinned, row.providerId, row.modelId, row.assistantId)
+                            row.isPinned, row.hasCompletionMarker, row.providerId, row.modelId, row.assistantId)
                     })
                     dao.deleteState()
                     for ((conversationId, state) in sorted) {
@@ -482,6 +485,7 @@ internal object AgentConversationStore {
                 }
                 .toMap(),
             pinnedIds = conversations.filter { it.isPinned }.map { it.id }.toSet(),
+            completionMarkerIds = conversations.filter { it.hasCompletionMarker }.map { it.id }.toSet(),
             folders = dao.folders().toUiFolders(),
         )
     }

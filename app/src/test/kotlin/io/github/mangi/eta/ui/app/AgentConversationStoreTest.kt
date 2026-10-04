@@ -716,6 +716,7 @@ class AgentConversationStoreTest {
                 updatedAt = mapOf("conv-1" to 2L, "conv-2" to 1L),
                 folderIds = mapOf("conv-1" to "folder-work"),
                 pinnedIds = setOf("conv-2"),
+                completionMarkerIds = setOf("conv-2"),
                 folders = listOf(
                     ConversationFolderUi(id = "folder-work", name = "工作", sortIndex = 0),
                 ),
@@ -726,6 +727,7 @@ class AgentConversationStoreTest {
         assertEquals("folder-work", snapshot.folderIds["conv-1"])
         assertEquals(null, snapshot.folderIds["conv-2"])
         assertEquals(setOf("conv-2"), snapshot.pinnedIds)
+        assertEquals(setOf("conv-2"), snapshot.completionMarkerIds)
         assertEquals(listOf("folder-work"), snapshot.folders.map { it.id })
         assertEquals("工作", snapshot.folders.single().name)
     }

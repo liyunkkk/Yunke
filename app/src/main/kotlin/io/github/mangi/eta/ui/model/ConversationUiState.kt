@@ -30,6 +30,7 @@ data class ConversationSummaryUi(
     val mode: ConversationModeUi,
     val isPinned: Boolean = false,
     val isActiveRun: Boolean = false,
+    val hasCompletionMarker: Boolean = false,
     val folderId: String? = null,
 )
 
