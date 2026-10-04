@@ -31,7 +31,7 @@ internal class AgentInvalidToolArgumentsGuard {
             FAILURE_CODE,
             "$subject 的参数校验失败（$count/$MAX_FAILURES）：$validationError。" +
                 "本次调用未执行；请仅修正这个调用，不要重放已成功的工具。" +
-                "再次无效达到 $MAX_FAILURES 次将终止运行；更换调用 ID、空白或其它工具成功均不会重置此预算。",
+                "再次无效达到 $MAX_FAILURES 次将按错误重连策略处理；更换调用 ID、空白或其它工具成功均不会重置此预算。",
         )
     }
 
