@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.components
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
@@ -23,9 +24,10 @@ internal class SubAgentUiFixture(
     canEdit: () -> Boolean = { true },
     providers: List<ProviderSetting>? = null,
     providerLookup: (suspend (String) -> ProviderSetting?)? = null,
+    preferenceTransform: (SharedPreferences) -> SharedPreferences = { it },
 ) {
     val repository = ConversationSubAgentPreferences(
-        RuntimeEnvironment.getApplication().getSharedPreferences("sub-agent-ui-${UUID.randomUUID()}", Context.MODE_PRIVATE))
+        preferenceTransform(RuntimeEnvironment.getApplication().getSharedPreferences("sub-agent-ui-${UUID.randomUUID()}", Context.MODE_PRIVATE)))
     val owner = SubAgentConfigKey.Conversation("ui-${UUID.randomUUID()}")
     init {
         check(repository.update(owner) { ConversationSubAgentConfig(profiles = profiles, enabled = enabled) }

@@ -44,7 +44,31 @@ internal class ConversationSubAgentEditor(
     val state: SubAgentEditorState
         get() = lifecycleFailure?.invoke()?.let { SubAgentEditorState.Error(it) } ?: storedState
     private var retryVersion by mutableIntStateOf(0)
-    val enabled: Boolean get() = state is SubAgentEditorState.Loaded && canEdit()
+    private var disposed = false
+    val enabled: Boolean get() = !disposed && state is SubAgentEditorState.Loaded && canEdit()
+    /** Irreversible: callbacks retained by a dismissed page must not revive on re-entry. */
+    fun dispose() { disposed = true }
+
+    /** Rows capture a whole application, not the root editor's subsequently refreshed state. */
+    fun scoped(applicationToken: String?, gate: () -> Boolean = { true }): ConversationSubAgentEditor {
+        val root = this
+        return ConversationSubAgentEditor(owner, repository, providerLookup) {
+            root.enabled && gate() && root.applicationMatches(applicationToken)
+        }
+    }
+    private fun applicationMatches(token: String?): Boolean = try {
+        repository.snapshot(owner).presetApplicationToken == token
+    } catch (_: Exception) { false }
+
+    fun applyPreset(id: String, canApply: () -> Boolean = { true }): ConversationSubAgentPreferences.WriteResult {
+        if (!enabled || !canApply()) return ConversationSubAgentPreferences.WriteResult.Rejected
+        return try {
+            repository.applyPreset(owner, id) { enabled && canApply() }.also { result ->
+                if (result is ConversationSubAgentPreferences.WriteResult.Saved)
+                    storedState = SubAgentEditorState.Loaded(result.config)
+            }
+        } catch (failure: Exception) { fail(failure); ConversationSubAgentPreferences.WriteResult.Rejected }
+    }
     private fun fail(failure: Exception) {
         if (failure is CancellationException) throw failure
         storedState = SubAgentEditorState.Error(failure.message ?: failure.javaClass.simpleName)
@@ -86,9 +110,10 @@ internal class ConversationSubAgentEditor(
     }
     fun update(change: (ConversationSubAgentConfig) -> ConversationSubAgentConfig): ConversationSubAgentPreferences.WriteResult {
         if (!enabled) return ConversationSubAgentPreferences.WriteResult.Rejected
+        val observedToken = (state as? SubAgentEditorState.Loaded)?.config?.presetApplicationToken
         return try {
             repository.update(owner) { old ->
-                if (!canEdit() || state !is SubAgentEditorState.Loaded) throw LostOwner()
+                if (!enabled || old.presetApplicationToken != observedToken) throw LostOwner()
                 change(old)
             }
         } catch (_: LostOwner) { ConversationSubAgentPreferences.WriteResult.Rejected }
@@ -122,7 +147,10 @@ internal class ConversationSubAgentEditor(
         if (!enabled) return ConversationSubAgentPreferences.WriteResult.Rejected
         return try {
             // Capture before suspension, even when the caller has no expected UI snapshot.
-            val captured = repository.snapshot(owner).profiles.singleOrNull { it.id == id } ?: throw LostOwner()
+            val capturedConfig = repository.snapshot(owner)
+            val capturedToken = capturedConfig.presetApplicationToken
+            if ((state as? SubAgentEditorState.Loaded)?.config?.presetApplicationToken != capturedToken) throw LostOwner()
+            val captured = capturedConfig.profiles.singleOrNull { it.id == id } ?: throw LostOwner()
             if (captured.providerId != providerId || captured.modelId != modelId ||
                 (expected != null && captured != expected)) throw LostOwner()
             // Room lookup is suspendable and must never run inside the owner transaction/lock.
@@ -132,7 +160,8 @@ internal class ConversationSubAgentEditor(
             val model = provider.models.singleOrNull { it.id == modelId } ?: throw LostOwner()
             if (!enabled || !supportsGptSpeedBinding(provider, model)) throw LostOwner()
             updateProfile(id) { old ->
-                // updateProfile also rechecks canEdit/state under the owner transaction.
+                // updateProfile also rechecks the scoped owner gate under the owner transaction.
+                if (!applicationMatches(capturedToken)) throw LostOwner()
                 if (old != (expected ?: captured) || old.providerId != providerId || old.modelId != modelId ||
                     !supportsGptSpeedBinding(provider, model)) throw LostOwner()
                 old.copy(gptSpeedByModel = old.gptSpeedByModel +

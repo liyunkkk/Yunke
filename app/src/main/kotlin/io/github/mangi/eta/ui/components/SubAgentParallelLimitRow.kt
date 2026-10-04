@@ -21,7 +21,7 @@ import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 
-/** Limits belong to this conversation's provider/API model pool, not the global preferences. */
+/** Limits belong to this configuration's provider/API model pool, not the global preferences. */
 @Composable
 internal fun SubAgentParallelLimitRow(profile: SubAgentProfile, config: AgentModelClient.ModelConfig?, enabled: Boolean = true) {
     val editor = LocalConversationSubAgentEditor.current
@@ -63,7 +63,7 @@ internal fun SubAgentParallelLimitRow(profile: SubAgentProfile, config: AgentMod
                     OutlinedTextField(value, { if (currentUsable) value = it }, label = { Text("0 为不限，或输入正整数") },
                         modifier = Modifier.fillMaxWidth(), singleLine = true, isError = number == null, enabled = usable,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                    Text("同一会话下相同提供商/API 模型共用此上限；0 表示不限。调低不会取消正在执行的任务。")
+                    Text("本配置内相同提供商/API 模型共用此上限；0 表示不限。调低不会取消正在执行的任务。")
                 } },
                 dismissButton = { TextButton(onClick = { open = false }) { Text("取消") } },
                 confirmButton = { TextButton(enabled = usable && number != null, onClick = {

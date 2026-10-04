@@ -1,5 +1,7 @@
 package io.github.mangi.eta.ui.components
 
+import android.content.SharedPreferences
+
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -20,6 +22,54 @@ import top.yukonga.miuix.kmp.theme.lightColorScheme
 class ConversationCollaborationDialogTest {
     @get:Rule val compose = createComposeRule()
 
+    /** Fails before memory changes; the repository still requires explicit durability recovery. */
+    private class FailOncePreferences(private val real: SharedPreferences) : SharedPreferences by real {
+        var failNextCommit = false
+        override fun edit(): SharedPreferences.Editor {
+            val edit = real.edit()
+            return object : SharedPreferences.Editor by edit {
+                override fun putString(key: String?, value: String?): SharedPreferences.Editor {
+                    edit.putString(key, value); return this
+                }
+                override fun remove(key: String?): SharedPreferences.Editor { edit.remove(key); return this }
+                override fun commit(): Boolean {
+                    if (failNextCommit) { failNextCommit = false; return false }
+                    return edit.commit()
+                }
+            }
+        }
+    }
+
+    @Test fun appliedPanelWriteFailureIsVisibleAndExplicitRetryRestoresEditing() {
+        lateinit var prefs: FailOncePreferences
+        val fixture = SubAgentUiFixture(preferenceTransform = {
+            FailOncePreferences(it).also { wrapped -> prefs = wrapped }
+        })
+        val preset = fixture.repository.presets().first()
+        compose.setSubAgentContent(fixture) {
+            MiuixTheme(colors = lightColorScheme()) {
+                ConversationCollaborationDialog(true, true, {}, {})
+            }
+        }
+        compose.onNodeWithContentDescription("应用子代理组${preset.name}").performScrollTo().performClick()
+        compose.onNodeWithText("切换子代理组").assertIsEnabled()
+        val before = fixture.snapshot().enabled
+        compose.runOnIdle { prefs.failNextCommit = true }
+        compose.onNodeWithText("自动委派").performScrollTo().performClick()
+        compose.onNodeWithText("本会话配置保存或读取失败", substring = true).assertExists()
+        compose.onNodeWithText("切换子代理组").assertIsNotEnabled()
+        compose.onNodeWithText("重试本会话配置").performScrollTo().performClick()
+        compose.onNodeWithText("本会话配置保存或读取失败", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("切换子代理组").assertIsEnabled()
+        compose.runOnIdle { org.junit.Assert.assertEquals(before, fixture.snapshot().enabled) }
+        compose.onNodeWithText("自动委派").performScrollTo().performClick()
+        compose.runOnIdle {
+            org.junit.Assert.assertEquals(!before, fixture.snapshot().enabled)
+            org.junit.Assert.assertEquals(preset.config.enabled,
+                fixture.repository.snapshot(io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Preset(preset.id)).enabled)
+        }
+    }
+
     @Test fun showsRolesAndToggleWithoutObsoleteReadOnlyParagraph() {
         val fixture = SubAgentUiFixture(enabled = false)
         val visible = mutableStateOf(true)
@@ -30,6 +80,8 @@ class ConversationCollaborationDialogTest {
             }
         }
         compose.onNodeWithText("本会话协作").assertExists()
+        compose.onNodeWithText("选择子代理组").assertExists()
+        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         listOf("执行代理 1", "执行代理 2", "执行代理 3", "审查／总结代理").forEach {
             compose.onNodeWithText(it).assertExists()
         }
@@ -48,6 +100,7 @@ class ConversationCollaborationDialogTest {
                 ConversationCollaborationDialog(true, true, {}, {})
             }
         }
+        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { longClick() }
         compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
         compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { click() }
@@ -73,6 +126,7 @@ class ConversationCollaborationDialogTest {
                 ConversationCollaborationDialog(true, true, { changes++ }, { dismissals++ }, taskRunning = running.value)
             }
         }
+        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("执行代理 1模型").performClick()
         compose.onNodeWithText("选择执行代理 1模型").assertExists()
         compose.runOnIdle { running.value = true }
@@ -117,6 +171,7 @@ class ConversationCollaborationDialogTest {
                 ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
             }
         }
+        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("设置执行代理 1任务分工").performClick()
         listOf("简单任务", "常规任务", "复杂任务").forEach { compose.onNodeWithText(it).assertExists() }
         compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
@@ -131,6 +186,7 @@ class ConversationCollaborationDialogTest {
                 ConversationCollaborationDialog(true, true, {}, {})
             }
         }
+        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         val info = compose.onNodeWithContentDescription("执行代理 1模型").fetchSemanticsNode().boundsInRoot
         val tier = compose.onNodeWithContentDescription("设置执行代理 1任务分工").fetchSemanticsNode().boundsInRoot
         org.junit.Assert.assertTrue("tier must be to the right of the model column", tier.left >= info.right)
@@ -149,6 +205,7 @@ class ConversationCollaborationDialogTest {
                 ConversationCollaborationDialog(true, true, {}, {})
             }
         }
+        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("设置执行代理 1任务分工")
             .assertHeightIsAtLeast(androidx.compose.ui.unit.Dp(48f))
             .assertWidthIsAtLeast(androidx.compose.ui.unit.Dp(48f))
@@ -157,4 +214,97 @@ class ConversationCollaborationDialogTest {
         compose.onNodeWithText("完成").assertIsDisplayed()
     }
 
+    @Test fun openingLegacyConfigDoesNotWriteAndUseCurrentRetainsIt() {
+        val fixture = SubAgentUiFixture(enabled = false)
+        val before = fixture.snapshot()
+        val revision = fixture.repository.revision(fixture.owner).value
+        compose.setSubAgentContent(fixture) {
+            androidx.compose.material3.MaterialTheme { ConversationCollaborationDialog(true, false, {}, {}) }
+        }
+        compose.onNodeWithText("选择子代理组").assertExists()
+        compose.onNodeWithContentDescription("执行代理 1模型").assertDoesNotExist()
+        compose.runOnIdle {
+            org.junit.Assert.assertEquals(before, fixture.snapshot())
+            org.junit.Assert.assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
+        compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
+        compose.onNodeWithText("切换子代理组").assertExists()
+        compose.onNodeWithContentDescription("执行代理 1模型").assertExists()
+        compose.runOnIdle {
+            org.junit.Assert.assertEquals(before, fixture.snapshot())
+            org.junit.Assert.assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
+    }
+
+    @Test fun applyingCopiesToConversationAndSwitchingDisposesOpenRows() {
+        val fixture = SubAgentUiFixture()
+        val first = fixture.repository.addPreset("第一组")
+        val second = fixture.repository.addPreset("第二组")
+        val profile = io.github.mangi.eta.agent.delegation.SubAgentProfile("shared", "组代理")
+        val firstOwner = io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Preset(first.id)
+        fixture.repository.update(firstOwner) { it.copy(profiles = listOf(profile)) }
+        fixture.repository.update(io.github.mangi.eta.agent.delegation.SubAgentConfigKey.Preset(second.id)) {
+            it.copy(profiles = listOf(profile.copy(name = "第二组代理")), enabled = false)
+        }
+        compose.setSubAgentContent(fixture) {
+            androidx.compose.material3.MaterialTheme { ConversationCollaborationDialog(true, true, {}, {}) }
+        }
+        compose.onNodeWithContentDescription("应用子代理组第一组").performScrollTo().performClick()
+        compose.onNodeWithText("选择子代理组").assertDoesNotExist()
+        compose.onNodeWithText("组代理").assertExists()
+        val token = fixture.snapshot().presetApplicationToken
+        compose.onNodeWithText("自动委派").performClick()
+        compose.runOnIdle {
+            assertFalse(fixture.snapshot().enabled)
+            assertTrue(fixture.repository.snapshot(firstOwner).enabled)
+            org.junit.Assert.assertEquals(first.id, fixture.snapshot().appliedPresetId)
+        }
+        compose.onNodeWithContentDescription("组代理模型").performClick()
+        compose.onNodeWithText("选择组代理模型").assertExists()
+        // External apply simulates switching in another owner-bound view while a picker is open.
+        compose.runOnIdle { fixture.editor.applyPreset(second.id) }
+        compose.onNodeWithText("选择组代理模型").assertDoesNotExist()
+        compose.onNodeWithText("第二组代理").assertExists()
+        compose.runOnIdle { org.junit.Assert.assertNotEquals(token, fixture.snapshot().presetApplicationToken) }
+        compose.onNodeWithText("切换子代理组").performClick()
+        compose.onNodeWithContentDescription("应用子代理组第一组").performScrollTo().performClick()
+        compose.onNodeWithText("组代理").assertExists()
+        compose.onNodeWithText("切换子代理组").assertExists()
+    }
+
+    @Test fun runningTaskLocksPresetCardsAndCurrentConfigEntry() {
+        val running = mutableStateOf(true)
+        val fixture = SubAgentUiFixture(canEdit = { !running.value })
+        val group = fixture.repository.presets().first()
+        val before = fixture.snapshot()
+        compose.setSubAgentContent(fixture) {
+            androidx.compose.material3.MaterialTheme {
+                ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
+            }
+        }
+        compose.onNodeWithContentDescription("应用子代理组${group.name}").assertIsNotEnabled()
+            .performTouchInput { click() }
+        compose.onNodeWithText("使用当前配置").performScrollTo().assertIsNotEnabled()
+        compose.runOnIdle {
+            org.junit.Assert.assertEquals(before, fixture.snapshot())
+            running.value = false
+        }
+        compose.onNodeWithContentDescription("应用子代理组${group.name}").performScrollTo().assertIsEnabled().performClick()
+        compose.onNodeWithText("切换子代理组").assertExists()
+    }
+
+    @Test fun ownerLossWhileChoosingDismissesOldCardsWithoutApplying() {
+        val matches = mutableStateOf(true)
+        val fixture = SubAgentUiFixture()
+        val before = fixture.snapshot()
+        compose.setSubAgentContent(fixture) {
+            androidx.compose.material3.MaterialTheme {
+                ConversationCollaborationDialog(true, true, {}, {}, ownerMatches = { matches.value })
+            }
+        }
+        compose.onNodeWithText("选择子代理组").assertExists()
+        compose.runOnIdle { matches.value = false }
+        compose.onNodeWithText("选择子代理组").assertDoesNotExist()
+        compose.runOnIdle { org.junit.Assert.assertEquals(before, fixture.snapshot()) }
+    }
 }

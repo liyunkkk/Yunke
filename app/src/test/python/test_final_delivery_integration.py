@@ -45,7 +45,7 @@ class FinalDeliveryIntegrationTest(unittest.TestCase):
         self.assertIn('repository.recoverDurability()', retry)
         self.assertIn('lifecycleRecovery?.invoke() == true', retry)
         self.assertLess(retry.index('lifecycleRecovery?.invoke() == true'), retry.index('storedState = SubAgentEditorState.Loading'))
-        self.assertIn('val enabled: Boolean get() = state is SubAgentEditorState.Loaded && canEdit()', editor)
+        self.assertIn('val enabled: Boolean get() = !disposed && state is SubAgentEditorState.Loaded && canEdit()', editor)
 
     def test_failed_initial_draft_pointer_read_cannot_be_seeded_by_new_draft(self):
         app = self.source('ui/app/AgentAppState.kt')

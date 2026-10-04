@@ -217,7 +217,13 @@ class SubAgentMaterialControlsTest {
     @Test
     @Config(qualifiers = "w320dp-h480dp")
     fun settingsAddActionStaysVisibleWhileAgentListScrolls() {
-        compose.setSubAgentContent { MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}) } }
+        val fixture = SubAgentUiFixture()
+        val group = fixture.repository.presets().first()
+        compose.setSubAgentContent(fixture) {
+            MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}, { fixture.repository }) }
+        }
+        compose.onNodeWithText("添加子代理组").assertIsDisplayed()
+        compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
         compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
         val add = compose.onNodeWithText("添加子代理").assertIsDisplayed()
         val parent = add.fetchSemanticsNode().boundsInRoot

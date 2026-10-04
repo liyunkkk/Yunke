@@ -757,6 +757,7 @@ internal class AgentAppState(
         owner = when (val owner = subAgentConfigOwner) {
             is SubAgentConfigKey.Conversation -> "conversation:${owner.value}"
             is SubAgentConfigKey.Draft -> "draft:${owner.value}"
+            is SubAgentConfigKey.Preset -> error("预设不能作为会话运行配置")
         },
         providerId = homeState.providerId,
         modelId = homeState.modelId,

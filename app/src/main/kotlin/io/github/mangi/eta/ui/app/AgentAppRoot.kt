@@ -850,7 +850,8 @@ fun AgentAppRoot(
                     feature = io.github.mangi.eta.agent.model.ModelFeature.VISION, onBack = ::popRoute)
             }
             entry<AppRoute.SubAgents>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.SubAgentSettingsScreen(onBack = ::popRoute)
+                io.github.mangi.eta.ui.SubAgentSettingsScreen(onBack = ::popRoute,
+                    isCurrentRoute = backStack.lastOrNull() == AppRoute.SubAgents)
             }
             entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
