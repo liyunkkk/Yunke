@@ -124,8 +124,8 @@ private fun AgentQuestionCardContent(
                         .background(colors.outline.copy(alpha = 0.45f)))
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(request.title, style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
-                        Text(request.question, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
+                        Text(request.title, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.titleMedium, color = colors.onSurface)
+                        Text(request.question, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
                             color = colors.onSurface)
                         if (!waiting) {
                             QuestionReadOnlyDetails(message)
@@ -208,7 +208,7 @@ private fun QuestionOptionRow(
                 disabledUnselectedColor = colors.onSurfaceVariantActions.copy(alpha = 0.38f)))
         Column(Modifier.weight(1f).alpha(if (enabled) 1f else 0.6f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             QuestionOptionLabel(label, recommended)
-            if (description.isNotBlank()) Text(description, style = MaterialTheme.typography.bodyMedium,
+            if (description.isNotBlank()) Text(description, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyMedium,
                 color = colors.onSurfaceVariantSummary)
         }
     }
@@ -255,7 +255,7 @@ private fun QuestionReadOnlyDetails(message: AgentQuestionMessageUi) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         questionSummary(message)?.let { summary ->
             // This is the only summary. Custom answers remain complete, even when very long.
-            Text(summary, style = MaterialTheme.typography.bodyLarge, color = MiuixTheme.colorScheme.primary)
+            Text(summary, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge, color = MiuixTheme.colorScheme.primary)
         }
         if (answer == null) {
             // Unanswered history may show the original options, never an uncommitted draft.
@@ -269,9 +269,9 @@ private fun QuestionReadOnlyDetails(message: AgentQuestionMessageUi) {
             when (answer.kind) {
                 "option" -> request.options.firstOrNull { it.id == answer.optionId }?.description
                     ?.takeIf { it.isNotBlank() }?.let {
-                        Text(it, style = MaterialTheme.typography.bodyMedium, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        Text(it, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyMedium, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                     }
-                "delegate" -> Text(stringResource(R.string.question_delegate_hint), style = MaterialTheme.typography.bodyMedium,
+                "delegate" -> Text(stringResource(R.string.question_delegate_hint), modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyMedium,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 else -> Unit
             }
@@ -280,7 +280,7 @@ private fun QuestionReadOnlyDetails(message: AgentQuestionMessageUi) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(stringResource(R.string.question_note), style = MaterialTheme.typography.bodyMedium,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                Text(note, style = MaterialTheme.typography.bodyMedium, color = MiuixTheme.colorScheme.onSurface)
+                Text(note, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyMedium, color = MiuixTheme.colorScheme.onSurface)
             }
         }
     }
@@ -299,7 +299,7 @@ private fun QuestionHistoryOption(label: String, description: String, selected: 
         else Box(Modifier.size(20.dp).border(1.5.dp, colors.onSurfaceVariantActions, CircleShape))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             QuestionOptionLabel(label, recommended)
-            if (description.isNotBlank()) Text(description, style = MaterialTheme.typography.bodyMedium,
+            if (description.isNotBlank()) Text(description, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyMedium,
                 color = colors.onSurfaceVariantSummary)
         }
     }
