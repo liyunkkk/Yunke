@@ -5738,7 +5738,7 @@ internal class AgentAppState(
             } else {
                 projected
             }
-            updateConversation(
+            updateConversationProjected(
                 conversationId = conversationId,
                 state = state.copy(messages = nextMessages),
                 updateTimestamp = updateTimestamp,
@@ -5790,7 +5790,13 @@ internal class AgentAppState(
         conversationId: String,
         state: AgentChatHomeUiState,
         updateTimestamp: Boolean = true,
-        recomputeWaitingQuestion: Boolean = true,
+    ) = updateConversationProjected(conversationId, state, updateTimestamp, recomputeWaitingQuestion = true)
+
+    private fun updateConversationProjected(
+        conversationId: String,
+        state: AgentChatHomeUiState,
+        updateTimestamp: Boolean,
+        recomputeWaitingQuestion: Boolean,
     ) {
         check(state.conversationContentLoaded) { "Conversation content must be loaded before editing" }
         val previous = conversationState(conversationId)
