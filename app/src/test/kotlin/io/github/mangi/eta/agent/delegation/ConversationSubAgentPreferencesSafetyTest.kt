@@ -252,6 +252,46 @@ class ConversationSubAgentPreferencesSafetyTest {
         assertTrue(repo.snapshot(owner).profiles.single().enabled)
     }
 
+    @Test fun missingDraftAndStaleOwnerFenceRejectBeforeChangeWithoutCollectingDefaults() {
+        val storage = prefs(); val repo = ConversationSubAgentPreferences(storage); val other = ConversationSubAgentPreferences(storage)
+        val owner = repo.createDraft(); val archive = repo.export(owner); val captured = repo.ownerState(owner)
+        val model = SubAgentParallelModel("p", "api")
+        val profile = SubAgentProfile("worker", "Worker", providerId = "p", modelId = "selection")
+        fun rejected(expected: ConversationSubAgentPreferences.OwnerState? = null) {
+            val before = storage.all.toMap(); val revision = repo.revision.value; val ownerRevision = repo.revision(owner).value
+            var changed = false
+            assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected,
+                repo.updateConfirmedProfile(owner, profile.id, model, expectedOwnerState = expected) {
+                    changed = true
+                    it.copy(profiles = listOf(profile))
+                })
+            assertFalse(changed); assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+            assertEquals(ownerRevision, repo.revision(owner).value)
+            assertFalse(storage.contains(SubAgentModelDefaults.KEY)); assertNull(repo.modelDefaults(profile))
+        }
+        assertTrue(other.delete(owner))
+        rejected() // Missing Draft must reject even synchronous callers without a fence.
+        rejected(captured)
+        assertTrue(other.importOwner(owner, archive))
+        assertTrue(repo.ownerState(owner).exists); assertNotEquals(captured, repo.ownerState(owner))
+        rejected(captured) // Identical payload does not hide the delete/recreate epoch.
+    }
+
+    @Test fun absentConversationOwnerFenceIsReadOnlyAndStillAllowsFirstExplicitConfirmation() {
+        val storage = prefs(); val repo = ConversationSubAgentPreferences(storage); val owner = c("old-unsaved")
+        val before = storage.all.toMap(); val revision = repo.revision.value
+        val captured = repo.ownerState(owner)
+        assertFalse(captured.exists); assertTrue(repo.snapshot(owner).profiles.isEmpty())
+        assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+        val model = SubAgentParallelModel("p", "api")
+        val profile = SubAgentProfile("worker", "Worker", providerId = "p", modelId = "selection")
+        assertTrue(repo.updateConfirmedProfile(owner, profile.id, model, expectedOwnerState = captured) {
+            it.copy(profiles = listOf(profile))
+        } is ConversationSubAgentPreferences.WriteResult.Saved)
+        assertTrue(repo.ownerState(owner).exists); assertEquals(profile, repo.snapshot(owner).profiles.single())
+        assertNotNull(repo.modelDefaults(profile))
+    }
+
     @Test fun archivesStrictlyValidateDefaultsAndResetMarkerWithoutRequiringDefaults() {
         val repo = ConversationSubAgentPreferences(prefs())
         repo.validatePreferenceArchives(mapOf(ConversationSubAgentPreferences.RESET_MARKER_KEY to "1"))

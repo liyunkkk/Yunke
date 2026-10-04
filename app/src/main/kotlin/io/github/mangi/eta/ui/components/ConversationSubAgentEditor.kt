@@ -48,7 +48,7 @@ internal class ConversationSubAgentEditor(
     private var retryVersion by mutableIntStateOf(0)
     private var disposed = false
     val isDisposed: Boolean get() = disposed
-    val enabled: Boolean get() = !disposed && canEdit() && state is SubAgentEditorState.Loaded
+    val enabled: Boolean get() = !disposed && state is SubAgentEditorState.Loaded && canEdit()
     /** Irreversible: callbacks retained by a dismissed page must not revive on re-entry. */
     fun dispose() { disposed = true }
 
@@ -153,6 +153,8 @@ internal class ConversationSubAgentEditor(
     ): ConversationSubAgentPreferences.WriteResult {
         if (!enabled || !canCommit()) return ConversationSubAgentPreferences.WriteResult.Rejected
         return try {
+            val capturedOwnerState = repository.ownerState(owner)
+            if (owner is SubAgentConfigKey.Draft && !capturedOwnerState.exists) throw LostOwner()
             if (draft.providerId.isBlank() != draft.modelId.isBlank()) throw LostOwner()
             val binding = if (draft.providerId.isBlank()) null else {
                 val provider = providerLookup(draft.providerId)?.takeIf { it.id == draft.providerId && it.isEnabled }
@@ -166,7 +168,8 @@ internal class ConversationSubAgentEditor(
             }
             if (parallelLimitChange != null && (binding == null || parallelLimitChange.model != binding ||
                     parallelLimitChange.value < 0 || parallelLimitChange.expected < 0)) throw LostOwner()
-            repository.updateConfirmedProfile(owner, draft.id, binding, { enabled && canCommit() }) { old ->
+            repository.updateConfirmedProfile(owner, draft.id, binding, { enabled && canCommit() },
+                expectedOwnerState = capturedOwnerState) { old ->
                 if (!enabled || !canCommit() || old.presetApplicationToken != expectedApplicationToken) throw LostOwner()
                 val current = old.profiles.singleOrNull { it.id == draft.id }
                 if (expectedProfile == null) {

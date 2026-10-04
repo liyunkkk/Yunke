@@ -111,6 +111,12 @@ internal class ConversationSubAgentPreferences(
     fun revision(owner: SubAgentConfigKey): StateFlow<Long> = synchronized(lock) {
         state.owners.getOrPut(owner) { MutableStateFlow(0L) }
     }
+    data class OwnerState(val revision: Long, val exists: Boolean)
+    /** Read-only fence for suspendable edits; an absent Conversation may still be explicitly saved. */
+    fun ownerState(owner: SubAgentConfigKey): OwnerState = synchronized(lock) {
+        ensureClean()
+        OwnerState(revision(owner).value, stored(key(owner)) != null)
+    }
     fun flow(owner: SubAgentConfigKey) = state.changes.map { snapshot(owner) }.distinctUntilChanged()
     private fun key(owner: SubAgentConfigKey): String = OWNER_PREFIX +
         when (owner) {
@@ -390,10 +396,13 @@ internal class ConversationSubAgentPreferences(
         profileId: String,
         binding: SubAgentParallelModel? = null,
         canCommit: () -> Boolean = { true },
+        expectedOwnerState: OwnerState? = null,
         change: (ConversationSubAgentConfig) -> ConversationSubAgentConfig,
     ): WriteResult = synchronized(lock) {
         ensureClean()
         if (!canCommit() || (owner !is SubAgentConfigKey.Preset && !canEdit(owner)) ||
+            (owner is SubAgentConfigKey.Draft && stored(key(owner)) == null) ||
+            (expectedOwnerState != null && ownerState(owner) != expectedOwnerState) ||
             (owner is SubAgentConfigKey.Preset && !presetExists(owner.value))) return@synchronized WriteResult.Rejected
         val next = change(read(owner).detached()).detached()
         next.validate()
@@ -409,6 +418,8 @@ internal class ConversationSubAgentPreferences(
             changes[SubAgentModelDefaults.KEY] = SubAgentModelDefaults.encode(entries + (identity to remembered))
         }
         if (!canCommit() || (owner !is SubAgentConfigKey.Preset && !canEdit(owner)) ||
+            (owner is SubAgentConfigKey.Draft && stored(key(owner)) == null) ||
+            (expectedOwnerState != null && ownerState(owner) != expectedOwnerState) ||
             (owner is SubAgentConfigKey.Preset && !presetExists(owner.value))) return@synchronized WriteResult.Rejected
         transaction(changes, owner)
         WriteResult.Saved(revision(owner).value, next.detached())

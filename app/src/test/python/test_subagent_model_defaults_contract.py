@@ -38,7 +38,10 @@ class SubAgentModelDefaultsContractTest(unittest.TestCase):
 
     def test_confirm_lookups_precede_atomic_transaction_and_cas(self):
         confirm = self.editor.split('suspend fun commitProfileDraft(', 1)[1].split('/** Legacy explicit add', 1)[0]
+        self.assertLess(confirm.index('repository.ownerState(owner)'), confirm.index('providerLookup('))
         self.assertLess(confirm.index('providerLookup('), confirm.index('repository.updateConfirmedProfile('))
+        self.assertIn('owner is SubAgentConfigKey.Draft && !capturedOwnerState.exists', confirm)
+        self.assertIn('expectedOwnerState = capturedOwnerState', confirm)
         for check in ('current != expectedProfile', 'current != null', 'old.presetApplicationToken != expectedApplicationToken',
                       'old.parallelLimit(parallelLimitChange.model) != parallelLimitChange.expected',
                       'parallelLimitChange.model != binding', 'model.supportsSpeechSynthesis',
@@ -49,7 +52,30 @@ class SubAgentModelDefaultsContractTest(unittest.TestCase):
         self.assertIn('changes[SubAgentModelDefaults.KEY]', txn)
         self.assertEqual(1, txn.count('transaction(changes, owner)'))
         self.assertNotIn('providerLookup', txn)
+        self.assertIn('expectedOwnerState: OwnerState? = null', txn)
+        missing_draft = 'owner is SubAgentConfigKey.Draft && stored(key(owner)) == null'
+        owner_cas = 'expectedOwnerState != null && ownerState(owner) != expectedOwnerState'
+        self.assertEqual(2, txn.count(missing_draft))
+        self.assertEqual(2, txn.count(owner_cas))
+        self.assertLess(txn.index(missing_draft), txn.index('change(read(owner).detached())'))
+        self.assertLess(txn.index(owner_cas), txn.index('change(read(owner).detached())'))
+        self.assertLess(txn.rindex(owner_cas), txn.index('transaction(changes, owner)'))
         self.assertIn('?: old.parallelLimits', confirm)  # null parallel change is not a default write
+
+    def test_owner_fence_is_read_only_and_delete_recreate_keeps_revision_history(self):
+        probe = self.repo.split('fun ownerState(', 1)[1].split('fun flow(', 1)[0]
+        self.assertIn('synchronized(lock)', probe)
+        self.assertIn('OwnerState(revision(owner).value, stored(key(owner)) != null)', probe)
+        self.assertNotIn('transaction(', probe)
+        self.assertNotIn('putString(', probe)
+        transaction = self.repo.split('private fun transaction(', 1)[1].split('fun isConfigurationResetComplete()', 1)[0]
+        self.assertIn('state.owners.getOrPut(owner)', transaction)
+        self.assertIn('flow.value = flow.value + 1', transaction)
+        delete = self.repo.split('fun delete(owner:', 1)[1].split('fun export(', 1)[0]
+        self.assertIn('transaction(names, owner)', delete)
+        self.assertNotIn('state.owners.remove(', delete)
+        recreate = self.repo.split('fun importOwner(', 1)[1].split('private fun ownerFromSuffix(', 1)[0]
+        self.assertIn('transaction(mapOf(key(owner) to encode(config.detached())), owner)', recreate)
 
     def test_reset_is_explicit_typed_and_whitelisted(self):
         reset = self.repo.split('fun resetLegacyConfigurationOnce()', 1)[1].split('private fun seed()', 1)[0]

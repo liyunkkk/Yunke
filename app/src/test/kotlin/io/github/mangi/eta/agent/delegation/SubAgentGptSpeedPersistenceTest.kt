@@ -90,7 +90,9 @@ class SubAgentGptSpeedPersistenceTest {
             SubAgentPreferences.saveModel("worker", io.github.mangi.eta.agent.model.ModelFeatureSelection(true, "p", "non-gpt"))
             assertEquals(GptSpeedMode.NORMAL, SubAgentPreferences.profiles().single().gptSpeedForModel())
             SubAgentPreferences.saveModel("worker", io.github.mangi.eta.agent.model.ModelFeatureSelection(true, "p", "m"))
-            assertEquals(profile(), SubAgentPreferences.profiles().single())
+            // Confirmation defaults restore only this selection, not the profile's cross-model history.
+            assertEquals(profile().copy(gptSpeedByModel = mapOf("p\u0000m" to GptSpeedMode.FAST)),
+                SubAgentPreferences.profiles().single())
         } finally {
             io.github.mangi.eta.config.Prefs.putString(SubAgentPreferences.PROFILES_KEY, before)
         }

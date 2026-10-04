@@ -122,6 +122,65 @@ class SubAgentModelDefaultsEditorTest {
         assertFalse(editor.enabled)
     }
 
+    @Test fun unsavedConversationRemainsReadOnlyUntilFirstConfirmationAndOtherOwnersDoNotConflict() = runBlocking {
+        val storage = prefs(); val repo = ConversationSubAgentPreferences(storage)
+        val owner = SubAgentConfigKey.Conversation("old-unsaved")
+        val lookup = CompletableDeferred<ProviderSetting?>(); val before = storage.all.toMap(); val revision = repo.revision.value
+        val editor = ConversationSubAgentEditor(owner, repo, { lookup.await() }) { true }
+        val draft = editor.changeProfileModel(editor.newProfileDraft(), selection)
+        assertFalse(repo.ownerState(owner).exists); assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+        val pending = async(start = CoroutineStart.UNDISPATCHED) { editor.commitProfileDraft(draft, null, null, null) }
+        assertFalse(pending.isCompleted); assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+        repo.createDraft() // An unrelated owner's revision must not reject the first explicit save.
+        assertFalse(repo.ownerState(owner).exists)
+        lookup.complete(provider)
+        assertTrue(pending.await() is ConversationSubAgentPreferences.WriteResult.Saved)
+        assertTrue(repo.ownerState(owner).exists); assertEquals(draft, repo.snapshot(owner).profiles.single())
+        assertNotNull(repo.modelDefaults(draft))
+    }
+
+    @Test fun suspendedLookupCannotReviveDeletedDraftOrCollectDefaults() = runBlocking {
+        val storage = prefs(); val repo = ConversationSubAgentPreferences(storage); val owner = repo.createDraft()
+        val lookup = CompletableDeferred<ProviderSetting?>()
+        val editor = ConversationSubAgentEditor(owner, repo, { lookup.await() }) { true }
+        val draft = editor.changeProfileModel(editor.newProfileDraft(), selection).copy(reasoning = ReasoningEffort.HIGH)
+        val pending = async(start = CoroutineStart.UNDISPATCHED) {
+            editor.commitProfileDraft(draft, null, null, SubAgentParallelLimitChange(pool, 0, 1))
+        }
+        assertFalse(pending.isCompleted)
+        assertTrue(repo.delete(owner)) // Deletion progresses while provider lookup is suspended.
+        val before = storage.all.toMap(); val revision = repo.revision.value; val ownerRevision = repo.revision(owner).value
+        lookup.complete(provider)
+        assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected, pending.await())
+        assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+        assertEquals(ownerRevision, repo.revision(owner).value); assertNull(repo.existingDraftOrNull(owner))
+        assertFalse(storage.contains(SubAgentModelDefaults.KEY)); assertNull(repo.modelDefaults(draft))
+    }
+
+    @Test fun suspendedLookupRejectsDeleteRecreateAbaWithIdenticalNullTokenOwner() = runBlocking {
+        for (isDraft in listOf(true, false)) {
+            val storage = prefs(); val repo = ConversationSubAgentPreferences(storage)
+            val owner = if (isDraft) repo.createDraft() else SubAgentConfigKey.Conversation("aba").also { repo.createConversation(it) }
+            val original = repo.snapshot(owner); val archive = repo.export(owner)
+            val lookup = CompletableDeferred<ProviderSetting?>()
+            val editor = ConversationSubAgentEditor(owner, repo, { lookup.await() }) { true }
+            val draft = editor.changeProfileModel(editor.newProfileDraft(), selection).copy(reasoning = ReasoningEffort.HIGH)
+            val pending = async(start = CoroutineStart.UNDISPATCHED) {
+                editor.commitProfileDraft(draft, null, null, SubAgentParallelLimitChange(pool, 0, 1))
+            }
+            assertFalse(pending.isCompleted)
+            val other = ConversationSubAgentPreferences(storage)
+            assertTrue(other.delete(owner)); assertTrue(other.importOwner(owner, archive))
+            assertEquals(original, repo.snapshot(owner)) // Token/profile/pool CAS alone would all pass.
+            val before = storage.all.toMap(); val revision = repo.revision.value; val ownerRevision = repo.revision(owner).value
+            lookup.complete(provider)
+            assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected, pending.await())
+            assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+            assertEquals(ownerRevision, repo.revision(owner).value); assertEquals(original, repo.snapshot(owner))
+            assertFalse(storage.contains(SubAgentModelDefaults.KEY)); assertNull(repo.modelDefaults(draft))
+        }
+    }
+
     @Test fun presetApplicationAndSwitchesDoNotCollectAndPayloadRemainsIndependent() = runBlocking {
         val storage = prefs(); val repo = ConversationSubAgentPreferences(storage); val owner = repo.createDraft()
         val preset = repo.addPreset("Source"); val presetOwner = SubAgentConfigKey.Preset(preset.id)
