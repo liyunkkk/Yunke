@@ -8,7 +8,7 @@ import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
  * global runtime recorder. MainActivity and AgentRuntimeService currently share the default app
  * process. Call sites supply only finite static stages; never event payloads, IDs or arguments.
  */
-internal fun <T> measureRuntimeStreamStage(stage: String, block: () -> T): T {
+internal inline fun <T> measureRuntimeStreamStage(stage: String, crossinline block: () -> T): T {
     if (!StreamPerformanceDiagnostics.enabled) return block()
-    return StreamPerformanceDiagnostics.measure(stage, block = block)
+    return StreamPerformanceDiagnostics.measure(stage) { block() }
 }
