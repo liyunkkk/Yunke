@@ -130,6 +130,29 @@ class RevisionEntryWiringContract(unittest.TestCase):
         self.assertIn("历史归档或附件未能完整复制", prepare)
         self.assertIn("else showRevisionHistoryUnavailableNotice()", prepare)
 
+    def test_runtime_suffix_matching_is_only_within_verified_turn(self):
+        body = method(self.reducer, "ownedHistoryMessageLocation")
+        self.assertIn("runId.isNotBlank() && history.turnId == runId", body)
+        self.assertIn("AgentRevisionRuntimeSuffix.matches(text, expectedText)", body)
+        self.assertIn("scoped.size != peers.size", body)
+        self.assertNotIn("AgentRevisionRuntimeSuffix", method(self.reducer, "mismatchedOwnerLocation"))
+        self.assertNotIn("AgentRevisionRuntimeSuffix", method(self.reducer, "historyText"))
+
+    def test_runtime_suffix_templates_stay_aligned_with_producers(self):
+        codec = (SRC / "ui/app/AgentRevisionRuntimeSuffix.kt").read_text()
+        availability = (SRC / "agent/runtime/AgentChildWorkerAvailability.kt").read_text()
+        for line in availability.splitlines():
+            match = re.match(r'\s*"([^"\\]+)"\s*\+', line)
+            if match:
+                self.assertIn(match.group(1), codec)
+        handoff = (SRC / "agent/runtime/AgentChildTaskHandoff.kt").read_text()
+        for line in handoff.splitlines():
+            if any(line.strip().startswith(prefix) for prefix in ("下面是", "本轮开始", "健康或暂停", "主代理停止", "若摘要")):
+                self.assertIn(line.strip(), codec)
+        self.assertIn("json.length == 12_000", codec)
+        self.assertIn("remaining.isNotEmpty()", codec)
+        self.assertIn("if (!seen.add(name)) return false", codec)
+
     def test_stop_controls_and_history_protection_both_survive_integration(self):
         guard = method(self.app, "rejectConversationArchiveMutation")
         self.assertIn("protectStoppingRun: Boolean = true", guard)

@@ -294,15 +294,20 @@ internal object AgentConversationRevisionReducer {
         val runId = ownerRunId(user.id)
         val expected = revisionComparableText(user.content.trim())
         val steering = revisionComparableText(AgentContextCompactor.steeringUserContent(user.content).trim())
+        fun sameOwnedText(history: AgentModelClient.ConversationMessage, expectedText: String): Boolean {
+            val text = revisionComparableText(historyText(history))
+            return text == expectedText || (runId.isNotBlank() && history.turnId == runId &&
+                AgentRevisionRuntimeSuffix.matches(text, expectedText))
+        }
         val hasSteering = state.history.any {
             it.role == "user" && (it.turnId == runId || it.turnId.isBlank()) &&
-                revisionComparableText(historyText(it)) == steering
+                sameOwnedText(it, steering)
         }
         val preferSteering = user.isSteerSupplement() && hasSteering
         fun matches(history: AgentModelClient.ConversationMessage): Boolean {
             if (history.role != "user" || AgentContextCompactor.isCompressionSummary(history)) return false
             val text = revisionComparableText(historyText(history))
-            if (text == (if (preferSteering) steering else expected)) return true
+            if (sameOwnedText(history, if (preferSteering) steering else expected)) return true
             // Only normalize attachment envelopes within a proven owner, never across turns.
             if (history.turnId != runId || user.isSteerSupplement()) return false
             val parsed = AgentFileReferencePromptCodec.parse(text)
