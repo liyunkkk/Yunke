@@ -30,6 +30,7 @@ internal class AgentModelRetry(
         onProviderEvent: (Int, ProviderEvent) -> Unit,
         discardAttemptReasoning: () -> Unit,
         onCancelledResponse: (ProviderResponse) -> Unit = {},
+        onAttemptStarted: (Int, JSONArray) -> String = { _, _ -> "" },
     ): Result {
         var round = initialRound
         var envelopeRetries = 0
@@ -67,7 +68,8 @@ internal class AgentModelRetry(
             while (true) {
                 controller.throwIfCancelled()
                 reconnect?.check()
-                onEvent(AgentEvent.RoundStarted(round, attemptRequest.messages.length()))
+                val historySnapshotId = onAttemptStarted(round, attemptRequest.messages)
+                onEvent(AgentEvent.RoundStarted(round, attemptRequest.messages.length(), historySnapshotId))
                 var toolDeliveryPossible = false
                 var callbackFailure: Throwable? = null
                 var attemptModelFailure: AgentModelFailure? = null

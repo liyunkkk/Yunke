@@ -138,14 +138,15 @@ class AgentTurnFooterRenderingTest {
         // exact-source completion signal that AgentMessageBlock normally emits.
         showConversation(messages, states = states, paused = true)
         footer(oldAnswer.id).assertIsDisplayed()
-        footer(stopped.id).assertDoesNotExist()
+        footer(stopped.id).assertIsDisplayed()
+        footerAction(stopped.id, R.string.ui_branch_conversation).assertIsEnabled()
         compose.runOnIdle { retained.revealedContent = "Older content" }
-        footer(stopped.id).assertDoesNotExist()
+        footer(stopped.id).assertIsDisplayed()
         compose.runOnIdle { retained.revealedContent = answer.content }
         footer(stopped.id).assertIsDisplayed()
     }
 
-    @Test fun openStreamingTurnHasNoFooterUntilTheRunEnds() {
+    @Test fun streamingAssistantCanBranchButCannotDeleteOrRegenerate() {
         val streaming = mutableStateOf(true)
         val messages = mutableStateOf<List<AgentChatMessageUi>>(listOf(
             UserMessageUi("user", "Question"),
@@ -153,7 +154,14 @@ class AgentTurnFooterRenderingTest {
             tool("step", "Work after the answer"),
         ))
         showConversation(messages, streaming = streaming)
-        footer("answer").assertDoesNotExist()
+        footer("answer").assertIsDisplayed()
+        footerAction("answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
+        footerAction("answer", R.string.ui_regenerate_reply_84a7d9)
+            .assertIsDisplayed().assertHasNoClickAction().performTouchInput { click() }
+        footerAction("answer", R.string.ui_delete_this_conversation_3f351b)
+            .assertIsDisplayed().assertHasNoClickAction().performTouchInput { click() }
+        compose.onAllNodesWithContentDescription(text(R.string.copy_answer)).assertCountEquals(0)
+        assertEquals(listOf("branch:answer"), callbacks)
         compose.runOnIdle { streaming.value = false }
         footer("answer").assertIsDisplayed()
         compose.onNodeWithContentDescription(text(R.string.work_expand)).performClick()
@@ -194,7 +202,7 @@ class AgentTurnFooterRenderingTest {
     private fun footer(id: String) = compose.onNodeWithTag("turn-footer:$id", useUnmergedTree = true)
 
     private fun footerAction(id: String, resource: Int) = compose.onNode(
-        hasContentDescription(text(resource)) and hasClickAction() and
+        hasContentDescription(text(resource)) and
             hasAnyAncestor(hasTestTag("turn-footer:$id")),
     )
 

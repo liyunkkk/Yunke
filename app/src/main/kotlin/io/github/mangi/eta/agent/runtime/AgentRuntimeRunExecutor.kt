@@ -372,6 +372,7 @@ internal class AgentRuntimeRunExecutor(
                 terminalSessionEnvironmentProvider = executor::terminalSessionEnvironment,
                 terminalSessionIdentityProvider = executor::terminalSessionIdentity,
                 compactPolicy = compactPolicy,
+                onHistorySnapshot = session::publishHistorySnapshot,
                 onEvent = { event ->
                     timing.accept(event)
                     foregroundReplay.accept(event)

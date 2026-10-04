@@ -41,6 +41,7 @@ internal class AgentLoop(
     /** 会话上一张可信云端回执折算到本次请求的输入量；只作为第一个锚点，本轮回执到达后被替换。 */
     private val calibratedInputTokens: Int? = null,
     private val onHistoryCompacted: () -> Unit = {},
+    private val onHistorySnapshot: ((Int, List<AgentModelClient.ConversationMessage>) -> String)? = null,
     private val compactHistory: ((
         List<AgentModelClient.ConversationMessage>,
         CompactPolicy,
@@ -288,6 +289,23 @@ internal class AgentLoop(
                     provider = provider,
                     controller = runController,
                     onEvent = onEvent,
+                    onAttemptStarted = { attemptRound, requestMessages ->
+                        runCatching { onHistorySnapshot?.let { publish ->
+                            // Preserve durable media from the unfiltered history. Reconnect adds only
+                            // committed TEXT and its continue prompt to the fixed request prefix.
+                            val full = AgentConversationCodec.transcript(messages, systemCount, sensitiveToolCallIds)
+                            val suffixMessages = JSONArray()
+                            for (index in filteredMessages.length() until requestMessages.length()) {
+                                val message = JSONObject(requestMessages.getJSONObject(index).toString())
+                                if (message.optString(AgentTurnIdentity.JSON_KEY).isBlank()) {
+                                    message.put(AgentTurnIdentity.JSON_KEY, turnId)
+                                }
+                                suffixMessages.put(message)
+                            }
+                            val suffix = AgentConversationCodec.transcript(suffixMessages, 0, sensitiveToolCallIds)
+                            publish(attemptRound, full + suffix)
+                        }.orEmpty() }.getOrDefault("")
+                    },
                     onProviderEvent = { attemptRound, providerEvent ->
                         if (providerEvent is ProviderEvent.RequestStarted) lastUsage = null
                         if (providerEvent is ProviderEvent.RequestEstimate) {

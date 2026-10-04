@@ -722,14 +722,15 @@ internal fun AgentConversationMessages(
     }
     // Project onto the EXACT rows consumed by LazyColumn. Expansion and late
     // records move only the footer anchor, never the message or callback owner.
-    val turnFooters = remember(timelineRows, isStreaming, isCompressingContext) {
+    val turnFooters = remember(timelineRows, isStreaming, isCompressingContext, branchEnabled) {
         timelineRows.turnFooters(
             isStreaming = isStreaming,
             isCompressingContext = isCompressingContext,
+            includeOpenTurnForBranch = branchEnabled,
         )
     }
-    val finalResultMessageIds = remember(turnFooters) {
-        turnFooters.values.mapTo(mutableSetOf()) { it.id }
+    val finalResultMessageIds = remember(timelineRows, isStreaming, isCompressingContext) {
+        timelineRows.turnFooters(isStreaming, isCompressingContext).values.mapTo(mutableSetOf()) { it.id }
     }
     // Reveal dependencies follow the projection's existing anchors, not a
     // second ownership heuristic. A stopped notice can own actions while an
@@ -1610,6 +1611,7 @@ internal fun AgentConversationMessages(
                         message = owner,
                         actions = messageActions,
                         revealPending = revealPending,
+                        isRunActive = (isStreaming || isPaused) && owner.id !in finalResultMessageIds,
                         speechPreface = speechPrefaces[owner.id].orEmpty(),
                         messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                         branchEnabled = branchEnabled,

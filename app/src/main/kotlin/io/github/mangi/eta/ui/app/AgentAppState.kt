@@ -1084,6 +1084,16 @@ internal class AgentAppState(
         memoryState = memoryState.copy(notice = null)
     }
 
+    private data class BranchRequestBoundary(
+        val runId: String,
+        val round: Int,
+        val snapshotId: String,
+        val textBaseline: Map<String, String>,
+    )
+    private val branchRequestBoundaries = mutableMapOf<String, BranchRequestBoundary>()
+    private var branchHistorySnapshotLoader: (String, String, String) -> io.github.mangi.eta.agent.runtime.AgentRuntimeSession.HistorySnapshot? =
+        { owner, run, snapshot -> AgentRuntimeClient(appContext, AndroidAgentLogger).queryHistory(owner, run, snapshot) }
+
     private var conversationRevisionBusy = false
 
     private fun rejectConversationArchiveMutation(protectStoppingRun: Boolean = true): Boolean {
@@ -1473,7 +1483,7 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         conversationUpdatedAt = conversationUpdatedAt +
@@ -2294,14 +2304,21 @@ internal class AgentAppState(
     /** One unpublished transaction: IO may only produce a candidate, never mutate the source. */
     private fun launchConversationRevision(
         messageId: String,
+        allowActiveSource: Boolean = false,
         publish: suspend (String, AgentChatHomeUiState, AgentChatHomeUiState, () -> Boolean) -> Unit,
     ) {
-        if (homeState.isStreaming || homeState.isPaused || homeState.messageEdit != null) return
+        if ((!allowActiveSource && (homeState.isStreaming || homeState.isPaused)) || homeState.messageEdit != null) return
         if (rejectConversationArchiveMutation() || rejectSendIfCompressing()) return
         if (modelPickerState.isChanging || runtimeRecoveryInProgress.get()) return
         val conversationId = selectedConversationId ?: return
-        if (runConversationIds.any { (run, owner) -> owner == conversationId && run in runJobs }) return
+        if (!allowActiveSource && runConversationIds.any { (run, owner) -> owner == conversationId && run in runJobs }) return
         val snapshot = homeState
+        val runningBranch = allowActiveSource && (snapshot.isStreaming || snapshot.isPaused ||
+            runConversationIds.any { (run, owner) -> owner == conversationId && run in runJobs })
+        // Capture the request token and already-consumed TEXT with the click, before any suspension.
+        val branchBoundary = if (runningBranch) runConversationIds.entries
+            .singleOrNull { it.value == conversationId && it.key in runJobs }
+            ?.key?.let { branchRequestBoundaries[it] } else null
         val selection = conversationSelectionVersion
         val modelGeneration = modelBindingGeneration
         val assistant = AssistantRepository.active().id
@@ -2309,12 +2326,13 @@ internal class AgentAppState(
         val stillCurrent = {
             selectedConversationId == conversationId && conversationSelectionVersion == selection &&
                 modelBindingGeneration == modelGeneration && AssistantRepository.active().id == assistant &&
-                homeState == snapshot && conversationState(conversationId) == snapshot &&
-                currentDraftField().text.toString() == draft && !homeState.isStreaming && !homeState.isPaused &&
+                (runningBranch || (homeState == snapshot && conversationState(conversationId) == snapshot)) &&
+                conversationState(conversationId) != null && currentDraftField().text.toString() == draft &&
+                (allowActiveSource || (!homeState.isStreaming && !homeState.isPaused)) &&
                 !modelPickerState.isChanging && !runtimeRecoveryInProgress.get() && !isCompressionBlockingSend() &&
                 !conversationArchiveBusy && !io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance &&
                 stoppingRuns.keys.none { runConversationIds[it] == conversationId } &&
-                runConversationIds.none { (run, owner) -> owner == conversationId && run in runJobs }
+                (allowActiveSource || runConversationIds.none { (run, owner) -> owner == conversationId && run in runJobs })
         }
         conversationRevisionBusy = true
         // UNDISPATCHED installs finally even if the owner scope is cancelled before IO starts.
@@ -2322,7 +2340,15 @@ internal class AgentAppState(
             try {
                 val prepared = runInterruptible(Dispatchers.IO) {
                     val archive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, conversationId)
-                    AgentConversationRevisionReducer.prepareForRevision(snapshot, messageId, archive::restoreHistory)
+                    val ordinary = AgentConversationRevisionReducer.prepareForRevision(snapshot, messageId, archive::restoreHistory)
+                    if (ordinary != null || branchBoundary == null) ordinary else {
+                        val runtime = branchHistorySnapshotLoader(conversationId, branchBoundary.runId, branchBoundary.snapshotId)
+                        if (runtime == null || runtime.id != branchBoundary.snapshotId || runtime.round != branchBoundary.round) null else {
+                            val candidate = AgentRunningBranchSnapshot.prepare(snapshot, messageId,
+                                branchBoundary.runId, branchBoundary.round, runtime.history, branchBoundary.textBaseline)
+                            candidate?.let { AgentConversationRevisionReducer.prepareForRevision(it, messageId, archive::restoreHistory) }
+                        }
+                    }
                 }
                 coroutineContext.ensureActive()
                 if (!stillCurrent()) return@launch
@@ -2482,7 +2508,7 @@ internal class AgentAppState(
 
     private class BranchArchiveCopyException(cause: Exception) : Exception(cause)
     fun branchConversation(messageId: String) {
-        launchConversationRevision(messageId) { sourceId, snapshot, prepared, stillCurrent ->
+        launchConversationRevision(messageId, allowActiveSource = true) { sourceId, snapshot, prepared, stillCurrent ->
             val prefix = AgentConversationRevisionReducer.branchPrefix(prepared, messageId) ?: run {
                 showRevisionHistoryUnavailableNotice()
                 return@launchConversationRevision
@@ -2530,7 +2556,9 @@ internal class AgentAppState(
         onPublished: () -> Unit,
     ) {
         val rewrite = { value: String -> chatImageCache.rewriteCachedPath(value, sourceId, newId) }
-        val branchMessages = freezeStreamingMessages(prefix.messages).map { message ->
+        val branchMessages = runMessageProjector.interruptRunningTools(
+            "分支保留点击时的工具状态，后续执行仍属于原会话。", freezeStreamingMessages(prefix.messages),
+        ).map { message ->
             val frozen = message.withId("$newId:${message.id}").rewritePaths(rewrite)
             if (frozen is AgentQuestionMessageUi) AgentQuestionProjection.freezeForBranch(frozen, newId)
             else frozen
@@ -2548,6 +2576,9 @@ internal class AgentAppState(
             pendingFileReferences = emptyList(),
                 pendingConversationMentions = emptyList(),
             appliedRuntimeRunIds = emptyList(),
+            activeRunContextWindow = null,
+            childContexts = emptyList(), childStatusRoster = emptyList(),
+            childContextRunId = "", selectedContextTaskId = null,
             messageEdit = null,
             livePromptTokens = null,
                 livePromptIsProjected = false,
@@ -3468,7 +3499,7 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
@@ -3488,7 +3519,7 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
@@ -4021,7 +4052,7 @@ internal class AgentAppState(
         if (imageGen) {
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
-            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
+            branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
@@ -4094,7 +4125,7 @@ internal class AgentAppState(
             }
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
-            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
+            branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
@@ -5233,9 +5264,17 @@ internal class AgentAppState(
                     requestOwnerContext(id)
                 }
             }
+            is AgentEvent.RoundStarted -> {
+                val source = conversationIdForRun(runId)?.let(::conversationState)
+                if (source != null && event.historySnapshotId.isNotBlank()) {
+                    branchRequestBoundaries[runId] = BranchRequestBoundary(runId, event.round, event.historySnapshotId,
+                        source.messages.filterIsInstance<AgentMessageUi>()
+                            .filter { AgentRunningBranchSnapshot.isTextForRound(it.id, runId, event.round) }
+                            .associate { it.id to it.content })
+                }
+            }
             is AgentEvent.ProviderResponseStarted,
             is AgentEvent.ToolImagesAttached,
-            is AgentEvent.RoundStarted,
             -> Unit
         }
     }
@@ -5479,7 +5518,7 @@ internal class AgentAppState(
         conversationId?.let(pendingInRunCompactConversationIds::remove)
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)

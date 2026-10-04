@@ -146,6 +146,20 @@ class AgentTurnFooterProjectionTest {
         assertEquals(messages, expanded.originalMessages())
     }
 
+    @Test fun streamingBranchOptInRetainsOwnerAfterWorkAndExcludesEmptyText() {
+        val answer = AgentMessageUi("answer", "partial", isStreaming = true)
+        val messages = listOf(UserMessageUi("user", "question"), answer, tool("tool"))
+        for (expanded in listOf(false, true)) {
+            val rows = rows(messages, expanded)
+            val footers = rows.turnFooters(isStreaming = true, includeOpenTurnForBranch = true)
+            assertSame(answer, footers.values.single())
+            assertEquals(rows.last().key, footers.keys.single())
+            assertTrue(rows.turnFooters(isStreaming = true, isCompressingContext = true, includeOpenTurnForBranch = true).isEmpty())
+        }
+        assertTrue(rows(listOf(AgentMessageUi("empty", "", isStreaming = true)))
+            .turnFooters(isStreaming = true, includeOpenTurnForBranch = true).isEmpty())
+    }
+
     @Test fun activeStreamingOrCompressionDoesNotExposeAnIntermediateFooter() {
         val rows = rows(listOf(
             UserMessageUi("user", "question"), AgentMessageUi("answer", "intermediate"), tool("tool"),

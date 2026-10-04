@@ -82,6 +82,31 @@ internal object AgentRuntimeHistoryTransfer {
             }
     }
 
+    fun prepareSnapshot(context: Context, history: List<AgentModelClient.ConversationMessage>): PreparedHistory {
+        val bytes = AgentConversationCodec.encodeHistorySnapshot(history).toByteArray(Charsets.UTF_8)
+        require(bytes.size <= MAX_HISTORY_FILE_BYTES) { "分支快照容量超限" }
+        val directory = File(context.cacheDir, HISTORY_TRANSFER_DIRECTORY).apply {
+            check(isDirectory || mkdirs()) { "无法创建 history 传输缓存" }
+        }
+        val file = File(directory, "snapshot-${UUID.randomUUID()}.json")
+        try {
+            file.writeBytes(bytes)
+            return PreparedHistory(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY), file)
+        } catch (failure: Throwable) {
+            file.delete()
+            throw failure
+        }
+    }
+
+    fun readSnapshotFromBundle(bundle: Bundle): List<AgentModelClient.ConversationMessage> {
+        val descriptor = requireNotNull(bundle.getParcelable(AgentRuntimeWire.KEY_HISTORY_FD, ParcelFileDescriptor::class.java))
+        val bytes = ParcelFileDescriptor.AutoCloseInputStream(descriptor).use {
+            it.readNBytes(MAX_HISTORY_FILE_BYTES.toInt() + 1)
+        }
+        require(bytes.size <= MAX_HISTORY_FILE_BYTES) { "分支快照容量超限" }
+        return AgentConversationCodec.decodeHistorySnapshot(String(bytes, Charsets.UTF_8))
+    }
+
     private fun cleanupStaleFiles(directory: File) {
         val cutoff = System.currentTimeMillis() - STALE_FILE_AGE_MILLIS
         directory.listFiles()?.forEach { file ->
