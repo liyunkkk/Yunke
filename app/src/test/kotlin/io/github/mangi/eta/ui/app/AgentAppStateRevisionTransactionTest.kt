@@ -122,14 +122,13 @@ class AgentAppStateRevisionTransactionTest {
             { f.app.branchConversation("assistant-h-1") },
         )) {
             operation()
-            assertTrue(f.busy())
+            // Fast invalid-archive IO may already have completed before this call returns.
             f.settle()
             assertEquals(before, f.state())
             assertEquals(setOf(f.id), f.conversationIds())
         }
         File(f.archiveDir(f.id), "${f.bId}.json").delete()
         f.app.beginMessageEdit("user-h")
-        assertTrue(f.busy())
         f.settle()
         assertEquals(before, f.state())
     }
