@@ -34,7 +34,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.ButtonDefaults as MiuixButtonDefaults
 import top.yukonga.miuix.kmp.basic.TextButton as MiuixTextButton
-import top.yukonga.miuix.kmp.overlay.OverlayDialog
+import top.yukonga.miuix.kmp.window.WindowDialog
 
 /** One opening owns one editor, application, expected profile and parallel-pool snapshot.
  * Nothing here writes preferences until commitProfileDraft; abandoning a session is zero-write. */
@@ -215,7 +215,10 @@ internal fun SubAgentProfileConfigDialog(
     val userDismiss = { if (!session.submitting) dismiss() }
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
         WithoutPressRipple {
-            OverlayDialog(show = true, title = if (session.expectedProfile == null) "添加子代理" else "子代理配置",
+            // This form is also opened from a Compose Dialog. OverlayDialog registers
+            // content in a Scaffold host, which can be absent or behind that parent window.
+            // WindowDialog keeps the same Miuix layout/style in its own modal window.
+            WindowDialog(show = true, title = if (session.expectedProfile == null) "添加子代理" else "子代理配置",
                 onDismissRequest = userDismiss) {
                 Column(Modifier.fillMaxWidth().profileDialogScrollableBody().verticalScroll(rememberScrollState())) {
                     EtaFormTextField(session.name, { if (usable) session.name = it.take(80) }, hint = "名称",
@@ -317,7 +320,7 @@ internal fun SubAgentProfileConfigDialog(
                     "tier" -> listOf(null to "未设置分工") + SubAgentTaskTier.entries.map { it.wireValue to it.label }
                     else -> listOf(null to "跟随接口") + ImageResolutionTier.values.filter { !verifiedGrok || it in setOf("low", "high") }.map { it to ImageResolutionTier.label(it) }
                 }
-                OverlayDialog(show = true, title = when (field) { "role" -> "职责"; "tier" -> "任务分工"; else -> "默认分辨率" },
+                WindowDialog(show = true, title = when (field) { "role" -> "职责"; "tier" -> "任务分工"; else -> "默认分辨率" },
                     onDismissRequest = { choices = null }) {
                     Column(Modifier.fillMaxWidth().profileDialogScrollableBody().verticalScroll(rememberScrollState())) {
                         options.forEach { (value, label) ->

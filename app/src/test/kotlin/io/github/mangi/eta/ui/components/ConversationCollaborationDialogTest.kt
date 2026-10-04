@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -13,8 +14,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = io.github.mangi.eta.EtaApp::class, sdk = [36], qualifiers = "w411dp-h891dp")
@@ -47,9 +46,7 @@ class ConversationCollaborationDialogTest {
         })
         val preset = fixture.createPreset()
         compose.setSubAgentContent(fixture) {
-            MiuixTheme(colors = lightColorScheme()) {
-                ConversationCollaborationDialog(true, true, {}, {})
-            }
+            ConversationCollaborationDialog(true, true, {}, {})
         }
         compose.onNodeWithContentDescription("应用子代理组${preset.name}").performScrollTo().performClick()
         compose.onNodeWithText("切换子代理组").assertIsEnabled()
@@ -74,10 +71,8 @@ class ConversationCollaborationDialogTest {
         val fixture = SubAgentUiFixture(enabled = false)
         val visible = mutableStateOf(true)
         compose.setSubAgentContent(fixture) {
-            MiuixTheme(colors = lightColorScheme()) {
-                ConversationCollaborationDialog(visible.value, false,
-                    {}, { visible.value = false })
-            }
+            ConversationCollaborationDialog(visible.value, false,
+                {}, { visible.value = false })
         }
         compose.onNodeWithText("本会话协作").assertExists()
         compose.onNodeWithText("选择子代理组").assertExists()
@@ -96,9 +91,7 @@ class ConversationCollaborationDialogTest {
     @Test fun emptySlotClickOpensModelPickerAndLongPressDoesNotTriggerClick() {
         val fixture = SubAgentUiFixture()
         compose.setSubAgentContent(fixture) {
-            MiuixTheme(colors = lightColorScheme()) {
-                ConversationCollaborationDialog(true, true, {}, {})
-            }
+            ConversationCollaborationDialog(true, true, {}, {})
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("执行代理 1模型").performTouchInput { longClick() }
@@ -122,9 +115,7 @@ class ConversationCollaborationDialogTest {
         var changes = 0
         var dismissals = 0
         compose.setSubAgentContent(fixture) {
-            MiuixTheme(colors = lightColorScheme()) {
-                ConversationCollaborationDialog(true, true, { changes++ }, { dismissals++ }, taskRunning = running.value)
-            }
+            ConversationCollaborationDialog(true, true, { changes++ }, { dismissals++ }, taskRunning = running.value)
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("执行代理 1模型").performClick()
@@ -155,9 +146,7 @@ class ConversationCollaborationDialogTest {
     fun lockedDialogKeepsDisabledDoneButtonInsideSmallViewport() {
         var dismissals = 0
         compose.setSubAgentContent {
-            MiuixTheme(colors = lightColorScheme()) {
-                ConversationCollaborationDialog(true, true, {}, { dismissals++ }, taskRunning = true)
-            }
+            ConversationCollaborationDialog(true, true, {}, { dismissals++ }, taskRunning = true)
         }
         compose.onNodeWithText("完成").assertIsDisplayed().assertIsNotEnabled()
             .performTouchInput { click() }
@@ -166,27 +155,32 @@ class ConversationCollaborationDialogTest {
 
     @Test fun fullConfigShowsTierChoicesAndClosesWhenTaskStarts() {
         val running = mutableStateOf(false)
-        compose.setSubAgentContent {
-            MiuixTheme(colors = lightColorScheme()) {
-                ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
-            }
+        val fixture = SubAgentUiFixture(canEdit = { !running.value })
+        val before = fixture.snapshot()
+        val revision = fixture.repository.revision(fixture.owner).value
+        compose.setSubAgentContent(fixture) {
+            ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("设置执行代理 1任务分工").assertDoesNotExist()
         compose.onNodeWithContentDescription("配置执行代理 1").performClick()
+        compose.onNodeWithContentDescription("名称").assertIsDisplayed().performTextReplacement("运行前未确认草稿")
         compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().performClick()
         listOf("简单任务", "常规任务", "复杂任务").forEach { compose.onNodeWithText(it).assertExists() }
         compose.onNodeWithText("选择执行代理 1模型").assertDoesNotExist()
         compose.runOnIdle { running.value = true }
         compose.onNodeWithText("复杂任务").assertDoesNotExist()
+        compose.onNodeWithContentDescription("名称").assertDoesNotExist()
         compose.onNodeWithText("执行代理 1").assertIsNotEnabled()
+        compose.runOnIdle {
+            org.junit.Assert.assertEquals(before, fixture.snapshot())
+            org.junit.Assert.assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
     }
 
     @Test fun agentModelAndNameShareLeftColumnAndConfigLivesOnRight() {
         compose.setSubAgentContent {
-            androidx.compose.material3.MaterialTheme {
-                ConversationCollaborationDialog(true, true, {}, {})
-            }
+            ConversationCollaborationDialog(true, true, {}, {})
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         val info = compose.onNodeWithContentDescription("执行代理 1模型").fetchSemanticsNode().boundsInRoot
@@ -203,14 +197,12 @@ class ConversationCollaborationDialogTest {
     @Config(qualifiers = "w320dp-h480dp")
     fun compactConfigKeepsAccessibleTouchTargetAndDoneStaysVisible() {
         compose.setSubAgentContent {
-            androidx.compose.material3.MaterialTheme {
-                ConversationCollaborationDialog(true, true, {}, {})
-            }
+            ConversationCollaborationDialog(true, true, {}, {})
         }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
         compose.onNodeWithContentDescription("配置执行代理 1")
-            .assertHeightIsAtLeast(androidx.compose.ui.unit.Dp(48f))
-            .assertWidthIsAtLeast(androidx.compose.ui.unit.Dp(48f))
+            .assertHeightIsAtLeast(48.dp)
+            .assertWidthIsAtLeast(48.dp)
         compose.onNodeWithText("完成").assertIsDisplayed()
         compose.onNodeWithContentDescription("审查／总结代理模型").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("完成").assertIsDisplayed()
@@ -221,7 +213,7 @@ class ConversationCollaborationDialogTest {
         val before = fixture.snapshot()
         val revision = fixture.repository.revision(fixture.owner).value
         compose.setSubAgentContent(fixture) {
-            androidx.compose.material3.MaterialTheme { ConversationCollaborationDialog(true, false, {}, {}) }
+            ConversationCollaborationDialog(true, false, {}, {})
         }
         compose.onNodeWithText("选择子代理组").assertExists()
         compose.onNodeWithContentDescription("执行代理 1模型").assertDoesNotExist()
@@ -249,7 +241,7 @@ class ConversationCollaborationDialogTest {
             it.copy(profiles = listOf(profile.copy(name = "第二组代理")), enabled = false)
         }
         compose.setSubAgentContent(fixture) {
-            androidx.compose.material3.MaterialTheme { ConversationCollaborationDialog(true, true, {}, {}) }
+            ConversationCollaborationDialog(true, true, {}, {})
         }
         compose.onNodeWithContentDescription("应用子代理组第一组").performScrollTo().performClick()
         compose.onNodeWithText("选择子代理组").assertDoesNotExist()
@@ -280,9 +272,7 @@ class ConversationCollaborationDialogTest {
         val group = fixture.createPreset()
         val before = fixture.snapshot()
         compose.setSubAgentContent(fixture) {
-            androidx.compose.material3.MaterialTheme {
-                ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
-            }
+            ConversationCollaborationDialog(true, true, {}, {}, taskRunning = running.value)
         }
         compose.onNodeWithContentDescription("应用子代理组${group.name}").assertIsNotEnabled()
             .performTouchInput { click() }
@@ -300,9 +290,7 @@ class ConversationCollaborationDialogTest {
         val fixture = SubAgentUiFixture()
         val before = fixture.snapshot()
         compose.setSubAgentContent(fixture) {
-            androidx.compose.material3.MaterialTheme {
-                ConversationCollaborationDialog(true, true, {}, {}, ownerMatches = { matches.value })
-            }
+            ConversationCollaborationDialog(true, true, {}, {}, ownerMatches = { matches.value })
         }
         compose.onNodeWithText("选择子代理组").assertExists()
         compose.runOnIdle { matches.value = false }

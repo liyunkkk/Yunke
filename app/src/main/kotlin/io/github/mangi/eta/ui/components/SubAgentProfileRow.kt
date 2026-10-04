@@ -115,7 +115,8 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 SubAgentGptSpeedButton(profile, providers, usable)
-                IconButton(enabled = usable, onClick = {
+                // Reserve a real 48dp layout/semantics target, not only IconButton's hit slop.
+                IconButton(modifier = Modifier.size(48.dp), enabled = usable, onClick = {
                     if (currentUsable && editor != null) {
                         SubAgentProfileDraftSession.open(editor, profile)?.let {
                             TouchHaptics.click(view)

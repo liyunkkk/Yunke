@@ -112,11 +112,28 @@ class SubAgentProfileDialogContractTest(unittest.TestCase):
         self.assertIn('Text("重命名")', settings)
         self.assertIn('editor.remove(profile.id)', settings)
 
-    def test_overlay_scrolls_body_not_actions_and_removes_ripple(self):
+    def test_window_dialog_works_without_scaffold_and_scrolls_body_not_actions(self):
         text = self.source('ui/components/SubAgentProfileConfigDialog.kt')
-        for required in ('OverlayDialog(show = true', 'profileDialogScrollableBody().verticalScroll(',
+        self.assertIn('import top.yukonga.miuix.kmp.window.WindowDialog', text)
+        self.assertEqual(text.count('WindowDialog(show = true'), 2)  # form + nested choices
+        self.assertNotIn('OverlayDialog(', text)
+        self.assertNotIn('renderInRootScaffold', text)
+        for required in ('profileDialogScrollableBody().verticalScroll(',
                          'SubAgentDraftDialogActions(ready', 'LocalRippleConfiguration provides null', 'WithoutPressRipple'):
             self.assertIn(required, text)
+
+    def test_session_shortcuts_reserve_real_48dp_layout_targets(self):
+        row = self.source('ui/components/SubAgentProfileRow.kt')
+        self.assertIn('IconButton(modifier = Modifier.size(48.dp), enabled = usable', row)
+        dialog = self.source('ui/components/ConversationCollaborationDialog.kt')
+        self.assertIn('IconButton(modifier = Modifier.size(48.dp), enabled = panelEnabled', dialog)
+
+    def test_ui_fixture_uses_production_theme_without_overlay_host_workaround(self):
+        fixture = (Path(__file__).resolve().parents[1] / 'kotlin/io/github/mangi/eta/ui/components/SubAgentUiFixture.kt').read_text()
+        self.assertIn('AgentAppTheme(', fixture)
+        self.assertIn('applyInterfaceScale = true', fixture)
+        self.assertNotIn('Scaffold(', fixture)
+        self.assertNotIn('OverlayHost(', fixture)
 
 
 if __name__ == '__main__':

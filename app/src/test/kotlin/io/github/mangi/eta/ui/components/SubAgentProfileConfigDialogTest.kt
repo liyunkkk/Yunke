@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.SubAgentParallelModel
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
@@ -18,8 +19,6 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 /** Bounded draft UI regressions; owner transactions/memory implementation are tested by the data suite. */
 @RunWith(RobolectricTestRunner::class)
@@ -53,12 +52,13 @@ class SubAgentProfileConfigDialogTest {
         val fixture = SubAgentUiFixture(profiles = emptyList(), enabled = false)
         val before = fixture.snapshot()
         val revision = fixture.repository.revision(fixture.owner).value
-        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+        compose.setSubAgentContent(fixture) {
             ConversationCollaborationDialog(true, false, {}, {})
-        } }
+        }
         compose.runOnIdle { assertTrue(fixture.repository.presets().isEmpty()) }
         compose.onNodeWithText("使用当前配置").performScrollTo().performClick()
-        compose.onNodeWithContentDescription("添加子代理").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("添加子代理").performScrollTo()
+            .assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp).performClick()
         compose.onNodeWithContentDescription("名称").performTextReplacement("尚未保存")
         compose.onNodeWithText("确认").assertIsNotEnabled()
         compose.onNodeWithText("取消").performClick()
@@ -74,9 +74,9 @@ class SubAgentProfileConfigDialogTest {
         val revision = fixture.repository.revision(fixture.owner).value
         val open = mutableStateOf(true)
         val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, profile))
-        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+        compose.setSubAgentContent(fixture) {
             if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(provider), onDismiss = { open.value = false })
-        } }
+        }
         compose.onNodeWithContentDescription("名称").performTextReplacement("改名但取消")
         compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().performClick()
         compose.onNodeWithText("复杂任务").performClick()
@@ -103,9 +103,9 @@ class SubAgentProfileConfigDialogTest {
         val rememberedBefore = fixture.repository.modelDefaults(original)
         val open = mutableStateOf(true)
         val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, original))
-        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+        compose.setSubAgentContent(fixture) {
             if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(gptProvider), onDismiss = { open.value = false })
-        } }
+        }
         compose.onNodeWithContentDescription("草稿GPT速度").performScrollTo().performClick()
         compose.onNodeWithText("快速", useUnmergedTree = true).assertExists()
         compose.runOnIdle {
@@ -132,9 +132,9 @@ class SubAgentProfileConfigDialogTest {
         val before = fixture.snapshot()
         val open = mutableStateOf(true)
         val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, original))
-        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+        compose.setSubAgentContent(fixture) {
             if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(gptProvider), onDismiss = { open.value = false })
-        } }
+        }
         compose.onNodeWithContentDescription("草稿GPT速度").performScrollTo().performClick()
         compose.onNodeWithContentDescription("草稿GPT速度").performClick()
         compose.runOnIdle {
@@ -165,9 +165,9 @@ class SubAgentProfileConfigDialogTest {
         val fixture = SubAgentUiFixture(profiles = listOf(gptProfile), providers = listOf(gptProvider))
         val before = fixture.snapshot()
         val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, gptProfile))
-        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+        compose.setSubAgentContent(fixture) {
             SubAgentProfileConfigDialog(session, fixture.editor, catalog.value, onDismiss = {})
-        } }
+        }
         compose.onNodeWithContentDescription("草稿GPT速度").assertExists()
         compose.runOnIdle { session.selectModel(ModelFeatureSelection(true, provider.id, fakeGpt.id)) }
         compose.onNodeWithContentDescription("草稿GPT速度").assertDoesNotExist()
@@ -193,9 +193,9 @@ class SubAgentProfileConfigDialogTest {
         val persistedBefore = preferences.all.toMap()
         val open = mutableStateOf(true)
         val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, gptProfile))
-        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+        compose.setSubAgentContent(fixture) {
             if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(gptProvider), onDismiss = { open.value = false })
-        } }
+        }
         compose.onNodeWithContentDescription("名称").performTextReplacement("成功才关闭")
         compose.onNodeWithContentDescription("草稿GPT速度").performScrollTo().performClick()
         compose.runOnIdle { preferences.failNext = true }
@@ -226,14 +226,45 @@ class SubAgentProfileConfigDialogTest {
         val before = fixture.snapshot()
         val open = mutableStateOf(true)
         val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, profile))
-        compose.setSubAgentContent(fixture) { MiuixTheme(colors = lightColorScheme()) {
+        compose.setSubAgentContent(fixture) {
             if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(provider), enabled = allowed.value,
                 onDismiss = { open.value = false })
-        } }
+        }
         compose.onNodeWithContentDescription("名称").performTextReplacement("失效不写")
         compose.runOnIdle { allowed.value = false }
         compose.onNodeWithText("确认").assertDoesNotExist()
         compose.runOnIdle { assertFalse(open.value); assertEquals(before, fixture.snapshot()) }
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h480dp")
+    fun standaloneCompactDraftKeepsActionsVisibleWhileBodyAndNestedChoicesScroll() {
+        val fixture = SubAgentUiFixture(profiles = listOf(profile), providers = listOf(provider))
+        val before = fixture.snapshot()
+        val revision = fixture.repository.revision(fixture.owner).value
+        val open = mutableStateOf(true)
+        val session = requireNotNull(SubAgentProfileDraftSession.open(fixture.editor, profile))
+        // No Scaffold or parent Dialog: the same production form must own its window.
+        compose.setSubAgentContent(fixture) {
+            if (open.value) SubAgentProfileConfigDialog(session, fixture.editor, listOf(provider), onDismiss = { open.value = false })
+        }
+        compose.onNodeWithContentDescription("名称").assertIsDisplayed()
+        compose.onNodeWithText("确认").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("取消").assertIsDisplayed()
+        val actionsBeforeScroll = compose.onNodeWithText("取消").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithContentDescription("并行上限（0 为不限）").performScrollTo().assertIsDisplayed()
+        assertEquals(actionsBeforeScroll, compose.onNodeWithText("取消").fetchSemanticsNode().boundsInRoot)
+        compose.onNodeWithText("确认").assertIsDisplayed()
+        compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().performClick()
+        compose.onNodeWithText("复杂任务").performScrollTo().assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").assertIsDisplayed()
+        compose.onNodeWithText("确认").assertIsDisplayed()
+        compose.onNodeWithText("取消").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertFalse(open.value)
+            assertEquals(before, fixture.snapshot())
+            assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
     }
 
     @Test fun existingParallelUsesActualOwnerAndOnlyExplicitEditCreatesChange() {

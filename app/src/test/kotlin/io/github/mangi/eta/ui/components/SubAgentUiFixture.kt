@@ -9,7 +9,10 @@ import io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.data.model.AppearanceAccentColor
+import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.ui.app.AgentAppTheme
 import org.robolectric.RuntimeEnvironment
 import java.util.UUID
 
@@ -56,9 +59,17 @@ internal fun ComposeContentTestRule.setSubAgentContent(
     content: @Composable () -> Unit,
 ) {
     setContent {
-        CompositionLocalProvider(LocalConversationSubAgentEditor provides fixture.editor) {
-            fixture.editor.observe()
-            content()
+        // Use the production Miuix + Material theme bridge (at the default 1x scale).
+        // Intentionally no Scaffold: window dialogs must work standalone and when opened
+        // from the collaboration Dialog, not silently depend on an Activity's overlay host.
+        AgentAppTheme(
+            appearance = AppearanceSettings(accentColor = AppearanceAccentColor.BLUE),
+            applyInterfaceScale = true,
+        ) {
+            CompositionLocalProvider(LocalConversationSubAgentEditor provides fixture.editor) {
+                fixture.editor.observe()
+                content()
+            }
         }
     }
 }

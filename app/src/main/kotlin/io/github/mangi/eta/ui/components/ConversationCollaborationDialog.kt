@@ -181,7 +181,7 @@ internal fun ConversationCollaborationDialog(
                                             verticalAlignment = Alignment.CenterVertically) {
                                             Text("点按模型切换 · 长按调整思考", style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
-                                            IconButton(enabled = panelEnabled, onClick = {
+                                            IconButton(modifier = Modifier.size(48.dp), enabled = panelEnabled, onClick = {
                                                 if (panelEnabled && panelEditor.enabled) {
                                                     SubAgentProfileDraftSession.open(panelEditor)?.let {
                                                         TouchHaptics.click(view)
