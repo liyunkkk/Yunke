@@ -9,7 +9,6 @@ import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
-import org.json.JSONArray
 import org.json.JSONObject
 
 /** Whole-list writes are atomic; stable IDs, not list positions, own model and reasoning settings. */
@@ -19,26 +18,12 @@ internal object SubAgentPreferences {
     fun profilesFlow() = revision.map { profiles() }.distinctUntilChanged()
 
     @Synchronized fun profiles(): List<SubAgentProfile> {
-        val stored = Prefs.getString(PROFILES_KEY)
-        if (stored.isNotBlank()) return runCatching {
-            val array = JSONObject(stored).getJSONArray("agents")
-            (0 until array.length()).map { SubAgentProfile.fromJson(array.getJSONObject(it)) }.distinctBy { it.id }
-        }.getOrDefault(emptyList())
-        // Migration happens once, in one write. An explicitly empty list must stay empty.
-        val migrated = listOf(0, 2, 3, 1).map { slot ->
-            SubAgentProfile("legacy-$slot", legacyLabel(slot), if (slot == 1) "review" else "implementation",
-                providerId = Prefs.getString("agent_child_${slot}_provider"),
-                modelId = Prefs.getString("agent_child_${slot}_model"),
-                reasoning = ReasoningEffort.fromWireValue(Prefs.getString("agent_child_${slot}_reasoning")),
-                tier = if (slot == 1) null else SubAgentTaskTier.fromWireValue(Prefs.getString("agent_child_${slot}_task_tier")))
-        }
-        persist(migrated)
-        return migrated
+        return repository().legacyProfiles()
     }
 
-    private fun persist(profiles: List<SubAgentProfile>) {
-        Prefs.putString(PROFILES_KEY, JSONObject().put("version", 1)
-            .put("agents", JSONArray(profiles.map { it.toJson() })).toString())
+    private fun repository() = ConversationSubAgentPreferences()
+    private fun persist(profiles: List<SubAgentProfile>, confirmed: SubAgentProfile? = null) {
+        repository().saveLegacyConfiguration(profiles = profiles, confirmedProfile = confirmed)
         revision.value += 1
     }
     @Synchronized fun add(): SubAgentProfile {
@@ -52,24 +37,24 @@ internal object SubAgentPreferences {
     @Synchronized fun update(id: String, change: (SubAgentProfile) -> SubAgentProfile) {
         val current = profiles()
         if (current.none { it.id == id }) return // A stale dialog must not recreate a deleted profile.
-        persist(current.map { old -> if (old.id == id) change(old).normalizedTaskTier().also { require(it.id == old.id) } else old })
+        val next = current.map { old -> if (old.id == id) change(old).normalizedTaskTier().also { require(it.id == old.id) } else old }
+        persist(next, next.single { it.id == id })
     }
     @Synchronized fun remove(id: String) { persist(profiles().filterNot { it.id == id }) }
-    fun saveModel(id: String, selection: ModelFeatureSelection) = update(id) { old ->
-        val sameModel = old.providerId == selection.providerId && old.modelId == selection.modelId
-        val memory = old.reasoningByModel.toMutableMap()
-        if (old.providerId.isNotBlank() && old.modelId.isNotBlank() && old.reasoning != null) {
-            memory[SubAgentProfile.modelReasoningKey(old.providerId, old.modelId)] = old.reasoning
-        }
-        val restored = when {
-            sameModel -> old.reasoning
-            selection.providerId.isBlank() || selection.modelId.isBlank() -> null
-            else -> memory[SubAgentProfile.modelReasoningKey(selection.providerId, selection.modelId)]
-        }
-        old.copy(providerId = selection.providerId, modelId = selection.modelId,
-            imageResolution = if (sameModel) old.imageResolution else null,
-            reasoning = restored,
-            reasoningByModel = memory)
+    @Synchronized fun saveModel(id: String, selection: ModelFeatureSelection) {
+        require(selection.providerId.isBlank() == selection.modelId.isBlank())
+        val current = profiles()
+        val old = current.singleOrNull { it.id == id } ?: return
+        val blank = old.copy(providerId = selection.providerId, modelId = selection.modelId, enabled = true,
+            tier = null, reasoning = null, imageResolution = null, reasoningByModel = emptyMap(), gptSpeedByModel = emptyMap())
+        val store = repository()
+        val memory = store.modelDefaults(blank)
+        val next = if (old.providerId == selection.providerId && old.modelId == selection.modelId) old
+            else memory?.restore(blank) ?: blank
+        val binding = memory?.apiModel?.let { SubAgentParallelModel(next.providerId, it) }
+        store.saveLegacyConfiguration(profiles = current.map { if (it.id == id) next else it },
+            confirmedProfile = next, binding = binding, parallelLimit = memory?.parallelLimit)
+        revision.value += 1
     }
     fun applyReasoning(profile: SubAgentProfile, config: AgentModelClient.ModelConfig): AgentModelClient.ModelConfig {
         if (profile.isMedia) {
@@ -117,13 +102,17 @@ internal object SubAgentPreferences {
         apiModel: String, limit: Int): Boolean {
         val profile = profiles().firstOrNull { it.id == profileId } ?: return false
         if (profile.providerId != providerId || profile.modelId != modelId) return false
-        saveParallelLimit(providerId, apiModel, limit)
+        require(apiModel.isNotBlank() && limit >= 0)
+        repository().saveLegacyConfiguration(confirmedProfile = profile,
+            binding = SubAgentParallelModel(providerId, apiModel), parallelLimit = limit)
+        SubAgentModelPools.configure(providerId + "\u0000" + apiModel, limit)
+        revision.value += 1
         return true
     }
 
     @Synchronized fun saveParallelLimit(providerId: String, model: String, limit: Int) {
         require(providerId.isNotBlank() && model.isNotBlank() && limit >= 0)
-        Prefs.putString(parallelKey(providerId, model), limit.toString())
+        repository().saveLegacyConfiguration(binding = SubAgentParallelModel(providerId, model), parallelLimit = limit)
         SubAgentModelPools.configure(providerId + "\u0000" + model, limit)
         revision.value += 1
     }
@@ -148,10 +137,10 @@ internal object SubAgentPreferences {
     fun applyReasoning(slot: Int, config: AgentModelClient.ModelConfig) = applyReasoning(legacy(slot), config)
 
     private fun key(conversation: String?) = "agent_collaboration_${conversation ?: "draft"}"
-    fun enabled(conversation: String?) = Prefs.getString(key(conversation), "true") != "false"
+    fun enabled(conversation: String?) = Prefs.getString(key(conversation), "false") == "true"
     fun setEnabled(conversation: String?, enabled: Boolean) = Prefs.putString(key(conversation), enabled.toString())
     fun promote(conversation: String) {
         setEnabled(conversation, enabled(null))
-        setEnabled(null, true)
+        setEnabled(null, false)
     }
 }

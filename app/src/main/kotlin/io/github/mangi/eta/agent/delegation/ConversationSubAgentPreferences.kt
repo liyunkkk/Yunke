@@ -86,13 +86,15 @@ internal class ConversationSubAgentPreferences(
         internal const val SEED_KEY = "agent_conversation_child_seed_v1"
         internal const val OWNER_PREFIX = "agent_conversation_child_owner_v1_"
         internal const val BIND_PREFIX = "agent_conversation_child_binding_v1_"
+        internal const val RESET_MARKER_KEY = "agent_subagent_configuration_reset_v2"
+        internal const val UI_DRAFT_KEY = "agent_conversation_child_ui_draft_v1"
         private const val VERSION = 1
         private val lock = Any()
         private class SharedState {
             val changes = MutableStateFlow(0L)
             val owners = mutableMapOf<SubAgentConfigKey, MutableStateFlow<Long>>()
-            // The original string values remain available even when both the write and rollback fail.
-            var pending: Map<String, String?>? = null
+            // Typed originals survive failed commits/rollbacks (legacy switches may be Boolean/Int).
+            var pending: Map<String, Any?>? = null
         }
         private val states = java.util.WeakHashMap<SharedPreferences, SharedState>()
         private fun stateFor(preferences: SharedPreferences): SharedState = synchronized(lock) {
@@ -125,8 +127,8 @@ internal class ConversationSubAgentPreferences(
         val original = state.pending ?: return@synchronized true
         val restored = try {
             val edit = preferences.edit()
-            original.forEach { (name, value) -> if (value == null) edit.remove(name) else edit.putString(name, value) }
-            edit.commit() && original.all { (name, value) -> storedUnchecked(name) == value }
+            original.forEach { (name, value) -> putRaw(edit, name, value) }
+            edit.commit() && original.all { (name, value) -> preferences.all[name] == value }
         } catch (_: Exception) { false }
         if (restored) state.pending = null
         restored
@@ -136,9 +138,27 @@ internal class ConversationSubAgentPreferences(
         return preferences.getString(name, null) ?: error("Invalid config value type: $name")
     }
     private fun stored(name: String): String? { ensureClean(); return storedUnchecked(name) }
+    private fun putRaw(edit: SharedPreferences.Editor, name: String, value: Any?) {
+        when (value) {
+            null -> edit.remove(name)
+            is String -> edit.putString(name, value)
+            is Boolean -> edit.putBoolean(name, value)
+            is Int -> edit.putInt(name, value)
+            is Long -> edit.putLong(name, value)
+            is Float -> edit.putFloat(name, value)
+            is Set<*> -> {
+                require(value.all { it is String }) { "Invalid preference set: $name" }
+                edit.putStringSet(name, value.map { it as String }.toSet())
+            }
+            else -> error("Unsupported preference type: $name")
+        }
+    }
     private fun transaction(changes: Map<String, String?>, vararg owners: SubAgentConfigKey) {
         ensureClean()
-        val old = changes.keys.associateWith(::storedUnchecked)
+        val values = preferences.all
+        val old = changes.keys.associateWith { name ->
+            values[name].let { if (it is Set<*>) it.toSet() else it }
+        }
         try {
             val edit = preferences.edit()
             changes.forEach { (name, value) -> if (value == null) edit.remove(name) else edit.putString(name, value) }
@@ -149,7 +169,7 @@ internal class ConversationSubAgentPreferences(
             // only explicit recoverDurability() with a successful commit lifts the fence.
             try {
                 val rollback = preferences.edit()
-                old.forEach { (name, value) -> if (value == null) rollback.remove(name) else rollback.putString(name, value) }
+                old.forEach { (name, value) -> putRaw(rollback, name, value) }
                 rollback.commit()
             } catch (_: Exception) { /* pending originals still held */ }
             throw failure
@@ -160,60 +180,49 @@ internal class ConversationSubAgentPreferences(
         }
         state.changes.value = state.changes.value + 1
     }
-    private fun seed(persist: Boolean = true): ConversationSubAgentConfig {
-        stored(SEED_KEY)?.let { return decode(it) }
-        // Legacy profile records are migrated using their historical tolerant reader, NOT archive validation.
-        val profiles = if (preferences.contains(SubAgentPreferences.PROFILES_KEY)) {
-            val json = JSONObject(stored(SubAgentPreferences.PROFILES_KEY)!!)
-            require(json.getInt("version") == 1)
-            val array = json.getJSONArray("agents")
-            (0 until array.length()).map { SubAgentProfile.fromJson(array.getJSONObject(it)) }
-        } else listOf(0, 2, 3, 1).map { slot ->
-            SubAgentProfile("legacy-$slot", when (slot) {
-                0 -> "执行代理 1"; 1 -> "审查／总结代理"; 2 -> "执行代理 2"; else -> "执行代理 3"
-            }, if (slot == 1) "review" else "implementation",
-                providerId = preferences.getString("agent_child_${slot}_provider", "").orEmpty(),
-                modelId = preferences.getString("agent_child_${slot}_model", "").orEmpty(),
-                reasoning = ReasoningEffort.fromWireValue(preferences.getString("agent_child_${slot}_reasoning", "").orEmpty()),
-                tier = if (slot == 1) null else SubAgentTaskTier.fromWireValue(preferences.getString("agent_child_${slot}_task_tier", "").orEmpty()))
-        }
-        val legacy = preferences.all.filterKeys { it.matches(Regex("agent_model_parallel_[0-9a-f]{64}")) }
-            .mapValues { (_, raw) -> when (raw) {
-                is Int -> raw
-                is String -> raw.toIntOrNull() ?: error("Invalid legacy parallel limit")
-                else -> error("Invalid legacy parallel limit type")
-            }.also { require(it >= 0) } }
-        val result = ConversationSubAgentConfig(profiles, legacyParallelLimits = legacy)
-        result.validate()
-        if (persist) transaction(mapOf(SEED_KEY to encode(result)))
-        return result.detached()
+    /** Explicit lifecycle admission only; never called by a repository read. */
+    fun isConfigurationResetComplete(): Boolean = synchronized(lock) {
+        stored(RESET_MARKER_KEY)?.let { require(it == "1") { "Invalid sub-agent reset marker" }; true } ?: false
     }
-    private fun initial(owner: SubAgentConfigKey, persistSeed: Boolean = true): ConversationSubAgentConfig {
-        require(owner !is SubAgentConfigKey.Preset) { "Presets have no seed fallback" }
-        val base = seed(persist = persistSeed).detached()
-        if (owner is SubAgentConfigKey.Conversation) {
-            val old = stored("agent_collaboration_${owner.value}")
-            if (old != null) {
-                require(old == "true" || old == "false") { "Invalid legacy collaboration switch" }
-                return base.copy(enabled = old == "true")
-            }
+    fun resetLegacyConfigurationOnce(): Boolean = synchronized(lock) {
+        ensureClean()
+        if (isConfigurationResetComplete()) return@synchronized true
+        val names = preferences.all.keys.filter { name ->
+            name == SEED_KEY || name == SubAgentPreferences.PROFILES_KEY || name == SubAgentPresetCatalog.KEY ||
+                name == UI_DRAFT_KEY || name == SubAgentModelDefaults.KEY ||
+                name.startsWith(OWNER_PREFIX + "c_") || name.startsWith(OWNER_PREFIX + "d_") ||
+                name.startsWith(OWNER_PREFIX + "p_") || name.startsWith(BIND_PREFIX) ||
+                name.matches(Regex("agent_child_[0-3]_(provider|model|reasoning|task_tier|image_resolution|enabled)")) ||
+                name.matches(Regex("agent_model_parallel_[0-9a-f]{64}")) || name.startsWith("agent_collaboration_")
         }
-        return base
+        val changes = names.associateWith { null as String? }.toMutableMap()
+        changes[RESET_MARKER_KEY] = "1"
+        // Empty local tombstones prevent Prefs fallback from resurrecting an old remote pointer/list.
+        changes[UI_DRAFT_KEY] = ""
+        changes[SubAgentPreferences.PROFILES_KEY] = JSONObject().put("version", 1).put("agents", JSONArray()).toString()
+        changes[SEED_KEY] = encode(ConversationSubAgentConfig(emptyList(), enabled = false))
+        changes[SubAgentPresetCatalog.KEY] = SubAgentPresetCatalog.encode(emptyList())
+        changes[SubAgentModelDefaults.KEY] = SubAgentModelDefaults.encode(emptyMap())
+        // transaction's typed originals and durability fence also cover legacy non-string values.
+        transaction(changes, *state.owners.keys.toTypedArray())
+        true
+    }
+    private fun seed(): ConversationSubAgentConfig =
+        stored(SEED_KEY)?.let(::decode) ?: ConversationSubAgentConfig(emptyList(), enabled = false)
+    private fun initial(owner: SubAgentConfigKey): ConversationSubAgentConfig {
+        require(owner !is SubAgentConfigKey.Preset) { "Presets have no seed fallback" }
+        return seed().detached()
     }
     private fun catalog(): List<SubAgentPresetCatalog.Entry>? = stored(SubAgentPresetCatalog.KEY)?.let(SubAgentPresetCatalog::decode)
 
-    /** Missing is distinct from an explicitly empty directory. Migration never changes an existing seed. */
+    /** Missing means empty, never an implicit import of frozen seed data. */
     private fun catalogForWrite(): Pair<List<SubAgentPresetCatalog.Entry>, Map<String, String?>> {
         catalog()?.let { entries ->
             validatePresetOwners(entries)
             return entries to emptyMap()
         }
         validatePresetOwners(emptyList())
-        val frozen = seed(persist = false).detached()
-        val entry = SubAgentPresetCatalog.Entry(SubAgentPresetCatalog.DEFAULT_ID, SubAgentPresetCatalog.DEFAULT_NAME)
-        val changes = mutableMapOf<String, String?>(key(SubAgentConfigKey.Preset(entry.id)) to encode(frozen))
-        if (stored(SEED_KEY) == null) changes[SEED_KEY] = encode(frozen)
-        return listOf(entry) to changes
+        return emptyList<SubAgentPresetCatalog.Entry>() to emptyMap()
     }
 
     private fun validatePresetOwners(entries: List<SubAgentPresetCatalog.Entry>) {
@@ -225,10 +234,8 @@ internal class ConversationSubAgentPreferences(
 
     fun presets(): List<SubAgentPreset> = synchronized(lock) {
         val (entries, migration) = catalogForWrite()
-        if (stored(SubAgentPresetCatalog.KEY) == null) {
-            transaction(migration + (SubAgentPresetCatalog.KEY to SubAgentPresetCatalog.encode(entries)),
-                *entries.map { SubAgentConfigKey.Preset(it.id) }.toTypedArray())
-        }
+        // A read is never a confirmation or a migration write.
+        check(migration.isEmpty())
         entries.map { SubAgentPreset(it.id, it.name, read(SubAgentConfigKey.Preset(it.id)).detached()) }
     }
 
@@ -303,7 +310,7 @@ internal class ConversationSubAgentPreferences(
     /** Same owner/legacy selection as runtime, without initializing or persisting the seed. */
     fun previewSnapshot(owner: SubAgentConfigKey): ConversationSubAgentConfig = synchronized(lock) {
         (if (owner is SubAgentConfigKey.Preset) read(owner)
-        else stored(key(owner))?.let(::decode) ?: initial(owner, persistSeed = false)).detached()
+        else stored(key(owner))?.let(::decode) ?: initial(owner)).detached()
     }
     /** No seed fallback: pointer recovery must distinguish absence from unreadable storage. */
     fun existingDraftOrNull(owner: SubAgentConfigKey.Draft): ConversationSubAgentConfig? = synchronized(lock) {
@@ -367,6 +374,95 @@ internal class ConversationSubAgentPreferences(
         transaction(mapOf(key(owner) to encode(next)), owner)
         WriteResult.Saved(revision(owner).value, next.detached())
     }
+    /** Read-only model confirmation memory. Absence is empty; corrupt data throws. */
+    fun modelDefaults(profile: SubAgentProfile): SubAgentModelDefaults.Entry? = synchronized(lock) {
+        defaults()[SubAgentProfile.modelReasoningKey(profile.providerId, profile.modelId)]
+    }
+    private fun defaults(): Map<String, SubAgentModelDefaults.Entry> =
+        stored(SubAgentModelDefaults.KEY)?.let(SubAgentModelDefaults::decode).orEmpty()
+
+    /** Owner payload and last confirmation are one transaction, including its rollback/fence.
+     * A resolved API binding is supplied by the editor AFTER its lock-free provider lookup.
+     * Legacy synchronous shortcuts may use an already confirmed API binding, but never modelId as API name.
+     */
+    fun updateConfirmedProfile(
+        owner: SubAgentConfigKey,
+        profileId: String,
+        binding: SubAgentParallelModel? = null,
+        canCommit: () -> Boolean = { true },
+        change: (ConversationSubAgentConfig) -> ConversationSubAgentConfig,
+    ): WriteResult = synchronized(lock) {
+        ensureClean()
+        if (!canCommit() || (owner !is SubAgentConfigKey.Preset && !canEdit(owner)) ||
+            (owner is SubAgentConfigKey.Preset && !presetExists(owner.value))) return@synchronized WriteResult.Rejected
+        val next = change(read(owner).detached()).detached()
+        next.validate()
+        val profile = next.profiles.singleOrNull { it.id == profileId } ?: return@synchronized WriteResult.Rejected
+        val changes = mutableMapOf<String, String?>(key(owner) to encode(next))
+        if (profile.providerId.isNotBlank() && profile.modelId.isNotBlank()) {
+            val entries = defaults()
+            val identity = SubAgentProfile.modelReasoningKey(profile.providerId, profile.modelId)
+            val previous = entries[identity]
+            require(binding == null || binding.providerId == profile.providerId) { "Profile/provider binding mismatch" }
+            val resolved = binding ?: previous?.apiModel?.let { SubAgentParallelModel(profile.providerId, it) }
+            val remembered = SubAgentModelDefaults.confirmed(profile, previous, resolved, resolved?.let(next::parallelLimit))
+            changes[SubAgentModelDefaults.KEY] = SubAgentModelDefaults.encode(entries + (identity to remembered))
+        }
+        if (!canCommit() || (owner !is SubAgentConfigKey.Preset && !canEdit(owner)) ||
+            (owner is SubAgentConfigKey.Preset && !presetExists(owner.value))) return@synchronized WriteResult.Rejected
+        transaction(changes, owner)
+        WriteResult.Saved(revision(owner).value, next.detached())
+    }
+    fun legacyProfiles(): List<SubAgentProfile> = synchronized(lock) {
+        val raw = stored(SubAgentPreferences.PROFILES_KEY) ?: return@synchronized emptyList()
+        if (raw.isBlank()) return@synchronized emptyList()
+        val json = JSONObject(raw)
+        require(int(json, "version") == VERSION) { "Invalid legacy profile version" }
+        val agents = array(json, "agents")
+        val profiles = (0 until agents.length()).map { profile(agents.getJSONObject(it)) }
+        ConversationSubAgentConfig(profiles).validate()
+        profiles
+    }
+    /** Compatibility writes retain the same durability boundary as owner editor writes. */
+    fun saveLegacyConfiguration(
+        profiles: List<SubAgentProfile>? = null,
+        confirmedProfile: SubAgentProfile? = null,
+        binding: SubAgentParallelModel? = null,
+        parallelLimit: Int? = null,
+    ) = synchronized(lock) {
+        ensureClean()
+        val changes = mutableMapOf<String, String?>()
+        profiles?.let {
+            ConversationSubAgentConfig(it).validate()
+            changes[SubAgentPreferences.PROFILES_KEY] = JSONObject().put("version", 1)
+                .put("agents", JSONArray(it.map(SubAgentProfile::toJson))).toString()
+        }
+        require(parallelLimit == null || (binding != null && parallelLimit >= 0))
+        if (parallelLimit != null) changes[binding!!.legacyKey()] = parallelLimit.toString()
+        var entries = defaults()
+        confirmedProfile?.takeIf { it.providerId.isNotBlank() && it.modelId.isNotBlank() }?.let { profile ->
+            require(binding == null || binding.providerId == profile.providerId)
+            val identity = SubAgentProfile.modelReasoningKey(profile.providerId, profile.modelId)
+            val previous = entries[identity]
+            val api = binding ?: previous?.apiModel?.let { SubAgentParallelModel(profile.providerId, it) }
+            val limit = parallelLimit ?: api?.let { model ->
+                val raw = preferences.all[model.legacyKey()]
+                when (raw) {
+                    null -> previous?.parallelLimit ?: 1
+                    is Int -> raw
+                    is String -> raw.toIntOrNull() ?: error("Invalid legacy parallel limit")
+                    else -> error("Invalid legacy parallel limit type")
+                }.also { require(it == null || it >= 0) }
+            }
+            entries = entries + (identity to SubAgentModelDefaults.confirmed(profile, previous, api, limit))
+        }
+        if (parallelLimit != null && binding != null) entries = entries.mapValues { (_, entry) ->
+            if (entry.providerId == binding.providerId && entry.apiModel == binding.apiModel)
+                entry.copy(parallelLimit = parallelLimit) else entry
+        }
+        if (confirmedProfile != null || parallelLimit != null) changes[SubAgentModelDefaults.KEY] = SubAgentModelDefaults.encode(entries)
+        transaction(changes)
+    }
     fun delete(owner: SubAgentConfigKey): Boolean = synchronized(lock) {
         ensureClean()
         if (owner is SubAgentConfigKey.Preset) return@synchronized removePreset(owner.value)
@@ -406,6 +502,8 @@ internal class ConversationSubAgentPreferences(
 
     /** Raw string payloads from an archive, never the current store. Safe before destructive restore. */
     fun validatePreferenceArchives(values: Map<String, String>) {
+        values[RESET_MARKER_KEY]?.let { require(it == "1") { "Invalid sub-agent reset marker" } }
+        values[SubAgentModelDefaults.KEY]?.let(SubAgentModelDefaults::validate)
         values[SEED_KEY]?.let(::decode)
         val entries = values[SubAgentPresetCatalog.KEY]?.let(SubAgentPresetCatalog::decode).orEmpty()
         val expected = entries.map { key(SubAgentConfigKey.Preset(it.id)) }.toSet()
@@ -430,7 +528,8 @@ internal class ConversationSubAgentPreferences(
     fun validateRestoredPreferences() = synchronized(lock) {
         ensureClean()
         val values = preferences.all.keys.filter {
-            it == SEED_KEY || it == SubAgentPresetCatalog.KEY || it.startsWith(OWNER_PREFIX) || it.startsWith(BIND_PREFIX)
+            it == SEED_KEY || it == SubAgentPresetCatalog.KEY || it == SubAgentModelDefaults.KEY ||
+                it == RESET_MARKER_KEY || it.startsWith(OWNER_PREFIX) || it.startsWith(BIND_PREFIX)
         }.associateWith { stored(it) ?: error("Missing sub-agent value: $it") }
         validatePreferenceArchives(values)
     }

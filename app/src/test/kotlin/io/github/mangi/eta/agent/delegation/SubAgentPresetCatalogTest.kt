@@ -210,30 +210,21 @@ class SubAgentPresetCatalogTest {
         assertThrows(IllegalArgumentException::class.java) { repo.createConversation(c("no-copy"), p(preset.id)) }
     }
 
-    @Test fun firstListingMigratesOnlyFrozenSeedAndExplicitEmptyDirectoryNeverRemigrates() = runBlocking {
-        val prefs = prefs()
-        prefs.edit().putString(SubAgentPreferences.PROFILES_KEY,
-            JSONObject().put("version", 1).put("agents", JSONArray().put(SubAgentProfile("legacy", "冻结前").toJson())).toString()).commit()
-        val repo = ConversationSubAgentPreferences(prefs)
-        repo.createConversation(c("existing"))
+    @Test fun missingDirectoryDoesNotImportFrozenSeedAndListingIsReadOnly() = runBlocking {
+        val prefs = prefs(); val repo = ConversationSubAgentPreferences(prefs)
+        repo.update(c("existing")) { it.copy(profiles = listOf(SubAgentProfile("legacy", "Frozen"))) }
         val existing = repo.export(c("existing"))
-        val frozen = prefs.getString(ConversationSubAgentPreferences.SEED_KEY, null)
-        prefs.edit().putString(SubAgentPreferences.PROFILES_KEY, "invalid now").commit()
+        prefs.edit().putString(ConversationSubAgentPreferences.SEED_KEY, existing).commit()
         val beforeProbe = prefs.all.toMap()
         assertFalse(repo.presetExists(SubAgentPresetCatalog.DEFAULT_ID))
         assertFalse(repo.removePreset("missing"))
+        assertTrue(repo.presets().isEmpty()); assertTrue(repo.presetsFlow().first().isEmpty())
         assertEquals(beforeProbe, prefs.all)
-        val migrated = repo.presets().single()
-        assertEquals(SubAgentPresetCatalog.DEFAULT_ID, migrated.id)
-        assertEquals("默认子代理组", migrated.name)
-        assertEquals("legacy", migrated.config.profiles.single().id)
-        assertEquals(frozen, prefs.getString(ConversationSubAgentPreferences.SEED_KEY, null))
         assertEquals(existing, repo.export(c("existing")))
-        assertEquals(listOf(migrated), repo.presetsFlow().first())
-        assertTrue(repo.removePreset(migrated.id))
+        val explicit = repo.addPreset("Explicit group")
+        assertTrue(repo.removePreset(explicit.id))
         val empty = prefs.all.toMap()
-        assertTrue(repo.presets().isEmpty())
-        assertTrue(ConversationSubAgentPreferences(prefs).presets().isEmpty())
+        assertTrue(repo.presets().isEmpty()); assertTrue(ConversationSubAgentPreferences(prefs).presets().isEmpty())
         assertEquals(empty, prefs.all)
         val fresh = repo.addPreset("独立空组")
         assertEquals(ConversationSubAgentConfig(emptyList()), fresh.config)
@@ -255,8 +246,7 @@ class SubAgentPresetCatalogTest {
         assertNull(repo.snapshot(c("old")).appliedPresetName)
         assertNull(repo.snapshot(c("old")).presetApplicationToken)
         val existing = repo.export(c("old"))
-        val migrated = repo.presets().single()
-        assertEquals(4, migrated.config.profiles.size)
+        assertTrue(repo.presets().isEmpty())
         assertEquals(existing, repo.export(c("old")))
     }
 

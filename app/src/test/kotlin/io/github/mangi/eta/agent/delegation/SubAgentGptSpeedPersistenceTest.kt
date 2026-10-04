@@ -53,10 +53,10 @@ class SubAgentGptSpeedPersistenceTest {
 
     @Test fun globalSeedDraftBindingConversationAndArchiveRetainIndependentDetachedMaps() {
         val storage = prefs()
-        storage.edit().putString(SubAgentPreferences.PROFILES_KEY, JSONObject().put("version", 1)
-            .put("agents", JSONArray().put(profile().toJson())).toString()).commit()
         val repo = ConversationSubAgentPreferences(storage)
-        val draft = repo.createDraft()
+        val sourceOwner = SubAgentConfigKey.Conversation("source")
+        repo.update(sourceOwner) { it.copy(profiles = listOf(profile())) }
+        val draft = repo.createDraft(sourceOwner)
         val a = SubAgentConfigKey.Conversation("a")
         val b = SubAgentConfigKey.Conversation("b")
         repo.bindDraft(draft, a)
@@ -86,6 +86,7 @@ class SubAgentGptSpeedPersistenceTest {
         try {
             io.github.mangi.eta.config.Prefs.putString(SubAgentPreferences.PROFILES_KEY,
                 JSONObject().put("version", 1).put("agents", JSONArray().put(profile().toJson())).toString())
+            SubAgentPreferences.update("worker") { it } // Explicit confirmation primes the shared model defaults.
             SubAgentPreferences.saveModel("worker", io.github.mangi.eta.agent.model.ModelFeatureSelection(true, "p", "non-gpt"))
             assertEquals(GptSpeedMode.NORMAL, SubAgentPreferences.profiles().single().gptSpeedForModel())
             SubAgentPreferences.saveModel("worker", io.github.mangi.eta.agent.model.ModelFeatureSelection(true, "p", "m"))

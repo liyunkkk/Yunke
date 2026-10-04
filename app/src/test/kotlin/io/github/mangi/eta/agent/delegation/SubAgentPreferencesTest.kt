@@ -10,6 +10,7 @@ import org.junit.Assert.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import org.junit.Test
+import org.junit.Before
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
@@ -18,6 +19,13 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34])
 class SubAgentPreferencesTest {
+    @Before fun explicitLegacyFixture() {
+        Prefs.initLocal(RuntimeEnvironment.getApplication())
+        val profiles = (0..3).map { slot -> SubAgentProfile("legacy-$slot", "Legacy $slot", if (slot == 1) "review" else "implementation") }
+        Prefs.putString(SubAgentPreferences.PROFILES_KEY, org.json.JSONObject().put("version", 1)
+            .put("agents", org.json.JSONArray(profiles.map { it.toJson() })).toString())
+        Prefs.putString(SubAgentModelDefaults.KEY, SubAgentModelDefaults.encode(emptyMap()))
+    }
     @Test fun additionalSlotsPreserveOriginalRoleAndModelReferences() {
         Prefs.initLocal(RuntimeEnvironment.getApplication())
         val original = SubAgentPreferences.selection(0)
@@ -37,12 +45,12 @@ class SubAgentPreferencesTest {
     @Test fun draftSwitchPromotesOnceAndConversationsRemainIndependent() {
         Prefs.initLocal(RuntimeEnvironment.getApplication())
         val id = java.util.UUID.randomUUID().toString()
-        assertTrue(SubAgentPreferences.enabled(id))
+        assertFalse(SubAgentPreferences.enabled(id))
         SubAgentPreferences.setEnabled(null, false)
         SubAgentPreferences.promote(id)
         assertFalse(SubAgentPreferences.enabled(id))
-        assertTrue(SubAgentPreferences.enabled(null))
-        assertTrue(SubAgentPreferences.enabled("another-$id"))
+        assertFalse(SubAgentPreferences.enabled(null))
+        assertFalse(SubAgentPreferences.enabled("another-$id"))
     }
     @Test fun reasoningIsSlotLocalAndLeavesSharedModelAndParentSnapshotUnchanged() {
         Prefs.initLocal(RuntimeEnvironment.getApplication())
@@ -113,7 +121,7 @@ class SubAgentPreferencesTest {
         } finally { SubAgentPreferences.saveReasoning(3, saved) }
     }
 
-    @Test fun legacyProfilesMigrateOnceAndDeletingAllDoesNotResurrectThem() {
+    @Test fun missingProfilesDoNotMigrateSlotsAndDeletingAllDoesNotResurrectThem() {
         Prefs.initLocal(RuntimeEnvironment.getApplication())
         val saved = Prefs.getString(SubAgentPreferences.PROFILES_KEY)
         val provider = Prefs.getString("agent_child_2_provider")
@@ -123,8 +131,7 @@ class SubAgentPreferencesTest {
             Prefs.putString("agent_child_2_provider", "legacy-provider")
             Prefs.putString("agent_child_2_model", "legacy-model")
             val migrated = SubAgentPreferences.profiles()
-            assertEquals(listOf("legacy-0", "legacy-2", "legacy-3", "legacy-1"), migrated.map { it.id })
-            assertEquals("legacy-model", migrated.single { it.id == "legacy-2" }.modelId)
+            assertTrue(migrated.isEmpty())
             Prefs.putString("agent_child_2_model", "do-not-remigrate")
             assertEquals(migrated, SubAgentPreferences.profiles())
             migrated.forEach { SubAgentPreferences.remove(it.id) }
