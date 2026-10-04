@@ -22,7 +22,7 @@ internal object SpeechInputSession {
         mode != VoiceEntryMode.DOUBAO_DUPLEX && VoiceEntryPolicy.enabled(DoubaoVoiceConfig.state.value, mode) &&
             if (config.cloudAsr) config.asrKey.isNotBlank() else OfflineSpeechPack.state.value.ready
 
-    suspend fun recognize(context: Context, onListening: suspend () -> Unit, onText: suspend (String) -> Unit, mode: VoiceEntryMode = VoiceEntryMode.DICTATION, settings: DoubaoVoiceConfig.Config? = null): Boolean {
+    suspend fun recognize(context: Context, onListening: suspend () -> Unit, onText: suspend (String) -> Unit, mode: VoiceEntryMode = VoiceEntryMode.DICTATION, settings: DoubaoVoiceConfig.Config? = null, onLevel: (Float) -> Unit = {}, finishRequested: () -> Boolean = { false }): Boolean {
         check(microphone.tryLock()) { "语音输入正在使用麦克风" }
         try {
             DoubaoVoiceConfig.load(context)

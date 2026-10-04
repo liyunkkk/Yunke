@@ -306,15 +306,15 @@ internal class AgentModelRetry(
             reconnectBinding?.close()
         }
     }
-    companion object {
-        /** 第 [retries] 次重试前的退避：`BASE shl (retries-1)`，可选叠加 ±20% 抖动。 */
-        private fun retryDelayMs(retries: Int): Long {
-            val base = BASE_DELAY_MS shl (retries - 1)
-            if (!jitterEnabled) return base
-            val factor = 1.0 + (random().coerceIn(0.0, 1.0) * 2.0 - 1.0) * JITTER_RATIO
-            return (base * factor).toLong().coerceAtLeast(0L)
-        }
+    /** 第 [retries] 次重试前的退避：`BASE shl (retries-1)`，可选叠加 ±20% 抖动。 */
+    private fun retryDelayMs(retries: Int): Long {
+        val base = BASE_DELAY_MS shl (retries - 1)
+        if (!jitterEnabled) return base
+        val factor = 1.0 + (random().coerceIn(0.0, 1.0) * 2.0 - 1.0) * JITTER_RATIO
+        return (base * factor).toLong().coerceAtLeast(0L)
+    }
 
+    companion object {
         private const val MAX_RETRIES = 3
         /** 退避抖动幅度：±20%。 */
         private const val JITTER_RATIO = 0.2
