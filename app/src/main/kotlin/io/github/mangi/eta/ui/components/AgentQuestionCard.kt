@@ -46,7 +46,7 @@ import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.ui.app.AgentQuestionProjection
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 
-/** Drafts stay in the conversation store; only disclosure and the immediate click guard are local. */
+/** Draft and submission state stay in the conversation store; only disclosure is local. */
 @Composable
 internal fun AgentQuestionCard(
     message: AgentQuestionMessageUi,
@@ -71,9 +71,8 @@ private fun AgentQuestionCardContent(
     val waiting = message.status == AgentQuestionStatus.Waiting
     // Every terminal transition collapses immediately, without waiting for an effect/frame.
     var detailsExpanded by remember(message.status) { mutableStateOf(false) }
-    // The store remains authoritative. Close the double-click window before its next UI snapshot,
-    // and release the guard when submission finishes/rejects so an explicit retry remains possible.
-    var submitDispatched by remember(message.status, message.submitting, message.error) { mutableStateOf(false) }
+    // Submission is guarded by the store. A local latch could stay locked when a fast failure
+    // returns to the original snapshot before Compose observes the intermediate submitting state.
     Surface(modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), tonalElevation = 2.dp) {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             if (!waiting) {
@@ -83,11 +82,11 @@ private fun AgentQuestionCardContent(
                     singleLine = true) { detailsExpanded = !detailsExpanded }
                 if (detailsExpanded) QuestionReadOnlyDetails(message, summary)
             } else {
-                val editable = !message.submitting && !submitDispatched
+                val editable = !message.submitting
                 val displayed = AgentQuestionProjection.draftAnswer(message)
                 val draft = AgentQuestionAnswer(message.answerKind, message.selectedOptionId, message.otherText, message.note)
                 val valid = AgentQuestionCodec.validateAnswer(request, displayed).accepted
-                val changeDraft: (AgentQuestionAnswer) -> Unit = { if (editable && !submitDispatched) onDraftChanged(it) }
+                val changeDraft: (AgentQuestionAnswer) -> Unit = { if (editable) onDraftChanged(it) }
                 var fullTextExpanded by remember(request.question, request.options) { mutableStateOf(false) }
                 val overflows = remember(request.question, request.options) { mutableStateMapOf<String, Boolean>() }
                 var noteExpanded by remember { mutableStateOf(false) }
@@ -139,12 +138,9 @@ private fun AgentQuestionCardContent(
                 }
                 message.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Button(onClick = {
-                    if (editable && valid && !submitDispatched) {
-                        submitDispatched = true
-                        onSubmit()
-                    }
+                    if (editable && valid) onSubmit()
                 }, enabled = editable && valid, modifier = Modifier.fillMaxWidth()) {
-                    Text(stringResource(if (message.submitting || submitDispatched) R.string.question_submitting else R.string.question_submit))
+                    Text(stringResource(if (message.submitting) R.string.question_submitting else R.string.question_submit))
                 }
             }
         }

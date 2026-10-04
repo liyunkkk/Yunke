@@ -205,7 +205,7 @@ class AgentQuestionCardCompactTest {
         compose.runOnIdle { assertEquals(0, submissions) }
     }
 
-    @Test fun localDisclosureAndClickGuardAreIsolatedByEveryQuestionIdentityFieldNotMessageId() {
+    @Test fun localDisclosureIsIsolatedByEveryQuestionIdentityFieldNotMessageId() {
         val initial = fixture()
         val request = initial.request.copy(question = (1..7).joinToString("\n") { "Condition $it" })
         show(initial.copy(request = request, selectedOptionId = "a"), updateSubmitting = false)
@@ -243,15 +243,12 @@ class AgentQuestionCardCompactTest {
         assertNoForm()
     }
 
-    @Test fun rapidSubmitCannotDispatchTwiceAndExplicitRetryIsPossibleAfterRejection() {
-        show(fixture().copy(selectedOptionId = "a"), updateSubmitting = false)
-        val click = compose.onNodeWithText(text(R.string.question_submit)).fetchSemanticsNode()
-            .config[SemanticsActions.OnClick].action!!
-        // Invoke the same snapshot twice without a recomposition in between.
-        compose.runOnIdle { click(); click(); assertEquals(1, submissions) }
+    @Test fun submittingDisablesTheFormAndExplicitRetryIsPossibleAfterRejection() {
+        show(fixture().copy(selectedOptionId = "a"))
+        compose.onNodeWithText(text(R.string.question_submit)).performClick()
+        compose.runOnIdle { assertEquals(1, submissions) }
         compose.onNodeWithText(text(R.string.question_submitting)).assertIsNotEnabled()
-        compose.runOnIdle { message.value = message.value.copy(submitting = true) }
-        // Pending/accepted submission is not an authoritative Answered event: keep the question visible.
+        // Accepted submission is not an authoritative Answered event: keep the question visible.
         compose.onNodeWithText("Decision title").assertExists()
         compose.onNodeWithText("Choose the next step.").assertExists()
         compose.onAllNodes(role(Role.RadioButton)).assertCountEquals(4)
@@ -259,6 +256,22 @@ class AgentQuestionCardCompactTest {
         compose.runOnIdle { message.value = message.value.copy(submitting = false, error = "Try again") }
         compose.onNodeWithText("Try again").assertExists()
         compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(2, submissions) }
+    }
+
+    @Test fun coalescedFastFailureWithUnchangedErrorDoesNotLatchTheForm() {
+        show(fixture().copy(selectedOptionId = "a", error = "Same failure"), updateSubmitting = false)
+        val click = compose.onNodeWithText(text(R.string.question_submit)).fetchSemanticsNode()
+            .config[SemanticsActions.OnClick].action!!
+        // Both store transitions finish before Compose can observe the intermediate state.
+        compose.runOnIdle {
+            click()
+            val before = message.value
+            message.value = before.copy(submitting = true, error = null)
+            message.value = before
+        }
+        compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled().performClick()
+        option("Second choice").assertIsEnabled()
         compose.runOnIdle { assertEquals(2, submissions) }
     }
 
