@@ -169,6 +169,8 @@ internal fun AgentAppShell(
                             onOpenConversationPane = onOpenConversationPane,
                             onNewConversation = onNewConversation,
                             onOpenTerminal = onOpenTerminal,
+                            interactiveModeEnabled = interactiveModeEnabled,
+                            onToggleInteractiveMode = onToggleInteractiveMode,
                             onLaunchKimiWeb = onLaunchKimiWeb,
                             kimiWebLabel = kimiWebLabel,
                             canStopKimiWeb = canStopKimiWeb,

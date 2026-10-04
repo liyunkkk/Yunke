@@ -82,6 +82,12 @@ internal fun TopBarOverflowMenu(
     var showTokenUsageDialog by remember { mutableStateOf(false) }
     var showSubAgentStatusDialog by remember { mutableStateOf(false) }
 
+    fun toggleInteractiveMode(enabled: Boolean) {
+        TouchHaptics.click(view)
+        menuState.dismiss()
+        onToggleInteractiveMode(enabled)
+    }
+
     androidx.compose.foundation.layout.Box {
         IconButton(
             onClick = {
@@ -143,14 +149,11 @@ internal fun TopBarOverflowMenu(
                 trailingIcon = {
                     Switch(
                         checked = interactiveModeEnabled,
-                        onCheckedChange = null,
+                        onCheckedChange = ::toggleInteractiveMode,
                         modifier = Modifier.scale(0.72f),
                     )
                 },
-                onClick = {
-                    TouchHaptics.click(view)
-                    onToggleInteractiveMode(!interactiveModeEnabled)
-                },
+                onClick = { toggleInteractiveMode(!interactiveModeEnabled) },
             )
             MenuSectionDivider()
             DropdownMenuItem(

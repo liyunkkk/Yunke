@@ -6174,6 +6174,8 @@ internal class AgentAppState(
     }
 
     fun updateInteractiveModeEnabled(enabled: Boolean) {
+        // 更新 Compose 状态后再落盘，避免依赖 SharedPreferences 回调导致菜单看起来无响应。
+        interactiveModeEnabled = enabled
         interactiveModePreference.setEnabled(enabled)
     }
 
