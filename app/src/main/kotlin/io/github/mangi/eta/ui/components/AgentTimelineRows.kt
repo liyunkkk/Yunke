@@ -42,7 +42,7 @@ internal fun List<AgentTimelineEntry>.toLazyTimelineRows(
                     (message is ThinkingMessageUi && message.isStreaming) ||
                         (message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running)
                 }
-                val expanded = expandedOverrides[entry.key] ?: running
+                val expanded = expandedOverrides[entry.key] ?: (running || (isStreaming && entry.key == trailingWorkKey))
                 add(AgentTimelineRow.WorkHeader(entry, expanded))
                 // During exit only retained rows are projected. A newly appended
                 // hidden step (or a deleted old tail) must not steal the card bottom.
