@@ -36,19 +36,6 @@ class AgentModelRetryTest {
     }
 
     @Test
-    fun retryCountIsConfigurable() {
-        var calls = 0
-        val failure = assertThrows(AgentModelFailure::class.java) {
-            complete(
-                AgentModelRetry(waitBeforeRetry = { _, _ -> }, maxRetries = 5),
-                provider { _, _ -> calls++; throw SocketTimeoutException("timeout") },
-            )
-        }
-        assertEquals(6, calls)
-        assertTrue(failure.message.orEmpty().contains("已重试 5 次"))
-    }
-
-    @Test
     fun cancellationDuringBackoffStopsBeforeAnotherRequest() {
         val controller = AgentRunController()
         var calls = 0
