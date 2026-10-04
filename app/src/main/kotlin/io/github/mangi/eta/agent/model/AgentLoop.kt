@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentRuntimePolicy
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -27,6 +28,10 @@ internal class AgentLoop(
     private val onEvent: (AgentEvent) -> Unit,
     private val toolsForRound: (() -> JSONArray)? = null,
     private val modelRetry: AgentModelRetry = AgentModelRetry(),
+    private val reconnectTiming: ReconnectTiming = SystemReconnectTiming,
+    private val waitForReconnect: (AgentRunController, Long) -> Unit = { controller, delay ->
+        controller.awaitRetryDelay(delay)
+    },
     private val sessionId: String = java.util.UUID.randomUUID().toString(),
     private val compactPolicy: CompactPolicy = CompactPolicy.Disabled,
     private val systemCount: Int = 0,
@@ -140,6 +145,42 @@ internal class AgentLoop(
     /** 上游在输出上限处截断且正文为空时，同一 round 内的自动重发预算，不跨 round 累积。 */
     private var emptyOutputLimitRetries = 0
     private var emptyOutputLimitRound = 0
+    private var invalidArgumentsInBatch = 0
+    private var shellFailuresInBatch = 0
+    private var postToolReconnect: ModelErrorReconnect? = null
+    private var postToolReconnectBinding: AgentRunController.ResourceBinding? = null
+    private var postToolRetryCount = 0
+
+    private fun finishPostToolReconnect(status: String) {
+        val current = postToolReconnect ?: return
+        current.finish(status)
+        postToolReconnectBinding?.close()
+        postToolReconnectBinding = null
+        postToolReconnect = null
+        postToolRetryCount = 0
+    }
+
+    private fun retryPostToolFailure(round: Int, code: String, message: String) {
+        val failure = AgentModelFailure(code, false, message)
+        val policy = ErrorReconnectPolicy.fromPersistedValue(config.errorReconnectPolicy)
+        if (policy == ErrorReconnectPolicy.NONE) throw failure
+        val state = postToolReconnect ?: ModelErrorReconnect(round, policy.windowMillis,
+            reconnectTiming, onEvent, failure, listOf(config.apiKey)).also {
+            postToolReconnect = it
+            postToolReconnectBinding = runController.register(wakeBeforeCleanup = true) { it.finish("stopped") }
+            it.start()
+        }
+        state.updateReason(failure)
+        state.check()
+        postToolRetryCount = postToolRetryCount % 3 + 1
+        val backoff = 2_000L shl (postToolRetryCount - 1)
+        val delay = minOf(backoff, state.remainingMs() ?: backoff)
+        onEvent(AgentEvent.ModelRetryScheduled(round, postToolRetryCount, 3, delay.toInt(), code,
+            AgentHttpFailureDiagnostics.safe(message, listOf(config.apiKey), 600)))
+        waitForReconnect(runController, delay)
+        runController.throwIfCancelled()
+        state.check()
+    }
 
     fun reasoningSnapshot(): String = accumulatedReasoning.toString().trim()
 
@@ -154,8 +195,10 @@ internal class AgentLoop(
             config.contextWindow?.takeIf { it > 0 } ?: compactPolicy.contextWindow)
         var round = 1
 
+        try {
         roundLoop@ while (true) {
             runController.throwIfCancelled()
+            postToolReconnect?.check()
             appendPendingSteeringMessage()
             currentRoundTools = delegationArgumentRepair.availableTools(toolsForRound?.invoke() ?: tools)
             try {
@@ -308,7 +351,7 @@ internal class AgentLoop(
                             responseStored = true
                         }
                     },
-                )
+                ).also { postToolReconnect?.check() }
             } catch (failure: AgentModelFailure) {
                 if (failure.code != "CONTEXT_WINDOW_EXCEEDED") throw failure
                 overflowPending = true
@@ -427,6 +470,8 @@ internal class AgentLoop(
 
             runController.throwIfCancelled()
             if (toolCalls.isNotEmpty()) {
+                invalidArgumentsInBatch = 0
+                shellFailuresInBatch = 0
                 val finishedContent = assistantMessage.optString("content").trim()
                 val finishedNaturally = providerResponse.stopReason != AssistantStopReason.TOOL_USE &&
                     providerResponse.stopReason != AssistantStopReason.OUTPUT_LIMIT &&
@@ -480,13 +525,17 @@ internal class AgentLoop(
                 } finally {
                     appendToolOutcomes(round, outcomes)
                 }
-                // Stop only after every tool result in this batch has been paired.
-                // This is a bounded repair budget, not a limit on legitimate long tasks.
-                invalidToolArgumentsGuard.stopMessage?.let { message ->
-                    throw AgentModelFailure(AgentInvalidToolArgumentsGuard.STOP_CODE, false, message)
-                }
-                shellFailureStopMessage?.let { message ->
-                    throw AgentModelFailure(AgentShellFailureGuard.STOP_CODE, false, message)
+                // Rebuild a model request only after the entire tool batch is paired.
+                val invalidStop = invalidToolArgumentsGuard.stopMessage
+                val shellStop = shellFailureStopMessage
+                if (invalidStop != null && invalidArgumentsInBatch > 0) {
+                    retryPostToolFailure(round, AgentInvalidToolArgumentsGuard.STOP_CODE, invalidStop)
+                } else if (shellStop != null && shellFailuresInBatch > 0) {
+                    retryPostToolFailure(round, AgentShellFailureGuard.STOP_CODE, shellStop)
+                } else if (postToolReconnect != null && invalidArgumentsInBatch == 0 && shellFailuresInBatch == 0) {
+                    finishPostToolReconnect("succeeded")
+                    invalidToolArgumentsGuard.clearExhaustion()
+                    shellFailureStopMessage = null
                 }
                 interruptedTextPrefix.setLength(0)
                 round += 1
@@ -545,12 +594,16 @@ internal class AgentLoop(
                 error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
             }
 
+            finishPostToolReconnect("succeeded")
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length, generatedAtMillis = System.currentTimeMillis()))
             return Result(
                 content = (interruptedTextPrefix.toString() + assistantMessage.optString("content")).trim(),
                 reasoningContent = reasoningSnapshot(),
                 sensitiveToolCallIds = sensitiveToolCallIds.toSet(),
             )
+        }
+        } finally {
+            finishPostToolReconnect(if (runController.isCancelled) "stopped" else "failed")
         }
     }
 
@@ -1112,6 +1165,7 @@ internal class AgentLoop(
                 declared = toolCallValidator.declares(toolCall.name),
                 validationError = validationError,
             )
+            invalidArgumentsInBatch++
             return rejectedToolOutcome(
                 round = round,
                 toolCall = toolCall,
@@ -1152,6 +1206,7 @@ internal class AgentLoop(
         val shellDecision = AgentShellFailureGuard.observe(shellFailureState, toolCall, rawResult)
         shellFailureState = shellDecision.state
         if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage
+        if (shellDecision.stopMessage != null) shellFailuresInBatch++
         val result = shellDecision.result
         // Record what the model actually receives, plus the pre-guard code for comparison.
         toolDiagnosticAttempt?.result(toolCall, result, toolIndex, rawResult)

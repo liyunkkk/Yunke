@@ -70,7 +70,7 @@ class VirtualDisplayToolContractTest {
     private fun catalog(rootAvailable: Boolean): JSONArray = AgentToolCatalog.build(
         terminalTools = false,
         browserTools = false,
-        capabilities = AgentToolCapabilities(rootAvailable = rootAvailable),
+        capabilities = AgentToolCapabilities(rootAvailable = rootAvailable, virtualDisplay = true),
     )
 
     private fun JSONArray.names(): Set<String> = (0 until length()).mapTo(linkedSetOf()) {

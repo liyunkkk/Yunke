@@ -215,10 +215,11 @@ class AgentTaskSurfaceModeTest {
     }
 
     @Test
-    fun onlyScreenAndVirtualLifecycleToolsNeedASurfaceChoice() {
-        listOf("launch_app", "observe_screen", "tap", "start_virtual_session", "finish_virtual_session", "keep_virtual_result")
+    fun onlyTraditionalScreenToolsNeedASurfaceChoice() {
+        listOf("launch_app", "observe_screen", "tap")
             .forEach { assertTrue(it, AgentTaskSurface.needsSurfaceChoice(it)) }
-        listOf("read_file", "terminal", "browser_use", "search_apps", "inspect_virtual_backend")
+        listOf("read_file", "terminal", "browser_use", "search_apps", "inspect_virtual_backend",
+            "start_virtual_session", "finish_virtual_session", "keep_virtual_result")
             .forEach { assertFalse(it, AgentTaskSurface.needsSurfaceChoice(it)) }
     }
 

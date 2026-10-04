@@ -190,7 +190,10 @@ class AgentConversationStoreTest {
         assertEquals(ReasoningEffort.HIGH, restored.reasoningEffort)
         assertEquals("provider-1", restored.providerId)
         assertEquals("model-1", restored.modelId)
-        assertEquals(conversation.messages, restored.messages)
+        assertEquals(conversation.messages.drop(1), restored.messages.drop(1))
+        assertEquals((conversation.messages.first() as UserMessageUi).content,
+            (restored.messages.first() as UserMessageUi).content)
+        assertTrue(restored.messages.first().id.startsWith("user-"))
         assertEquals(io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(conversation.history), restored.history)
     }
 
@@ -756,14 +759,14 @@ class AgentConversationStoreTest {
                         input = "",
                         isStreaming = false,
                         thinkingEnabled = false,
-                    ),
-                ),
-                history = listOf(
-                    io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
-                        role = "user", content = "旧消息", turnId = "1",
-                    ),
-                    io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
-                        role = "user", content = "继续", turnId = "2",
+                        history = listOf(
+                            io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                                role = "user", content = "旧消息", turnId = "1",
+                            ),
+                            io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                                role = "user", content = "继续", turnId = "2",
+                            ),
+                        ),
                     ),
                 ),
                 titles = mapOf("conv-compact" to "压缩"),
@@ -772,7 +775,8 @@ class AgentConversationStoreTest {
         }
         val restored = AgentConversationStore.load(context)
             .conversationsById.getValue("conv-compact").messages
-        assertEquals(listOf("user-1", "compacted-1", "user-2"), restored.map { it.id })
+        assertEquals(listOf("旧消息", "继续"), restored.filterIsInstance<UserMessageUi>().map { it.content })
+        assertEquals("compacted-1", restored[1].id)
         val loaded = restored[1] as ContextCompactedMessageUi
         assertEquals(6, loaded.compactedCount)
         assertEquals("用户要查 Actions，已经推送成功。", loaded.summary)

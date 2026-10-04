@@ -22,7 +22,7 @@ internal class AgentInvalidToolArgumentsGuard {
         val subject = if (key == null) "未声明工具（所有未知名称共用预算）" else "工具 $key"
         if (count >= MAX_FAILURES) {
             val message = "$STOP_CODE：$subject 的参数校验失败已达 $MAX_FAILURES 次，纠错预算耗尽。" +
-                "本次调用未执行；本批工具结果完整配对后终止运行，不再请求模型。" +
+                "本次调用未执行；本批工具结果完整配对后按错误重连策略处理，不重放已完成工具。" +
                 "不会自动切换环境或重放调用。校验原因：$validationError"
             if (stopMessage == null) stopMessage = message
             return Rejection(STOP_CODE, message)
@@ -39,6 +39,11 @@ internal class AgentInvalidToolArgumentsGuard {
         // Exhaustion is sticky even if the same batch later contains a corrected call.
         if (stopMessage != null) return
         failures.remove(toolName.trim())
+    }
+
+    fun clearExhaustion() {
+        stopMessage = null
+        failures.clear()
     }
 
     companion object {

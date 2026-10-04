@@ -806,14 +806,18 @@ class AgentModelClientLoopTest {
         assertEquals(1, executions)
         assertEquals(3, requests.size)
         assertEquals(List(3) { "conversation-retry" }, sessions)
-        assertEquals(requests[1], requests[2])
+        val retriedHistory = JSONArray(requests[2])
+        assertEquals(requests[1], JSONArray().apply {
+            for (index in 0 until retriedHistory.length() - 1) put(retriedHistory.getJSONObject(index))
+        }.toString())
+        assertTrue(requests[2].contains("Continue the interrupted task"))
         assertTrue(requests[2].contains("data:image/png"))
         assertFalse(messages.toString().contains("data:image/png"))
         assertFalse(messages.toString().contains("半截"))
         assertEquals("先观察观察成功", result.reasoningContent)
         assertEquals(listOf(1, 2, 3), events.filterIsInstance<AgentEvent.RoundStarted>().map { it.round })
         assertEquals(2, events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().first().round)
-        assertTrue(events.none { it is AgentEvent.ModelRetryScheduled })
+        assertEquals(1, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().size)
         assertEquals(1, events.filterIsInstance<AgentEvent.ToolStarted>().size)
     }
 
