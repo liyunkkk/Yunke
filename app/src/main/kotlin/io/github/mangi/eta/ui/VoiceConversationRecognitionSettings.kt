@@ -2,7 +2,7 @@ package io.github.mangi.eta.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.OutlinedTextField
+import io.github.mangi.eta.ui.components.EtaFormTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -17,8 +17,8 @@ import io.github.mangi.eta.agent.voice.offline.OfflineSpeechPack
 import io.github.mangi.eta.agent.voice.offline.SpeechModelManifest
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.ArrowPreference
+import io.github.mangi.eta.ui.components.SwitchPreference
 
 /** Own ASR selections; only the downloaded offline model is shared with dictation. */
 @Composable
@@ -44,10 +44,10 @@ internal fun VoiceConversationRecognitionSettings() {
                 insideMargin = PaddingValues(16.dp),
             )
             if (config.conversationCloudAsr) {
-                OutlinedTextField(
+                EtaFormTextField(
                     value = config.conversationAsrKey,
                     onValueChange = { DoubaoVoiceConfig.save(context, config.copy(conversationAsrKey = it)) },
-                    label = { Text("ASR API Key") },
+                    hint = "ASR API Key",
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),

@@ -31,6 +31,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -85,14 +86,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -141,8 +140,6 @@ import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.ListPopupDefaults
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.squircle.squircleBorder
-import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -150,7 +147,7 @@ private val SendButtonVisualSize = ChatInputActionIconSize
 private val SendIconSize = 16.dp
 private val StopIconSize = 10.dp
 private val ThinkingIconSize = 21.dp
-private val InputContainerShape = RoundedCornerShape(20.dp)
+private val InputContainerShape = RoundedCornerShape(EtaInputCornerRadius)
 
 /**
  * Agent 输入器始终保持同一空间结构，聚焦、输入和执行过程只改变状态，不搬动操作入口。
@@ -411,22 +408,12 @@ internal fun AgentChatInputBar(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .dropShadow(
-                        shape = InputContainerShape,
-                        shadow = Shadow(
-                            radius = 8.dp,
-                            color = Color.Black,
-                            alpha = 0.08f,
-                        ),
-                    )
-                    .squircleSurface(
-                        color = MiuixTheme.colorScheme.surfaceContainer,
-                        cornerRadius = 20.dp,
-                    )
-                    .squircleBorder(
+                    .clip(InputContainerShape)
+                    .background(etaInputContainerColor())
+                    .border(
                         width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
-                        cornerRadius = 20.dp,
+                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.30f),
+                        shape = InputContainerShape,
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {

@@ -28,8 +28,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
@@ -230,18 +228,8 @@ private fun QuestionOptionLabel(label: String, recommended: Boolean) {
 
 @Composable
 private fun QuestionTextField(value: String, onValueChange: (String) -> Unit, enabled: Boolean, label: String) {
-    val colors = MiuixTheme.colorScheme
-    OutlinedTextField(value = value, onValueChange = onValueChange, enabled = enabled,
-        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(14.dp),
-        textStyle = MaterialTheme.typography.bodyLarge,
-        label = { Text(label, style = MaterialTheme.typography.bodyMedium) }, minLines = 1, maxLines = Int.MAX_VALUE,
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedTextColor = colors.onSurface, unfocusedTextColor = colors.onSurface,
-            disabledTextColor = colors.onSurface.copy(alpha = 0.38f), cursorColor = colors.primary,
-            focusedBorderColor = colors.primary, unfocusedBorderColor = colors.outline,
-            disabledBorderColor = colors.outline.copy(alpha = 0.38f),
-            focusedLabelColor = colors.primary, unfocusedLabelColor = colors.onSurfaceVariantSummary,
-            disabledLabelColor = colors.onSurfaceVariantSummary.copy(alpha = 0.38f)))
+    EtaFormTextField(value = value, onValueChange = onValueChange, enabled = enabled, hint = label,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), minLines = 1, maxLines = Int.MAX_VALUE)
 }
 
 @Composable

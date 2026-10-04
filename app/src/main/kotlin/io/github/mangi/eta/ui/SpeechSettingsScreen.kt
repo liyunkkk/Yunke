@@ -86,7 +86,7 @@ internal fun SpeechSettingsScreen(onBack: () -> Unit) {
         item(key = "recognition_method") {
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                 ArrowPreference(title = "识别方式", summary = if (config.cloudAsr) "豆包识别 · 需要联网" else "本机识别 · 无需账户",
-                    insideMargin = PaddingValues(16.dp), onClick = { page = "asr" })
+                    insideMargin = PaddingValues(16.dp), onClick = { TouchHaptics.click(view); page = "asr" })
             }
         }
 

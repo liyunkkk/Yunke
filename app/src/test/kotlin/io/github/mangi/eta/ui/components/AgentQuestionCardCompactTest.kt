@@ -251,10 +251,31 @@ class AgentQuestionCardCompactTest {
         compose.onNodeWithText("Choose the next step.").assertExists()
         compose.onAllNodes(role(Role.RadioButton)).assertCountEquals(4)
         option("Second choice").assertIsNotEnabled()
+        field(R.string.question_note).assertIsNotEnabled()
         compose.runOnIdle { message.value = message.value.copy(submitting = false, error = "Try again") }
         compose.onNodeWithText("Try again").assertExists()
+        field(R.string.question_note).assertIsEnabled()
         compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(2, submissions) }
+    }
+
+    @Test fun submittingDisablesOtherAnswerAndNoteUntilRetry() {
+        show(fixture().copy(answerKind = "other", otherText = "Custom answer", note = "Keep note"))
+        compose.onNodeWithText(text(R.string.question_submit)).performClick()
+        field(R.string.question_other_hint).assertIsNotEnabled().assertTextContains("Custom answer")
+        field(R.string.question_note).assertIsNotEnabled().assertTextContains("Keep note")
+        compose.runOnIdle {
+            assertEquals(1, submissions)
+            assertTrue(drafts.isEmpty())
+            message.value = message.value.copy(submitting = false, error = "Try again")
+        }
+        field(R.string.question_other_hint).assertIsEnabled().performTextReplacement("Revised answer")
+        field(R.string.question_note).assertIsEnabled().performTextReplacement("Revised note")
+        compose.runOnIdle {
+            assertEquals("Revised answer", message.value.otherText)
+            assertEquals("Revised note", message.value.note)
+            assertEquals("other", message.value.answerKind)
+        }
     }
 
     @Test fun coalescedFastFailureWithUnchangedErrorDoesNotLatchForm() {
@@ -309,7 +330,7 @@ class AgentQuestionCardCompactTest {
     private fun role(value: Role) = SemanticsMatcher.expectValue(SemanticsProperties.Role, value)
     private fun option(label: String) = compose.onNode(hasText(label) and role(Role.RadioButton))
     private fun header() = compose.onNode(role(Role.Button) and hasText("Decision title", substring = true))
-    private fun field(id: Int) = compose.onNode(hasSetTextAction() and hasText(text(id)))
+    private fun field(id: Int) = compose.onNode(hasSetTextAction() and hasContentDescription(text(id)))
     private fun text(id: Int, vararg args: Any): String = RuntimeEnvironment.getApplication().getString(id, *args)
 
     private fun layout(text: String): TextLayoutResult {
