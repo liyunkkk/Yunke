@@ -388,7 +388,12 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
                 AgentRuntimeWire.MSG_EVENT -> {
                     val data = msg.data ?: return
                     recordDeliveryTiming(data, live = true)
-                    AgentRuntimeWire.eventFromBundle(data)?.let(onEvent)
+                    val event = measureRuntimeStreamStage("ipc.client.decode.live") {
+                        AgentRuntimeWire.eventFromBundle(data)
+                    }
+                    event?.let {
+                        measureRuntimeStreamStage("ipc.client.callback.live") { onEvent(it) }
+                    }
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return
@@ -416,13 +421,32 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
     }
     private class AttachHandler(onReplay: ((List<AgentEvent>) -> Unit)?, onEvent: (AgentEvent) -> Unit,
         onAttachResponse: (Boolean) -> Unit, onResult: (AgentRuntimeWire.RunResult) -> Unit) : Handler(Looper.getMainLooper()) {
-        private val delivery = AgentRuntimeAttachDelivery(onReplay, onEvent, onAttachResponse, onResult)
+        // Replay callbacks run at attach ACK/result, not while MSG_EVENT buffers replay history.
+        // Keep delivery's null-onReplay fallback: invoke the original onEvent once per replay item.
+        private val delivery = AgentRuntimeAttachDelivery(
+            onReplay = { events ->
+                if (onReplay != null) {
+                    measureRuntimeStreamStage("ipc.attach.callback.replayBatch") { onReplay(events) }
+                } else {
+                    events.forEach { event ->
+                        measureRuntimeStreamStage("ipc.attach.callback.replay") { onEvent(event) }
+                    }
+                }
+            },
+            onEvent = { event -> measureRuntimeStreamStage("ipc.attach.callback.live") { onEvent(event) } },
+            onAttachResponse = onAttachResponse,
+            onResult = onResult,
+        )
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
                     val data = msg.data ?: return
-                    recordDeliveryTiming(data, live = delivery.isLive)
-                    AgentRuntimeWire.eventFromBundle(data)?.let(delivery::event)
+                    val live = delivery.isLive
+                    recordDeliveryTiming(data, live = live)
+                    val event = measureRuntimeStreamStage(
+                        if (live) "ipc.attach.decode.live" else "ipc.attach.decode.replay",
+                    ) { AgentRuntimeWire.eventFromBundle(data) }
+                    event?.let(delivery::event)
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return

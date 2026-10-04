@@ -30,7 +30,7 @@ internal class AgentRunCheckpointRecorder private constructor(
                     delta = pending.delta + checkpointEvent.delta,
                 )
             } else {
-                flushPendingDelta()
+                flushPendingDelta("runtime.checkpoint.flush.boundary")
                 pendingDelta = checkpointEvent
             }
             val elapsed = nanoTime() - lastFlushNanos
@@ -38,12 +38,15 @@ internal class AgentRunCheckpointRecorder private constructor(
                 pendingDelta.orEmptyChars() >= MAX_BUFFERED_DELTA_CHARS ||
                 elapsed >= MAX_BUFFERED_DELTA_NANOS
             ) {
-                flushPendingDelta()
+                flushPendingDelta(
+                    if (pendingDelta.orEmptyChars() >= MAX_BUFFERED_DELTA_CHARS)
+                        "runtime.checkpoint.flush.size" else "runtime.checkpoint.flush.timer",
+                )
             }
             return
         }
 
-        flushPendingDelta()
+        flushPendingDelta("runtime.checkpoint.flush.boundary")
         append(checkpointEvent)
     }
 
@@ -51,7 +54,7 @@ internal class AgentRunCheckpointRecorder private constructor(
     @Synchronized fun seal() {
         if (sealed) return
         sealed = true
-        flushPendingDelta()
+        flushPendingDelta("runtime.checkpoint.flush.seal")
     }
 
     @Synchronized fun discard() {
@@ -60,20 +63,26 @@ internal class AgentRunCheckpointRecorder private constructor(
         AgentRunCheckpointStore.remove(appContext, runId)
     }
 
-    private fun flushPendingDelta() {
+    // These timings are inside the existing recorder monitor, not monitor-wait measurements.
+    // Flush includes append; append is caller wall time, including the store's existing blocking IO.
+    private fun flushPendingDelta(stage: String) {
         val event = pendingDelta ?: return
-        pendingDelta = null
-        append(event)
-        lastFlushNanos = nanoTime()
+        measureRuntimeStreamStage(stage) {
+            pendingDelta = null
+            append(event)
+            lastFlushNanos = nanoTime()
+        }
     }
 
     private fun append(event: AgentEvent) {
-        AgentRunCheckpointStore.append(
-            context = appContext,
-            runId = runId,
-            sortIndex = nextSortIndex++,
-            event = event,
-        )
+        measureRuntimeStreamStage("runtime.checkpoint.append") {
+            AgentRunCheckpointStore.append(
+                context = appContext,
+                runId = runId,
+                sortIndex = nextSortIndex++,
+                event = event,
+            )
+        }
     }
 
     private fun AgentEvent.AssistantBlockDelta?.orEmptyChars(): Int = this?.deltaChars ?: 0

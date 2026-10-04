@@ -466,13 +466,23 @@ internal class AgentRuntimeRunExecutor(
             response.takeIf { committed && session.terminalResult?.ok == true }, committed)
     }
 
+    // All stages below start inside this synchronized method: executor monitor acquisition is
+    // excluded. checkpoint.accept includes the recorder call (and its own monitor, if contended).
     @Synchronized private fun acceptEvent(session: AgentRuntimeSession, event: AgentEvent,
         archivedEvents: MutableList<AgentEvent>, entrySurfaceGuard: EntrySurfaceGuard?,
         checkpointRecorder: AgentRunCheckpointRecorder?) {
         if (event is AgentEvent.QuestionRequested || event is AgentEvent.QuestionResolved) {
-            AgentQuestionEventPublisher.publish(session, event) { checkpointRecorder?.accept(event) }
+            AgentQuestionEventPublisher.publish(session, event) {
+                checkpointRecorder?.let { recorder ->
+                    measureRuntimeStreamStage("runtime.checkpoint.accept") { recorder.accept(event) }
+                }
+            }
         } else {
-            if (!session.emit(event) { checkpointRecorder?.accept(event) }) return
+            if (!session.emit(event) {
+                checkpointRecorder?.let { recorder ->
+                    measureRuntimeStreamStage("runtime.checkpoint.accept") { recorder.accept(event) }
+                }
+            }) return
         }
         archivedEvents += event
         if (event is AgentEvent.ModelRetryScheduled) AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")
