@@ -26,3 +26,6 @@ class ConversationCompletionMarkerTest {
         ))
         assertTrue(ConversationCompletionMarker.shouldMark(
             AgentRuntimeWire.RunResult("run", true, "", virtualDeliveryCompleted = true), isSelected = false,
+        ))
+    }
+}
