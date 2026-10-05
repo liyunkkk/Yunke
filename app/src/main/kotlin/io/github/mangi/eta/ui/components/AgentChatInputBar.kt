@@ -128,7 +128,6 @@ import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.ui.screens.assistants.AssistantPickerDialog
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.liveContextUsage
-import io.github.mangi.eta.ui.model.shouldBlockSendForContextWindow
 import io.github.mangi.eta.ui.model.ConversationMentionInputUi
 import io.github.mangi.eta.ui.model.SkillSlashMention
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
@@ -225,16 +224,11 @@ internal fun AgentChatInputBar(
             .filter { it.installed && it.id in enabledIds }
             .filter { SkillCompatibilityChecker.evaluate(it).available }
     }
-    // 原始历史计数只服务静默发送/压缩预算；显示（圆环）不再消费任何本地计数。
-    val historyTokenCount = remember(history) { history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) } }
     val supportsVision = modelPickerState.selectedModel?.supportsVision == true
     val supportsVideo = modelPickerState.selectedModel?.supportsVideo == true
     // 只有“实际选中模型”的 modelId 是 GPT 速度模型、端点仍是文本 OpenAI 且非图像/视频生成时，
     // 思考图标才具备长按切速度语义。非 GPT 立即走普通原色分支，不给长按语义，也不做旋转/缩放。
     val gptSpeedSupported = modelPickerState.selectedModel?.gptSpeedSupported == true
-    val localHistoryTokenCount = remember(history, supportsVision, supportsVideo) {
-        io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
-    }
     val liveUsage = remember(contextDisplayPolicy, billedContextTokens, modelPickerState.selectedModel,
         activeRunContextWindow) {
         // 圆环只显示真实云端回执：没有实测回执时不投影任何本地估算。
@@ -245,23 +239,29 @@ internal fun AgentChatInputBar(
             activeRunContextWindow = activeRunContextWindow,
         )
     }
-    val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
-        conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
-        billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, projectedContextTokens, activeRunContextWindow) {
-        io.github.mangi.eta.ui.model.compressionContextUsage(
-            history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
-            selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
-            localHistoryTokenCount = localHistoryTokenCount,
-            pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
-            billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
-            billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
-            projectedContextTokens = projectedContextTokens,
-            activeRunContextWindow = activeRunContextWindow,
-        )
+    // The budget only serves manual send blocking. Skip all local history work
+    // when the existing policy cannot block; the cloud-only ring stays independent.
+    val contextSendBlocked = contextSendBlocked(measuredContextTokens, autoCompressEnabled) {
+        val historyTokenCount = remember(history) { history.sumOf { io.github.mangi.eta.agent.model.AgentContextBudget.countMessage(it) } }
+        val localHistoryTokenCount = remember(history, supportsVision, supportsVideo) {
+            io.github.mangi.eta.agent.model.AgentRequestTokenEstimate.history(history, supportsVision, supportsVideo)
+        }
+        val sendBudget = remember(historyTokenCount, localHistoryTokenCount, draftText, pendingImages, pendingFileReferences,
+            conversationMentions.pending, modelPickerState.selectedModel, billedContextTokens,
+            billedHistoryTokens, requestOverheadTokens, billedOverheadTokens, projectedContextTokens, activeRunContextWindow) {
+            io.github.mangi.eta.ui.model.compressionContextUsage(
+                history = emptyList(), currentInput = draftText, pendingImages = pendingImages,
+                selectedModel = modelPickerState.selectedModel, historyTokenCount = historyTokenCount,
+                localHistoryTokenCount = localHistoryTokenCount,
+                pendingFileReferences = pendingFileReferences, pendingConversationMentions = conversationMentions.pending,
+                billedContextTokens = billedContextTokens, requestOverheadTokens = requestOverheadTokens,
+                billedHistoryTokens = billedHistoryTokens, billedOverheadTokens = billedOverheadTokens,
+                projectedContextTokens = projectedContextTokens,
+                activeRunContextWindow = activeRunContextWindow,
+            )
+        }
+        sendBudget
     }
-    // 真未知（没有有效实测）不因本地估算的 99% 被禁用；known 保留原有拦截与 autoCompress 短路。
-    val contextSendBlocked = measuredContextTokens != null &&
-        shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)
     val compressionSendBlocked = isCompressingContext
     val canSend = !modelPickerState.isChanging && modelPickerState.selectedModel != null && !contextSendBlocked && !compressionSendBlocked && (
         textFieldState.text.isNotBlank() ||

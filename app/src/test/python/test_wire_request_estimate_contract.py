@@ -32,8 +32,10 @@ class WireRequestEstimateContractTest(unittest.TestCase):
         # 显示不再消费任何本地预览 overhead/校准样本；只有 sendBudget（静默预算）保留 requestOverheadTokens。
         self.assertNotIn('previewRequestOverheadTokens', bar)
         self.assertNotIn('overheadCalibrationTokens', bar)
-        self.assertIn('val contextSendBlocked = measuredContextTokens != null &&', bar)
-        send = bar.split('val sendBudget = remember(', 1)[1].split('val contextSendBlocked', 1)[0]
+        self.assertIn('val contextSendBlocked = contextSendBlocked(measuredContextTokens, autoCompressEnabled)', bar)
+        gate = self.text('ui/components/ContextSendBudgetGate.kt')
+        self.assertIn('measuredContextTokens != null && !autoCompressEnabled', gate)
+        send = bar.split('val sendBudget = remember(', 1)[1].split('val compressionSendBlocked', 1)[0]
         self.assertIn('localHistoryTokenCount = localHistoryTokenCount', send)
         self.assertIn('requestOverheadTokens = requestOverheadTokens', send)
         preview = self.text('ui/model/AgentModelPickerUiState.kt').split('internal fun compressionContextUsage(', 1)[1]
