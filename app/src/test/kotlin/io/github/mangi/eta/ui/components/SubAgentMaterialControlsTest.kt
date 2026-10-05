@@ -83,8 +83,7 @@ class SubAgentMaterialControlsTest {
             SubAgentProfileRow(current, emptyList(), enabled = enabled.value, settings = true)
         }
         compose.onNodeWithContentDescription("设置测试代理任务分工").performClick()
-        val retainedSelection = compose.onNode(isSelectable() and hasText("简单任务")).fetchSemanticsNode()
-            .config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
+        val retainedSelection = compose.onNode(isSelectable() and hasText("简单任务")).captureSelectableOnClick()
         compose.runOnIdle { fixture.editor.updateProfile(profile.id) { it.withRole("review") } }
         compose.onNodeWithText("简单任务").assertDoesNotExist()
         compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
@@ -95,8 +94,7 @@ class SubAgentMaterialControlsTest {
             fixture.editor.updateProfile(profile.id) { it.withRole("implementation") }
         }
         compose.onNodeWithContentDescription("设置测试代理任务分工").assert(hasText("未设置分工")).performClick()
-        val disabledSelection = compose.onNode(isSelectable() and hasText("常规任务")).fetchSemanticsNode()
-            .config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
+        val disabledSelection = compose.onNode(isSelectable() and hasText("常规任务")).captureSelectableOnClick()
         compose.runOnIdle { enabled.value = false }
         compose.onNodeWithText("常规任务").assertDoesNotExist()
         compose.onNodeWithContentDescription("设置测试代理任务分工").assertIsNotEnabled()
@@ -107,6 +105,19 @@ class SubAgentMaterialControlsTest {
             assertEquals(before, fixture.snapshot())
             assertEquals(revision, fixture.repository.revision(fixture.owner).value)
         }
+    }
+
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+    @Suppress("UNCHECKED_CAST")
+    private fun SemanticsNodeInteraction.captureSelectableOnClick(): () -> Unit {
+        // A semantics click wraps an attached Modifier node (including click sound).
+        // Retain the actual selectable callback to test stale application choices.
+        val element = fetchSemanticsNode().layoutInfo.getModifierInfo()
+            .map { it.modifier }
+            .single { it.javaClass.name == "androidx.compose.foundation.selection.SelectableElement" }
+        return element.javaClass.getDeclaredField("onClick")
+            .apply { isAccessible = true }
+            .get(element) as () -> Unit
     }
 
     @Test fun nonImplementationConversationLabelHasNoTierMenu() {

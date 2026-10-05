@@ -102,6 +102,7 @@ class FrozenMarkdownRenderingTest {
                             val value = when (val item = link.item) {
                                 is LinkAnnotation.Url -> item.url
                                 is LinkAnnotation.Clickable -> item.tag
+                                else -> error("Unrecognized link annotation: $item")
                             }
                             Triple(link.start, link.end, value)
                         },
