@@ -21,7 +21,13 @@ class SubAgentReplacementTest {
             "fresh evidence"
         }).use { c ->
             val old = call(c, "delegate_task", JSONObject().put("task", "inspect").put("worker", 1)).getString("task_id")
-            val failed = call(c, "get_task_result", JSONObject().put("task_id", old).put("wait_ms", 1000))
+            var failed = call(c, "get_task_result", JSONObject().put("task_id", old).put("wait_ms", 1000))
+            // 清理线程把 executing 收回前 can_replace 可能还是 false：给一个有界等待窗口，避免与调度时序赛跑。
+            val deadline = System.currentTimeMillis() + 2_000
+            while (!failed.optBoolean("can_replace") && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25)
+                failed = call(c, "get_task_result", JSONObject().put("task_id", old))
+            }
             assertEquals("failed", failed.getString("status"))
             assertTrue(failed.getBoolean("can_replace"))
             assertEquals("model-one", failed.getString("model"))

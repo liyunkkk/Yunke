@@ -194,7 +194,9 @@ internal abstract class EtaDatabase : RoomDatabase() {
 
         /** 上游 v5.3.6 新增：会话完成标记（未读完成圆环）。设备旧库已在我方 32 上，需要独立补这一列。 */
         internal val MIGRATION_32_33 = Migration(32, 33) { database ->
-            database.execSQL("ALTER TABLE conversations ADD COLUMN has_completion_marker INTEGER NOT NULL DEFAULT 0")
+            if (!tableHasColumn(database, "conversations", "has_completion_marker")) {
+                database.execSQL("ALTER TABLE conversations ADD COLUMN has_completion_marker INTEGER NOT NULL DEFAULT 0")
+            }
         }
 
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->
