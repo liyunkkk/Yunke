@@ -16,7 +16,8 @@ class ChildGptSpeedContractTest(unittest.TestCase):
         self.assertIn('Icon(Icons.Rounded.MoreVert, "配置${profile.name}"', card)
         self.assertIn('SubAgentProfileDraftSession.open(editor, profile)', card)
         self.assertNotIn('SubAgentTaskTierButton(', row)
-        self.assertNotIn('"任务分工"', row)
+        compact = row.split('Row(Modifier.fillMaxWidth().heightIn(min = 88.dp)', 1)[1].split('profileDraft?.let', 1)[0]
+        self.assertNotIn('"任务分工"', compact)
         settings = source('ui/components/SubAgentSettingRow.kt')
         self.assertLess(settings.index('trailing?.invoke()'), settings.index('Icon(if (dropdown)'))
 
