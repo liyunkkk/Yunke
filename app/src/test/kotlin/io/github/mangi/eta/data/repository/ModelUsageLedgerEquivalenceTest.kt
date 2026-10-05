@@ -213,6 +213,7 @@ class ModelUsageLedgerEquivalenceTest {
         val deltas = listOf(delta(request = "100"), delta(request = null), delta(request = "other"))
         cases.forEach { (label, raw) ->
             assertFalse(label, JSONObject(raw).hasOnlyCanonicalJsonValues())
+            assertRootReuse(label, raw, expectedReuse = false)
             deltas.forEachIndexed { index, change -> assertDeltaMatchesOriginal("$label delta $index", raw, change) }
         }
         // initializedRaw() deliberately carries a 1.25 field, so it covers the round-trip
@@ -223,9 +224,67 @@ class ModelUsageLedgerEquivalenceTest {
         assertTrue(JSONObject().put("days", JSONArray().put(JSONObject.NULL)).hasOnlyCanonicalJsonValues())
     }
 
+    @Test fun collisionObjectChangesStringCoercionAcrossJvmRoundTrip() {
+        // Keep the hand-written insertion order; serializing this fixture before apply would
+        // hide the first parse/re-parse difference under review.
+        val parsed = JSONObject("""{"q":$collisionObjectRaw}""")
+        val keys = parsed.getJSONObject("q").keys().asSequence().toList()
+        assertEquals(12, keys.size)
+        assertEquals("all fixture keys collide in Java's HashMap", 1, keys.map { it.hashCode() }.toSet().size)
+        assertTrue("the old recursive guard admits this object", parsed.hasOnlyCanonicalJsonValues())
+        val reparsed = JSONObject(parsed.toString())
+        assertNotEquals("rebuilding the object changes its optString result on JVM org.json",
+            parsed.optString("q"), reparsed.optString("q"))
+    }
+
+    @Test fun containerStringCoercionsFallBackAndMatchOriginal() {
+        // These raw inputs are never pre-normalized with JSONObject.toString(). An array can
+        // also carry a colliding object, so even its optString conversion can change.
+        for ((shape, value) in listOf(
+            "object" to collisionObjectRaw,
+            "array containing object" to """[$collisionObjectRaw,"tail"]""",
+        )) {
+            val cases = listOf(
+                "q $shape" to stringCoercionRaw(eventFields = """ "c":"old","q":$value """),
+                "c $shape" to stringCoercionRaw(eventFields = """ "c":$value,"q":"kept" """),
+                "conversations element $shape" to stringCoercionRaw(conversations = """["old",$value]"""),
+                "days element $shape" to stringCoercionRaw(days = """["1970-01-01",$value]"""),
+            )
+            for ((label, raw) in cases) {
+                assertTrue("$label passed the old scalar guard", JSONObject(raw).hasOnlyCanonicalJsonValues())
+                assertRootReuse(label, raw, expectedReuse = false)
+                assertDeltaMatchesOriginal("$label append", raw, delta(request = "incoming", conversation = "new"))
+                val originalRequest = JSONObject(originalSeedConversationUsage(raw, emptyMap()))
+                    .getJSONObject("providers").getJSONObject("p").getJSONObject("models")
+                    .getJSONObject("main").getJSONArray("events").getJSONObject(0).optString("q")
+                assertDeltaMatchesOriginal("$label request replacement", raw,
+                    delta(request = originalRequest, conversation = "new"))
+                assertDeltaMatchesOriginal("$label no request", raw, delta(request = null, conversation = "new"))
+            }
+        }
+    }
+
+    @Test fun scalarStringCoercionsRemainFastAndJavaNullStillFallsBack() {
+        val raw = stringCoercionRaw(
+            eventFields = """ "q":7,"c":true """,
+            conversations = """["old",7,true,null]""",
+            days = """["1970-01-01",8,false,null]""",
+        )
+        assertRootReuse("stable scalar coercions", raw, expectedReuse = true)
+        assertDeltaMatchesOriginal("stable scalar coercions", raw, delta(request = "7"))
+        val root = JSONObject(canonicalInitializedRaw())
+        root.getJSONObject("providers").getJSONObject("p").getJSONObject("models")
+            .getJSONObject("main").getJSONArray("days").put(null as Any?)
+        assertFalse(root.hasOnlyCanonicalJsonValues())
+        assertNotSame("raw Java null retains the original round-trip", root,
+            root.rootForModelUsageDelta("p", "main", wasInitialized = true))
+    }
+
     @Test fun canonicalInitializedLedgerTakesFastPathAndMatchesOriginal() {
         val raw = canonicalInitializedRaw()
         assertTrue(JSONObject(raw).hasOnlyCanonicalJsonValues())
+        assertRootReuse("production-shaped initialized ledger", raw, expectedReuse = true)
+        assertRootReuse("migration keeps the old round-trip", legacyRaw(), expectedReuse = false)
         assertSequenceMatchesOriginal("canonical fast path", raw, listOf(
             delta(request = "request-a", input = 150),
             delta(request = "request-a", input = 170),
@@ -237,6 +296,38 @@ class ModelUsageLedgerEquivalenceTest {
     }
 
     private fun JSONObject.removeTotals(): JSONObject = apply { remove("conversationTotalsV1") }
+
+    private val collisionObjectRaw = """{
+        "AaAaAaAa":1,"AaAaBBAa":1,"AaAaBBBB":1,"AaBBAaAa":1,
+        "AaBBAaBB":1,"AaBBBBAa":1,"AaBBBBBB":1,"BBAaAaAa":1,
+        "BBAaAaBB":1,"BBAaBBAa":1,"BBAaBBBB":1,"AaAaAaBB":1
+    }"""
+
+    private fun stringCoercionRaw(
+        eventFields: String = """ "c":"old","q":"kept" """,
+        conversations: String = """["old"]""",
+        days: String = """["1970-01-01"]""",
+    ): String = """{
+        "conversationTotalsInitialized":true,
+        "conversationTotalsV1":{"old":{"in":10,"out":0,"k":0,"w":0}},
+        "providers":{"p":{"name":"Provider","models":{"main":{
+            "displayName":"Main","inputTokens":10,"outputTokens":0,
+            "cachedTokens":0,"cacheCreationTokens":0,
+            "events":[{"t":1000,"in":10,"out":0,"r":1,$eventFields}],
+            "conversations":$conversations,"days":$days
+        }}}}
+    }"""
+
+    private fun assertRootReuse(label: String, raw: String, expectedReuse: Boolean) {
+        val parsed = JSONObject(raw)
+        val wasInitialized = parsed.optBoolean("conversationTotalsInitialized")
+        seedConversationUsageInPlace(parsed, raw, emptyMap())
+        val selected = parsed.rootForModelUsageDelta("p", "main", wasInitialized)
+        if (expectedReuse) assertSame("$label must take the actual fast path", parsed, selected)
+        else assertNotSame("$label must actually serialize/re-parse", parsed, selected)
+        assertJsonEquivalent("$label prepared root",
+            JSONObject(originalSeedConversationUsage(raw, emptyMap())), selected)
+    }
 
     private fun legacyRaw(withCounters: Boolean = false): String {
         val main = JSONObject().put("displayName", "Legacy main")
