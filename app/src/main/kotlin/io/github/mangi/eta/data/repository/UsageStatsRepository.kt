@@ -9,7 +9,6 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -96,9 +95,8 @@ internal object UsageStatsRepository {
         }
     }
 
-    fun conversationUsageFlow(id: String?) = SettingsDataStore.modelUsageFlow().map { raw ->
-        conversationUsageTotals(raw, id)
-    }
+    fun conversationUsageFlow(id: String?) =
+        conversationUsageTotalsFlow(SettingsDataStore.modelUsageFlow(), id)
 
     suspend fun recordModelUsage(delta: ModelUsageDelta) {
         modelUsageLock.withLock {
