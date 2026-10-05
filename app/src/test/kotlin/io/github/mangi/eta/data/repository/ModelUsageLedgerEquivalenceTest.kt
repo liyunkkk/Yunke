@@ -215,7 +215,22 @@ class ModelUsageLedgerEquivalenceTest {
             assertFalse(label, JSONObject(raw).hasOnlyCanonicalJsonValues())
             deltas.forEachIndexed { index, change -> assertDeltaMatchesOriginal("$label delta $index", raw, change) }
         }
-        assertTrue(JSONObject(initializedRaw()).hasOnlyCanonicalJsonValues())
+        // initializedRaw() deliberately carries a 1.25 field, so it covers the round-trip
+        // fallback; the production-shaped ledger below must take the fast path.
+        assertFalse(JSONObject(initializedRaw()).hasOnlyCanonicalJsonValues())
+    }
+
+    @Test fun canonicalInitializedLedgerTakesFastPathAndMatchesOriginal() {
+        val raw = canonicalInitializedRaw()
+        assertTrue(JSONObject(raw).hasOnlyCanonicalJsonValues())
+        assertSequenceMatchesOriginal("canonical fast path", raw, listOf(
+            delta(request = "request-a", input = 150),
+            delta(request = "request-a", input = 170),
+            delta(request = "request-new", input = 40, at = 3000),
+            delta(request = null, input = 9),
+            delta(request = "x", conversation = null, input = 3),
+            delta(request = "esc", conversation = "q\"\\/\u0001\u00e9\ud83d\ude00", input = 4),
+        ))
     }
 
     private fun JSONObject.removeTotals(): JSONObject = apply { remove("conversationTotalsV1") }
@@ -247,6 +262,30 @@ class ModelUsageLedgerEquivalenceTest {
             .put("p", JSONObject().put("name", "Old provider").put("models", JSONObject().put("main", main).put("child", child)))
             .put("z", JSONObject().put("models", JSONObject().put("aux", other))))
             .put("unrelatedRootField", JSONArray().put(JSONObject.NULL).put(true).put(1.25)).toString()
+    }
+
+    /** Same shape the app writes: integers, strings and booleans only. */
+    private fun canonicalInitializedRaw(): String {
+        val events = JSONArray()
+        listOf(
+            """{"t":1000,"in":20,"out":2,"k":3,"w":1,"c":"a","r":1}""",
+            """{"t":1200,"in":100,"out":10,"k":70,"w":5,"c":"a","r":1,"q":"request-a"}""",
+            """{"t":1300,"in":80,"out":8,"k":6,"c":"b","q":"other-owner"}""",
+            """{"t":1400,"in":3000000000,"out":1,"c":"a","r":2,"q":"big"}""",
+        ).forEach { events.put(JSONObject(it)) }
+        val main = JSONObject().put("displayName", "Main").put("events", events)
+            .put("inputTokens", 3000000200L).put("outputTokens", 21L)
+            .put("cachedTokens", 79L).put("cacheCreationTokens", 6L)
+            .put("conversations", JSONArray().put("a").put("b"))
+            .put("days", JSONArray().put("1970-01-01"))
+        return JSONObject()
+            .put("conversationTotalsInitialized", true)
+            .put("conversationTotalsV1", JSONObject()
+                .put("a", JSONObject().put("in", 3000000120L).put("out", 13).put("k", 73).put("w", 6))
+                .put("b", JSONObject().put("in", 80).put("out", 8).put("k", 6).put("w", 0)))
+            .put("providers", JSONObject().put("p", JSONObject().put("name", "Provider")
+                .put("models", JSONObject().put("main", main))))
+            .toString()
     }
 
     private fun initializedRaw(): String = originalSeedConversationUsage(
