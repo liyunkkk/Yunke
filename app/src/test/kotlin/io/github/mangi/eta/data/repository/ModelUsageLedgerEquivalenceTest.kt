@@ -218,6 +218,9 @@ class ModelUsageLedgerEquivalenceTest {
         // initializedRaw() deliberately carries a 1.25 field, so it covers the round-trip
         // fallback; the production-shaped ledger below must take the fast path.
         assertFalse(JSONObject(initializedRaw()).hasOnlyCanonicalJsonValues())
+        // A raw Java null inside an array is not round-trip stable (it re-parses as NULL).
+        assertFalse(JSONObject().put("days", JSONArray().put(null as Any?)).hasOnlyCanonicalJsonValues())
+        assertTrue(JSONObject().put("days", JSONArray().put(JSONObject.NULL)).hasOnlyCanonicalJsonValues())
     }
 
     @Test fun canonicalInitializedLedgerTakesFastPathAndMatchesOriginal() {

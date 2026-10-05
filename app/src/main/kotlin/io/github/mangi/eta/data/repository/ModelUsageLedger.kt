@@ -352,8 +352,10 @@ internal fun List<ModelUsageEvent>.collapsedByRound(): List<ModelUsageEvent> {
 
 /**
  * True when serializing and re-parsing [this] would yield identical value objects:
- * strings, booleans, NULL, Integer and Long survive org.json's round-trip unchanged.
- * Any other Number (Double, BigDecimal, BigInteger...) may be rewritten by it.
+ * strings, booleans, JSONObject.NULL, Integer and Long survive org.json's round-trip unchanged.
+ * Any other Number (Double, BigDecimal, BigInteger...) may be rewritten by it, and a raw Java
+ * null (Android's lenient array elision, e.g. `[,"a"]`) becomes JSONObject.NULL, which
+ * optString reads differently. Both cases fall back to the original round-trip.
  */
 internal fun JSONObject.hasOnlyCanonicalJsonValues(): Boolean {
     val keys = keys()
@@ -364,7 +366,8 @@ internal fun JSONObject.hasOnlyCanonicalJsonValues(): Boolean {
 }
 
 private fun Any?.isCanonicalJsonValue(): Boolean = when (this) {
-    null, JSONObject.NULL, is String, is Boolean, is Int, is Long -> true
+    null -> false
+    JSONObject.NULL, is String, is Boolean, is Int, is Long -> true
     is JSONObject -> this.hasOnlyCanonicalJsonValues()
     is JSONArray -> (0 until this.length()).all { index -> this.opt(index).isCanonicalJsonValue() }
     else -> false
