@@ -47,11 +47,29 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         self.assertLess(toggle.index('if (active == null) return 0'), toggle.index('probeRequests.intValue++'))
         self.assertNotRegex(toggle, r'\battach\s*\(')
 
-    def test_existing_heavy_monitor_keeps_its_original_streaming_lifecycle(self):
+    def test_window_monitor_requires_opt_in_and_foreground_not_streaming(self):
+        # Page-level jank diagnostics are explicitly enabled by the global log switch.
         monitor = body(self.stream, 'StreamPerformanceMonitor')
-        self.assertIn('delay(3000)', monitor)
-        self.assertRegex(monitor, r'if \(tailActive && lifecycleState.isAtLeast\(Lifecycle.State.RESUMED\) && window != null\)')
+        self.assertIn('lifecycleState.isAtLeast(Lifecycle.State.RESUMED)', monitor)
+        self.assertIn('if (loggingEnabled && resumed && window != null)', monitor)
+        self.assertIn('DisposableEffect(view, loggingEnabled, resumed, pages)', monitor)
+        self.assertIn('onDispose { detach?.invoke() }', monitor)
+        self.assertNotIn('isStreaming', monitor)
         self.assertNotIn('scrollTraceEnabled', monitor)
+        root = (ROOT.parent / 'app/AgentAppRoot.kt').read_text()
+        self.assertEqual(root.count('StreamPerformanceMonitor('), 1)
+        self.assertIn('SettingsDataStore.fileLoggingEnabledFlow()', root)
+        self.assertNotIn('StreamPerformanceMonitor(', self.chat)
+
+    def test_frame_attribution_uses_frame_time_and_bounded_periodic_reporting(self):
+        attach = body(self.stream, 'attach')
+        self.assertIn('FrameMetrics.INTENDED_VSYNC_TIMESTAMP', attach)
+        self.assertIn('pages.attributeFrame(intended, total)', attach)
+        self.assertIn('page.aggregatePage.frameStage', attach)
+        self.assertIn('${page.fields()}', (ROOT / 'StreamPerformanceDiagnostics.kt').read_text())
+        self.assertIn('emit(false)\n                spikes = 0', attach)
+        self.assertIn('handler.postDelayed(this, 5000)', attach)
+        self.assertIn('AppFileLogger.isEnabled()', attach)
 
     def test_trace_gate_polls_only_while_resumed(self):
         gate = body(self.helper, 'rememberChatScrollTraceEnabled')

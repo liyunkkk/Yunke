@@ -222,7 +222,6 @@ internal fun AgentChatBody(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    StreamPerformanceMonitor(isStreaming)
     io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
         enabled = !isPaused,
         conversationId = collaborationConversationId,

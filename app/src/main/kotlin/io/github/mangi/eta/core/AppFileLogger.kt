@@ -28,7 +28,11 @@ internal object AppFileLogger {
         .withZone(ZoneId.systemDefault())
     private val enabled = AtomicBoolean(false)
     private val installed = AtomicBoolean(false)
+    // Lifecycle operations may wait for logcat or touch multiple files.
     private val lock = ReentrantLock()
+    // Writers never acquire the lifecycle lock. This gate only fences accepted writes
+    // against disable/clear; process shutdown and file cleanup happen outside it.
+    private val writeLock = ReentrantLock()
     private val logcatProcess = AtomicReference<java.lang.Process?>()
     private val logcatThread = AtomicReference<Thread?>()
 
@@ -58,11 +62,11 @@ internal object AppFileLogger {
                 }
                 appSink = FileLogSink(directory, APP_LOG_FILE)
                 logcatSink = FileLogSink(directory, LOGCAT_FILE)
-                enabled.set(true)
                 writeSessionHeader()
+                writeLock.withLock { enabled.set(true) }
                 startLogcatLocked()
             } else {
-                enabled.set(false)
+                writeLock.withLock { enabled.set(false) }
                 stopLogcatLocked()
                 appSink?.close()
                 logcatSink?.close()
@@ -80,16 +84,10 @@ internal object AppFileLogger {
 
     /**
      * Optional redacted diagnostics share the global file-logging switch, including logcat output.
-     * Check at delivery time (not when a run starts), under the same lock as setEnabled/clear,
-     * so retained child tasks cannot emit after logging has been disabled.
+     * Check at delivery time (not when a run starts), under the write gate shared with
+     * disable/clear, so retained child tasks cannot emit after logging has been disabled.
      */
-    fun diagnosticInfo(message: String) {
-        lock.withLock {
-            if (!enabled.get()) return
-            runCatching { Log.i(ModuleConfig.TAG, message) }
-            write("I", message, null)
-        }
-    }
+    fun diagnosticInfo(message: String) = write("I", message, null, echoLogcat = true)
 
     fun warn(message: String) = write("W", message, null)
 
@@ -104,9 +102,8 @@ internal object AppFileLogger {
 
     fun clear() {
         lock.withLock {
-            val wasEnabled = enabled.get()
+            val wasEnabled = writeLock.withLock { enabled.getAndSet(false) }
             if (wasEnabled) {
-                enabled.set(false)
                 stopLogcatLocked()
             }
             appSink?.clear()
@@ -122,8 +119,8 @@ internal object AppFileLogger {
                 val dir = directory ?: return
                 appSink = FileLogSink(dir, APP_LOG_FILE)
                 logcatSink = FileLogSink(dir, LOGCAT_FILE)
-                enabled.set(true)
                 writeSessionHeader()
+                writeLock.withLock { enabled.set(true) }
                 startLogcatLocked()
             }
         }
@@ -146,10 +143,18 @@ internal object AppFileLogger {
         return DiagnosticLogArchive.writeZip(files, output)
     }
 
-    private fun write(level: String, message: String, throwable: Throwable?) {
-        lock.withLock {
-            if (!enabled.get()) return
-            val sink = appSink ?: return
+    private fun write(
+        level: String,
+        message: String,
+        throwable: Throwable?,
+        echoLogcat: Boolean = false,
+    ) {
+        if (!enabled.get()) return
+        val sink = appSink ?: return
+        writeLock.withLock {
+            // A caller delayed across clear/re-enable must not write to the new session.
+            if (!enabled.get() || appSink !== sink) return
+            if (echoLogcat) runCatching { Log.i(ModuleConfig.TAG, message) }
             val builder = StringBuilder(message.length + 80)
             builder.append(timeFormatter.format(Instant.now()))
                 .append(' ')

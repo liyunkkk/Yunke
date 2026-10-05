@@ -1,0 +1,46 @@
+package io.github.mangi.eta.ui.app
+
+import io.github.mangi.eta.ui.components.FrameDiagnosticPage
+import io.github.mangi.eta.ui.navigation.AppRoute
+
+/** Exhaustive mapping intentionally ignores all route payloads. */
+internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
+    AppRoute.Home -> FrameDiagnosticPage.Home
+    AppRoute.Chat -> FrameDiagnosticPage.Chat
+    AppRoute.Browser -> FrameDiagnosticPage.Browser
+    AppRoute.Terminal -> FrameDiagnosticPage.Terminal
+    AppRoute.Tools -> FrameDiagnosticPage.Tools
+    AppRoute.AgentTaskPreference -> FrameDiagnosticPage.AgentTaskPreference
+    AppRoute.VirtualDisplayRecovery -> FrameDiagnosticPage.AgentTaskPreference
+    AppRoute.Haptics -> FrameDiagnosticPage.Haptics
+    AppRoute.Skills -> FrameDiagnosticPage.Skills
+    AppRoute.Permissions -> FrameDiagnosticPage.Permissions
+    AppRoute.SystemEnhance -> FrameDiagnosticPage.SystemEnhance
+    AppRoute.Settings -> FrameDiagnosticPage.Settings
+    AppRoute.SpeechSettings -> FrameDiagnosticPage.VoiceSettings
+    AppRoute.TtsSettings -> FrameDiagnosticPage.VoiceSettings
+    AppRoute.VoiceSettings -> FrameDiagnosticPage.VoiceSettings
+    AppRoute.AuxiliaryVision -> FrameDiagnosticPage.AuxiliaryVision
+    AppRoute.TitleModel -> FrameDiagnosticPage.TitleModel
+    AppRoute.ErrorReconnectSettings -> FrameDiagnosticPage.ErrorReconnectSettings
+    AppRoute.SubAgents -> FrameDiagnosticPage.SubAgents
+    AppRoute.VoiceModeSettings -> FrameDiagnosticPage.VoiceSettings
+    AppRoute.AppearanceSettings -> FrameDiagnosticPage.AppearanceSettings
+    AppRoute.DataBackup -> FrameDiagnosticPage.DataBackup
+    AppRoute.Memory -> FrameDiagnosticPage.Memory
+    AppRoute.LinuxEnvironment -> FrameDiagnosticPage.LinuxEnvironment
+    AppRoute.SharedFolders -> FrameDiagnosticPage.SharedFolders
+    AppRoute.Workspace -> FrameDiagnosticPage.Workspace
+    is AppRoute.LinuxFiles -> FrameDiagnosticPage.LinuxFiles
+    AppRoute.ModelProviders -> FrameDiagnosticPage.ModelProviders
+    AppRoute.McpServers -> FrameDiagnosticPage.McpServers
+    is AppRoute.McpServerDetail -> FrameDiagnosticPage.McpServerDetail
+    is AppRoute.ModelProviderDetail -> FrameDiagnosticPage.ModelProviderDetail
+    is AppRoute.ModelProviderAuthMethod -> FrameDiagnosticPage.ModelProviderAuthMethod
+    is AppRoute.ModelProviderNew -> FrameDiagnosticPage.ModelProviderNew
+    AppRoute.ContextCompression -> FrameDiagnosticPage.ContextCompression
+    is AppRoute.Assistants -> FrameDiagnosticPage.Assistants
+    is AppRoute.AssistantEdit -> FrameDiagnosticPage.AssistantEdit
+    AppRoute.UsageStats -> FrameDiagnosticPage.UsageStats
+    AppRoute.ManageChats -> FrameDiagnosticPage.ManageChats
+}

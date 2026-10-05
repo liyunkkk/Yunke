@@ -1,0 +1,54 @@
+package io.github.mangi.eta.ui.components
+
+/** Static labels only: never route.toString(), IDs, URLs, names, or user content. */
+internal enum class FrameDiagnosticPage {
+    Unknown, Transition, BrowserOverlay, ConversationDrawer,
+    Home, Chat, Browser, Terminal, Tools, AgentTaskPreference, VirtualDisplayRecovery, Haptics, Skills, Permissions, SystemEnhance, Settings, SpeechSettings, TtsSettings, VoiceSettings, AuxiliaryVision, TitleModel, ErrorReconnectSettings, SubAgents, VoiceModeSettings, AppearanceSettings, DataBackup, Memory, LinuxEnvironment, SharedFolders, Workspace, LinuxFiles, ModelProviders, McpServers, McpServerDetail, ModelProviderDetail, ModelProviderAuthMethod, ModelProviderNew, ContextCompression, Assistants, AssistantEdit, UsageStats, ManageChats;
+
+    val frameStage: String = "frame.page.$name"
+}
+
+internal data class FramePageAttribution(
+    val start: FrameDiagnosticPage,
+    val end: FrameDiagnosticPage,
+    val changed: Boolean,
+) {
+    val aggregatePage: FrameDiagnosticPage get() = when {
+        start == FrameDiagnosticPage.Unknown || end == FrameDiagnosticPage.Unknown -> FrameDiagnosticPage.Unknown
+        changed -> FrameDiagnosticPage.Transition
+        else -> start
+    }
+    fun fields(): String = "page=${start.name} pageEnd=${end.name} pageChanged=$changed pageSource=route"
+}
+
+/** Bounded route history. Read immutable snapshots without contending with the UI thread. */
+internal class FramePageTimeline(private val capacity: Int = 64) {
+    private data class Entry(val atNs: Long, val page: FrameDiagnosticPage)
+    @Volatile private var entries: List<Entry> = emptyList()
+
+    init { require(capacity >= 2) }
+
+    @Synchronized fun mark(page: FrameDiagnosticPage, nowNs: Long) {
+        val last = entries.lastOrNull()
+        if (last?.page == page) return
+        require(last == null || nowNs >= last.atNs)
+        entries = (entries.takeLast(capacity - 1) + Entry(nowNs, page))
+    }
+
+    fun attributeFrame(intendedNs: Long, totalNs: Long): FramePageAttribution {
+        if (intendedNs < 0 || totalNs < 0 || intendedNs > Long.MAX_VALUE - totalNs) {
+            return FramePageAttribution(FrameDiagnosticPage.Unknown, FrameDiagnosticPage.Unknown, false)
+        }
+        return attribute(intendedNs, intendedNs + totalNs)
+    }
+
+    /** Resolve the frame's timestamps, not the later callback delivery time. */
+    fun attribute(startNs: Long, endNs: Long): FramePageAttribution {
+        val snapshot = entries
+        if (endNs < startNs) return FramePageAttribution(FrameDiagnosticPage.Unknown, FrameDiagnosticPage.Unknown, false)
+        val start = snapshot.lastOrNull { it.atNs <= startNs }?.page ?: FrameDiagnosticPage.Unknown
+        val end = snapshot.lastOrNull { it.atNs <= endNs }?.page ?: FrameDiagnosticPage.Unknown
+        val changed = snapshot.any { it.atNs > startNs && it.atNs <= endNs }
+        return FramePageAttribution(start, end, changed)
+    }
+}

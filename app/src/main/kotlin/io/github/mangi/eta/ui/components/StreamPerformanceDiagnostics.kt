@@ -17,8 +17,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import io.github.mangi.eta.core.AndroidAgentLogger
-import kotlinx.coroutines.delay
+import io.github.mangi.eta.core.AppFileLogger
 import java.util.UUID
 
 /** Fixed-size aggregate; values are counts/lengths only, never message text or IDs. */
@@ -233,9 +232,9 @@ internal const val MAIN_LOG_CAPACITY = 256
 private const val CHOREOGRAPHER_FRAME_RECEIVER = "Choreographer\$FrameDisplayEventReceiver"
 // 点击前一帧也收进来，看点击之前主线程是否已经在忙。
 private const val FRAME_PROBE_LEAD_NS = 17_000_000L
-// 点击窗口以外超过这个值的帧单独记一条，最多 SPIKE_MAX_PER_SESSION 条。
+// 点击窗口以外超过这个值的帧单独记一条，每个五秒报告窗口最多 SPIKE_MAX_PER_WINDOW 条。
 internal const val SPIKE_FRAME_NS = 33_000_000L
-private const val SPIKE_MAX_PER_SESSION = 40
+private const val SPIKE_MAX_PER_WINDOW = 40
 private const val SPIKE_LOOKBACK_NS = 200_000_000L
 internal const val NOTE_MAX_PER_SESSION = 120
 internal const val SLOW_STAGE_NS = 16_000_000L
@@ -279,7 +278,7 @@ internal object StreamPerformanceDiagnostics {
                 snapshot
             }
             // Format outside the lock; overflow is one bounded line, never a payload label.
-            val prefix = "StreamDiag id=$id final=$final elapsedMs=${(System.nanoTime()-started)/1_000_000}"
+            val prefix = "StreamDiag id=$id final=$final elapsedMs=${(System.nanoTime()-started)/1_000_000} scope=window"
             return buildList {
                 snapshot.forEach { (stage, stats) -> add("$prefix stage=$stage ${stats.summary()}") }
                 if (dropped > 0) add("$prefix stage=diagnostic.stageOverflow droppedRecords=$dropped")
@@ -295,7 +294,7 @@ internal object StreamPerformanceDiagnostics {
     @Volatile private var mainLog: MainThreadMessageLog? = null
     @Volatile private var noteSink: ((String) -> Unit)? = null
 
-    /** 当前是否有诊断会话（输出中且界面在前台）。 */
+    /** 当前是否有诊断会话（日志已开启且界面在前台）。 */
     val enabled: Boolean get() = active != null
 
     /**
@@ -320,7 +319,7 @@ internal object StreamPerformanceDiagnostics {
 
     /**
      * 在主线程的点击回调里调用。系统追踪开启时先记录轻量点击标记；
-     * 没有流式诊断会话（不在输出中）时仍返回 0，不启动重型探针。
+     * 没有前台诊断会话时仍返回 0，不启动重型探针。
      * 上一次点击的窗口还没收完就再点，先把上一次的结果写出来。
      * 返回这次点击的 token，被点开的那一项用它把自己的高度和组合进度记进同一个窗口。
      */
@@ -399,7 +398,7 @@ internal object StreamPerformanceDiagnostics {
         }
     }
 
-    fun attach(window: Window): () -> Unit {
+    fun attach(window: Window, pages: FramePageTimeline): () -> Unit {
         val session = Session()
         active = session
         val thread = HandlerThread("Eta-StreamDiag").apply { start() }
@@ -418,7 +417,7 @@ internal object StreamPerformanceDiagnostics {
                 runCatching {
                     val lead = target.startNs - FRAME_PROBE_LEAD_NS
                     val messages = log.between(lead, System.nanoTime(), target.startNs, TOGGLE_PROBE_MAX_MESSAGES)
-                    target.report(session.id, messages).forEach(AndroidAgentLogger::info)
+                    target.report(session.id, messages).forEach(AppFileLogger::diagnosticInfo)
                 }
             }
         }
@@ -430,7 +429,7 @@ internal object StreamPerformanceDiagnostics {
                 if (notes < NOTE_MAX_PER_SESSION) {
                     notes++
                     runCatching {
-                        AndroidAgentLogger.info("StreamDiag id=${session.id} gen=$sessionGeneration note=$notes $line")
+                        AppFileLogger.diagnosticInfo("StreamDiag id=${session.id} gen=$sessionGeneration note=$notes $line")
                     }
                 }
             }
@@ -442,14 +441,18 @@ internal object StreamPerformanceDiagnostics {
                 session.record("heap.usedBytes", 0, runtime.totalMemory() - runtime.freeMemory())
                 session.record("main.frameMessages", 0, log.frameMessages)
                 session.record("main.otherMessages", 0, log.otherMessages)
-                session.report(final).forEach(AndroidAgentLogger::info)
+                session.report(final).forEach(AppFileLogger::diagnosticInfo)
             }
         }
         val periodic = object : Runnable {
-            override fun run() { emit(false); handler.postDelayed(this, 5000) }
+            override fun run() {
+                emit(false)
+                spikes = 0 // A long foreground session must not permanently exhaust spike reporting.
+                handler.postDelayed(this, 5000)
+            }
         }
         val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
-            if (frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) != 1L) {
+            if (AppFileLogger.isEnabled() && frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) != 1L) {
                 val total = frame.getMetric(FrameMetrics.TOTAL_DURATION)
                 val deadline = frame.getMetric(FrameMetrics.DEADLINE)
                 val unknown = frame.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION)
@@ -462,6 +465,10 @@ internal object StreamPerformanceDiagnostics {
                 val swap = frame.getMetric(FrameMetrics.SWAP_BUFFERS_DURATION)
                 val gpu = frame.getMetric(FrameMetrics.GPU_DURATION)
                 val missed = deadline > 0 && total > deadline
+                val intended = frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
+                val page = pages.attributeFrame(intended, total)
+                // Only this counter is per-page; the other stage aggregates remain window-wide.
+                session.record(page.aggregatePage.frameStage, total, if (missed) 1 else 0)
                 session.record("frame.total", total, if (missed) 1 else 0)
                 session.record("frame.layout", layout, 0)
                 session.record("frame.draw", draw, 0)
@@ -475,12 +482,11 @@ internal object StreamPerformanceDiagnostics {
                 val gap = frameUnaccountedNs(total, unknown, input, animation, layout, draw, sync, command, swap)
                 if (gap >= 0) session.record("frame.unaccounted", gap, 0)
                 else session.record("frame.overlap", -gap, 1)
-                val intended = frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
                 val late = frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP) - intended
                 session.record("frame.vsyncLate", late.coerceAtLeast(0), if (late > 8_333_333L) 1 else 0)
                 session.record("frame.metricsDropped", 0, dropped.toLong())
                 session.record("frame.deadline", deadline, 0)
-                val parts = "totalUs=${total / 1000} deadlineUs=${deadline / 1000} " +
+                val parts = "${page.fields()} totalUs=${total / 1000} deadlineUs=${deadline / 1000} " +
                     "miss=${if (missed) 1 else 0} " +
                     "unknownUs=${unknown / 1000} inputUs=${input / 1000} " +
                     "animUs=${animation / 1000} layoutUs=${layout / 1000} drawUs=${draw / 1000} " +
@@ -497,13 +503,13 @@ internal object StreamPerformanceDiagnostics {
                 } else {
                     if (target != null && target.expired(System.nanoTime())) finishProbe(target, reportProbe)
                     // 点击窗口外的大尖峰：记下这一帧和它前后的主线程慢消息。
-                    if (total >= SPIKE_FRAME_NS && spikes < SPIKE_MAX_PER_SESSION) {
+                    if (total >= SPIKE_FRAME_NS && spikes < SPIKE_MAX_PER_WINDOW) {
                         spikes++
                         val messages = log.between(intended - SPIKE_LOOKBACK_NS, intended + total, intended, 12)
                         val prefix = "StreamDiag id=${session.id} spike=$spikes gen=$sessionGeneration"
                         runCatching {
-                            AndroidAgentLogger.info("$prefix $parts slowMessages=${messages.size}")
-                            messages.forEach { AndroidAgentLogger.info("$prefix main $it") }
+                            AppFileLogger.diagnosticInfo("$prefix $parts slowMessages=${messages.size}")
+                            messages.forEach { AppFileLogger.diagnosticInfo("$prefix main $it") }
                         }
                     }
                 }
@@ -511,7 +517,7 @@ internal object StreamPerformanceDiagnostics {
         }
         window.addOnFrameMetricsAvailableListener(listener, handler)
         handler.post {
-            AndroidAgentLogger.info(
+            AppFileLogger.diagnosticInfo(
                 "StreamDiag id=${session.id} start=1 gen=$sessionGeneration intervalMs=5000 " +
                     "frameValue=deadlineMiss histogramMs=16,32,50,100 " +
                     "probeFrames=$TOGGLE_PROBE_FRAMES probeMaxMs=${TOGGLE_PROBE_MAX_NS / 1_000_000} " +
@@ -593,19 +599,21 @@ internal fun frameUnaccountedNs(
     swap: Long,
 ): Long = total - (unknown + input + animation + layout + draw + sync + command + swap)
 
+/** One foreground-window monitor at the app root, including non-chat pages. */
 @Composable
-internal fun StreamPerformanceMonitor(isStreaming: Boolean) {
+internal fun StreamPerformanceMonitor(loggingEnabled: Boolean, page: FrameDiagnosticPage) {
     val view = LocalView.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val lifecycleState by lifecycle.currentStateFlow.collectAsState()
-    var tailActive by remember { mutableStateOf(isStreaming) }
-    LaunchedEffect(isStreaming) {
-        if (isStreaming) tailActive = true else { delay(3000); tailActive = false }
+    val resumed = lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+    val pages = remember(view, loggingEnabled, resumed) { FramePageTimeline() }
+    SideEffect {
+        if (loggingEnabled && resumed) pages.mark(page, System.nanoTime())
     }
-    DisposableEffect(view, tailActive, lifecycleState) {
+    DisposableEffect(view, loggingEnabled, resumed, pages) {
         val window = view.context.findStreamActivity()?.window
-        val detach = if (tailActive && lifecycleState.isAtLeast(Lifecycle.State.RESUMED) && window != null) {
-            StreamPerformanceDiagnostics.attach(window)
+        val detach = if (loggingEnabled && resumed && window != null) {
+            StreamPerformanceDiagnostics.attach(window, pages)
         } else null
         onDispose { detach?.invoke() }
     }

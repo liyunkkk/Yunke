@@ -10,6 +10,12 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.CoroutineStart
@@ -181,6 +187,130 @@ class SubAgentDiagnosticLoggingTest {
             assertTrue(appLogText().contains("after_enabled_clear"))
         }
     }
+
+    @Test fun enabledWritesDoNotWaitForTheLifecycleLock() = runBlocking {
+        withLogging { setLogging ->
+            setLogging(true)
+            assertCompletesWhileLockHeld(loggerLock("lock")) {
+                AppFileLogger.info("ordinary_without_lifecycle_wait")
+                AppFileLogger.diagnosticInfo("SubAgentDiag diagnostic_without_lifecycle_wait")
+            }
+            assertTrue(appLogText().contains("ordinary_without_lifecycle_wait"))
+            assertTrue(appLogText().contains("diagnostic_without_lifecycle_wait"))
+            assertTrue(logcatDiagnostics().contains("diagnostic_without_lifecycle_wait"))
+        }
+    }
+
+    @Test fun disabledWritesReturnWithoutAcquiringTheWriteGate() = runBlocking {
+        withLogging { setLogging ->
+            setLogging(false)
+            assertCompletesWhileLockHeld(loggerLock("writeLock")) {
+                AppFileLogger.info("disabled_ordinary_gate")
+                AppFileLogger.diagnosticInfo("SubAgentDiag disabled_diagnostic_gate")
+            }
+            assertFalse(AppFileLogger.hasLogs())
+            assertFalse(logcatDiagnostics().contains("disabled_diagnostic_gate"))
+        }
+    }
+
+    @Test fun writesReturnWhileDisableWaitsForLogcatShutdown() = runBlocking {
+        withLogging { setLogging ->
+            setLogging(true)
+            AppFileLogger.info("before_blocked_disable")
+            val before = appLogText()
+            assertWritesReturnDuringShutdown(clear = false)
+            assertFalse(AppFileLogger.isEnabled())
+            assertEquals(before, appLogText())
+        }
+    }
+
+    @Test fun writesReturnWhileClearWaitsAndOldSinkCannotReappear() = runBlocking {
+        withLogging { setLogging ->
+            setLogging(true)
+            AppFileLogger.info("before_blocked_clear")
+            val oldSink = loggerField("appSink") as FileLogSink
+            assertWritesReturnDuringShutdown(clear = true)
+            assertTrue(AppFileLogger.isEnabled())
+            oldSink.append("stale_sink_after_clear")
+            AppFileLogger.info("fresh_after_clear")
+            val text = appLogText()
+            assertFalse(text.contains("before_blocked_clear"))
+            assertFalse(text.contains("stale_sink_after_clear"))
+            assertFalse(text.contains("during_blocked_shutdown"))
+            assertTrue(text.contains("fresh_after_clear"))
+        }
+    }
+
+    // The test thread performs the writes (Robolectric's main thread). A timeout is
+    // returned to JUnit, not thrown and lost on the lock-holder thread.
+    private fun assertCompletesWhileLockHeld(lock: ReentrantLock, block: () -> Unit) {
+        val acquired = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        val holder = FutureTask<Boolean> {
+            lock.withLock {
+                acquired.countDown()
+                completed.await(5, TimeUnit.SECONDS)
+            }
+        }
+        Thread(holder, "logger-lock-holder").apply { isDaemon = true }.start()
+        try {
+            assertTrue("holder acquired lock", acquired.await(5, TimeUnit.SECONDS))
+            block()
+        } finally {
+            completed.countDown()
+        }
+        assertTrue("logging must finish before lifecycle/gate lock is released", holder.get(10, TimeUnit.SECONDS))
+    }
+
+    private fun assertWritesReturnDuringShutdown(clear: Boolean) {
+        val process = BlockingShutdownProcess()
+        @Suppress("UNCHECKED_CAST")
+        val processRef = loggerField("logcatProcess") as AtomicReference<Process?>
+        val previous = processRef.getAndSet(process)
+        previous?.destroyForcibly()
+        val shutdown = FutureTask<Unit> {
+            if (clear) AppFileLogger.clear() else AppFileLogger.setEnabled(false)
+        }
+        val worker = Thread(shutdown, "logger-lifecycle-test").apply { isDaemon = true }
+        worker.start()
+        try {
+            assertTrue("shutdown entered process wait", process.entered.await(5, TimeUnit.SECONDS))
+            assertFalse(AppFileLogger.isEnabled())
+            AppFileLogger.info("during_blocked_shutdown_ordinary")
+            AppFileLogger.diagnosticInfo("SubAgentDiag during_blocked_shutdown_diagnostic")
+            assertFalse("shutdown must still be blocked when writes return", process.timedOut.get())
+            assertFalse(appLogText().contains("during_blocked_shutdown"))
+            assertFalse(logcatDiagnostics().contains("during_blocked_shutdown"))
+        } finally {
+            process.release.countDown()
+            shutdown.get(10, TimeUnit.SECONDS)
+            worker.join(1_000)
+        }
+    }
+
+    private class BlockingShutdownProcess : Process() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val timedOut = AtomicBoolean(false)
+        override fun getOutputStream() = ByteArrayOutputStream()
+        override fun getInputStream() = ByteArrayInputStream(byteArrayOf())
+        override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+        override fun destroy() = Unit
+        override fun exitValue() = 0
+        override fun waitFor(): Int { waitFor(5, TimeUnit.SECONDS); return 0 }
+        override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
+            entered.countDown()
+            // An explicit latch holds shutdown open; the guard bounds failures even
+            // when testing the old blocking implementation. No sleeps or polling.
+            if (!release.await(5, TimeUnit.SECONDS)) timedOut.set(true)
+            return true
+        }
+    }
+
+    private fun loggerField(name: String): Any? = AppFileLogger::class.java
+        .getDeclaredField(name).apply { isAccessible = true }.get(null)
+
+    private fun loggerLock(name: String) = loggerField(name) as ReentrantLock
 
     private fun logsDir() = File(RuntimeEnvironment.getApplication().filesDir, AppFileLogger.DIRECTORY_NAME)
     private fun appLogText(): String = logsDir().listFiles().orEmpty()

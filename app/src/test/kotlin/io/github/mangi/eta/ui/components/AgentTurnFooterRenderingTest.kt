@@ -159,10 +159,17 @@ class AgentTurnFooterRenderingTest {
         footer("answer").assertDoesNotExist()
         footerAction("old-answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
         assertEquals(listOf("branch:old-answer"), callbacks)
+        // Streaming expands trailing work by default; explicit overrides take precedence.
+        compose.onNodeWithText("Work after the answer").assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.work_collapse)).performClick()
+        compose.onNodeWithContentDescription(text(R.string.work_expand)).assertIsDisplayed()
+        footer("answer").assertDoesNotExist()
         compose.onNodeWithContentDescription(text(R.string.work_expand)).performClick()
+        compose.onNodeWithText("Work after the answer").assertIsDisplayed()
         footer("answer").assertDoesNotExist()
         footer("old-answer").assertIsDisplayed()
         compose.runOnIdle { streaming.value = false }
+        compose.onNodeWithText("Work after the answer").assertIsDisplayed()
         footer("answer").assertIsDisplayed()
         assertBelow(footer("answer"), compose.onNodeWithText("Work after the answer"))
     }
