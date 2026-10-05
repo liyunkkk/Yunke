@@ -202,8 +202,10 @@ class SubAgentDiagnosticLoggingTest {
     }
 
     @Test fun disabledWritesReturnWithoutAcquiringTheWriteGate() = runBlocking {
-        withLogging { setLogging ->
-            setLogging(false)
+        withLogging { _ ->
+            // withLogging already consumed the initial disabled delivery. The distinct
+            // settings flow does not emit again when false is written a second time.
+            assertFalse(AppFileLogger.isEnabled())
             assertCompletesWhileLockHeld(loggerLock("writeLock")) {
                 AppFileLogger.info("disabled_ordinary_gate")
                 AppFileLogger.diagnosticInfo("SubAgentDiag disabled_diagnostic_gate")
