@@ -274,8 +274,9 @@ internal fun AgentChatBody(
     // Project once for both the initial tail anchor and the rendered rows below. In
     // particular, do not derive a second full timeline just to ask for its size: this
     // list can contain thousands of streaming/tool messages.
+    val timelineProjection = remember { AgentTimelineProjectionCache() }
     val timelineEntries = remember(visibleMessages) {
-        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
+        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { timelineProjection.project(visibleMessages) }
     }
     val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
         initialTimelineItemIndex(
