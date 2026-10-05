@@ -191,7 +191,15 @@ final class LaunchTargetOccupancy {
      * partial/contradictory self name, is a conflict, never a clean inventory.
      */
     private static boolean provenNonTarget(Root root) {
-        if (!root.componentsKnown || !validChildIds(root)) return false;
+        if (!root.componentsKnown) return false;
+        if (!validChildIds(root)) {
+            // Some ROMs use 0 as a real child task id (HyperOS / Android 17 exposes the
+            // Bubbles container as root 3 with childTaskIds [0]). The id-marker rule above
+            // cannot clear those ids, so the only admissible proof is the organizer
+            // enumeration: it must match this root's child ids exactly and every child must
+            // be identity-free with zero activities. No proof still means UNKNOWN.
+            return organizerProven(root);
+        }
         if (identityAbsent(root) && root.numActivities != 0) return false;
         // A claimed readable name array that disagrees with the ids is inconsistent, not empty.
         if (root.childNamesKnown && !hasParallelChildNames(root)) return false;

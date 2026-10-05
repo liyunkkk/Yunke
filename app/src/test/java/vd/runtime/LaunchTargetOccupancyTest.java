@@ -326,4 +326,25 @@ public class LaunchTargetOccupancyTest {
         assertEquals(LaunchTargetOccupancy.UNKNOWN, LaunchTargetOccupancy.decide(TARGET,
                 Arrays.asList(self(191, TARGET)), Collections.<LaunchTargetOccupancy.Recent>emptyList(), null).code);
     }
+
+    @Test public void zeroChildIdWithOrganizerProofIsClear() {
+        // HyperOS / Android 17 exposes the Bubbles container as root 3 with childTaskIds [0]
+        // (task 0 is a real, identity-free, zero-activity child). The id-marker rule cannot
+        // clear that id, so the organizer enumeration is the only admissible proof.
+        assertFalse(decide(root(3, null, null, null, null, true, 0,
+                true, new int[]{0}, true, new String[]{null}, true, true)).rejects());
+    }
+    @Test public void zeroChildIdWithoutOrganizerProofStaysUnknown() {
+        assertEquals(LaunchTargetOccupancy.UNKNOWN, decide(root(3, null, null, null, null,
+                true, 0, true, new int[]{0}, true, new String[]{null}, false, false)).code);
+        assertEquals(LaunchTargetOccupancy.UNKNOWN, decide(root(3, null, null, null, null,
+                true, 0, true, new int[]{0}, true, new String[]{null}, true, false)).code);
+        assertEquals(LaunchTargetOccupancy.UNKNOWN, decide(root(3, null, null, null, null,
+                true, 0, true, new int[]{0}, true, new String[]{null}, false, true)).code);
+    }
+    @Test public void zeroChildIdWithOrganizerProofStillRefusesIdentifiedRoots() {
+        // The organizer exception must never clear a root that carries package identity.
+        assertEquals(LaunchTargetOccupancy.UNKNOWN, decide(root(3, "com.other.app", null, null,
+                null, true, 0, true, new int[]{0}, true, new String[]{null}, true, true)).code);
+    }
 }
