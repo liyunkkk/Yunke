@@ -41,6 +41,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * Differential rendering: identical library host and legacy frozen boundary,
@@ -49,6 +50,7 @@ import org.robolectric.annotation.Config
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], qualifiers = "w480dp-h900dp-mdpi")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class FrozenMarkdownRenderingTest {
     @get:Rule val compose = createComposeRule()
 
@@ -191,11 +193,11 @@ class FrozenMarkdownRenderingTest {
         compose.waitForIdle()
         assertSameRendering("narrow width while frozen")
         val narrow = compose.onNodeWithTag("candidate").getUnclippedBoundsInRoot()
-        assertTrue("frozen text must still reflow", narrow.bottom - narrow.top > before.bottom - before.top)
+        assertTrue("frozen text must still reflow: $before -> $narrow", narrow.bottom - narrow.top > before.bottom - before.top)
         compose.runOnIdle { scale.value = 1.3f; dark.value = true }
         compose.waitForIdle()
         assertSameRendering("font scale and theme while frozen")
         val scaled = compose.onNodeWithTag("candidate").getUnclippedBoundsInRoot()
-        assertTrue("frozen text must still follow font scale", scaled.bottom - scaled.top > narrow.bottom - narrow.top)
+        assertTrue("frozen text must still follow font scale: $narrow -> $scaled", scaled.bottom - scaled.top > narrow.bottom - narrow.top)
     }
 }
