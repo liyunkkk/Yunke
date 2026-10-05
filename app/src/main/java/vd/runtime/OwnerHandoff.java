@@ -332,6 +332,24 @@ final class OwnerHandoff {
         }
         return true;
     }
+
+    /**
+     * Same as {@link #completeChildIds} but tolerates {@code 0} as a real child task id.
+     *
+     * <p>HyperOS / Android 17 exposes the Bubbles container as root 3 whose {@code childTaskIds}
+     * is {@code [0]}, and task {@code 0} is a real, identity-free, zero-activity child. Only the
+     * organizer enumeration path uses this relaxed check: {@code -1} and the root's own id remain
+     * markers, duplicates stay invalid, and the enumeration that follows still has to match the
+     * ids exactly with every child empty and identity-free.
+     */
+    static boolean completeChildIdsAllowingZero(int[] childIds,int selfId) {
+        if(childIds==null||childIds.length==0) return false;
+        Set<Integer> seen=new HashSet<Integer>();
+        for(int id:childIds) {
+            if(id<0||id==selfId||!seen.add(id)) return false;
+        }
+        return true;
+    }
     /**
      * Read-only proof that {@code root} is an organizer-created, identity-free empty container whose
      * direct children are exactly {@code childIds}, each also an identity-free empty task.
@@ -347,7 +365,7 @@ final class OwnerHandoff {
         if(root==null||childIds==null) return false;
         try {
             int rootId=requiredInt(root,"taskId");
-            if(!completeChildIds(childIds,rootId)) return false;
+            if(!completeChildIdsAllowingZero(childIds,rootId)) return false;
             if(requiredInt(root,"parentTaskId")!=-1) return false;
             Integer activityType=activityType(root);
             if(activityType==null||activityType.intValue()!=0) return false;
