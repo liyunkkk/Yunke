@@ -129,6 +129,11 @@ if (providers.environmentVariable("GITHUB_ACTIONS").orNull == "true") {
     }
 }
 
+// Keep compiler function slices available in the signed release diagnostic capture.
+composeCompiler {
+    includeTraceMarkers = true
+}
+
 dependencies {
     implementation(libs.commons.compress)
     implementation(libs.xz)

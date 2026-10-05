@@ -77,6 +77,7 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
         RootAccess.initialize(this)
         SettingsDataStore.init(this)
         AppFileLogger.install(this)
+        io.github.mangi.eta.ui.components.ComposeSystemTrace.install()
         AgentMemoryRepository.init(this)
         ProviderRepository.init(this)
         AssistantRepository.init(this)
