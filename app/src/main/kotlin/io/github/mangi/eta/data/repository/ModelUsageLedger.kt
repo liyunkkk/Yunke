@@ -193,9 +193,12 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
         val parsed = JSONObject(raw?.takeIf { it.isNotBlank() } ?: "{}")
         val initialized = parsed.optBoolean("conversationTotalsInitialized")
         seedConversationUsageInPlace(parsed, raw, emptyMap())
-        // The steady-state path reuses the parsed ledger. Preserve the migration's original
-        // intermediate JSON round-trip, including decoding events from the untouched raw string.
-        if (initialized) parsed else JSONObject(parsed.toString())
+        // The steady-state path reuses the parsed ledger. The original code always re-parsed
+        // its own serialization, which canonicalizes non-integral number objects (100.0, 1E2,
+        // 3e9) before optString/optInt read them. Keep that round-trip whenever such a value
+        // exists, and for migration, so every input still yields the original result.
+        if (initialized && parsed.hasOnlyCanonicalJsonValues()) parsed
+        else JSONObject(parsed.toString())
     }.getOrDefault(JSONObject())
     val providers = root.optJSONObject("providers") ?: JSONObject().also {
         root.put("providers", it)
@@ -345,4 +348,24 @@ internal fun List<ModelUsageEvent>.collapsedByRound(): List<ModelUsageEvent> {
         }
     }
     return kept
+}
+
+/**
+ * True when serializing and re-parsing [this] would yield identical value objects:
+ * strings, booleans, NULL, Integer and Long survive org.json's round-trip unchanged.
+ * Any other Number (Double, BigDecimal, BigInteger...) may be rewritten by it.
+ */
+internal fun JSONObject.hasOnlyCanonicalJsonValues(): Boolean {
+    val keys = keys()
+    while (keys.hasNext()) {
+        if (!opt(keys.next()).isCanonicalJsonValue()) return false
+    }
+    return true
+}
+
+private fun Any?.isCanonicalJsonValue(): Boolean = when (this) {
+    null, JSONObject.NULL, is String, is Boolean, is Int, is Long -> true
+    is JSONObject -> this.hasOnlyCanonicalJsonValues()
+    is JSONArray -> (0 until this.length()).all { index -> this.opt(index).isCanonicalJsonValue() }
+    else -> false
 }

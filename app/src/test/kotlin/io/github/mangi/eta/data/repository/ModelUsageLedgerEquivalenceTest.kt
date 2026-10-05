@@ -197,6 +197,27 @@ class ModelUsageLedgerEquivalenceTest {
         assertJsonEquivalent("initialized seed is a no-op", JSONObject(initializedRaw()), initialized)
     }
 
+    @Test fun nonCanonicalNumbersInInitializedLedgerMatchOriginal() {
+        // Hand-written raw text: these number forms must reach applyModelUsageDelta unnormalized.
+        fun ledger(event: String) = """{"conversationTotalsInitialized":true,
+            "conversationTotalsV1":{"a":{"in":10,"out":0,"k":0,"w":0}},
+            "providers":{"p":{"name":"Provider","models":{"main":{"displayName":"Main",
+            "inputTokens":10,"outputTokens":0,"cachedTokens":0,"cacheCreationTokens":0,
+            "events":[$event],"conversations":["a"],"days":["1970-01-01"]}}}}}"""
+        val cases = listOf(
+            "numeric decimal request id" to ledger("""{"t":1000,"in":10,"out":0,"c":"a","r":1,"q":100.0}"""),
+            "exponent request id" to ledger("""{"t":1000,"in":10,"out":0,"c":"a","r":1,"q":1E2}"""),
+            "exponent round" to ledger("""{"t":1000,"in":10,"out":0,"c":"a","r":3e9}"""),
+            "decimal counter" to ledger("""{"t":1000,"in":10.0,"out":0,"c":"a","r":1,"q":"100"}"""),
+        )
+        val deltas = listOf(delta(request = "100"), delta(request = null), delta(request = "other"))
+        cases.forEach { (label, raw) ->
+            assertFalse(label, JSONObject(raw).hasOnlyCanonicalJsonValues())
+            deltas.forEachIndexed { index, change -> assertDeltaMatchesOriginal("$label delta $index", raw, change) }
+        }
+        assertTrue(JSONObject(initializedRaw()).hasOnlyCanonicalJsonValues())
+    }
+
     private fun JSONObject.removeTotals(): JSONObject = apply { remove("conversationTotalsV1") }
 
     private fun legacyRaw(withCounters: Boolean = false): String {
