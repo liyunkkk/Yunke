@@ -26,7 +26,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         McpServerEntity::class,
         SubAgentRunEntity::class,
     ],
-    version = 32,
+    version = 33,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -75,6 +75,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_29_30,
                         MIGRATION_30_31,
                         MIGRATION_31_32,
+                        MIGRATION_32_33,
                     )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -189,6 +190,11 @@ internal abstract class EtaDatabase : RoomDatabase() {
                     "ok INTEGER NOT NULL, " +
                     "created_at INTEGER NOT NULL)"
             )
+        }
+
+        /** 上游 v5.3.6 新增：会话完成标记（未读完成圆环）。设备旧库已在我方 32 上，需要独立补这一列。 */
+        internal val MIGRATION_32_33 = Migration(32, 33) { database ->
+            database.execSQL("ALTER TABLE conversations ADD COLUMN has_completion_marker INTEGER NOT NULL DEFAULT 0")
         }
 
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->
