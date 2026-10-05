@@ -1160,6 +1160,7 @@ private fun StreamingMarkdown(
     }
 
     snapshot?.let { parsed ->
+        val imageTransformer = rememberStreamingMarkdownImageTransformer(parsed.state.content)
         Markdown(
             state = parsed.state,
             colors = chatMarkdownColors(tone),
@@ -1167,6 +1168,7 @@ private fun StreamingMarkdown(
             padding = chatMarkdownPadding(),
             dimens = chatMarkdownDimens(),
             components = components,
+            imageTransformer = imageTransformer,
             animations = markdownAnimations(animateTextSize = { this }),
             modifier = modifier.onGloballyPositioned {
                 StreamPerformanceDiagnostics.record("markdown.layout", value = it.size.height.toLong())

@@ -30,3 +30,17 @@ class FrozenMarkdownInputContract(unittest.TestCase):
         self.assertIn('if (freeze) {\n        remember { value }\n    } else {\n        value', helper)
         for token in ('LaunchedEffect', 'remember(value', 'mutableStateOf', 'rememberSaveable'):
             self.assertNotIn(token, helper)
+
+    def test_only_streaming_host_supplies_the_conservative_transformer(self):
+        text = (ROOT / 'ui/components/ChatMessageItem.kt').read_text()
+        self.assertEqual(1, text.count('rememberStreamingMarkdownImageTransformer(parsed.state.content)'))
+        start = text.index('private fun StreamingMarkdown(')
+        end = text.index('private fun StreamingGfmSuccess(', start)
+        body = text[start:end]
+        self.assertIn('val imageTransformer = rememberStreamingMarkdownImageTransformer(parsed.state.content)', body)
+        self.assertIn('imageTransformer = imageTransformer,', body)
+        helper = (ROOT / 'ui/components/StreamingMarkdownImageTransformer.kt').read_text()
+        for token in ('private var bracketSyntaxSeen = false', "'[' in content", 'if (bracketSyntaxSeen) NoOpImageTransformerImpl() else retained', 'remember { StreamingMarkdownImageTransformerPolicy() }'):
+            self.assertIn(token, helper)
+        for token in ('ReferenceLinkHandlerImpl', 'parseMarkdown(', 'LocalMarkdown', 'LaunchedEffect', 'mutableStateOf'):
+            self.assertNotIn(token, helper)

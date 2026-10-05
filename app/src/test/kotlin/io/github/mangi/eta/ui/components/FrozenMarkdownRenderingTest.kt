@@ -8,6 +8,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +31,7 @@ import com.mikepenz.markdown.compose.components.MarkdownComponents
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.markdownAnimations
+import com.mikepenz.markdown.model.NoOpImageTransformerImpl
 import com.mikepenz.markdown.model.State
 import com.mikepenz.markdown.model.parseMarkdown
 import io.github.mangi.eta.ui.markdown.StreamingGfmParserSession
@@ -95,6 +97,7 @@ class FrozenMarkdownRenderingTest {
             modifier = Modifier.width(width).testTag(tag),
             animations = markdownAnimations(animateTextSize = { this }),
             components = components,
+            imageTransformer = if (candidate) rememberStreamingMarkdownImageTransformer(hostState.content) else NoOpImageTransformerImpl(),
             success = { state, components, modifier ->
                 Column(modifier) {
                     val node = topLevelMarkdownBlocks(state.node).first()
@@ -150,6 +153,9 @@ class FrozenMarkdownRenderingTest {
             frame("An unfinished *emphasis", false, complete = false),
             frame("An unfinished *emphasis", false, complete = true),
             frame("A completed paragraph with **styles**, `inline code`, and a [link](https://example.test/last).\n\nTail", true),
+            frame("A [late reference][late].\n\nTail", false),
+            frame("A [late reference][late].\n\nTail", true),
+            frame("A [late reference][late].\n\nTail grows\n\n[late]: https://example.test/late", true),
         )
         val current = mutableStateOf(frames.first())
         val width = mutableStateOf(320.dp)
@@ -170,6 +176,11 @@ class FrozenMarkdownRenderingTest {
             compose.runOnIdle { current.value = frame }
             compose.waitForIdle()
             assertSameRendering("frame $index")
+            if (index >= 8) {
+                listOf("legacy", "candidate").forEach { tag ->
+                    assertTrue("late reference fixture must be displayed: $tag", texts(tag).any { "late reference" in it.text })
+                }
+            }
             if (index == 2) {
                 for (tag in listOf("legacy", "candidate")) {
                     assertTrue("reference annotation must actually exist at freeze entry: $tag",
@@ -200,4 +211,122 @@ class FrozenMarkdownRenderingTest {
         val scaled = compose.onNodeWithTag("candidate").getUnclippedBoundsInRoot()
         assertTrue("frozen text must still follow font scale: $narrow -> $scaled", scaled.bottom - scaled.top > narrow.bottom - narrow.top)
     }
+
+    @Composable
+    private fun CountedElement(
+        node: ASTNode, content: String, components: MarkdownComponents,
+        freeze: Boolean, calls: MutableMap<Int, Int>,
+    ) {
+        SideEffect { calls[node.startOffset] = (calls[node.startOffset] ?: 0) + 1 }
+        LegacyBoundary(node, content, components, freeze)
+    }
+
+    @Composable
+    private fun CountDocument(
+        snapshot: StreamingGfmSnapshot, candidate: Boolean, calls: MutableMap<Int, Int>,
+    ) {
+        val components = remember { markdownComponents() }
+        val transformer = if (candidate) {
+            rememberStreamingMarkdownImageTransformer(snapshot.state.content)
+        } else {
+            NoOpImageTransformerImpl()
+        }
+        Markdown(
+            state = snapshot.state,
+            components = components,
+            imageTransformer = transformer,
+            animations = markdownAnimations(animateTextSize = { this }),
+            success = { state, c, modifier ->
+                Column(modifier) {
+                    val blocks = topLevelMarkdownBlocks(state.node)
+                    val tail = blocks.last().startOffset
+                    check(blocks.size == 4)
+                    check(blocks.count {
+                        shouldFreezeStreamingMarkdownBlock(it.startOffset, tail)
+                    } == 3)
+                    blocks.forEach { node ->
+                        key(node.startOffset, node.type.name) {
+                            val freeze = shouldFreezeStreamingMarkdownBlock(node.startOffset, tail)
+                            val n = rememberFrozenMarkdownInput(node, freeze)
+                            val text = rememberFrozenMarkdownInput(state.content, freeze)
+                            CountedElement(n, text, c, freeze, calls)
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    @Test fun realProviderSkipsFrozenPlainBlocksButUpdatesTheTail() {
+        val parser = StreamingGfmParserSession()
+        val prefix = "Frozen one.\n\nFrozen two.\n\nFrozen three.\n\n"
+        fun next(i: Int) = parser.parse(prefix + "Tail $i", isComplete = false)
+        val current = mutableStateOf(next(0))
+        val old = linkedMapOf<Int, Int>()
+        val fixed = linkedMapOf<Int, Int>()
+        compose.setContent {
+            MaterialTheme {
+                Column {
+                    key("fresh") { CountDocument(current.value, false, old) }
+                    key("retained") { CountDocument(current.value, true, fixed) }
+                }
+            }
+        }
+        compose.waitForIdle()
+        val offsets = topLevelMarkdownBlocks(current.value.state.node).map { it.startOffset }
+        val baseline = fixed.toMap()
+        var previousOld = old.toMap()
+        var previousTail = fixed.getValue(offsets.last())
+        repeat(8) { i ->
+            compose.runOnIdle {
+                val snapshot = next(i + 1)
+                assertSame(current.value.state.referenceLinkHandler, snapshot.state.referenceLinkHandler)
+                current.value = snapshot
+            }
+            compose.waitForIdle()
+            compose.runOnIdle {
+                offsets.dropLast(1).forEach { offset ->
+                    assertEquals("frozen plain block must skip", baseline[offset], fixed[offset])
+                    assertTrue("fresh control must recompose", old.getValue(offset) > previousOld.getValue(offset))
+                }
+                assertTrue("active tail must update", fixed.getValue(offsets.last()) > previousTail)
+                previousOld = old.toMap()
+                previousTail = fixed.getValue(offsets.last())
+            }
+        }
+    }
+
+    @Test fun optimizedPlainRendererPreservesGeometryAndCurrentTypography() {
+        val parser = StreamingGfmParserSession()
+        val current = mutableStateOf(Frame(parser.parse("Pure **bold** and *emphasis* with `code`.\n\nTail", true), true))
+        val width = mutableStateOf(320.dp)
+        val scale = mutableStateOf(1f)
+        val dark = mutableStateOf(false)
+        compose.setContent {
+            val density = LocalDensity.current.density
+            CompositionLocalProvider(LocalDensity provides Density(density, scale.value)) {
+                MaterialTheme(colorScheme = if (dark.value) darkColorScheme() else lightColorScheme()) {
+                    Column {
+                        key("legacy") { Document(current.value, false, "legacy", width.value) }
+                        key("candidate") { Document(current.value, true, "candidate", width.value) }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        assertSameRendering("plain entry")
+        compose.runOnIdle { current.value = Frame(parser.parse("Pure **bold** and *emphasis* with `code`.\n\nTail grows", true), true) }
+        compose.waitForIdle()
+        assertSameRendering("plain frozen append")
+        compose.runOnIdle { width.value = 180.dp }
+        compose.waitForIdle()
+        assertSameRendering("plain width")
+        compose.runOnIdle { scale.value = 1.3f }
+        compose.waitForIdle()
+        assertSameRendering("plain font scale")
+        compose.runOnIdle { dark.value = true }
+        compose.waitForIdle()
+        assertSameRendering("plain theme")
+    }
+
 }
