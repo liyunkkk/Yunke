@@ -1302,12 +1302,17 @@ private fun ChatMarkdownDocument(
             if (gap > 0.dp) Spacer(Modifier.height(gap))
             previousVisibleType = node.type
             key(node.startOffset, node.type.name) {
+                val freeze = revealCoordinator != null &&
+                    shouldFreezeStreamingMarkdownBlock(node.startOffset, lastVisibleStartOffset)
+                // Pin only what the existing frozen branch already renders. Keep the
+                // renderer at one call site so freeze changes do not remount its Box.
+                val renderNode = rememberFrozenMarkdownInput(node, freeze)
+                val renderContent = rememberFrozenMarkdownInput(content, freeze)
                 FrozenMarkdownElement(
-                    node = node,
+                    node = renderNode,
                     components = components,
-                    content = content,
-                    freeze = revealCoordinator != null &&
-                        shouldFreezeStreamingMarkdownBlock(node.startOffset, lastVisibleStartOffset),
+                    content = renderContent,
+                    freeze = freeze,
                 )
             }
         }
