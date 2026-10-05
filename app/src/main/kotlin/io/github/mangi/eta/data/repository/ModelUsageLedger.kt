@@ -189,8 +189,14 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     if (delta.inputTokens <= 0L && delta.outputTokens <= 0L && delta.conversationId.isNullOrBlank()) {
         return raw.orEmpty()
     }
-    val root = runCatching { JSONObject(seedConversationUsage(raw, emptyMap())) }
-        .getOrDefault(JSONObject())
+    val root = runCatching {
+        val parsed = JSONObject(raw?.takeIf { it.isNotBlank() } ?: "{}")
+        val initialized = parsed.optBoolean("conversationTotalsInitialized")
+        seedConversationUsageInPlace(parsed, raw, emptyMap())
+        // The steady-state path reuses the parsed ledger. Preserve the migration's original
+        // intermediate JSON round-trip, including decoding events from the untouched raw string.
+        if (initialized) parsed else JSONObject(parsed.toString())
+    }.getOrDefault(JSONObject())
     val providers = root.optJSONObject("providers") ?: JSONObject().also {
         root.put("providers", it)
     }
