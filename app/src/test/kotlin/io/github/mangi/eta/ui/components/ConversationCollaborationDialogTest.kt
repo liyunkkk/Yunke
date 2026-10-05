@@ -6,6 +6,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
+import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -175,6 +180,57 @@ class ConversationCollaborationDialogTest {
         compose.runOnIdle {
             org.junit.Assert.assertEquals(before, fixture.snapshot())
             org.junit.Assert.assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
+    }
+
+    @Test fun conversationTaskTierDraftSavesReopensAndRoleSwitchDoesNotWriteBackToPreset() {
+        val fixture = SubAgentUiFixture(profiles = listOf(SubAgentProfile("tier-agent", "分工代理")))
+        val preset = fixture.createPreset()
+        val presetOwner = SubAgentConfigKey.Preset(preset.id)
+        val visible = mutableStateOf(true)
+        compose.setSubAgentContent(fixture) {
+            ConversationCollaborationDialog(visible.value, true, {}, { visible.value = false })
+        }
+        compose.onNodeWithContentDescription("应用子代理组${preset.name}").performClick()
+        compose.onNodeWithContentDescription("配置分工代理").performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().performClick()
+        compose.onNodeWithText("常规任务").performClick()
+        compose.runOnIdle {
+            assertNull(fixture.snapshot().profiles.single().tier) // Still a draft until confirmed.
+            assertEquals(preset.config, fixture.repository.snapshot(presetOwner))
+        }
+        compose.onNodeWithText("确认").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(SubAgentTaskTier.REGULAR, fixture.snapshot().profiles.single().tier)
+            assertEquals(preset.config, fixture.repository.snapshot(presetOwner))
+        }
+        compose.onNodeWithText("完成").performClick()
+        compose.runOnIdle { visible.value = true }
+        compose.onNodeWithContentDescription("配置分工代理").performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().assert(hasText("常规任务"))
+        compose.onNodeWithContentDescription("草稿职责").performScrollTo().performClick()
+        compose.onNodeWithText("审查／总结").performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").assertDoesNotExist()
+        compose.onNodeWithText("确认").performClick()
+        compose.runOnIdle {
+            assertEquals("review", fixture.snapshot().profiles.single().role)
+            assertNull(fixture.snapshot().profiles.single().tier)
+            assertEquals(preset.config, fixture.repository.snapshot(presetOwner))
+        }
+        compose.onNodeWithContentDescription("配置分工代理").performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").assertDoesNotExist()
+        compose.onNodeWithContentDescription("草稿职责").performScrollTo().performClick()
+        compose.onNodeWithText("执行").performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().assert(hasText("未设置分工"))
+        compose.onNodeWithText("确认").performClick()
+        compose.onNodeWithContentDescription("配置分工代理").performClick()
+        compose.onNodeWithContentDescription("草稿任务分工").performScrollTo().assert(hasText("未设置分工"))
+        compose.onNodeWithText("取消").performClick()
+        compose.runOnIdle {
+            assertEquals("implementation", fixture.snapshot().profiles.single().role)
+            assertNull(fixture.snapshot().profiles.single().tier)
+            assertEquals(preset.config, fixture.repository.snapshot(presetOwner))
         }
     }
 

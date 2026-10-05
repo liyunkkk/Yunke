@@ -19,6 +19,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.SubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
 import io.github.mangi.eta.agent.model.MediaReasoningSettings
 import io.github.mangi.eta.agent.model.ModelFeatureSelection
 import io.github.mangi.eta.data.model.ProviderSetting
@@ -39,12 +40,13 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
     var modelPicker by remember(editor, profile.id) { mutableStateOf(false) }
     var thinkingPicker by remember(editor, profile.id) { mutableStateOf(false) }
     var rolePicker by remember(editor, profile.id) { mutableStateOf(false) }
+    var tierPicker by remember(editor, profile.id, profile.role) { mutableStateOf(false) }
     var profileDraft by remember(editor, profile.id) { mutableStateOf<SubAgentProfileDraftSession?>(null) }
     var resolutionPicker by remember(editor, profile.id, profile.providerId, profile.modelId, profile.role) { mutableStateOf(false) }
     LaunchedEffect(usable, editor) {
-        if (!usable) { modelPicker = false; thinkingPicker = false; rolePicker = false; resolutionPicker = false }
+        if (!usable) { modelPicker = false; thinkingPicker = false; rolePicker = false; tierPicker = false; resolutionPicker = false }
     }
-    LaunchedEffect(profile.role) { rolePicker = false; thinkingPicker = false; modelPicker = false; resolutionPicker = false }
+    LaunchedEffect(profile.role) { rolePicker = false; tierPicker = false; thinkingPicker = false; modelPicker = false; resolutionPicker = false }
     val config = remember(profile.providerId, profile.modelId, profile.role, providers) {
         val provider = providers.firstOrNull { it.id == profile.providerId && it.isEnabled }
         val model = provider?.models?.firstOrNull { it.id == profile.modelId && it.isEnabled }
@@ -81,6 +83,25 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
                             SubAgentSelectionItem(label, profile.role == role) {
                                 if (currentUsable) editor?.updateProfile(profile.id) { it.withRole(role) }
                                 rolePicker = false
+                            }
+                        }
+                    }
+                }
+            }
+            if (profile.supportsTaskTier) {
+                Box(Modifier.fillMaxWidth()) {
+                    SubAgentSettingRow("任务分工", profile.tier?.label ?: "未设置分工", Icons.Rounded.AccountTree,
+                        "设置${profile.name}任务分工", enabled = usable, dropdown = true,
+                        onClick = { if (currentUsable) { TouchHaptics.click(view); tierPicker = !tierPicker } })
+                    Box(Modifier.align(Alignment.CenterEnd).size(40.dp)) {
+                        if (usable) SubAgentDropdownMenu(tierPicker, { tierPicker = false }, Modifier.selectableGroup()) {
+                            (listOf<SubAgentTaskTier?>(null) + SubAgentTaskTier.entries).forEach { tier ->
+                                SubAgentSelectionItem(tier?.label ?: "未设置分工", profile.tier == tier) {
+                                    if (currentUsable) editor?.updateProfile(profile.id) { latest ->
+                                        if (latest.supportsTaskTier) latest.copy(tier = tier) else latest
+                                    }
+                                    tierPicker = false
+                                }
                             }
                         }
                     }

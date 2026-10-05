@@ -94,10 +94,11 @@ class SubAgentProfileDialogContractTest(unittest.TestCase):
             self.assertIn(required, text)
         self.assertNotIn('SubAgentParallelModel(draft.providerId, draft.modelId)', text)
 
-    def test_entry_points_remove_tier_shortcuts_and_never_preadd(self):
+    def test_entry_points_keep_compact_card_and_never_preadd(self):
         row = self.source('ui/components/SubAgentProfileRow.kt')
         self.assertNotIn('SubAgentTaskTierButton', row)
-        self.assertNotIn('"任务分工"', row)
+        compact = row.split('Row(Modifier.fillMaxWidth().heightIn(min = 88.dp)', 1)[1].split('profileDraft?.let', 1)[0]
+        self.assertNotIn('"任务分工"', compact)
         self.assertIn('Icon(Icons.Rounded.MoreVert, "配置${profile.name}"', row)
         self.assertIn('SubAgentProfileDraftSession.open(editor, profile)', row)
         self.assertIn('onLongClickLabel = "调整${profile.name}思考深度"', row)

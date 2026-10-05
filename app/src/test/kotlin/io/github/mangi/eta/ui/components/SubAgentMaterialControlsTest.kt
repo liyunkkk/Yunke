@@ -51,20 +51,61 @@ class SubAgentMaterialControlsTest {
         compose.runOnIdle { assertTrue(clicked) }
     }
 
-    @Test fun externalSettingsNeverShowsTierControls() {
+    @Test fun externalSettingsShowsDisabledTierOnlyForImplementation() {
         val role = mutableStateOf("implementation")
         compose.setContent {
             MaterialTheme {
                 SubAgentProfileRow(SubAgentProfile("test", "测试代理", role = role.value), emptyList(), settings = true)
             }
         }
-        compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
-        for (next in listOf("implementation", "review", "image_generation", "video_generation")) {
+        for (next in listOf("implementation", "review", "image_generation", "video_generation", "implementation")) {
             compose.runOnIdle { role.value = next }
-            compose.onNodeWithText("任务分工").assertDoesNotExist()
-            compose.onNodeWithText("未设置分工").assertDoesNotExist()
+            if (next == "implementation") {
+                compose.onNodeWithContentDescription("设置测试代理任务分工").assertExists().assertIsNotEnabled()
+                compose.onNodeWithText("任务分工").assertExists()
+                compose.onNodeWithText("未设置分工").assertExists()
+            } else {
+                compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
+                compose.onNodeWithText("任务分工").assertDoesNotExist()
+                compose.onNodeWithText("未设置分工").assertDoesNotExist()
+            }
             compose.onNodeWithContentDescription("选择测试代理职责").assertExists()
             compose.onNodeWithContentDescription("设置测试代理并行上限").assertExists().assertIsNotEnabled()
+        }
+    }
+
+    @Test fun settingsTierMenuClosesOnRoleChangeAndDisableAndRejectsRetainedSelection() {
+        val profile = SubAgentProfile("test", "测试代理", tier = SubAgentTaskTier.COMPLEX)
+        val fixture = SubAgentUiFixture(profiles = listOf(profile))
+        val enabled = mutableStateOf(true)
+        compose.setSubAgentContent(fixture) {
+            val current = (fixture.editor.observe() as? SubAgentEditorState.Loaded)?.config?.profiles?.single() ?: profile
+            SubAgentProfileRow(current, emptyList(), enabled = enabled.value, settings = true)
+        }
+        compose.onNodeWithContentDescription("设置测试代理任务分工").performClick()
+        val retainedSelection = compose.onNode(isSelectable() and hasText("简单任务")).fetchSemanticsNode()
+            .config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
+        compose.runOnIdle { fixture.editor.updateProfile(profile.id) { it.withRole("review") } }
+        compose.onNodeWithText("简单任务").assertDoesNotExist()
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
+        compose.runOnIdle {
+            val before = fixture.snapshot()
+            retainedSelection()
+            assertEquals(before, fixture.snapshot())
+            fixture.editor.updateProfile(profile.id) { it.withRole("implementation") }
+        }
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assert(hasText("未设置分工")).performClick()
+        val disabledSelection = compose.onNode(isSelectable() and hasText("常规任务")).fetchSemanticsNode()
+            .config[androidx.compose.ui.semantics.SemanticsActions.OnClick].action!!
+        compose.runOnIdle { enabled.value = false }
+        compose.onNodeWithText("常规任务").assertDoesNotExist()
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assertIsNotEnabled()
+        compose.runOnIdle {
+            val before = fixture.snapshot()
+            val revision = fixture.repository.revision(fixture.owner).value
+            disabledSelection()
+            assertEquals(before, fixture.snapshot())
+            assertEquals(revision, fixture.repository.revision(fixture.owner).value)
         }
     }
 
@@ -154,13 +195,16 @@ class SubAgentMaterialControlsTest {
         assertTrue(value.left > label.right)
         val model = compose.onNodeWithContentDescription("测试代理模型").fetchSemanticsNode().boundsInRoot
         val role = compose.onNodeWithContentDescription("选择测试代理职责").fetchSemanticsNode().boundsInRoot
-        compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
+        val tier = compose.onNodeWithContentDescription("设置测试代理任务分工").assertIsEnabled().fetchSemanticsNode().boundsInRoot
         assertTrue(role.top >= model.bottom)
+        assertTrue(tier.top >= role.bottom)
         val thinking = compose.onNodeWithContentDescription("调整测试代理思考深度").fetchSemanticsNode().boundsInRoot
+        assertTrue(thinking.top >= tier.bottom)
         val parallel = compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsNotEnabled().fetchSemanticsNode().boundsInRoot
         assertTrue(parallel.top >= thinking.bottom)
         compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
-        compose.onNodeWithText("任务分工").assertDoesNotExist()
+        compose.onNodeWithText("任务分工").assertExists()
+        compose.onNodeWithText("复杂任务").assertExists()
     }
 
     @Test fun iconsAndLabelsUseOnSurfaceLikeTheApprovedSettingsShot() {

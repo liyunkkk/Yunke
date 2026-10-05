@@ -8,6 +8,8 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
+import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.delegation.SubAgentTaskTier
 import io.github.mangi.eta.ui.SubAgentSettingsScreen
 import org.junit.Assert.*
 import org.junit.Rule
@@ -123,6 +125,67 @@ class SubAgentPresetSettingsTest {
             assertTrue("profile edits must also preserve an enabled preset", saved.enabled)
             assertTrue(saved.profiles.first().enabled)
             assertEquals(before, fixture.snapshot())
+        }
+    }
+
+    @Test fun presetTaskTierSavesReopensAndCanBeClearedWithoutChangingConversation() {
+        val agent = SubAgentProfile("tier-agent", "分工代理")
+        val fixture = SubAgentUiFixture(profiles = listOf(agent))
+        val group = fixture.createPreset()
+        val owner = SubAgentConfigKey.Preset(group.id)
+        val before = fixture.snapshot()
+        compose.setSubAgentContent(fixture) { SubAgentSettingsScreen({}, { fixture.repository }) }
+        compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
+        compose.onNodeWithContentDescription("设置分工代理任务分工").assertIsEnabled().assert(hasText("未设置分工"))
+        compose.runOnIdle { assertNull(fixture.repository.snapshot(owner).profiles.single().tier) }
+        for (tier in SubAgentTaskTier.entries) {
+            compose.onNodeWithContentDescription("设置分工代理任务分工").performClick()
+            compose.onNode(isSelectable() and hasText(tier.label)).performClick()
+            compose.runOnIdle {
+                assertEquals(tier, fixture.repository.snapshot(owner).profiles.single().tier)
+                assertEquals(before, fixture.snapshot())
+            }
+            compose.onNodeWithContentDescription("返回").performClick()
+            compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
+            compose.onNodeWithContentDescription("设置分工代理任务分工").assert(hasText(tier.label)).performClick()
+            compose.onNode(isSelectable() and hasText(tier.label)).assertIsSelected().performClick()
+        }
+        compose.onNodeWithContentDescription("设置分工代理任务分工").performClick()
+        compose.onNode(isSelectable() and hasText("未设置分工")).performClick()
+        compose.onNodeWithContentDescription("返回").performClick()
+        compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
+        compose.onNodeWithContentDescription("设置分工代理任务分工").assert(hasText("未设置分工")).performClick()
+        compose.onNode(isSelectable() and hasText("未设置分工")).assertIsSelected().performClick()
+        compose.runOnIdle {
+            assertNull(fixture.repository.snapshot(owner).profiles.single().tier)
+            assertEquals(before, fixture.snapshot())
+        }
+    }
+
+    @Test fun presetRoleSwitchOnlyShowsTaskTierForImplementationAndDropsInvalidTier() {
+        val fixture = SubAgentUiFixture(profiles = listOf(
+            SubAgentProfile("tier-agent", "分工代理", tier = SubAgentTaskTier.COMPLEX)))
+        val group = fixture.createPreset()
+        val owner = SubAgentConfigKey.Preset(group.id)
+        val before = fixture.snapshot()
+        compose.setSubAgentContent(fixture) { SubAgentSettingsScreen({}, { fixture.repository }) }
+        compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
+        compose.onNodeWithContentDescription("设置分工代理任务分工").assert(hasText("复杂任务"))
+        for ((role, label) in listOf("review" to "审查／总结", "image_generation" to "图片生成", "video_generation" to "视频生成")) {
+            compose.onNodeWithContentDescription("选择分工代理职责").performClick()
+            compose.onNode(isSelectable() and hasText(label)).performClick()
+            compose.onNodeWithContentDescription("设置分工代理任务分工").assertDoesNotExist()
+            compose.onNodeWithText("任务分工").assertDoesNotExist()
+            compose.runOnIdle {
+                val saved = fixture.repository.snapshot(owner).profiles.single()
+                assertEquals(role, saved.role)
+                assertNull(saved.tier)
+                assertEquals(before, fixture.snapshot())
+            }
+            compose.onNodeWithContentDescription("选择分工代理职责").performClick()
+            compose.onNode(isSelectable() and hasText("执行")).performClick()
+            compose.onNodeWithContentDescription("设置分工代理任务分工").assertIsEnabled().assert(hasText("未设置分工"))
+            compose.runOnIdle { assertNull(fixture.repository.snapshot(owner).profiles.single().tier) }
         }
     }
 
