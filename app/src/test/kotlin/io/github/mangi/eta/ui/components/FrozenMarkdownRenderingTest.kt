@@ -30,6 +30,8 @@ import com.mikepenz.markdown.compose.components.MarkdownComponents
 import com.mikepenz.markdown.compose.components.markdownComponents
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.model.markdownAnimations
+import com.mikepenz.markdown.model.State
+import com.mikepenz.markdown.model.parseMarkdown
 import io.github.mangi.eta.ui.markdown.StreamingGfmParserSession
 import io.github.mangi.eta.ui.markdown.StreamingGfmSnapshot
 import org.intellij.markdown.ast.ASTNode
@@ -74,8 +76,20 @@ class FrozenMarkdownRenderingTest {
     @Composable
     private fun Document(frame: Frame, candidate: Boolean, tag: String, width: androidx.compose.ui.unit.Dp) {
         val components = remember { markdownComponents() }
+        val inputState = frame.snapshot.state
+        val hostState = remember(inputState) {
+            // Direct State.Success hosts bypass MarkdownState's definition lookup.
+            // Initialize the CURRENT full source equally for both renderers, while
+            // retaining the actual streaming AST/content and shared link handler.
+            val initialized = parseMarkdown(
+                content = inputState.content,
+                lookupLinks = true,
+                referenceLinkHandler = inputState.referenceLinkHandler,
+            ) as State.Success
+            inputState.copy(linksLookedUp = initialized.linksLookedUp)
+        }
         Markdown(
-            state = frame.snapshot.state,
+            state = hostState,
             modifier = Modifier.width(width).testTag(tag),
             animations = markdownAnimations(animateTextSize = { this }),
             components = components,
@@ -155,8 +169,10 @@ class FrozenMarkdownRenderingTest {
             compose.waitForIdle()
             assertSameRendering("frame $index")
             if (index == 2) {
-                assertTrue("reference annotation must actually exist at freeze entry",
-                    texts("candidate").any { text -> text.links.any { it.third == "https://example.test/one" } })
+                for (tag in listOf("legacy", "candidate")) {
+                    assertTrue("reference annotation must actually exist at freeze entry: $tag",
+                        texts(tag).any { text -> text.links.any { it.third == "https://example.test/one" } })
+                }
             }
             if (index == 5 || index == 6) {
                 assertEquals("tail must use the current projected source", frame.snapshot.renderedSource, frame.snapshot.state.content)
