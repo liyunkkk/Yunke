@@ -156,6 +156,9 @@ class FrozenMarkdownRenderingTest {
             frame("A [late reference][late].\n\nTail", false),
             frame("A [late reference][late].\n\nTail", true),
             frame("A [late reference][late].\n\nTail grows\n\n[late]: https://example.test/late", true),
+            // Restore the original long geometry fixture after the late-reference case.
+            frame("A completed paragraph with **styles**, `inline code`, and a [link](https://example.test/last).\n\nTail", false),
+            frame("A completed paragraph with **styles**, `inline code`, and a [link](https://example.test/last).\n\nTail", true),
         )
         val current = mutableStateOf(frames.first())
         val width = mutableStateOf(320.dp)
@@ -176,7 +179,7 @@ class FrozenMarkdownRenderingTest {
             compose.runOnIdle { current.value = frame }
             compose.waitForIdle()
             assertSameRendering("frame $index")
-            if (index >= 8) {
+            if (index in 8..10) {
                 listOf("legacy", "candidate").forEach { tag ->
                     assertTrue("late reference fixture must be displayed: $tag", texts(tag).any { "late reference" in it.text })
                 }
@@ -185,6 +188,12 @@ class FrozenMarkdownRenderingTest {
                 for (tag in listOf("legacy", "candidate")) {
                     assertTrue("reference annotation must actually exist at freeze entry: $tag",
                         texts(tag).any { text -> text.links.any { it.third == "https://example.test/one" } })
+                }
+            }
+            if (index == 3) {
+                for (tag in listOf("legacy", "candidate")) {
+                    assertTrue("recognized reference uses the current definition: $tag",
+                        texts(tag).any { text -> text.links.any { it.third == "https://example.test/two" } })
                 }
             }
             if (index == 5 || index == 6) {
