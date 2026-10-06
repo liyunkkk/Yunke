@@ -46,7 +46,7 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
             self.assertNotIn(forbidden, construction + element + measure)
         draw = helper.split("internal fun Modifier.streamDiagnosticDraw", 1)[1]
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", draw)
-        self.assertLess(draw.index("return this"), draw.index("return drawWithContent"))
+        self.assertLess(draw.index("return this"), draw.index("return this.then(StreamDiagnosticDrawElement(stage, attribution))"))
         self.assertEqual(draw.count("drawContent()"), 1)
         self.assertIn("measureDetail(stage) { drawContent() }", draw)
         for forbidden in ("semantics", "graphicsLayer", "mutableState", "post", "note(", "launch", "coroutineScope", "onAttach", "onDetach"):

@@ -169,7 +169,20 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
                 // A construction in composition observes only attach/detach, even when initially OFF.
                 StreamPerformanceDiagnostics.sessionGeneration.longValue
                 if (!StreamPerformanceDiagnostics.enabled) return this
-                return drawWithContent {
+                return this.then(StreamDiagnosticDrawElement(stage, attribution))
+            }
+
+            private data class StreamDiagnosticDrawElement(val stage: String, val attribution: StreamDiagnosticAttribution?) : ModifierNodeElement<StreamDiagnosticDrawNode>() {
+                override fun create() = StreamDiagnosticDrawNode(stage, attribution)
+                override fun update(node: StreamDiagnosticDrawNode) { node.stage = stage; node.attribution = attribution }
+                override fun InspectorInfo.inspectableProperties() {
+                    name = "streamDiagnosticDraw"
+                    properties["stage"] = stage
+                }
+            }
+
+            private class StreamDiagnosticDrawNode(var stage: String, var attribution: StreamDiagnosticAttribution?) : Modifier.Node(), DrawModifierNode {
+                override fun ContentDrawScope.draw() {
                     StreamPerformanceDiagnostics.withRenderAttribution(attribution) {
                         StreamPerformanceDiagnostics.measureDetail(stage) { drawContent() }
                     }

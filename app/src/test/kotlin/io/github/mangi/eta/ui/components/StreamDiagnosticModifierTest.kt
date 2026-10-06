@@ -65,6 +65,15 @@ class StreamDiagnosticModifierTest {
             .streamDiagnosticDraw("settings.root.draw"))
     }
 
+    @Test fun enabledDrawUsesValueEqualElementsInsteadOfCapturedLambdaIdentity() = withDiagnosticSession { session ->
+        val original = Modifier.testTag("draw-equality")
+        val attr = StreamDiagnosticAttribution(session.serial, list = 7L)
+        val first = original.streamDiagnosticDraw("row.draw", attr)
+        assertEquals(first, original.streamDiagnosticDraw("row.draw", attr.copy()))
+        assertFalse(first == original.streamDiagnosticDraw("settings.root.draw", attr))
+        assertFalse(first == original.streamDiagnosticDraw("row.draw", attr.copy(list = 8L)))
+    }
+
     @Test fun disabledObserverPreservesRtlPlacementAndAllIntrinsicBoundaries() {
         assertFalse(StreamPerformanceDiagnostics.enabled)
         assertRtlPlacementAndAllIntrinsicBoundaries()

@@ -1010,14 +1010,19 @@ internal fun AgentConversationMessages(
     // 不额外请求帧。跟底上提时列表裁在静止线上，真正画进输入框的只能是没在上提的时候；
     // 上提时越线的部分被裁掉，只计数。跟底的各个条件变化、越线开始和结束各记一行。
     LaunchedEffect(scrollState) {
-        snapshotFlow { currentStreaming.value || isBottomSettling }
+        snapshotFlow {
+            val generation = StreamPerformanceDiagnostics.sessionGeneration.longValue
+            generation to (StreamPerformanceDiagnostics.enabled && (currentStreaming.value || isBottomSettling))
+        }
             .distinctUntilChanged()
-            .collectLatest { active ->
+            .collectLatest { (generation, active) ->
                 if (!active) return@collectLatest
                 var lastState = ""
                 var breachSamples = 0
                 var breachMaxPx = 0
                 snapshotFlow {
+                    if (StreamPerformanceDiagnostics.sessionGeneration.longValue != generation ||
+                        !StreamPerformanceDiagnostics.enabled) return@snapshotFlow null
                     val info = scrollState.layoutInfo
                     val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
                     val last = info.visibleItemsInfo.lastOrNull()
@@ -1049,7 +1054,8 @@ internal fun AgentConversationMessages(
                 }
                     .distinctUntilChanged()
                     .collect { sample ->
-                        if (!StreamPerformanceDiagnostics.enabled) return@collect
+                        if (sample == null || StreamPerformanceDiagnostics.sessionGeneration.longValue != generation ||
+                            !StreamPerformanceDiagnostics.enabled) return@collect
                         val over = sample.overPx
                         if (sample.state != lastState) {
                             StreamPerformanceDiagnostics.note("follow") {
