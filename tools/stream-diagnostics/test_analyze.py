@@ -8,6 +8,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -91,6 +92,27 @@ class ParserTests(unittest.TestCase):
         for line in (SPAN, WINDOW):
             with self.assertRaises(diag.Rejected):
                 diag.parse_line(line.replace("duration=inclusive", "duration=160"))
+
+    def test_same_build_emitter_field_sets_match_independent_golden(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "app/src/main/kotlin/io/github/mangi/eta/ui/components/StreamPerformanceDiagnostics.kt").read_text()
+        prefix = source.split('val prefix = "StreamDiag id=${session.id} windowStartNs=', 1)[1].split("AppFileLogger.diagnosticInfo", 1)[0]
+        common = {"id", "windowStartNs"} | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", prefix))
+        templates = {
+            "window": source.split("v=2 type=window", 1)[1].split("postCloseObservation=notTracked", 1)[0] + "postCloseObservation=notTracked",
+            "span": source.split("v=2 type=span", 1)[1].split("detail.frames.forEachIndexed", 1)[0],
+            "frame": source.split("v=2 type=frame", 1)[1].split("val messages = log.between", 1)[0],
+            "runtime": source.split("v=2 type=runtime", 1)[1].split("previousGc = currentGc", 1)[0],
+        }
+        golden = {"window": WINDOW, "span": SPAN, "frame": FRAME, "runtime": RUNTIME_SUPPORTED}
+        for kind, template in templates.items():
+            with self.subTest(kind=kind):
+                emitted = common | {"v", "type"} | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", template))
+                if kind == "window":
+                    emitted |= {"package", "versionCode", "versionName", "buildType"}
+                if kind == "frame":
+                    emitted |= {"page", "pageEnd", "pageChanged", "pageSource"}
+                self.assertEqual(emitted, set(diag.parse_line(golden[kind])))
 
     def test_final_admission_schema_is_exact_and_preserves_cutoff_counters(self):
         record = diag.parse_line(WINDOW)
