@@ -139,7 +139,8 @@ class EtaBackupRepositoryTest {
                         assertTrue(operation.exists())
                         assertTrue(io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance)
                         remainingFailures = 0
-                        EtaBackupRepository.recoverInterruptedImport(context)
+                        EtaBackupRepository.recoverInterruptedImport(context, maintenanceAlreadyHeld = true)
+                        io.github.mangi.eta.agent.runtime.AgentExecutionService.endBackupMaintenance()
                         assertEquals(old, SettingsDataStore.backupSnapshot())
                     }
                     assertEquals(9007199254740993L, SettingsDataStore.conversationUsageFlow("old-owner").first()!!.input)
