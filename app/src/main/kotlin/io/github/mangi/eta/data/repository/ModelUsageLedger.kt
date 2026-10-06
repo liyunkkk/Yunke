@@ -272,6 +272,161 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     return StreamPerformanceDiagnostics.measure("usage.ledger.serialize") { root.toString() }
 }
 
+/**
+ * Single-owner, process-local working ledger. The owner serializes access and bounds dirty time.
+ * Normal ledgers are parsed once; touched models keep their detail window and sets in memory.
+ * Every partial is applied in order (never just keep the latest delta): intermediate days,
+ * conversations and detail trimming are part of the existing cumulative semantics.
+ * Exotic imported scalar/string-coercion shapes use the old round-trip path for compatibility.
+ */
+internal class MutableModelUsageLedger(private var raw: String) {
+    private var root = runCatching { JSONObject(raw.takeIf { it.isNotBlank() } ?: "{}") }.getOrNull()
+    private var prepared = false
+    private var batchSafe = false
+    private var changed = false
+    private val models = mutableMapOf<Pair<String, String>, WorkingModel>()
+    private var totals = root?.let(::decodeConversationUsageTotals).orEmpty()
+
+    // Each update replaces this immutable map; existing Flow collectors retain their snapshot.
+    fun conversationTotalsSnapshot(): Map<String, ConversationUsageTotals> = totals
+
+    fun apply(delta: ModelUsageDelta): Boolean {
+        if (delta.providerId.isBlank() || delta.modelId.isBlank() ||
+            (delta.inputTokens <= 0L && delta.outputTokens <= 0L && delta.conversationId.isNullOrBlank())) return false
+        if (!prepared) {
+            val parsed = root
+            if (parsed != null) {
+                val preparedRoot = runCatching {
+                    val initialized = parsed.optBoolean("conversationTotalsInitialized")
+                    seedConversationUsageInPlace(parsed, raw, emptyMap())
+                    parsed.rootForModelUsageDelta(delta.providerId, delta.modelId, initialized)
+                }.getOrNull()
+                if (preparedRoot != null) {
+                    root = preparedRoot
+                    batchSafe = preparedRoot.isBatchSafeLedger()
+                    totals = decodeConversationUsageTotals(preparedRoot)
+                }
+            }
+            prepared = true
+        }
+        if (!batchSafe) {
+            // Preserve all lenient org.json round-trip/coercion behavior for unusual old imports.
+            raw = applyModelUsageDelta(raw, delta)
+            root = JSONObject(raw)
+            totals = decodeConversationUsageTotals(root!!)
+            batchSafe = root!!.isBatchSafeLedger()
+            // A malformed source bypasses legacy seeding in the original path. Its next valid
+            // edit must still run the one-time initialization, even within this same batch.
+            prepared = root!!.optBoolean("conversationTotalsInitialized")
+            changed = true
+            return true
+        }
+        val tree = root!!
+        val providers = tree.optJSONObject("providers") ?: JSONObject().also { tree.put("providers", it) }
+        val provider = providers.optJSONObject(delta.providerId) ?: JSONObject().also { providers.put(delta.providerId, it) }
+        provider.put("name", delta.providerName.ifBlank { delta.providerId })
+        val modelJson = provider.optJSONObject("models") ?: JSONObject().also { provider.put("models", it) }
+        val model = modelJson.optJSONObject(delta.modelId) ?: JSONObject().also { modelJson.put(delta.modelId, it) }
+        model.put("displayName", delta.modelDisplayName.ifBlank { delta.modelId })
+        val working = models.getOrPut(delta.providerId to delta.modelId) { WorkingModel(model) }
+        working.prepareNextPartial()
+        val incoming = ModelUsageEvent(delta.atMillis, delta.inputTokens.coerceAtLeast(0),
+            delta.outputTokens.coerceAtLeast(0), delta.cachedTokens.coerceAtLeast(0),
+            delta.cacheCreationTokens.coerceAtLeast(0), delta.conversationId, delta.round, delta.requestId)
+        val replaceAt = working.events.indexOfLast { event ->
+            if (!incoming.requestId.isNullOrBlank()) event.requestId == incoming.requestId
+            else event.requestId == null && incoming.round != null &&
+                !incoming.conversationId.isNullOrBlank() && event.round == incoming.round &&
+                event.conversationId == incoming.conversationId
+        }
+        val previous = working.events.getOrNull(replaceAt)
+        updateConversationUsage(tree, incoming, previous)
+        incoming.conversationId?.takeIf { it.isNotBlank() }?.let { id ->
+            totals = totals + (id to conversationUsageTotals(tree, id)!!)
+        }
+        model.put("inputTokens", model.optLong("inputTokens") - (previous?.inputTokens ?: 0) + incoming.inputTokens)
+        model.put("outputTokens", model.optLong("outputTokens") - (previous?.outputTokens ?: 0) + incoming.outputTokens)
+        model.put("cachedTokens", model.optLong("cachedTokens") - (previous?.cachedTokens ?: 0) + incoming.cachedTokens)
+        model.put("cacheCreationTokens", model.optLong("cacheCreationTokens") - (previous?.cacheCreationTokens ?: 0) + incoming.cacheCreationTokens)
+        if (replaceAt >= 0) working.events[replaceAt] = incoming else working.events.add(incoming)
+        if (working.events.size > MAX_MODEL_EVENTS) {
+            working.events.subList(0, working.events.size - MAX_MODEL_EVENTS).clear()
+        }
+        delta.conversationId?.takeIf { it.isNotBlank() }?.let(working.conversations::add)
+        working.days.add(delta.day.toString())
+        working.applied = true
+        working.dirty = true
+        changed = true
+        return true
+    }
+
+    fun serialize(): String {
+        if (!changed) return raw
+        models.values.forEach { it.materialize() }
+        raw = StreamPerformanceDiagnostics.measure("usage.ledger.serialize") { root!!.toString() }
+        changed = false
+        return raw
+    }
+
+    private class WorkingModel(val json: JSONObject) {
+        val events = decodeEvents(json.optJSONArray("events")).toMutableList()
+        val conversations = stringSet(json.optJSONArray("conversations")).toMutableSet()
+        val days = stringSet(json.optJSONArray("days")).toMutableSet()
+        var applied = false
+        var dirty = false
+
+        init {
+            if (!json.has("inputTokens")) json.put("inputTokens", events.sumOf { it.inputTokens })
+            if (!json.has("outputTokens")) json.put("outputTokens", events.sumOf { it.outputTokens })
+            if (!json.has("cachedTokens")) json.put("cachedTokens", events.sumOf { it.cachedTokens })
+            if (!json.has("cacheCreationTokens")) json.put("cacheCreationTokens", events.sumOf { it.cacheCreationTokens })
+        }
+
+        fun prepareNextPartial() {
+            if (!applied) return
+            // Match decode(encode(events)) between sequential edits, including invalid times,
+            // blank request IDs and old negative cache fields that encodeEvents omits.
+            events.removeAll { it.atMillis <= 0L }
+            for (index in events.indices) {
+                val event = events[index]
+                if (event.cachedTokens < 0 || event.cacheCreationTokens < 0 ||
+                    event.requestId?.isBlank() == true || event.conversationId?.isBlank() == true) {
+                    events[index] = event.copy(cachedTokens = event.cachedTokens.coerceAtLeast(0),
+                        cacheCreationTokens = event.cacheCreationTokens.coerceAtLeast(0),
+                        requestId = event.requestId?.takeIf { it.isNotBlank() },
+                        conversationId = event.conversationId?.takeIf { it.isNotBlank() })
+                }
+            }
+        }
+
+        fun materialize() {
+            if (!dirty) return
+            json.put("conversations", JSONArray(conversations.sorted()))
+            json.put("days", JSONArray(days.sorted()))
+            json.put("events", StreamPerformanceDiagnostics.measure("usage.ledger.encodeEvents", events.size.toLong()) {
+                encodeEvents(events)
+            })
+            dirty = false
+        }
+    }
+}
+
+private fun JSONObject.isBatchSafeLedger(): Boolean {
+    if (!hasOnlyCanonicalJsonValues()) return false
+    val providers = optJSONObject("providers") ?: return true
+    providers.keys().forEach { providerId ->
+        val models = providers.optJSONObject(providerId)?.optJSONObject("models") ?: return@forEach
+        models.keys().forEach { modelId ->
+            if (!hasOnlyScalarModelUsageStrings(providerId, modelId)) return false
+        }
+    }
+    return true
+}
+
+/** A batch is numerically identical to applying each delta via the legacy persisted path. */
+internal fun applyModelUsageDeltas(raw: String?, deltas: Iterable<ModelUsageDelta>): String =
+    MutableModelUsageLedger(raw.orEmpty()).also { ledger -> deltas.forEach { ledger.apply(it) } }.serialize()
+
 private fun decodeEvents(array: JSONArray?): List<ModelUsageEvent> {
     if (array == null) return emptyList()
     return buildList {

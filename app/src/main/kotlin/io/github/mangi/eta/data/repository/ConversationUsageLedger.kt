@@ -16,6 +16,23 @@ internal data class ConversationUsageTotals(
 
 private const val CONVERSATION_TOTALS = "conversationTotalsV1"
 
+/** Read once when a ledger is loaded/replaced, not once per foreground collector. */
+internal fun decodeConversationUsageTotals(root: JSONObject): Map<String, ConversationUsageTotals> {
+    val totals = root.optJSONObject(CONVERSATION_TOTALS) ?: return emptyMap()
+    return buildMap {
+        totals.keys().forEach { id ->
+            val item = totals.optJSONObject(id) ?: return@forEach
+            put(id, ConversationUsageTotals(item.optLong("in"), item.optLong("out"),
+                item.optLong("k"), item.optLong("w")))
+        }
+    }
+}
+
+internal fun conversationUsageTotals(root: JSONObject, id: String): ConversationUsageTotals? {
+    val item = root.optJSONObject(CONVERSATION_TOTALS)?.optJSONObject(id) ?: return null
+    return ConversationUsageTotals(item.optLong("in"), item.optLong("out"), item.optLong("k"), item.optLong("w"))
+}
+
 internal fun conversationUsageTotals(raw: String?, id: String?): ConversationUsageTotals? {
     if (id.isNullOrBlank()) return ConversationUsageTotals()
     val item = runCatching { JSONObject(raw.orEmpty()).optJSONObject(CONVERSATION_TOTALS)?.optJSONObject(id) }.getOrNull()

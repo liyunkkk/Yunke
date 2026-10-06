@@ -100,7 +100,7 @@ internal object UsageStatsRepository {
     }
 
     fun conversationUsageFlow(id: String?) =
-        conversationUsageTotalsFlow(SettingsDataStore.modelUsageFlow(), id)
+        SettingsDataStore.conversationUsageFlow(id)
 
     suspend fun recordModelUsage(delta: ModelUsageDelta) {
         val diagnose = StreamPerformanceDiagnostics.enabled
@@ -113,14 +113,13 @@ internal object UsageStatsRepository {
                     StreamPerformanceDiagnostics.record("usage.lockWait", elapsed)
                 }
             }
-            SettingsDataStore.updateModelUsage { current ->
-                StreamPerformanceDiagnostics.withAttribution(attribution) {
-                    StreamPerformanceDiagnostics.measure("usage.ledger.update", current.length.toLong()) {
-                        applyModelUsageDelta(current, delta)
-                    }
-                }
-            }
+            SettingsDataStore.recordModelUsage(delta)
         }
+    }
+
+    /** All received partials are durable before a provider request returns/throws. */
+    suspend fun flushModelUsage() {
+        modelUsageLock.withLock { SettingsDataStore.flushModelUsage() }
     }
 
     // Suspend DAO calls remain suspend lambdas; attribution is restored only for the final record.

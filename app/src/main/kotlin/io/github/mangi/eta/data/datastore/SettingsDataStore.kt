@@ -19,6 +19,9 @@ import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
 import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.model.Settings
+import io.github.mangi.eta.data.repository.ConversationUsageTotals
+import io.github.mangi.eta.data.repository.ModelUsageDelta
+import java.io.File
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import java.io.IOException
 import java.time.LocalDate
@@ -26,6 +29,7 @@ import org.json.JSONObject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 internal object SettingsDataStore {
@@ -76,9 +80,24 @@ internal object SettingsDataStore {
     @Volatile
     private lateinit var dataStore: DataStore<Preferences>
 
+    private lateinit var usageLedger: UsageLedgerStore
+
+    @Synchronized
     fun init(context: Context) {
         if (!::dataStore.isInitialized) {
-            dataStore = context.applicationContext.dataStore
+            val appContext = context.applicationContext
+            val preferencesStore = appContext.dataStore
+            usageLedger = UsageLedgerStore(
+                storage = AtomicUsageLedgerFile(File(appContext.filesDir, "datastore/eta_usage_ledger.json")),
+                readLegacy = { preferencesStore.data.first()[MODEL_USAGE_JSON] },
+                clearLegacy = {
+                    // Avoid writing/re-emitting Preferences on every process launch after migration.
+                    if (preferencesStore.data.first()[MODEL_USAGE_JSON] != null) {
+                        preferencesStore.edit { it.remove(MODEL_USAGE_JSON) }
+                    }
+                },
+            )
+            dataStore = preferencesStore // Publish both stores only after the ledger is ready.
         }
     }
 
@@ -93,6 +112,7 @@ internal object SettingsDataStore {
                 }
             }
             .map { preferences -> preferences.toSettings() }
+            .distinctUntilChanged()
     }
 
     suspend fun settings(): Settings = settingsFlow().first()
@@ -112,10 +132,10 @@ internal object SettingsDataStore {
     }
 
     fun selectedProviderIdFlow(): Flow<String?> =
-        settingsFlow().map { it.selectedProviderId }
+        settingsFlow().map { it.selectedProviderId }.distinctUntilChanged()
 
     fun selectedModelIdFlow(): Flow<String?> =
-        settingsFlow().map { it.selectedModelId }
+        settingsFlow().map { it.selectedModelId }.distinctUntilChanged()
 
     suspend fun selectedModelIdForProvider(providerId: String): String? {
         ensureInitialized()
@@ -132,17 +152,17 @@ internal object SettingsDataStore {
     }
 
     fun memoryEnabledFlow(): Flow<Boolean> =
-        settingsFlow().map { it.memoryEnabled }
+        settingsFlow().map { it.memoryEnabled }.distinctUntilChanged()
 
     fun fileLoggingEnabledFlow(): Flow<Boolean> =
-        settingsFlow().map { it.fileLoggingEnabled }
+        settingsFlow().map { it.fileLoggingEnabled }.distinctUntilChanged()
 
     suspend fun setFileLoggingEnabled(enabled: Boolean) {
         updateSettings { it.copy(fileLoggingEnabled = enabled) }
     }
 
     fun errorReconnectPolicyFlow(): Flow<ErrorReconnectPolicy> =
-        settingsFlow().map { it.errorReconnectPolicy }
+        settingsFlow().map { it.errorReconnectPolicy }.distinctUntilChanged()
 
     suspend fun setErrorReconnectPolicy(policy: ErrorReconnectPolicy) {
         updateSettings { it.copy(errorReconnectPolicy = policy) }
@@ -155,13 +175,14 @@ internal object SettingsDataStore {
                 if (cause is IOException) emit(emptyPreferences()) else throw cause
             }
             .map { preferences -> preferences[LINUX_DISTRIBUTION] }
+            .distinctUntilChanged()
     }
 
     fun linuxBackendFlow(distribution: String): Flow<String?> {
         ensureInitialized()
         return dataStore.data.catch { cause ->
             if (cause is IOException) emit(emptyPreferences()) else throw cause
-        }.map { it[stringPreferencesKey("linux_backend.$distribution")] }
+        }.map { it[stringPreferencesKey("linux_backend.$distribution")] }.distinctUntilChanged()
     }
 
     suspend fun setLinuxBackend(distribution: String, backend: String?) {
@@ -173,7 +194,7 @@ internal object SettingsDataStore {
     }
 
     fun appearanceSettingsFlow(): Flow<AppearanceSettings> =
-        settingsFlow().map { it.appearance }
+        settingsFlow().map { it.appearance }.distinctUntilChanged()
 
     suspend fun setSelectedProviderId(id: String?) {
         updateSettings { it.copy(selectedProviderId = id) }
@@ -218,6 +239,7 @@ internal object SettingsDataStore {
 
     suspend fun backupSnapshot(): EtaSettingsBackup {
         ensureInitialized()
+        val modelUsage = usageLedger.snapshot() // Includes all pending partials before export.
         val prefs = dataStore.data.first()
         val settings = prefs.toSettings()
         return EtaSettingsBackup(
@@ -230,7 +252,7 @@ internal object SettingsDataStore {
             linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
             selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
             appearance = settings.appearance,
-            modelUsageJson = prefs[MODEL_USAGE_JSON].orEmpty(),
+            modelUsageJson = modelUsage,
             retiredInputTokens = prefs[RETIRED_INPUT_TOKENS] ?: 0L,
             retiredOutputTokens = prefs[RETIRED_OUTPUT_TOKENS] ?: 0L,
             retiredCachedTokens = prefs[RETIRED_CACHED_TOKENS] ?: 0L,
@@ -242,6 +264,9 @@ internal object SettingsDataStore {
 
     suspend fun restoreBackup(snapshot: EtaSettingsBackup) {
         ensureInitialized()
+        // Retain the existing backup schema; only its storage location changes. This replacement
+        // is durable before returning and resets the process-local tree/totals together.
+        usageLedger.replace(snapshot.modelUsageJson)
         dataStore.edit { prefs ->
             prefs.asMap().keys
                 .filter { key ->
@@ -267,7 +292,7 @@ internal object SettingsDataStore {
                     prefs[selectedModelByProviderKey(providerId)] = modelId
                 }
             }
-            prefs.putOrRemove(MODEL_USAGE_JSON, snapshot.modelUsageJson.takeIf { it.isNotBlank() })
+            prefs.remove(MODEL_USAGE_JSON)
             prefs.putOrRemove(RETIRED_HEATMAP_JSON, snapshot.retiredHeatmapJson.takeIf { it.isNotBlank() })
             if (snapshot.retiredInputTokens > 0L) prefs[RETIRED_INPUT_TOKENS] = snapshot.retiredInputTokens else prefs.remove(RETIRED_INPUT_TOKENS)
             if (snapshot.retiredOutputTokens > 0L) prefs[RETIRED_OUTPUT_TOKENS] = snapshot.retiredOutputTokens else prefs.remove(RETIRED_OUTPUT_TOKENS)
@@ -411,32 +436,38 @@ internal object SettingsDataStore {
 
     fun modelUsageFlow(): Flow<String> {
         ensureInitialized()
-        return dataStore.data.map { it[MODEL_USAGE_JSON].orEmpty() }
+        return usageLedger.rawFlow().distinctUntilChanged()
+    }
+
+    fun conversationUsageFlow(id: String?): Flow<ConversationUsageTotals?> {
+        ensureInitialized()
+        return usageLedger.conversationFlow(id)
     }
 
     suspend fun modelUsageJson(): String {
         ensureInitialized()
-        return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) emit(emptyPreferences()) else throw cause
-            }
-            .map { prefs -> prefs[MODEL_USAGE_JSON].orEmpty() }
-            .first()
+        return usageLedger.snapshot()
+    }
+
+    suspend fun recordModelUsage(delta: ModelUsageDelta) {
+        ensureInitialized()
+        usageLedger.record(delta)
+    }
+
+    suspend fun flushModelUsage() {
+        ensureInitialized()
+        usageLedger.flush()
     }
 
     suspend fun addModelUsage(deltaJson: String) {
         if (deltaJson.isBlank()) return
         ensureInitialized()
-        dataStore.edit { prefs ->
-            prefs[MODEL_USAGE_JSON] = deltaJson
-        }
+        usageLedger.replace(deltaJson)
     }
 
     suspend fun updateModelUsage(transform: (String) -> String) {
         ensureInitialized()
-        diagnosticEdit("usage.editEntryWait", "usage.transform", "usage.commitTail") { prefs ->
-            prefs[MODEL_USAGE_JSON] = transform(prefs[MODEL_USAGE_JSON].orEmpty())
-        }
+        usageLedger.update(transform)
     }
 
     /**

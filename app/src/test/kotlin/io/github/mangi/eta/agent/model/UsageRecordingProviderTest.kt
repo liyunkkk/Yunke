@@ -128,6 +128,32 @@ class UsageRecordingProviderTest {
         assertEquals(784_267L, records.single().inputTokens)
     }
 
+    @Test fun requestCompletionFlushesAfterAllPartialsEvenWhenProviderFails() {
+        val order = mutableListOf<String>()
+        val original = IllegalStateException("stream ended")
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 100)))
+            emit(ProviderEvent.Usage(AgentTokenUsage(outputTokens = 7)))
+            throw original
+        }, finish = { order += "flush" }) { delta -> order += "record:${delta.outputTokens}" }
+        assertSame(original, assertThrows(IllegalStateException::class.java) {
+            decorated.complete(request, AgentRunController()) { }
+        })
+        assertEquals(listOf("record:0", "record:7", "flush"), order)
+    }
+
+    @Test fun flushFailureCannotReplaceSuccessfulResponseOrConsumerError() {
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 100)))
+            answer()
+        }, finish = { error("flush failed") }) { }
+        assertEquals("done", decorated.complete(request, AgentRunController()) { }.assistantMessage.getString("content"))
+        val consumerError = IllegalStateException("consumer failed")
+        assertSame(consumerError, assertThrows(IllegalStateException::class.java) {
+            decorated.complete(request, AgentRunController()) { throw consumerError }
+        })
+    }
+
     @Test fun accountingUsesConversationOwnerNotNetworkSession() {
         val records = mutableListOf<ModelUsageDelta>()
         val decorated = UsageRecordingProvider(provider { emit ->

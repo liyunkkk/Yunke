@@ -8,15 +8,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
+private fun finishAccounting(block: suspend () -> Unit) {
+    // Finish received accounting even if the network/agent thread was interrupted.
+    val interrupted = Thread.interrupted()
+    try { runBlocking(Dispatchers.IO) { block() } }
+    finally { if (interrupted) Thread.currentThread().interrupt() }
+}
+
+private val DEFAULT_USAGE_RECORD: (ModelUsageDelta) -> Unit = { delta ->
+    finishAccounting { UsageStatsRepository.recordModelUsage(delta) }
+}
+
 /** Accounting belongs to a provider request, not to a UI/display round or the selected model. */
 internal class UsageRecordingProvider(
     private val delegate: AgentProviderClient,
-    private val record: (ModelUsageDelta) -> Unit = { delta ->
-        // Finish the received usage write even if the network/agent thread was interrupted.
-        val interrupted = Thread.interrupted()
-        try { runBlocking(Dispatchers.IO) { UsageStatsRepository.recordModelUsage(delta) } }
-        finally { if (interrupted) Thread.currentThread().interrupt() }
-    },
+    private val finish: (() -> Unit)? = null,
+    private val record: (ModelUsageDelta) -> Unit = DEFAULT_USAGE_RECORD,
 ) : AgentProviderClient by delegate {
     override fun complete(request: ProviderRequest, runController: AgentRunController,
                           onEvent: (ProviderEvent) -> Unit): ProviderResponse {
@@ -63,6 +70,15 @@ internal class UsageRecordingProvider(
                     onEvent(event)
                 }
             }
-        } finally { persist() }
+        } finally {
+            persist()
+            // Timed/count-bounded commits cover a long-running request; completion (including
+            // cancellation/error/consumer failure) closes its final dirty interval synchronously.
+            // As before, statistics failure must not replace the model response/error.
+            runCatching {
+                if (finish != null) finish.invoke()
+                else if (record === DEFAULT_USAGE_RECORD) finishAccounting { UsageStatsRepository.flushModelUsage() }
+            }
+        }
     }
 }

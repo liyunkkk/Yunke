@@ -56,9 +56,12 @@ class ModelUsageLedgerEquivalenceTest {
             delta(conversation = " "),
             delta(input = -10).copy(outputTokens = -20, cachedTokens = -30, cacheCreationTokens = -40),
         )
-        inputs.forEach { (name, raw) -> changes.forEachIndexed { index, change ->
-            assertDeltaMatchesOriginal("$name / delta $index", raw, change)
-        } }
+        inputs.forEach { (name, raw) ->
+            changes.forEachIndexed { index, change ->
+                assertDeltaMatchesOriginal("$name / delta $index", raw, change)
+            }
+            assertSequenceMatchesOriginal("$name multi-edit batch", raw, changes)
+        }
         // Invalid JSON must still bypass seeding completely, rather than initialize an empty ledger.
         val fallback = JSONObject(applyModelUsageDelta("not JSON", delta()))
         assertFalse(fallback.has("conversationTotalsInitialized"))
@@ -126,6 +129,11 @@ class ModelUsageLedgerEquivalenceTest {
             assertEquals(10200L, result.getLong("inputTokens"))
             assertDeltaMatchesOriginal("replace last of $count events", raw, delta(request = "retained-${count - 1}"))
             assertDeltaMatchesOriginal("replace first of $count events", raw, delta(request = "retained-0"))
+            assertSequenceMatchesOriginal("batched trim/reappearance $count", raw, listOf(
+                delta(request = "last", input = 200, at = 99999),
+                delta(request = "retained-0", input = 1),
+                delta(request = "last", input = 20, at = 99999),
+            ))
         }
     }
 
@@ -140,8 +148,42 @@ class ModelUsageLedgerEquivalenceTest {
             changes.forEach { change ->
                 assertEquals(originalApplyModelUsageDelta(raw, change), applyModelUsageDelta(raw, change))
                 assertEquals(raw.orEmpty(), applyModelUsageDelta(raw, change))
+                assertEquals(raw.orEmpty(), applyModelUsageDeltas(raw, listOf(change)))
             }
         }
+    }
+
+    @Test fun batchesPreserveDecodeEncodeNormalizationAndInvalidTimestampSemantics() {
+        val raw = """{"conversationTotalsInitialized":true,"conversationTotalsV1":{},
+            "providers":{"p":{"models":{"main":{"events":[
+                {"t":1,"in":10,"out":1,"k":-3,"w":-1,"c":"a","q":"old"}
+            ]}}}}}"""
+        assertSequenceMatchesOriginal("cache normalization and timestamps", raw, listOf(
+            delta(request = "new", input = 20),
+            delta(request = "old", input = 5),
+            delta(request = "bad-time", input = 3, at = 0),
+            delta(request = "bad-time", input = 4, at = 10),
+            delta(request = "", input = 2),
+            delta(request = null, input = 1),
+            delta(request = "changed-owner", conversation = "b", input = 3),
+            delta(request = "changed-owner", conversation = "a", input = 1),
+        ))
+    }
+
+    @Test fun seededRandomBatchesMatchFrozenOracleAcrossModelsAndRequests() {
+        val random = java.util.Random(42)
+        val changes = List(120) { index ->
+            delta(request = "request-${random.nextInt(12)}", input = random.nextInt(900).toLong(),
+                at = 1000L + index).copy(
+                modelId = "model-${random.nextInt(3)}",
+                conversationId = "owner-${random.nextInt(3)}",
+                outputTokens = random.nextInt(30).toLong(),
+                cachedTokens = random.nextInt(70).toLong(),
+                cacheCreationTokens = random.nextInt(10).toLong(),
+                day = LocalDate.of(2026, 1, 1).plusDays(random.nextInt(10).toLong()),
+            )
+        }
+        assertSequenceMatchesOriginal("seeded random partials", "{}", changes)
     }
 
     @Test fun seedStringWrapperRetainsOriginalMigrationAndFailureBehavior() {
@@ -390,17 +432,25 @@ class ModelUsageLedgerEquivalenceTest {
         val expected = originalApplyModelUsageDelta(raw, delta)
         val actual = applyModelUsageDelta(raw, delta)
         assertJsonEquivalent(label, JSONObject(expected), JSONObject(actual))
+        assertJsonEquivalent("$label batched", JSONObject(expected),
+            JSONObject(applyModelUsageDeltas(raw, listOf(delta))))
         return actual
     }
 
     private fun assertSequenceMatchesOriginal(label: String, raw: String?, deltas: List<ModelUsageDelta>) {
         var expected = raw
         var actual = raw
+        val working = MutableModelUsageLedger(raw.orEmpty())
         deltas.forEachIndexed { index, delta ->
             expected = originalApplyModelUsageDelta(expected, delta)
             actual = applyModelUsageDelta(actual, delta)
+            working.apply(delta)
             assertJsonEquivalent("$label step $index", JSONObject(expected!!), JSONObject(actual!!))
+            assertJsonEquivalent("$label cached step $index", JSONObject(expected!!), JSONObject(working.serialize()))
+            assertEquals(decodeConversationUsageTotals(JSONObject(expected!!)), working.conversationTotalsSnapshot())
         }
+        assertJsonEquivalent("$label one commit", JSONObject(expected!!),
+            JSONObject(applyModelUsageDeltas(raw, deltas)))
     }
 
     /** Object key order is irrelevant; array order, every field and numeric value are not. */
