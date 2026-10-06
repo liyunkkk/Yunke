@@ -23,20 +23,33 @@ def between(text, start, end):
 class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
     def test_transparent_helper_measures_and_draws_once_per_branch(self):
         helper = code(source("ui/components/StreamDiagnosticModifier.kt"))
-        measure = between(helper, "streamDiagnosticMeasure", "streamDiagnosticDraw")
+        construction = between(helper, "internal fun Modifier.streamDiagnosticMeasure", "private data class StreamDiagnosticMeasureElement")
+        self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", construction)
+        self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage))", construction)
+        self.assertLess(construction.index("return this"), construction.index("return this.then"))
+        element = between(helper, "private data class StreamDiagnosticMeasureElement", "private class StreamDiagnosticMeasureNode")
+        self.assertIn("(val stage: String) : ModifierNodeElement<StreamDiagnosticMeasureNode>()", element)
+        self.assertIn("override fun create() = StreamDiagnosticMeasureNode(stage)", element)
+        self.assertIn("override fun update(node: StreamDiagnosticMeasureNode) { node.stage = stage }", element)
+        self.assertNotIn("override fun equals", element)  # Data-class equality is by the fixed stage label.
+        self.assertNotIn("override fun hashCode", element)
+        measure = between(helper, "private class StreamDiagnosticMeasureNode", "internal fun Modifier.streamDiagnosticDraw")
+        self.assertIn("(var stage: String) : Modifier.Node(), LayoutModifierNode", measure)
+        self.assertIn("override fun MeasureScope.measure(measurable: Measurable, constraints: Constraints): MeasureResult", measure)
         self.assertEqual(measure.count("measurable.measure(constraints)"), 1)
         self.assertEqual(measure.count("layout(child.width, child.height)"), 1)
         self.assertEqual(measure.count("child.placeRelative(0, 0)"), 1)
-        self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", measure)
-        self.assertLess(measure.index("return this"), measure.index("return layout"))
         self.assertLess(measure.index("measureDetail(stage)"), measure.index("measurable.measure(constraints)"))
-        self.assertNotIn("System.nanoTime", measure)
-        draw = helper.split("streamDiagnosticDraw", 1)[1]
+        self.assertNotIn("System.nanoTime", construction + element + measure)
+        # Default node invalidation and intrinsic dispatch run the same transparent measure policy.
+        for forbidden in ("shouldAutoInvalidate", "invalidateMeasurement", "override fun minIntrinsic", "override fun maxIntrinsic"):
+            self.assertNotIn(forbidden, construction + element + measure)
+        draw = helper.split("internal fun Modifier.streamDiagnosticDraw", 1)[1]
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", draw)
         self.assertLess(draw.index("return this"), draw.index("return drawWithContent"))
         self.assertEqual(draw.count("drawContent()"), 1)
         self.assertIn("measureDetail(stage) { drawContent() }", draw)
-        for forbidden in ("semantics", "graphicsLayer", "mutableState", "post", "note("):
+        for forbidden in ("semantics", "graphicsLayer", "mutableState", "post", "note(", "launch", "coroutineScope", "onAttach", "onDetach"):
             self.assertNotIn(forbidden, helper)
         self.assertEqual(helper.count("!StreamPerformanceDiagnostics.enabled"), 2)
 

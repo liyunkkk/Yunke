@@ -715,15 +715,15 @@ internal object StreamPerformanceDiagnostics {
                 metric("frame.vsyncLate", late.coerceAtLeast(0), if (late > 8_333_333L) 1 else 0)
                 metric("frame.metricsDropped", 0, dropped.toLong())
                 metric("frame.deadline", deadline, 0)
-                val parts = "${page.fields()} totalUs=${total / 1000} deadlineUs=${deadline / 1000} " +
-                    "miss=${if (missed) 1 else 0} " +
-                    "unknownUs=${unknown / 1000} inputUs=${input / 1000} " +
-                    "animUs=${animation / 1000} layoutUs=${layout / 1000} drawUs=${draw / 1000} " +
-                    "syncUs=${sync / 1000} cmdUs=${command / 1000} gpuUs=${gpu / 1000} " +
-                    "vsyncLateUs=${late.coerceAtLeast(0) / 1000}"
                 val target = probe
                 val inWindow = target != null && !target.finished && intended >= target.startNs - FRAME_PROBE_LEAD_NS
                 if (inWindow) {
+                    val parts = "${page.fields()} totalUs=${total / 1000} deadlineUs=${deadline / 1000} " +
+                        "miss=${if (missed) 1 else 0} " +
+                        "unknownUs=${unknown / 1000} inputUs=${input / 1000} " +
+                        "animUs=${animation / 1000} layoutUs=${layout / 1000} drawUs=${draw / 1000} " +
+                        "syncUs=${sync / 1000} cmdUs=${command / 1000} gpuUs=${gpu / 1000} " +
+                        "vsyncLateUs=${late.coerceAtLeast(0) / 1000}"
                     val tenths = (intended - target!!.startNs) / 100_000
                     val line = "sinceTapMs=${tenths / 10}.${kotlin.math.abs(tenths % 10)} $parts"
                     if (target.addFrame(line, total / 1000, missed) || target.expired(System.nanoTime())) {

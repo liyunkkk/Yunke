@@ -3,6 +3,10 @@ package io.github.mangi.eta.ui.components
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
+import io.github.mangi.eta.core.AppFileLogger
+import java.util.concurrent.atomic.AtomicBoolean
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.IntrinsicMeasurable
 import androidx.compose.ui.layout.IntrinsicMeasureScope
@@ -38,7 +42,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-/** Behavior check for the default disabled path; enabled wiring is also source-guarded. */
+/** Disabled identity plus enabled transparency and unrelated-recomposition regression checks. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], qualifiers = "w480dp-h900dp-mdpi")
 class StreamDiagnosticModifierTest {
@@ -62,6 +66,14 @@ class StreamDiagnosticModifierTest {
 
     @Test fun disabledObserverPreservesRtlPlacementAndAllIntrinsicBoundaries() {
         assertFalse(StreamPerformanceDiagnostics.enabled)
+        assertRtlPlacementAndAllIntrinsicBoundaries()
+    }
+
+    @Test fun enabledObserverPreservesRtlPlacementAndAllIntrinsicBoundaries() = withDiagnosticSession {
+        assertRtlPlacementAndAllIntrinsicBoundaries()
+    }
+
+    private fun assertRtlPlacementAndAllIntrinsicBoundaries() {
         var parentX = 0f
         var childX = 0f
         var measured: Constraints? = null
@@ -102,8 +114,10 @@ class StreamDiagnosticModifierTest {
                         .onGloballyPositioned { parentX = it.positionInRoot().x },
                 ) { measurables, constraints ->
                     val child = measurables.single()
-                    intrinsicResults = listOf(child.minIntrinsicWidth(37), child.maxIntrinsicWidth(37),
-                        child.minIntrinsicHeight(43), child.maxIntrinsicHeight(43))
+                    intrinsicResults = listOf(0, 37, Constraints.Infinity).flatMap { argument ->
+                        listOf(child.minIntrinsicWidth(argument), child.maxIntrinsicWidth(argument),
+                            child.minIntrinsicHeight(argument), child.maxIntrinsicHeight(argument))
+                    }
                     val placeable = child.measure(Constraints.fixed(20, 10))
                     layout(constraints.maxWidth, constraints.maxHeight) { placeable.placeRelative(11, 0) }
                 }
@@ -112,11 +126,11 @@ class StreamDiagnosticModifierTest {
         compose.waitForIdle()
         compose.runOnIdle {
             assertEquals(Constraints.fixed(20, 10), measured)
-            assertEquals(listOf(17, 29, 13, 23), intrinsicResults)
-            assertTrue(intrinsicCalls.isNotEmpty())
-            assertTrue(intrinsicCalls.all { (kind, argument) ->
-                argument == if (kind.endsWith("Width")) 37 else 43
-            })
+            assertEquals(List(3) { listOf(17, 29, 13, 23) }.flatten(), intrinsicResults)
+            val expectedCalls = listOf(0, 37, Constraints.Infinity).flatMap { argument ->
+                listOf("minWidth", "maxWidth", "minHeight", "maxHeight").map { it to argument }
+            }.toSet()
+            assertEquals(expectedCalls, intrinsicCalls.toSet())
             // RTL relative x=11 is measured from the right, not the left.
             val expected = with(compose.density) { 100.dp.roundToPx() } - 11 - 20
             assertEquals(expected.toFloat(), childX - parentX, 0.01f)
@@ -126,6 +140,15 @@ class StreamDiagnosticModifierTest {
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     @Test fun disabledObserverPreservesConstraintsSizeAndSingleChildPass() {
         assertFalse(StreamPerformanceDiagnostics.enabled)
+        assertConstraintsSizeAndSingleChildPass()
+    }
+
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun enabledObserverPreservesConstraintsSizeAndSingleChildPass() = withDiagnosticSession {
+        assertConstraintsSizeAndSingleChildPass()
+    }
+
+    private fun assertConstraintsSizeAndSingleChildPass() {
         var parentMeasures = 0
         var childMeasures = 0
         var parentDraws = 0
@@ -167,6 +190,128 @@ class StreamDiagnosticModifierTest {
             assertTrue(parentDraws > 0)
             assertTrue(childDraws > 0)
             assertEquals(parentDraws, childDraws)
+        }
+    }
+
+    @Test fun equalStageAvoidsUnrelatedRemeasureButOldCapturedLambdaDoesNot() = withDiagnosticSession { session ->
+        val revision = mutableStateOf(0)
+        val stage = mutableStateOf("settings.root.measure")
+        val childWidth = mutableStateOf(30)
+        val childConstraints = mutableStateOf(Constraints(maxWidth = 100, maxHeight = 40))
+        var committedRevision = -1
+        var nodeChildMeasures = 0
+        var nodeReceivedConstraints: Constraints? = null
+        val nodePolicy = object : MeasurePolicy {
+            override fun MeasureScope.measure(measurables: List<Measurable>, constraints: Constraints): MeasureResult {
+                nodeChildMeasures++
+                nodeReceivedConstraints = constraints
+                return layout(constraints.constrainWidth(childWidth.value), constraints.constrainHeight(10)) {}
+            }
+        }
+        val legacyPolicy = object : MeasurePolicy {
+            override fun MeasureScope.measure(measurables: List<Measurable>, constraints: Constraints): MeasureResult =
+                layout(constraints.constrainWidth(childWidth.value), constraints.constrainHeight(10)) {}
+        }
+        val parentPolicy = object : MeasurePolicy {
+            override fun MeasureScope.measure(measurables: List<Measurable>, constraints: Constraints): MeasureResult {
+                val children = measurables.map { it.measure(childConstraints.value) }
+                return layout(constraints.constrainWidth(100), constraints.constrainHeight(40)) {
+                    children[0].placeRelative(0, 0)
+                    children[1].placeRelative(0, 20)
+                }
+            }
+        }
+        compose.setContent {
+            Layout(content = {
+                // Read inside the content scope so even memoized parent content cannot skip this recomposition.
+                val currentRevision = revision.value
+                val currentStage = stage.value
+                SideEffect { committedRevision = currentRevision }
+                Layout(content = {}, measurePolicy = nodePolicy,
+                    modifier = Modifier.testTag("node")
+                        // Fresh but equal strings ensure equality is by label, not by String identity.
+                        .streamDiagnosticMeasure(String(currentStage.toCharArray())))
+                Layout(content = {}, measurePolicy = legacyPolicy,
+                    modifier = Modifier.testTag("legacy").legacyDiagnosticMeasure("markdown.tail.measure"))
+            }, measurePolicy = parentPolicy)
+        }
+        compose.waitForIdle()
+        var initialChildMeasures = 0
+        compose.runOnIdle {
+            val initial = session.snapshot(final = false).stats
+            assertTrue(initial.getValue("settings.root.measure").count > 0)
+            assertTrue(initial.getValue("markdown.tail.measure").count > 0)
+            initialChildMeasures = nodeChildMeasures
+        }
+        repeat(5) { index ->
+            compose.runOnIdle { revision.value = index + 1 }
+            compose.waitForIdle()
+            compose.runOnIdle {
+                assertEquals(index + 1, committedRevision)
+                val unrelated = session.snapshot(final = false).stats
+                assertEquals(0L, unrelated["settings.root.measure"]?.count ?: 0L)
+                assertTrue("the old captured lambda must exercise the negative control",
+                    (unrelated["markdown.tail.measure"]?.count ?: 0L) > 0L)
+                assertEquals(initialChildMeasures, nodeChildMeasures)
+            }
+        }
+
+        // A changed stage must still update the node and automatically invalidate its measurement.
+        compose.runOnIdle { stage.value = "markdown.stable.measure" }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            val changed = session.snapshot(final = false).stats
+            assertTrue((changed["markdown.stable.measure"]?.count ?: 0L) > 0L)
+            assertEquals(0L, changed["settings.root.measure"]?.count ?: 0L)
+        }
+
+        // Child measure-state changes still propagate through the equal-stage observer.
+        compose.runOnIdle { childWidth.value = 45 }
+        compose.waitForIdle()
+        compose.onNodeWithTag("node").assertWidthIsEqualTo(45.dp).assertHeightIsEqualTo(10.dp)
+        var beforeConstraintChange = 0
+        compose.runOnIdle {
+            assertTrue(nodeChildMeasures > initialChildMeasures)
+            assertEquals(childConstraints.value, nodeReceivedConstraints)
+            assertTrue((session.snapshot(final = false).stats["markdown.stable.measure"]?.count ?: 0L) > 0L)
+            beforeConstraintChange = nodeChildMeasures
+        }
+
+        // Parent constraints continue to reach the child unchanged, even with the same stage.
+        compose.runOnIdle { childConstraints.value = Constraints.fixed(60, 15) }
+        compose.waitForIdle()
+        compose.onNodeWithTag("node").assertWidthIsEqualTo(60.dp).assertHeightIsEqualTo(15.dp)
+        compose.runOnIdle {
+            assertTrue(nodeChildMeasures > beforeConstraintChange)
+            assertEquals(Constraints.fixed(60, 15), nodeReceivedConstraints)
+            assertTrue((session.snapshot(final = false).stats["markdown.stable.measure"]?.count ?: 0L) > 0L)
+        }
+    }
+
+    /** Exactly the previous helper, intentionally outside composition's lambda memoization. */
+    private fun Modifier.legacyDiagnosticMeasure(stage: String): Modifier = layout { measurable, constraints ->
+        StreamPerformanceDiagnostics.measureDetail(stage) {
+            val child = measurable.measure(constraints)
+            layout(child.width, child.height) { child.placeRelative(0, 0) }
+        }
+    }
+
+    /** Open a real recording session without a Window listener, logger I/O or a test-only production switch. */
+    private fun withDiagnosticSession(block: (StreamPerformanceDiagnostics.Session) -> Unit) {
+        val activeField = StreamPerformanceDiagnostics::class.java.getDeclaredField("active").apply { isAccessible = true }
+        val loggerField = AppFileLogger::class.java.getDeclaredField("enabled").apply { isAccessible = true }
+        val loggerEnabled = loggerField.get(null) as AtomicBoolean
+        val previousActive = activeField.get(null)
+        val previousEnabled = loggerEnabled.get()
+        val session = StreamPerformanceDiagnostics.Session()
+        loggerEnabled.set(true)
+        activeField.set(null, session)
+        try {
+            assertTrue(StreamPerformanceDiagnostics.enabled)
+            block(session)
+        } finally {
+            activeField.set(null, previousActive)
+            loggerEnabled.set(previousEnabled)
         }
     }
 }

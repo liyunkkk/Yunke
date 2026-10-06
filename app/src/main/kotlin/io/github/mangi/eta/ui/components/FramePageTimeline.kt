@@ -46,9 +46,12 @@ internal class FramePageTimeline(private val capacity: Int = 64) {
     fun attribute(startNs: Long, endNs: Long): FramePageAttribution {
         val snapshot = entries
         if (endNs < startNs) return FramePageAttribution(FrameDiagnosticPage.Unknown, FrameDiagnosticPage.Unknown, false)
-        val start = snapshot.lastOrNull { it.atNs <= startNs }?.page ?: FrameDiagnosticPage.Unknown
-        val end = snapshot.lastOrNull { it.atNs <= endNs }?.page ?: FrameDiagnosticPage.Unknown
-        val changed = snapshot.any { it.atNs > startNs && it.atNs <= endNs }
-        return FramePageAttribution(start, end, changed)
+        var endIndex = snapshot.lastIndex
+        while (endIndex >= 0 && snapshot[endIndex].atNs > endNs) endIndex--
+        var startIndex = endIndex
+        while (startIndex >= 0 && snapshot[startIndex].atNs > startNs) startIndex--
+        val start = snapshot.getOrNull(startIndex)?.page ?: FrameDiagnosticPage.Unknown
+        val end = snapshot.getOrNull(endIndex)?.page ?: FrameDiagnosticPage.Unknown
+        return FramePageAttribution(start, end, startIndex != endIndex)
     }
 }
