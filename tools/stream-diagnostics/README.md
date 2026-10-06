@@ -12,7 +12,9 @@ For a 45-second unsampled capture, use `docs/diagnostics/eta-jank.perfetto`.
 The longer and CPU-only profiles below are separate diagnostic passes, not a
 matched performance baseline. **No automatic ON/OFF success oracle is supplied.**
 Missing counters, missing source coverage, an unclosed session, or missing proof
-of the effective OFF setting remain unknown and must not be replaced with zero.
+of either effective ON/OFF setting remain unknown and must not be replaced with
+zero. The [on-device acceptance gates](#on-device-acceptance-gates) below are
+mandatory before matched comparisons or per-frame causal attribution.
 
 On this Root/KernelSU Android device, passing a caller-opened output FD with `-o`
 can be rejected by the tracing service. Generate a private copy of the canonical
@@ -20,15 +22,15 @@ config, append one `output_path: "/data/misc/perfetto-traces/eta-UNIQUE.pftrace"
 where the destination does not already exist, and run:
 
 ```sh
-perfetto --txt -c /data/local/tmp/eta-UNIQUE.pbtxt
+perfetto --txt -c /data/local/tmp/eta-UNIQUE/capture.pbtxt
 ```
 
-Do **not** pass `-o` together with that service-owned output path, force Android
+Do **not** pass `-o` for these captures, force Android
 `primary_trace_clock: MONOTONIC`, disable SELinux, or overwrite an existing trace.
 Default Android trace time is BOOTTIME; map the app nanoTime window using measured
 clock bridges at both ends and actual PID/Linux TID, not Java Thread.id.
-Preserve exact APK hash, Git SHA, signing certificate, process lifetime, OFF key
-readback and actual absence/presence evidence with each matched reproduction.
+Preserve exact APK hash, Git SHA, signing certificate, process lifetime, ON/OFF
+key readback and actual absence/presence evidence with each matched reproduction.
 
 Before attribution, inspect complete stats (including `*overwrit*`, per-buffer
 and per-CPU loss), source-specific time ranges, and emitted final completion.
@@ -42,11 +44,13 @@ input aliases and symlinks are refused to preserve original evidence.
 
 ## Evidence and limits of validation
 
-- The parent supplied both configs and the initial integrity SQL. The 180-second
-  baseline config is copied unchanged. The 30-second config only removes the
-  nonexistent `io.github.mangi.eta:agent_runtime` targets and documents why.
-- Manifest declares no `android:process` on `AgentRuntimeService` or
-  `AgentExecutionService`, and no application default override: these are in
+- The inherited 180-second config is a **legacy compatibility profile**, not
+  the canonical baseline. The 45-second canonical config now includes its four
+  block/direct-reclaim events; actual device/kernel support is **unverified**.
+  The 30-second config targets the main process and enables CPU sampling only.
+- The inherited manifest review reports no `android:process` on
+  `AgentRuntimeService` or `AgentExecutionService`, and no application default
+  override: these are in
   **`io.github.mangi.eta`**. `:voice`, `:voice_session`, `:recognition` are separate
   voice-related processes, not the agent runtime. Recheck the installed merged
   manifest and `adb shell ps -A` if another build changes this.
@@ -56,7 +60,8 @@ input aliases and symlinks are refused to preserve original evidence.
   compromised-data health finding, **not zero loss**, not a 180-second workload
   measurement and not evidence about Eta's actual jank.
 - Parent-reported sampled-config 1-second smoke used a deliberately nonexistent
-  target: **syntax accepted only; no real CPU/heap stacks were demonstrated**.
+  target: **syntax accepted only; no real CPU stacks were demonstrated**.
+  This CPU-only config cannot demonstrate allocation counts or allocation stacks.
 - This implementation agent has no shell/Android execution capability. The
   Python unit tests, SQL schema compatibility, final same-build core golden
   fixture, installed `profileable` permission, real samples and the full two
@@ -65,73 +70,108 @@ input aliases and symlinks are refused to preserve original evidence.
 
 ## Two separate capture passes (commands to run manually, not executed here)
 
-Use a trusted local USB-connected device and a same-build APK. Confirm the APK
-SHA/version and workload/device refresh rate. Local traces can contain system
-process/thread names and stack symbols; do not upload them casually. These
-configs do **not** enable `android.log`, full logcat, network/prompt/reply/audio
-payload capture or heap object dumps. Pass 2 samples CPU callstacks only; it does
-not capture allocation sizes, allocation stacks, or allocation contents.
+Use a trusted local USB-connected device and the final same-build APK. Local
+traces can contain system process/thread names and stack symbols; do not upload
+them casually. These configs do **not** enable `android.log`, full logcat,
+network/prompt/reply/audio payload capture or heap object dumps. Pass 2 samples
+CPU callstacks only, not allocation counts, sizes, stacks or contents.
 
-### 1. Baseline timeline, 180 seconds
+### 1. Canonical timeline, 45 seconds
 
-From the repository root, with `adb` already authorized:
+Use `docs/diagnostics/eta-jank.perfetto`. The 180-second
+`config/eta-jank-timeline.pbtxt` is legacy, not the recommended baseline; if used
+for exploration it still requires the same new-config/new-output procedure.
+Neither profile alone constitutes a matched long-text ON/OFF result.
+
+For **each** run (including each ON/OFF repetition), start a new private host
+workspace and a new private device config directory. The following host-side
+POSIX-shell example is manual, from the repository root with `adb` authorized.
+Stop on any error. Inspect the generated config: exactly one `output_path` must
+be present; refuse a template that already defines one. A destination whose
+existence cannot be checked with authorized device access is **unknown**, not
+available. Do not weaken SELinux to inspect or write it.
 
 ```sh
-adb shell ps -A
-adb push tools/stream-diagnostics/config/eta-jank-timeline.pbtxt /data/local/tmp/eta-jank-timeline.pbtxt
-adb shell perfetto --txt -c /data/local/tmp/eta-jank-timeline.pbtxt -o /data/misc/perfetto-traces/eta-jank-timeline.pftrace
-# During the 180-second foreground command, reproduce streaming and scrolling
-# on the device (or start the command in one terminal and use the device).
-adb pull /data/misc/perfetto-traces/eta-jank-timeline.pftrace ./eta-jank-timeline.pftrace
+# Select ONE profile for this run. For pass 2, use the path given below instead.
+PROFILE=docs/diagnostics/eta-jank.perfetto
+umask 077
+CAPTURE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eta-capture.XXXXXXXXXX") || exit 1
+CAPTURE_ID=${CAPTURE_DIR##*/}
+DEVICE_DIR=/data/local/tmp/$CAPTURE_ID
+TRACE_PATH=/data/misc/perfetto-traces/$CAPTURE_ID.pftrace
+cp "$PROFILE" "$CAPTURE_DIR/capture.pbtxt" || exit 1
+printf '\noutput_path: "%s"\n' "$TRACE_PATH" >> "$CAPTURE_DIR/capture.pbtxt" || exit 1
+printf 'profile=%s\ndevice_config=%s/capture.pbtxt\ntrace=%s\n' \
+  "$PROFILE" "$DEVICE_DIR" "$TRACE_PATH" > "$CAPTURE_DIR/paths.txt" || exit 1
+# The directory must be inspectable; a new mkdir also refuses config-dir reuse.
+adb shell "test -d /data/misc/perfetto-traces && test -x /data/misc/perfetto-traces && test ! -e '$TRACE_PATH' && test ! -L '$TRACE_PATH' && mkdir -m 700 '$DEVICE_DIR'" || exit 1
+adb push "$CAPTURE_DIR/capture.pbtxt" "$DEVICE_DIR/capture.pbtxt" || exit 1
+adb shell chmod 600 "$DEVICE_DIR/capture.pbtxt" || exit 1
+adb shell perfetto --txt -c "$DEVICE_DIR/capture.pbtxt" || exit 1
+# Reproduce streaming/scrolling during the foreground capture, e.g. use another
+# terminal/device. Wait for completion; preserve any producer/service errors.
+test ! -e "$CAPTURE_DIR/trace.pftrace" && test ! -L "$CAPTURE_DIR/trace.pftrace" || exit 1
+adb pull "$TRACE_PATH" "$CAPTURE_DIR/trace.pftrace" || exit 1
 ```
 
-The ring buffers and 1 GiB file cap are bounded; bounds can overwrite/truncate
-history. Do not assume the requested full duration survived. Check `stats`,
-`trace_bounds`, trace file completeness, and clock/window coverage first. If the
-app/session was not visible/streaming in the selected window, say so explicitly.
+There is **no `-o`**: the tracing service owns the fresh output path. Keep the
+private config, path manifest and original trace with this run's evidence.
+Do not reuse these paths, overwrite an existing trace, or force Android
+`primary_trace_clock: MONOTONIC`. Ring buffers and file caps can overwrite or
+truncate history. Check all stats, file completeness, final closure, source and
+per-frame window coverage; requested duration and trace bounds are not proof.
 
-### 2. Short sampled stacks, 30 seconds, same workload repeated separately
+Cleanup is optional and manual. Only after checking the pull's byte count/hash
+against the device original and preserving the evidence, confirm that the two
+remote files are exactly those created by **this** run in `paths.txt`. Use that
+run's retained variables, not variables reassigned for a later pass. Then delete
+only those confirmed files; never fixed legacy paths, globs, or recursive trees:
 
 ```sh
-adb push tools/stream-diagnostics/config/eta-jank-sampled-stacks.pbtxt /data/local/tmp/eta-jank-sampled-stacks.pbtxt
-adb shell perfetto --txt -c /data/local/tmp/eta-jank-sampled-stacks.pbtxt -o /data/misc/perfetto-traces/eta-jank-sampled-stacks.pftrace
-adb pull /data/misc/perfetto-traces/eta-jank-sampled-stacks.pftrace ./eta-jank-sampled-stacks.pftrace
-# Optional manual cleanup after verifying local copies (not performed by tool):
-adb shell rm /data/local/tmp/eta-jank-timeline.pbtxt /data/local/tmp/eta-jank-sampled-stacks.pbtxt
-adb shell rm /data/misc/perfetto-traces/eta-jank-timeline.pftrace /data/misc/perfetto-traces/eta-jank-sampled-stacks.pftrace
+adb shell rm -- "$DEVICE_DIR/capture.pbtxt" "$TRACE_PATH"
+adb shell rmdir -- "$DEVICE_DIR"
+```
+
+### 2. Short CPU-sampled stacks, 30 seconds, separate reproduction
+
+Repeat the entire fresh-workspace procedure above, replacing its `PROFILE`
+assignment with:
+
+```sh
+PROFILE=tools/stream-diagnostics/config/eta-jank-sampled-stacks.pbtxt
 ```
 
 Pass 2 is **CPU-only**: `linux.perf` CPU-clock **99 Hz** callstack sampling.
 It does not enable heapprofd, ART heap snapshots, or allocation-stack capture.
+It is **not** an ON/OFF pair and does **not** provide stacks of the same frames
+from pass 1, even if the workload is repeated. A within-pass sample/frame link
+still requires that trace's own calibrated window and process/thread identity.
 Supported Android/ART build, profileable permission, producer availability and
-unwind/symbol support are prerequisites. Present tables with
-zero rows, target-window zero samples, missing tables, unresolved stacks and
-sampling producer errors are different findings; none means “no allocations” or
-“CPU did no work”. Startup/runtime restrictions may require repeating the
-short pass after a manual app restart; do not silently automate it.
+unwind/symbol support are prerequisites. Present-but-empty tables,
+target-window zero samples, missing tables, unresolved stacks and producer
+errors are different findings; none means “CPU did no work” or “no allocations”.
+Startup/runtime restrictions may require a manually recorded app restart;
+do not silently automate it.
 
 Sampling and diagnostics add scheduling, unwinding, memory and I/O disturbance.
-Do not combine pass 2 FPS/jank into baseline or compare mismatched workloads as a
-performance improvement. CPU samples are statistical, heap counts/bytes are
-sampled estimates/accounting (including signed allocation/free rows), and dump
-timestamps are not exact allocation times. CPU, GC cycles, GPU and nested Eta
+Do not combine pass 2 FPS/jank into the unsampled baseline or compare mismatched
+workloads as a performance improvement. CPU samples are statistical, not exact
+method coverage or allocation evidence. CPU, GC cycles, GPU and nested Eta
 stages overlap. **Their durations cannot be precisely added into a single frame
-or response time**. A sampled hot stack correlated with a slow frame is evidence
-for investigation, not proof of causation.
+or response time**. A sampled hot stack is investigative evidence, not by itself
+proof of the first pass's frame cause.
 
 ### Profileability and symbols
 
 Official references (provided/checked by parent; not browsed by this agent):
 
 - https://developer.android.com/guide/topics/manifest/profileable-element
-- https://perfetto.dev/docs/data-sources/native-heap-profiler
 
 `profileable` permits trusted local shell profiling on a user build (needed for
 local stack profiling on the reported Android 15 device), not arbitrary app
-memory reading and not debugging. The official profileable discussion does not
-promise a heap object/body view. No heap producer is enabled in the CPU-only pass;
-if separately enabled, heapprofd is not a Java heap dump, and the app's `heap=proxyNotAllocationStack` counter
-is only a runtime heap proxy, not an allocation stack trace.
+memory reading and not debugging. No heap producer is enabled in the CPU-only
+pass. The app's `heap=proxyNotAllocationStack` counter is only a runtime heap
+proxy, not allocation counts or an allocation stack trace.
 
 Keep R8 `mapping.txt`, native unstripped ELF/debug symbols/build IDs, source
 revision and the exact installed **same APK** together. Another build's mapping
@@ -143,19 +183,25 @@ Do not decode anonymous conversation/run tokens back to user identifiers.
 Use a compatible local `trace_processor_shell` binary; it is not bundled or
 installed by this tool. Save its version. The examples below use the verified
 **v58.2** `query` subcommand; older versions may use different flags. Check
-`query --help`, and never reinterpret an SQL string as a filename. For example:
+`query --help`, and never reinterpret an SQL string as a filename. Set
+`TIMELINE_TRACE` to the pulled trace in the selected timeline run's private
+workspace (and `SAMPLED_TRACE` to a separate sampled run's trace below). Retain
+the associated path manifests; do not overwrite/rename old evidence. For example:
 
 ```sh
-trace_processor_shell query -f tools/stream-diagnostics/sql/diagnostic-integrity.sql eta-jank-timeline.pftrace
-trace_processor_shell query eta-jank-timeline.pftrace 'SELECT start_ts,end_ts FROM trace_bounds'
+trace_processor_shell query -f tools/stream-diagnostics/sql/diagnostic-integrity.sql "$TIMELINE_TRACE"
+trace_processor_shell query "$TIMELINE_TRACE" 'SELECT start_ts,end_ts FROM trace_bounds'
 # Replace numbers with actual TRACE-TIME ns and the app UPID from integrity SQL.
 python3 tools/stream-diagnostics/analyze.py render-sql --template window-analysis --start-ns 123000000000 --end-ns 124000000000 --upid 42 --output window.sql
-trace_processor_shell query -f window.sql eta-jank-timeline.pftrace
+trace_processor_shell query -f window.sql "$TIMELINE_TRACE"
 ```
 
 Do **not** use those example numbers as a real measurement or omit bounds and
 silently analyze the whole recording. PID is not UPID; PID may be recycled.
-SQL stats are trace-wide even when stage/frame queries select a window.
+SQL stats and integrity inventory counts are trace-wide even when stage/frame
+queries select a window. Global `sched`/FrameTimeline row totals, first-to-last
+source spans and overall trace bounds do **not** establish per-frame coverage
+or continuity. Check rows and missing intervals on each target thread/frame.
 `diagnostic-integrity.sql` prints **all** stats including zeros, indexed per-CPU
 entries and warnings/errors/loss/overwrite/truncation entries. Keep these with
 any conclusion. A missing expected statistic is unknown, not zero. The known
@@ -184,16 +230,14 @@ After integrity confirms the optional table exists, run sampling templates on
 
 ```sh
 python3 tools/stream-diagnostics/analyze.py render-sql --template cpu-samples --start-ns 123000000000 --end-ns 124000000000 --upid 42 --output cpu.sql
-trace_processor_shell query -f cpu.sql eta-jank-sampled-stacks.pftrace
-python3 tools/stream-diagnostics/analyze.py render-sql --template heap-samples --start-ns 123000000000 --end-ns 124000000000 --upid 42 --output heap.sql
-trace_processor_shell query -f heap.sql eta-jank-sampled-stacks.pftrace
+trace_processor_shell query -f cpu.sql "$SAMPLED_TRACE"
 ```
 
-Each optional query distinguishes present-but-zero trace rows from target-window
+The CPU query distinguishes present-but-zero trace rows from target-window
 sample counts and missing callsites. Missing-table SQL errors must be labelled
-unsupported/missing, **never replaced by zeros**. Heap output keeps each dump
-and heap separate; summing dumps is not a live-heap size. SQL/schema and runtime
-labels must be smoke checked by the parent on the actual trace processor.
+unsupported/missing, **never replaced by zeros**. Heap/allocation queries are
+not applicable to either capture profile above. SQL/schema and runtime labels
+must be checked on the actual trace processor.
 
 ## StreamDiag v2 JSON exporter
 
@@ -258,7 +302,8 @@ Example (replace bounds with actual **System.nanoTime ns**, not trace/wall time)
 ```sh
 python3 tools/stream-diagnostics/analyze.py summary extracted-streamdiag-v2.txt --start-ns 123000000000 --end-ns 124000000000 --output summary.json
 # Optional: export this dedicated query in trace_processor's CSV output format.
-trace_processor_shell query eta-jank-timeline.pftrace 'SELECT name,idx,value,severity,source FROM stats ORDER BY name,idx' > stats.csv
+# Noclobber: an existing stats.csv is evidence, not a reusable output target.
+(set -C; trace_processor_shell query "$TIMELINE_TRACE" 'SELECT name,idx,value,severity,source FROM stats ORDER BY name,idx' > stats.csv) || exit 1
 python3 tools/stream-diagnostics/analyze.py summary extracted-streamdiag-v2.txt --start-ns 123000000000 --end-ns 124000000000 --stats-csv stats.csv --output summary-with-health.json
 python3 -m unittest discover -s tools/stream-diagnostics -p 'test_analyze.py' -v
 ```
@@ -364,6 +409,11 @@ never a fabricated zero.
 
 ### Complete literal table for new or connected labels
 
+The source/wiring descriptions here are inherited preparation notes, not a
+verification of the final source or installed APK. Recheck each connection in
+that artifact; label registration does not establish runtime coverage or supply
+frame-to-row/block identifiers.
+
 New labels are registered only in `StreamPerformanceDiagnostics.kt`'s
 `StreamDiagnosticGapLabels.stages`; the existing registry delegates validation to
 that fixed set. No dynamic suffix or content-derived label is accepted.
@@ -406,12 +456,92 @@ requested-window samples. The analysis script does not query Perfetto or recover
 missing tables silently. Check table existence with `diagnostic-integrity.sql`
 first; a query failure remains unsupported/unavailable, never a zero-row result.
 
-## Acceptance report checklist
+## On-device acceptance gates
 
-Record APK SHA/version/source/same-build symbols, device/refresh rate, pass and
-workload, exact windows and clock mapping uncertainty, visibility/run/page
-coverage, all application drop/truncation counters, trace stats including errors,
-optional table presence/zero samples/unresolved symbols, and unknown attribution.
-Separate baseline findings from perturbed sample evidence. Installed capture and
-controlled same-workload verification are still required; this preparation is
-not “installed and retested”, “all jank explained” or “optimized”.
+Apply these gates to **each final on-device reproduction**, not a smoke trace or
+synthetic fixture. They are evidence requirements, **not implementation claims**:
+this documentation/config change adds no clock calibration emitter, Linux TID
+bridge, row/block link emitter, lock tracing or independent OFF frame collector.
+Verify actual final-source wiring and installed-APK output; a registered stage,
+parser field, pending wiring note or passing fixture does not supply missing
+data. Missing evidence remains unavailable and blocks the corresponding claim.
+
+1. **Final artifact identity.** Preserve the installed final APK's SHA-256,
+   version/build variant, full source Git SHA and dirty-source status, signing
+   certificate SHA-256, same-build R8/native symbols and device/refresh rate.
+   Verify the installed bytes/signature, not just a candidate APK or version
+   string. ON and OFF must use this same final artifact; record process lifetime,
+   restarts and device conditions for each repetition.
+2. **Effective ON and OFF.** Record the exact setting key, namespace/store and
+   value read back from the effective app setting at both ends of each run,
+   including persistence/restart behavior. Verify actual diagnostic
+   presence/absence in the chosen window. A toggle screenshot, a presumed key,
+   or missing diagnostic lines alone is not proof of OFF; ON also needs positive
+   activation evidence. OFF absence must never be exported as zero counters.
+3. **Same rendered workload.** Match long-text body, length, streaming chunk
+   order/timing, page/visibility, scroll/list position and rendering options.
+   Check the actual rendered body, not only the input or server response. If the
+   **53-character prefix** is still rendered differently between ON/OFF
+   (including appearing on-screen in only one setting), the bodies differ:
+   do **not** call it fully same-load ON/OFF. Keep local body verification
+   private; these profiles must not start recording
+   prompt/reply text to satisfy this gate.
+4. **One window and final closure.** Use explicit equal-duration, matched-phase
+   `[start,end)` windows for app diagnostics, trace and each frame collector.
+   Require the session's emitted `final=true`, `admission=closed` and exact
+   window bounds, with open-at-cutoff/late/rejected records accounted for.
+   Retain **all** application integrity/capacity counters for that same window,
+   including span/main/event-link overwrites, output truncation, slow/frame
+   budget drops and `metricsDropped`, plus parser rejection/truncation and all
+   trace loss/error/per-buffer/per-CPU stats. Admission snapshots and cumulative
+   counters are not exact completion filters or exact per-frame losses. OFF may
+   legitimately omit app diagnostics; its independent collector still needs a
+   completed matched window and its own integrity evidence. Unclosed/missing
+   reports and unobserved post-close completions cannot be replaced with zeros.
+5. **Two-end clock calibration.** Measure app MONOTONIC/nanoTime against
+   BOOTTIME/elapsed realtime at **both start and end**, correlated with actual
+   Perfetto clock snapshots. Preserve bracketing/read-skew bounds, quantization,
+   suspend effects and offset/drift uncertainty, including sample-clock
+   conversion for `PERF_CLOCK_MONOTONIC` in pass 2. Verify intended/actual-vsync
+   domains on this device. Report the calibrated interval and uncertainty for
+   every selected frame; one anchor or a pasted nanoTime SQL bound is not enough.
+   If uncertainty makes the frame/dispatch association non-unique, stop that
+   attribution rather than choosing the nearest frame.
+6. **Real process/thread bridge.** Correlate actual PID/Linux TID and process/
+   thread lifetimes to trace UPID/UTID for Eta main, RenderThread and relevant
+   workers. Java `Thread.id`, a numeric `span.thread`, thread names and recycled
+   PIDs are not verified Linux identity bridges by themselves. If final source
+   does not emit the bridge, obtain a verified independent bridge or leave the
+   link unavailable; do not document the bridge as already implemented.
+7. **Actually reproduce abnormal Eta frames.** Retain abnormal frame records
+   from this workload with exact criteria, counts/denominators and unique
+   calibrated joins to the target app/surface and dispatch. Global trace counts,
+   other apps' FrameTimeline rows, first/last source timestamps or a long trace
+   cannot substitute for actual per-frame coverage. If **Eta FrameTimeline is
+   absent**, report only execution/wait evidence for uniquely matched, calibrated
+   FrameMetrics frames; do not claim presentation FPS or FrameTimeline deadline
+   misses. If OFF has no independent same-kind frame metric and valid window/
+   denominator, make **no ON/OFF FPS comparison** (nor a missing-as-zero jank
+   comparison). Visual smoothness and doFrame envelopes are not substitutes.
+8. **Per-frame cause chain, not window totals.** For each reproduced abnormal
+   frame, retain clipped main/RenderThread `sched` and `thread_state` rows,
+   Running/Runnable/wait intervals, explicit lock-contention/wait evidence,
+   actual stop-the-world GC pause slices and RenderThread/binder/fence waits.
+   Distinguish each source's verified per-frame coverage/observed-zero result
+   from unavailable data; not every frame must contain every kind of wait.
+   D/S state is not automatically a lock wait; runtime GC time and concurrent GC
+   cycles are not pause durations. Validate block/direct-reclaim event support
+   and target-window coverage on this kernel before using them. Link the frame
+   to actual anonymous event/span/**row/block** identifiers and the measured
+   rendered work; page labels or temporal proximity alone do not identify a
+   conversation row/markdown block. Missing source links or lock/pause/wait data
+   leave that portion unknown, not zero or a proven renderer cause. Show exact
+   local evidence references, gaps and uncertainty; overlapping components and
+   inclusive parent/child stages are not an additive causal pie chart.
+
+Keep a per-frame evidence/unknowns table and the matched-run artifact/window/
+integrity manifest with the report. Separate unsampled findings from the
+perturbed 99 Hz repetition. Failed gates permit a bounded exploratory finding,
+not “installed and retested”, “fully same-load”, “all jank explained”, an ON/OFF
+acceptance result or “optimized”. No full two-pass/on-device acceptance was
+performed by this implementation agent.
