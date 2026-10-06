@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentShellToolAvailability
+import io.github.mangi.eta.data.model.ProviderTypes
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -171,6 +172,12 @@ internal object AgentPromptBuilder {
                         "只有需要把 URI 交给外部应用时才使用 open_uri；open_uri 不用于读取网页。"
                 )
             )
+        }
+        // Anthropic can retain the instruction prefix when memory/Skills change.
+        // This local hint is consumed by its adapter, never copied to the HTTP body.
+        if (config.providerType == ProviderTypes.ANTHROPIC) {
+            messages.optJSONObject(messages.length() - 1)
+                ?.put(AnthropicPromptCaching.SYSTEM_BOUNDARY_KEY, true)
         }
         buildMemorySystemMessage(memoryContext)?.let(messages::put)
         buildSkillSystemMessage(skillContext)?.let(messages::put)
