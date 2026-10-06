@@ -16,10 +16,10 @@ SPEC = importlib.util.spec_from_file_location("eta_diag_analyze", Path(__file__)
 diag = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(diag)
 
-PREFIX = "StreamDiag id=12ab34cd windowStartNs=100 windowEndNs=300 final=false v=2 type={kind} "
+PREFIX = "StreamDiag id=12ab34cd windowStartNs=100 windowEndNs=300 boundary=admissionSnapshot final=false v=2 type={kind} "
 WINDOW = PREFIX.format(kind="window") + (
     "anchorNanoNs=300 uptimeMs=1 elapsedRealtimeNs=900 package=io.github.mangi.eta "
-    "versionCode=42 versionName=1.2.3 buildType=unknown boundary=admissionSnapshot duration=inclusive "
+    "versionCode=42 versionName=1.2.3 buildType=unknown duration=inclusive "
     "heap=proxyNotAllocationStack gcTime=runtimeCounterNotPause spanCapacity=2048 "
     "slowBudget=256 frameBudget=120 ringOverwritten=2 slowBudgetDropped=3 "
     "frameBudgetDropped=4 spanOutputTruncated=5 tokenSaturated=6 "

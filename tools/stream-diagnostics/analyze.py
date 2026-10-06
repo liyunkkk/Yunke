@@ -89,7 +89,7 @@ FRAME_NUMBERS = frozenset({
     "deadlineNs", "metricsDropped", "unknownNs", "inputNs", "animationNs",
     "layoutNs", "drawNs", "syncNs", "commandNs", "swapNs", "gpuNs",
 })
-COMMON = frozenset({"v", "type", "id", "windowStartNs", "windowEndNs", "final"})
+COMMON = frozenset({"v", "type", "id", "windowStartNs", "windowEndNs", "final", "boundary"})
 FIELDS = {
     "window": COMMON | COUNTERS | {
         "anchorNanoNs", "uptimeMs", "elapsedRealtimeNs", "package", "versionCode",
