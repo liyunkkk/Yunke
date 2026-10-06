@@ -370,8 +370,9 @@ class ConversationCollaborationDialogTest {
         compose.onNodeWithText("切换子代理组").assertDoesNotExist()
         compose.onNodeWithText("使用当前配置").performClick()
         assertFooterAligned("切换子代理组")
-        assertTrue("empty content must not force a tall card",
-            compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().let { it.bottom - it.top < 300.dp })
+        // fork 增量：面板含 Kimi 配置行，高度基线相应放宽（仍须明显小于 480dp 视口）。
+        val panelCardHeight = compose.onNodeWithTag("subagent-collaboration-card").getUnclippedBoundsInRoot().let { it.bottom - it.top }
+        assertTrue("empty content must not force a tall card: $panelCardHeight", panelCardHeight < 420.dp)
         compose.onNodeWithText("使用当前配置").assertDoesNotExist()
         compose.onNodeWithText("自动委派").assertIsDisplayed()
         compose.runOnIdle {

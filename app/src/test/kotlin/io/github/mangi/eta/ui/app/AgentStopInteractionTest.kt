@@ -64,7 +64,7 @@ class AgentStopInteractionTest {
         app.javaClass.getDeclaredField("selectedConversationId").apply { isAccessible = true }.set(app, id)
         call(app, "updateConversation", id, AgentChatHomeUiState(
             messages = emptyList(), input = "", isStreaming = false, thinkingEnabled = false,
-        ), false, true)
+        ), false)
     }
 
     @Suppress("UNCHECKED_CAST")

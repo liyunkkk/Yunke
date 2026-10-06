@@ -98,7 +98,7 @@ class AgentAppStateRevisionTransactionTest {
         val attached = old.copy(messages = old.messages.map {
             if (it.id == "user-h") (it as UserMessageUi).copy(imageSources = listOf(source.absolutePath)) else it
         })
-        call(f.app, "updateConversation", f.id, attached, false, true)
+        call(f.app, "updateConversation", f.id, attached, false)
         try {
             f.app.branchConversation("assistant-h-1"); f.settle()
             val branchId = f.selected()!!
@@ -190,7 +190,7 @@ class AgentAppStateRevisionTransactionTest {
         val otherId = "other-${UUID.randomUUID()}"
         val other = before.copy(messages = emptyList(), history = emptyList(), input = "other draft")
         set(f.app, "selectedConversationId", otherId)
-        call(f.app, "updateConversation", otherId, other, false, true)
+        call(f.app, "updateConversation", otherId, other, false)
         val current = f.state(otherId)
         f.settle()
         assertEquals(otherId, f.selected())
@@ -213,7 +213,7 @@ class AgentAppStateRevisionTransactionTest {
         f.app.beginMessageEdit("user-h"); f.settle()
         val editing = f.state()
         val rewritten = editing.copy(history = listOf(ConversationMessage("user", "intervening")))
-        call(f.app, "updateConversation", f.id, rewritten, false, true)
+        call(f.app, "updateConversation", f.id, rewritten, false)
         assertEquals(rewritten.history, AgentConversationRevisionReducer.outboundHistory(f.state()))
         f.app.cancelMessageEdit()
         assertEquals(rewritten.history, f.state().history)
@@ -232,7 +232,7 @@ class AgentAppStateRevisionTransactionTest {
 
     @Test fun runningAndPausedSourcesAreNeverAbortedOrRevised() = fixture { f ->
         for (state in listOf(f.state().copy(isStreaming = true), f.state().copy(isPaused = true))) {
-            call(f.app, "updateConversation", f.id, state, false, true)
+            call(f.app, "updateConversation", f.id, state, false)
             val before = f.state()
             f.app.beginMessageEdit("user-h")
             f.app.deleteMessageTurn("assistant-h-1")
@@ -376,7 +376,7 @@ class AgentAppStateRevisionTransactionTest {
                 contextBudgetReceiptTokens = 999, contextHasStarted = true, cloudReceiptRequestId = "old-request",
             )
             val route = call(app, "contextRouteSignature", source) as String
-            call(app, "updateConversation", id, source.copy(cloudRouteSignature = route), false, true)
+            call(app, "updateConversation", id, source.copy(cloudRouteSignature = route), false)
             app.currentDraftField().edit { replace(0, length, "saved draft") }
         }
         fun selected() = get(app, "selectedConversationId") as String?
