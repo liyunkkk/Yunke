@@ -107,6 +107,7 @@ import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
 import io.github.mangi.eta.ui.components.streamDiagnosticDraw
+import io.github.mangi.eta.ui.components.settingsSectionDiagnostics
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -308,7 +309,7 @@ internal fun SettingsScreen(
             // ── LLM 提供商 ──────────────────────────────────────────────
             item(key = "section_agent") {
                 SmallTitle(stringResource(R.string.settings_llm_providers))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("agent").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.ui_model_provider_e8c7f5),
                         summary = providerSummary,
@@ -332,7 +333,7 @@ internal fun SettingsScreen(
 
             item(key = "section_model_features") {
                 SmallTitle(stringResource(R.string.settings_model_features))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("model_features").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.route_context_compression),
                         startAction = {
@@ -366,7 +367,7 @@ internal fun SettingsScreen(
             // ── 扩展 ────────────────────────────────────────────
             item(key = "section_context_extensions") {
                 SmallTitle(stringResource(R.string.settings_context_extensions))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("context_extensions").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.settings_assistants),
                         startAction = {
@@ -403,7 +404,7 @@ internal fun SettingsScreen(
             // ── 通用 ────────────────────────────────────────────────────
             item(key = "section_general") {
                 SmallTitle(stringResource(R.string.settings_general))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("general").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.voice_title),
                         startAction = { PreferenceIcon(icon = Icons.Rounded.RecordVoiceOver) },
@@ -445,7 +446,7 @@ internal fun SettingsScreen(
             // ── 工具 ───────────────────────────────────────────────────
             item(key = "section_tools") {
                 SmallTitle(stringResource(R.string.ui_tool_a72ef1))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("tools").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.settings_tools_list),
                         startAction = { PreferenceIcon(Icons.Rounded.Dashboard) },
@@ -521,7 +522,7 @@ internal fun SettingsScreen(
 
             item(key = "section_haptics") {
                 SmallTitle(stringResource(R.string.haptics_title))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("haptics").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.haptics_list),
                         summary = stringResource(R.string.haptics_entry_summary),
@@ -534,7 +535,7 @@ internal fun SettingsScreen(
             // ── 系统助手接管 ──────────────────────────────────────────────
             item(key = "section_assistant_takeover") {
                 SmallTitle(stringResource(R.string.ui_system_assistant_takes_over_f46043))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("assistant_takeover").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.ui_eta_system_assistant_003e9b),
                         summary = stringResource(
@@ -601,7 +602,7 @@ internal fun SettingsScreen(
                 // ── 厂商助手兼容入口 ──────────────────────────────────────────
                 item(key = "section_oem_assistant_compatibility") {
                     SmallTitle(stringResource(R.string.ui_xiaobu_xiaoai_compatible_entrance_ae918a))
-                    Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    Card(modifier = Modifier.settingsSectionDiagnostics("oem_assistant_compatibility").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                         SwitchPref(
                             context = context,
                             prefs = prefs,
@@ -625,7 +626,7 @@ internal fun SettingsScreen(
                 // ── Gemini ─────────────────────────────────────────────────
                 item(key = "section_gemini") {
                     SmallTitle("Gemini")
-                    Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    Card(modifier = Modifier.settingsSectionDiagnostics("gemini").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                         if (prefs != null || hasConnectedFramework) {
                             SwitchPref(
                                 context = context,
@@ -680,7 +681,7 @@ internal fun SettingsScreen(
                 // ── 一圈即搜 ────────────────────────────────────────────────
                 item(key = "section_circle_to_search") {
                     SmallTitle(stringResource(R.string.ui_search_in_one_turn_179584))
-                    Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    Card(modifier = Modifier.settingsSectionDiagnostics("circle_to_search").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                         SwitchPref(
                             context = context,
                             prefs = prefs,
@@ -702,7 +703,7 @@ internal fun SettingsScreen(
 
             item(key = "section_diagnostics") {
                 SmallTitle(stringResource(R.string.settings_diagnostics))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("diagnostics").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     SwitchPreference(
                         title = stringResource(R.string.settings_file_logging),
                         summary = stringResource(R.string.settings_file_logging_summary),
@@ -760,7 +761,7 @@ internal fun SettingsScreen(
             // ── 权限 ────────────────────────────────────────────────────
             item(key = "section_permissions") {
                 SmallTitle(stringResource(R.string.ui_permissions_560165))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("permissions").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.ui_permission_health_3048bb),
                         summary = stringResource(R.string.ui_permissions_and_status_35f368),
@@ -887,7 +888,7 @@ internal fun SettingsScreen(
             // ── 关于 ────────────────────────────────────────────────────
             item(key = "section_about") {
                 SmallTitle(stringResource(R.string.ui_about_bed172))
-                Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                Card(modifier = Modifier.settingsSectionDiagnostics("about").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.update_check_title),
                         summary = if (checkingUpdate) {

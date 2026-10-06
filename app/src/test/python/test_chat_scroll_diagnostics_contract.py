@@ -111,7 +111,8 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         self.assertNotRegex(raw, r'\.select\s*\(|DiagnosticSpanRecord\s*\(|diagnosticInfo')
         selection = class_body(self.bounded, 'DiagnosticRawDetailSnapshot')
         self.assertNotRegex(selection, r'@Synchronized|\bsynchronized\s*\(')
-        self.assertIn('DiagnosticSpanRecord(', body(selection, 'select'))
+        self.assertIn('candidates(includeProtected = true)', body(selection, 'select'))
+        self.assertIn('DiagnosticSpanRecord(', body(selection, 'candidates'))
 
     def test_emit_selects_and_reports_the_same_snapshot_outside_the_lock(self):
         attach = body(self.stream, 'attach')

@@ -107,6 +107,13 @@ internal data class StreamDiagnosticAttribution(
     val replay: Boolean = false,
     val event: Long = 0,
     val sourceSpan: Long = 0,
+    val list: Long = 0,
+    val row: Int = 0,
+    val rowType: String = "unknown",
+    val block: Int = -1,
+    val blockType: String = "unknown",
+    val blockChars: Int = 0,
+    val component: String = "unknown",
 )
 
 internal data class DiagnosticSpanContext(
@@ -141,7 +148,7 @@ internal data class DiagnosticSpanRecord(
 /** Dispatch wall time, not CPU time or a FrameTimeline frame. Subsets must not be added. */
 internal data class DiagnosticMainMessageRecord(
     val beginNs: Long, val endNs: Long, val frameDispatch: Boolean,
-    val coveredNs: Long, val revealNs: Long,
+    val coveredNs: Long, val revealNs: Long, val cpuNs: Long = -1,
 ) {
     val uninstrumentedNs: Long get() = endNs - beginNs - coveredNs
     val nonRevealNs: Long get() = endNs - beginNs - revealNs
@@ -152,6 +159,8 @@ internal data class DiagnosticFrameRecord(
     val page: Int, val pageEnd: Int, val changed: Boolean, val metricsDropped: Int,
     val unknownNs: Long, val inputNs: Long, val animationNs: Long, val layoutNs: Long,
     val drawNs: Long, val syncNs: Long, val commandNs: Long, val swapNs: Long, val gpuNs: Long,
+    val listSnapshot: DiagnosticListSnapshot? = null,
+    val mainMessages: List<DiagnosticMainMessageRecord> = emptyList(),
 ) {
     val missed: Boolean get() = deadlineNs > 0 && totalNs > deadlineNs
     // Signed residual of FrameMetrics components; GPU overlaps command/swap and is excluded.
@@ -168,6 +177,9 @@ internal data class DiagnosticDetailSnapshot(
     val spans: List<DiagnosticSpanRecord>, val frames: List<DiagnosticFrameRecord>,
     val overwritten: Long, val slowBudgetDropped: Long, val frameBudgetDropped: Long,
     val spanOutputTruncated: Long,
+    val protectedBudgetDropped: Long = 0,
+    val frameCaptureTruncated: Long = 0,
+    val previousWindowSpans: Long = 0,
 )
 
 /** Primitive columns detached under the admission lock; selection and record construction are outside it. */
@@ -180,26 +192,50 @@ internal class DiagnosticRawDetailSnapshot internal constructor(
     private val frames: Array<DiagnosticFrameRecord?>,
     private val overwritten: Long, private val slowDropped: Long, private val frameDropped: Long,
     private val slowLimit: Int, private val slowNs: Long, private val first: Int, private val size: Int,
+    private val slowColumns: DiagnosticSpanColumns? = null,
+    private val protectedSpans: Array<DiagnosticSpanRecord?> = emptyArray(),
+    private val protectedDropped: Long = 0,
+    private val captureTruncated: Long = 0,
+    private val previousWindowSpans: Long = 0,
 ) {
-    fun select(): DiagnosticDetailSnapshot {
-        val frameSnapshot = frames.filterNotNull()
-        val out = ArrayList<DiagnosticSpanRecord>(minOf(size, slowLimit))
-        var truncated = 0L
+    private fun candidates(includeProtected: Boolean): List<DiagnosticSpanRecord> {
+        val out = linkedMapOf<Long, DiagnosticSpanRecord>()
+        // Protected records were copied at the anomalous FrameMetrics callback, not at emit.
+        if (includeProtected) protectedSpans.filterNotNull().forEach { out[it.span] = it }
+        slowColumns?.records()?.forEach { out[it.span] = it }
         for (i in 0 until size) {
             val slot = (first + i) % stages.size
-            val slow = ends[slot] - begins[slot] >= slowNs
-            val overlapsFrame = mains[slot] && frameSnapshot.any {
-                begins[slot] < it.intendedNs + it.totalNs && ends[slot] > it.intendedNs
-            }
-            if (slow || overlapsFrame) {
-                if (out.size == slowLimit) truncated++ else out += DiagnosticSpanRecord(
-                    requireNotNull(stages[slot]), spans[slot], parents[slot], begins[slot], ends[slot], threads[slot],
-                    mains[slot], attrs[slot], pages[slot], pageEnds[slot], values[slot],
-                )
+            out.putIfAbsent(spans[slot], DiagnosticSpanRecord(
+                requireNotNull(stages[slot]), spans[slot], parents[slot], begins[slot], ends[slot], threads[slot],
+                mains[slot], attrs[slot], pages[slot], pageEnds[slot], values[slot],
+            ))
+        }
+        return out.values.toList()
+    }
+
+    fun recentForFrame(frame: DiagnosticFrameRecord): List<DiagnosticSpanRecord> =
+        candidates(includeProtected = false).filter {
+            it.main && diagnosticOverlapNs(it.beginNs, it.endNs,
+                frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS, frame.intendedNs + frame.totalNs) > 0
+        }
+
+    fun select(): DiagnosticDetailSnapshot {
+        val frameSnapshot = frames.filterNotNull()
+        val eligible = candidates(includeProtected = true).filter { span ->
+            span.endNs - span.beginNs >= slowNs || frameSnapshot.any { frame ->
+                span.main && diagnosticOverlapNs(span.beginNs, span.endNs,
+                    frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS, frame.intendedNs + frame.totalNs) > 0
             }
         }
+        // Actual frame overlaps precede lookback-only and unrelated slow work. Stable ties keep admission order.
+        val prioritized = eligible.sortedBy { span ->
+            if (span.main && frameSnapshot.any { diagnosticOverlapNs(span.beginNs, span.endNs,
+                    it.intendedNs, it.intendedNs + it.totalNs) > 0 }) 0 else 1
+        }
+        val out = prioritized.take(slowLimit)
         return DiagnosticDetailSnapshot(fromNs, toNs, out, frameSnapshot,
-            overwritten, slowDropped, frameDropped, truncated)
+            overwritten, slowDropped, frameDropped, (prioritized.size - out.size).toLong(),
+            protectedDropped, captureTruncated, previousWindowSpans)
     }
 }
 
@@ -211,7 +247,7 @@ internal class DiagnosticRawDetailSnapshot internal constructor(
 internal class BoundedDiagnosticDetails(
     startedNs: Long,
     private val capacity: Int = 2048,
-    private val slowLimit: Int = 256,
+    private val slowLimit: Int = 512,
     private val frameLimit: Int = 120,
     private val slowNs: Long = 4_000_000L,
     private val admissionLock: Any = Any(),
@@ -237,6 +273,15 @@ internal class BoundedDiagnosticDetails(
     // Fixed-size, bounded objects on the worker only (FrameMetrics callback).
     private val frames = arrayOfNulls<DiagnosticFrameRecord>(frameLimit)
     private var frameSize = 0
+    // Separate primitive retention prevents a flood of short spans overwriting all slow evidence.
+    private var slowColumns = DiagnosticSpanColumns(slowLimit)
+    private val protectedSpans = arrayOfNulls<DiagnosticSpanRecord>(FRAME_PROTECTED_SPAN_CAPACITY)
+    private val protectedIds = HashSet<Long>()
+    private var protectedSize = 0
+    private var protectedDropped = 0L
+    private var captureTruncated = 0L
+    private var previousWindowSpans = 0L
+    private var previousWindow: DiagnosticRawDetailSnapshot? = null
     init { require(capacity > 0 && slowLimit > 0 && frameLimit > 0) }
 
     @Volatile var closed = false
@@ -255,6 +300,7 @@ internal class BoundedDiagnosticDetails(
         if (endNs - beginNs >= slowNs) {
             if (slowAccepted >= slowLimit) { slowDropped++; return }
             slowAccepted++
+            slowColumns.add(stage, span, parent, beginNs, endNs, thread, main, attribution, page, pageEnd, value)
         }
         if (size == capacity) overwritten++ else size++
         stages[next] = stage; spans[next] = span; parents[next] = parent
@@ -277,16 +323,54 @@ internal class BoundedDiagnosticDetails(
         frames[frameSize++] = frame
     }
 
+    /** Worker-only capture: locks copy columns/admit bounded references; overlap selection is outside the lock. */
+    fun protectFrame(frame: DiagnosticFrameRecord) {
+        val pair = synchronized(admissionLock) {
+            if (closed) return
+            recentSnapshot(frame.intendedNs + frame.totalNs) to previousWindow
+        }
+        val current = pair.first.recentForFrame(frame)
+        val previous = pair.second?.recentForFrame(frame).orEmpty()
+        val all = (current + previous).distinctBy { it.span }.sortedByDescending {
+            diagnosticOverlapNs(it.beginNs, it.endNs, frame.intendedNs, frame.intendedNs + frame.totalNs)
+        }
+        val selected = all.take(FRAME_CAPTURE_MAX_SPANS)
+        val previousIds = previous.map { it.span }.toHashSet()
+        val selectedFromPrevious = selected.count { it.span in previousIds }
+        synchronized(admissionLock) {
+            if (closed) return
+            captureTruncated += all.size - selected.size
+            previousWindowSpans += selectedFromPrevious
+            selected.forEach { span ->
+                if (span.span !in protectedIds) {
+                    if (protectedSize == protectedSpans.size) protectedDropped++
+                    else { protectedSpans[protectedSize++] = span; protectedIds.add(span.span) }
+                }
+            }
+        }
+    }
+
+    private fun recentSnapshot(toNs: Long) = DiagnosticRawDetailSnapshot(fromNs, maxOf(fromNs, toNs),
+        stages.copyOf(), spans.copyOf(), parents.copyOf(), begins.copyOf(), ends.copyOf(), threads.copyOf(),
+        mains.copyOf(), attrs.copyOf(), pages.copyOf(), pageEnds.copyOf(), values.copyOf(), emptyArray(),
+        overwritten, slowDropped, frameDropped, slowLimit, slowNs, (next - size + capacity) % capacity, size,
+        slowColumns.detached())
+
     /** No overlap scanning, span construction, or formatting while holding this lock. */
     fun snapshot(toNs: Long, final: Boolean = false): DiagnosticRawDetailSnapshot = synchronized(admissionLock) {
         require(toNs >= fromNs)
         val raw = DiagnosticRawDetailSnapshot(fromNs, toNs,
             stages.copyOf(), spans.copyOf(), parents.copyOf(), begins.copyOf(), ends.copyOf(), threads.copyOf(),
             mains.copyOf(), attrs.copyOf(), pages.copyOf(), pageEnds.copyOf(), values.copyOf(), frames.copyOf(frameSize),
-            overwritten, slowDropped, frameDropped, slowLimit, slowNs, (next - size + capacity) % capacity, size)
+            overwritten, slowDropped, frameDropped, slowLimit, slowNs, (next - size + capacity) % capacity, size,
+            slowColumns.detached(), protectedSpans.copyOf(protectedSize), protectedDropped, captureTruncated, previousWindowSpans)
+        previousWindow = raw // One detached generation only; raw snapshots never reference each other.
         stages.fill(null); attrs.fill(null); frames.fill(null)
         fromNs = toNs; size = 0; next = 0; overwritten = 0
         slowAccepted = 0; slowDropped = 0; frameDropped = 0; frameSize = 0; frameReserved = 0
+        slowColumns.reset(); protectedSpans.fill(null); protectedIds.clear(); protectedSize = 0
+        protectedDropped = 0; captureTruncated = 0; previousWindowSpans = 0
+        if (final) previousWindow = null
         if (final) closed = true
         raw
     }

@@ -655,6 +655,7 @@ internal fun AgentConversationMessages(
     // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
     val scrollTraceEnabled = rememberChatScrollTraceEnabled()
     val chatListTrace = ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
+    val diagnosticList = remember(scrollState) { nextStreamDiagnosticListId() }
     traceChatListOwnerExecution(chatListTrace, scrollTraceEnabled)
     // Retain successful parses beyond individual lazy-row compositions.
     val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
@@ -1335,6 +1336,7 @@ internal fun AgentConversationMessages(
                     }
                 }
                 .onGloballyPositioned {
+                    StreamPerformanceDiagnostics.recordListGeometry(diagnosticList, scrollState, visibleMessages.size)
                     // Post-layout, before draw: pinned work insertion preserves a measured
                     // pre-click key even when the tail is outside the lazy measurement window.
                     // Normal follow still consumes only excess beyond the existing draw buffer.
@@ -1407,7 +1409,10 @@ internal fun AgentConversationMessages(
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalExpansionHoldsBottom provides expansionHoldsBottom,
                     LocalCompletedMarkdownCache provides completedMarkdownCache,
+                    LocalStreamDiagnosticRow provides StreamPerformanceDiagnostics.rowAttribution(
+                        diagnosticList, entry.key, timelineDiagnosticRowType(entry)),
                 ) {
+                val diagnosticRow = LocalStreamDiagnosticRow.current
                 val firstMessageAppearance = if (entry is AgentTimelineRow.Message) {
                     // Retire an existing root's appearance on an explicit work toggle even
                     // if LazyColumn retains its composition while temporarily unmeasured.
@@ -1415,7 +1420,11 @@ internal fun AgentConversationMessages(
                     remember(entry.key, workExpansionOverrides) { appearedMessageKeys.add(entry.key) }
                 } else false
                 Column(
-                    modifier = Modifier.fillMaxWidth().then(
+                    modifier = Modifier
+                        .streamDiagnosticMeasure("row.measure", diagnosticRow)
+                        .streamDiagnosticPlacement("row.place", diagnosticRow)
+                        .streamDiagnosticDraw("row.draw", diagnosticRow)
+                        .fillMaxWidth().then(
                         if (entry is AgentTimelineRow.Message) Modifier.animateItem(
                             fadeInSpec = if (firstMessageAppearance) tween(durationMillis = 180) else null,
                             placementSpec = null,

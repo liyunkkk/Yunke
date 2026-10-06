@@ -1246,6 +1246,7 @@ private fun ChatMarkdownDocument(
     progressive: Boolean = false,
 ) {
     val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    val diagnosticRow = LocalStreamDiagnosticRow.current
     SideEffect { traceChatBodyRun("md.doc", bodyTraceMount) }
     val blocks = remember(root) { topLevelMarkdownBlocks(root) }
     // 用户点击展开长文档时，把整篇的组合与文字测量分摊到连续几帧，避免首帧一次性
@@ -1299,8 +1300,8 @@ private fun ChatMarkdownDocument(
     // Inclusive document-container range; never add it to the inner block spans.
     Column(
         modifier
-            .streamDiagnosticMeasure("render.measure")
-            .streamDiagnosticDraw("render.draw"),
+            .streamDiagnosticMeasure("render.measure", diagnosticRow)
+            .streamDiagnosticDraw("render.draw", diagnosticRow),
     ) {
         blocks.forEachIndexed { index, node ->
             if (index >= composedBlockLimit) return@forEachIndexed
@@ -1329,6 +1330,8 @@ private fun ChatMarkdownDocument(
                     components = components,
                     content = renderContent,
                     freeze = freeze,
+                    diagnosticAttribution = StreamPerformanceDiagnostics.blockAttribution(
+                        diagnosticRow, index, node.type.name, node.endOffset - node.startOffset),
                 )
             }
         }
@@ -1342,19 +1345,22 @@ private fun FrozenMarkdownElement(
     components: MarkdownComponents,
     content: String,
     freeze: Boolean,
+    diagnosticAttribution: StreamDiagnosticAttribution? = null,
 ) {
     // Keep completed blocks in independent RenderNode display lists. Tail draw
     // invalidation must not re-record every paragraph in a tall message.
     Box(Modifier.graphicsLayer()
-        .streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure")
+        .streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure", diagnosticAttribution)
         .drawWithContent {
-            StreamPerformanceDiagnostics.measure("markdown.blockDraw") {
-                if (StreamPerformanceDiagnostics.enabled) {
-                    StreamPerformanceDiagnostics.measure(
-                        if (freeze) "markdown.stable.draw" else "markdown.tail.draw",
-                    ) { drawContent() }
-                } else {
-                    drawContent()
+            StreamPerformanceDiagnostics.withRenderAttribution(diagnosticAttribution) {
+                StreamPerformanceDiagnostics.measure("markdown.blockDraw") {
+                    if (StreamPerformanceDiagnostics.enabled) {
+                        StreamPerformanceDiagnostics.measure(
+                            if (freeze) "markdown.stable.draw" else "markdown.tail.draw",
+                        ) { drawContent() }
+                    } else {
+                        drawContent()
+                    }
                 }
             }
         }) {

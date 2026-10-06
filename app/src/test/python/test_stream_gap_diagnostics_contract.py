@@ -17,7 +17,7 @@ class StreamGapDiagnosticsContract(unittest.TestCase):
 
     def test_new_labels_are_registered_only_as_central_literals(self):
         registry = self.stream.split("internal object StreamDiagnosticGapLabels {", 1)[1].split("\n}", 1)[0]
-        expected = {"main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place"}
+        expected = {"main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"}
         self.assertEqual(set(re.findall(r'"([a-zA-Z.]+)"', registry)), expected)
         self.assertNotIn("$", registry)
         self.assertIn("label in StreamDiagnosticGapLabels.stages", self.bounded)
@@ -38,12 +38,12 @@ class StreamGapDiagnosticsContract(unittest.TestCase):
     def test_placement_is_opt_in_transparent_and_separate_from_measure_draw(self):
         placement = self.modifier.split("internal fun Modifier.streamDiagnosticPlacement", 1)[1]
         self.assertLess(placement.index("if (!StreamPerformanceDiagnostics.enabled) return this"),
-                        placement.index("StreamDiagnosticPlacementElement(stage)"))
+                        placement.index("StreamDiagnosticPlacementElement(stage, attribution)"))
         self.assertEqual(placement.count("measurable.measure(constraints)"), 1)
         self.assertEqual(placement.count("child.placeRelative(0, 0)"), 1)
         self.assertIn("return layout(child.width, child.height)", placement)
         self.assertIn("measureDetail(stage) { child.placeRelative(0, 0) }", placement)
-        self.assertIn("private data class StreamDiagnosticPlacementElement(val stage: String)", placement)
+        self.assertIn("private data class StreamDiagnosticPlacementElement(val stage: String, val attribution: StreamDiagnosticAttribution?)", placement)
         for forbidden in ("mutableState", "LaunchedEffect", "semantics", "graphicsLayer", "invalidateMeasurement", "Log."):
             self.assertNotIn(forbidden, placement)
 

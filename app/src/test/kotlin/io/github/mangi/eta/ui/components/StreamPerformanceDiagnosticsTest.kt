@@ -298,7 +298,7 @@ class StreamPerformanceDiagnosticsTest {
     }
 
     @Test fun supplementalStageRegistryContainsOnlyFixedShortLiterals() {
-        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place"),
+        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"),
             StreamDiagnosticGapLabels.stages)
         for (stage in StreamDiagnosticGapLabels.stages) {
             assertTrue(Regex("[a-z]+(?:\\.[a-zA-Z]+)+").matches(stage))

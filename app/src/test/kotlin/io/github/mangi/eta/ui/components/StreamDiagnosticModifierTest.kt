@@ -324,6 +324,92 @@ class StreamDiagnosticModifierTest {
         }
     }
 
+    @Test fun renderIdentityInheritsEventAndParentWithoutSummingNestedScopes() = withDiagnosticSession { session ->
+        compose.setContent { }
+        compose.runOnIdle {
+            val begin = System.nanoTime()
+            val base = StreamDiagnosticAttribution(session.serial, run = 9, conversation = 8, event = 41, sourceSpan = 888)
+            val row = StreamPerformanceDiagnostics.rowAttribution(3, "PRIVATE_ROW", "agent")!!
+            val block = StreamPerformanceDiagnostics.blockAttribution(row, 2, "PARAGRAPH", 300)!!
+            StreamPerformanceDiagnostics.withAttribution(base) {
+                StreamPerformanceDiagnostics.measure("list.measure") {
+                    StreamPerformanceDiagnostics.withRenderAttribution(row) {
+                        StreamPerformanceDiagnostics.measure("row.measure") {
+                            StreamPerformanceDiagnostics.withRenderAttribution(block) {
+                                StreamPerformanceDiagnostics.measure("markdown.tail.measure") { Unit }
+                            }
+                        }
+                    }
+                }
+            }
+            val end = System.nanoTime()
+            session.details.frame(DiagnosticFrameRecord(begin, begin, end - begin, 0,
+                0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            val records = session.snapshot(false).rawDetails.select().spans
+            val list = records.single { it.stage == "list.measure" }
+            val rowSpan = records.single { it.stage == "row.measure" }
+            val child = records.single { it.stage == "markdown.tail.measure" }
+            assertEquals(list.span, rowSpan.parent)
+            assertEquals(rowSpan.span, child.parent)
+            assertEquals(9, child.attribution!!.run)
+            assertEquals(41L, child.attribution.event)
+            assertEquals(row.row, child.attribution.row)
+            assertEquals(2, child.attribution.block)
+            assertEquals("paragraph", child.attribution.blockType)
+            assertEquals(300, child.attribution.blockChars)
+            assertFalse(records.toString().contains("PRIVATE_ROW"))
+            org.junit.Assert.assertNull(StreamPerformanceDiagnostics.captureAttribution())
+        }
+    }
+
+    @Test fun staleRenderMetadataCannotCrossForegroundSessions() = withDiagnosticSession { session ->
+        compose.setContent { }
+        compose.runOnIdle {
+            val stale = StreamDiagnosticAttribution(session.serial - 1, row = 99, block = 8)
+            assertEquals(null, StreamPerformanceDiagnostics.blockAttribution(stale, 1, "PARAGRAPH", 100))
+            var calls = 0
+            StreamPerformanceDiagnostics.withRenderAttribution(stale) {
+                assertEquals(null, StreamPerformanceDiagnostics.captureAttribution())
+                calls++
+            }
+            assertEquals(1, calls)
+            val original = Modifier.width(12.dp)
+            session.snapshot(final = true)
+            assertSame(original, original.streamDiagnosticMeasure("row.measure", stale))
+            assertSame(original, original.streamDiagnosticDraw("row.draw", stale))
+            assertSame(original, original.streamDiagnosticPlacement("row.place", stale))
+            assertSame(original, original.settingsSectionDiagnostics("general"))
+        }
+    }
+
+    @Test fun changedRowMetadataUpdatesExistingMeasureNodeWithoutChangingGeometry() = withDiagnosticSession { session ->
+        val attr = mutableStateOf(StreamPerformanceDiagnostics.rowAttribution(4, "PRIVATE_FIRST", "agent"))
+        var begin = System.nanoTime()
+        compose.setContent {
+            androidx.compose.foundation.layout.Box(Modifier.width(20.dp).height(10.dp)
+                .streamDiagnosticMeasure("row.measure", attr.value).testTag("diagnostic-row"))
+        }
+        compose.waitForIdle()
+        fun selectedRows(): List<DiagnosticSpanRecord> {
+            val end = System.nanoTime()
+            session.details.frame(DiagnosticFrameRecord(begin, begin, end - begin, 0,
+                0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            return session.snapshot(false).rawDetails.select().spans.filter { it.stage == "row.measure" }
+        }
+        compose.runOnIdle {
+            assertTrue(selectedRows().any { it.attribution?.row == 1 })
+            begin = System.nanoTime()
+            attr.value = StreamPerformanceDiagnostics.rowAttribution(4, "PRIVATE_SECOND", "tool")
+        }
+        compose.waitForIdle()
+        compose.onNodeWithTag("diagnostic-row").assertWidthIsEqualTo(20.dp).assertHeightIsEqualTo(10.dp)
+        compose.runOnIdle {
+            val rows = selectedRows()
+            assertTrue(rows.any { it.attribution?.row == 2 && it.attribution.rowType == "tool" })
+            assertFalse(rows.any { it.attribution?.row == 1 })
+        }
+    }
+
     /** Exactly the previous helper, intentionally outside composition's lambda memoization. */
     private fun Modifier.legacyDiagnosticMeasure(stage: String): Modifier = layout { measurable, constraints ->
         StreamPerformanceDiagnostics.measureDetail(stage) {

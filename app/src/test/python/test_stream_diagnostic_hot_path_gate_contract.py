@@ -45,9 +45,16 @@ val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
             session.recordMetric(page.aggregatePage.ordinal, stage, ns, value)
         }
         if ((missed || total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) && session.details.reserveFrame()) {
-            session.details.frame(DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
+            val record = DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
                 total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
-                unknown, input, animation, layout, draw, sync, command, swap, gpu))
+                unknown, input, animation, layout, draw, sync, command, swap, gpu)
+            // Only severe/unknown-delay anomalies copy evidence, not every 120Hz frame or deadline miss.
+            if (total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) session.details.protectFrame(record)
+            val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
+                session.listSamples.forFrame(record) else null
+            val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
+                .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
+            session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages))
         }
         session.record(page.aggregatePage.frameStage, total, if (missed) 1 else 0)
         metric("frame.total", total, if (missed) 1 else 0)
@@ -101,7 +108,7 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
         actual_parts = inside.split("val tenths =", 1)[0]
         self.assertEqual(normalized_lines(PARTS), normalized_lines(actual_parts))
 
-    def test_all_other_listener_work_and_output_are_unchanged(self):
+    def test_metrics_admission_and_expiry_are_unchanged_with_bounded_anomaly_capture(self):
         listener_lines = normalized_lines(self.listener)
         parts_lines = normalized_lines(PARTS)
         self.assertEqual(listener_lines.count(parts_lines), 1)
@@ -123,11 +130,11 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
         measure, draw = helper.split("internal fun Modifier.streamDiagnosticDraw", 1)
         draw = draw.split("/** Placement-only observer.", 1)[0]
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", measure)
-        self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage))", measure)
-        self.assertIn("private data class StreamDiagnosticMeasureElement(val stage: String)", measure)
+        self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage, attribution))", measure)
+        self.assertIn("private data class StreamDiagnosticMeasureElement(val stage: String, val attribution: StreamDiagnosticAttribution?)", measure)
         self.assertIn("ModifierNodeElement<StreamDiagnosticMeasureNode>()", measure)
-        self.assertIn("override fun create() = StreamDiagnosticMeasureNode(stage)", measure)
-        self.assertIn("override fun update(node: StreamDiagnosticMeasureNode) { node.stage = stage }", measure)
+        self.assertIn("override fun create() = StreamDiagnosticMeasureNode(stage, attribution)", measure)
+        self.assertIn("override fun update(node: StreamDiagnosticMeasureNode) { node.stage = stage; node.attribution = attribution }", measure)
         self.assertIn("Modifier.Node(), LayoutModifierNode", measure)
         self.assertEqual(measure.count("measurable.measure(constraints)"), 1)
         self.assertEqual(measure.count("layout(child.width, child.height) { child.placeRelative(0, 0) }"), 1)
@@ -138,10 +145,12 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
                           "override fun maxIntrinsic", "mutableState", "semantics", "graphicsLayer"):
             self.assertNotIn(forbidden, measure_code)
         self.assertEqual(normalized_lines(draw), normalized_lines('''
-            (stage: String): Modifier {
+            (stage: String, attribution: StreamDiagnosticAttribution? = null): Modifier {
                 if (!StreamPerformanceDiagnostics.enabled) return this
                 return drawWithContent {
-                    StreamPerformanceDiagnostics.measureDetail(stage) { drawContent() }
+                    StreamPerformanceDiagnostics.withRenderAttribution(attribution) {
+                        StreamPerformanceDiagnostics.measureDetail(stage) { drawContent() }
+                    }
                 }
             }
         '''))
