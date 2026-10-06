@@ -910,9 +910,9 @@ internal object StreamPerformanceDiagnostics {
         }
         val periodic = object : Runnable {
             override fun run() {
-                if (session.closed) return
+                if (session.closed || session.stopCutoffNs != null) return
                 emit(false)
-                if (!session.closed) handler.postDelayed(this, 5000)
+                if (!session.closed && session.stopCutoffNs == null) handler.postDelayed(this, 5000)
             }
         }
         val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
