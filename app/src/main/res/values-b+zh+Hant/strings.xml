@@ -1066,6 +1066,7 @@
   </plurals>
   <string name="provider_models_endpoint_summary">讀取 %1$s 的 /models 清單</string>
   <string name="provider_models_fetched_filtered">已取得 %1$d 個模型，略過 %2$d 個非對話模型</string>
+  <string name="provider_models_sync_summary">已同步 %1$d 個遠端模型，移除 %2$d 個遠端已下架模型</string>
   <string name="provider_model_list_count">模型清單（共 %1$d 個）</string>
   <string name="provider_model_list_matches">模型清單（符合 %1$d / %2$d 個）</string>
   <string name="provider_model_saved">已儲存：%1$s</string>

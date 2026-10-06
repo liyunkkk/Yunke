@@ -140,20 +140,70 @@ class TopBarInteractiveModeContractTest(unittest.TestCase):
         self.assertIn("private val CompactMenuItemModifier = Modifier.height(40.dp)", self.menu)
         self.assertIn("private val CompactMenuItemPadding = PaddingValues(horizontal = 12.dp)", self.menu)
 
-    def test_preference_and_observer_share_execution_position_storage(self):
+    def test_preference_cold_read_and_observer_use_only_the_independent_local_boolean(self):
         preference = read("config/InteractiveModePreference.kt")
         state = read("ui/components/InteractiveModePreferenceState.kt")
         self.assertIn("private val preferences: SharedPreferences? = Prefs.localAgentPreferences()", preference)
-        self.assertIn("val enabled: Boolean get() = AgentTaskSurface.stored() == AgentTaskSurfaceMode.ASK", preference)
-        self.assertIn("AgentTaskSurface.save(if (enabled) AgentTaskSurfaceMode.ASK else AgentTaskSurfaceMode.FOREGROUND)", preference)
-        self.assertIn("key == null || key == AgentTaskSurface.PREF_KEY", preference)
-        self.assertNotIn("putBoolean", preference)
+        self.assertIn('const val PREF_KEY = "interactive_mode"', preference)
+        self.assertIn("val enabled: Boolean get() = read(preferences)", preference)
+        self.assertIn("fun read(preferences: SharedPreferences? = Prefs.localAgentPreferences()): Boolean", preference)
+        self.assertIn("runCatching { preferences?.getBoolean(PREF_KEY, false) ?: false }.getOrDefault(false)", preference)
+        self.assertEqual(1, preference.count("getBoolean("))
+        self.assertEqual(1, preference.count("putBoolean("))
+        setter_at = preference.index("fun setEnabled(")
+        setter = balanced(preference, preference.index("{", setter_at))
+        self.assertIn("preferences?.edit()?.putBoolean(PREF_KEY, enabled)?.apply()", setter)
+        # All write access is confined to an explicit user-requested toggle, not
+        # construction, cold reads, migration, or observer registration/refresh.
+        self.assertEqual(1, preference.count(".edit()"))
+        self.assertNotIn(".edit()", preference[:setter_at])
         for source in (self.menu, preference, state):
-            self.assertNotIn('"interactive_mode"', source)
+            # Comments may describe the intentional absence of migration.
+            code = re.sub(r"/\*.*?\*/|//[^\n]*", "", source, flags=re.S)
+            for forbidden in ("AgentTaskSurface", "agent_task_surface", "migrate", "putString", "Prefs.putBoolean"):
+                self.assertNotIn(forbidden, code)
+        self.assertIn("key == null || key == PREF_KEY", preference)
+        self.assertIn("preferences?.registerOnSharedPreferenceChangeListener(listener)", preference)
+        self.assertIn("preferences?.unregisterOnSharedPreferenceChangeListener(listener)", preference)
+        self.assertIn("closed.compareAndSet(false, true)", preference)
+        self.assertIn("if (!closed.get()) onChanged(enabled)", preference)
+        self.assertIn("main.removeCallbacks(refresh)", preference)
         self.assertIn("remember(preference) { mutableStateOf(preference.enabled) }", state)
         self.assertIn("DisposableEffect(preference)", state)
         self.assertIn("preference.observe { enabled.value = it }", state)
         self.assertIn("onDispose { observation.close() }", state)
+
+    def test_behavior_tests_cover_location_isolation_real_touches_and_observer_disposal(self):
+        tests = ROOT / "app/src/test/kotlin/io/github/mangi/eta"
+        preference_test = (tests / "config/InteractiveModePreferenceTest.kt").read_text(encoding="utf-8")
+        menu_test = (tests / "ui/app/TopBarOverflowMenuInteractiveModeTest.kt").read_text(encoding="utf-8")
+        observer_test = (tests / "ui/components/InteractiveModePreferenceStateTest.kt").read_text(encoding="utf-8")
+        for case in (
+            "absentIndependentKeyDefaultsFalseForEveryLocationWithoutWritingOrMigrating",
+            "existingIndependentBooleanWinsForAllLocationsAndColdReadsAgreeWithObservers",
+            "togglingOnAndOffNeverChangesForegroundBackgroundAskOrAMissingLocation",
+            "settingsLocationWritesDoNotChangeTheSwitchOrNotifyItsObservers",
+            "externalIndependentWritesRemovalAndClearRefreshTheSameColdRead",
+            "corruptBooleanAndUnavailableStorageFailClosedWithoutRepairWrites",
+            "backgroundNotificationsUseMainAndReadLatestStorageRatherThanCapturedValues",
+            "registrationRereadsAndCloseUnregistersOnceSuppressingQueuedAndLateCallbacks",
+        ):
+            self.assertIn(f"@Test fun {case}()", preference_test)
+        for mode in ("FOREGROUND", "BACKGROUND", "ASK"):
+            self.assertIn(f"exerciseRealTouches(AgentTaskSurfaceMode.{mode})", menu_test)
+        self.assertIn("row().performTouchInput { click(Offset(width * 0.35f, center.y)) }", menu_test)
+        self.assertIn("switch().performTouchInput { click() }", menu_test)
+        self.assertIn("compose.mainClock.advanceTimeBy(500)", menu_test)
+        self.assertIn("assertStored(mode)", menu_test)
+        self.assertIn("assertEnabled(true)", menu_test)
+        self.assertIn("assertEnabled(false)", menu_test)
+        self.assertIn("settingsLocationChangesNeverChangeTheSwitchButIndependentWritesRefreshIt", menu_test)
+        self.assertIn("persistedIndependentTrueIsUsedOnFirstCompositionWithoutChangingForeground", menu_test)
+        self.assertIn("askLocationDoesNotEnableOrInitializeTheIndependentSwitch", menu_test)
+        self.assertIn("rememberInteractiveModeEnabled(selected.value)", observer_test)
+        self.assertIn("assertEquals(0, first.listeners.size)", observer_test)
+        self.assertIn("assertEquals(0, second.listeners.size)", observer_test)
+        self.assertIn("assertEquals(2, second.unregisterCount)", observer_test)
 
     def test_menu_call_parameters_keep_existing_actions_and_avoid_lifted_toggle_state(self):
         declaration = arguments(self.menu, "TopBarOverflowMenu")

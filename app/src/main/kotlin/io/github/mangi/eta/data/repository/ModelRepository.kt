@@ -92,7 +92,11 @@ internal object ModelRepository {
         }
     }
 
-    suspend fun syncRemoteModels(providerId: String, fetched: List<Model>): RemoteModelSyncResult =
+    suspend fun syncRemoteModels(
+        providerId: String,
+        fetched: List<Model>,
+        includeNewModels: Boolean = true,
+    ): RemoteModelSyncResult =
         mutationMutex.withLock {
             val remoteByKey = fetched
                 .asSequence()
@@ -135,7 +139,7 @@ internal object ModelRepository {
                     }
                 }
                 remoteByKey.forEach { (key, remote) ->
-                    if (key !in consumed) {
+                    if (includeNewModels && key !in consumed) {
                         add(
                             remote.copy(
                                 id = remote.id.ifBlank(::newId),
