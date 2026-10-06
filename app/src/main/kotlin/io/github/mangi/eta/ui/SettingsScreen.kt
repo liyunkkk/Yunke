@@ -146,6 +146,8 @@ internal fun SettingsScreen(
     currentProviderId: String? = null,
     currentModelId: String? = null,
 ) {
+    // Read only attach/detach generation so idle sections rebuild observer identities.
+    StreamPerformanceDiagnostics.sessionGeneration.longValue
     // Counts only successfully applied compositions; never writes snapshot state.
     SideEffect {
         if (StreamPerformanceDiagnostics.enabled) {

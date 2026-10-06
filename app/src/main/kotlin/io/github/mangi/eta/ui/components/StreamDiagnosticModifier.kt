@@ -12,10 +12,13 @@ import androidx.compose.ui.unit.Constraints
 
 /**
  * Observes the existing child once without changing constraints, size or placement.
- * Labels must be fixed stage names, never content or item identity. No snapshot state,
- * semantics, layers or scheduled work are introduced by this modifier.
+ * Labels must be fixed stage names, never content or item identity. Construction reads
+ * the attach/detach generation only; no per-frame state, semantics, layers or scheduled
+ * work are introduced by this modifier.
  */
 internal fun Modifier.streamDiagnosticMeasure(stage: String, attribution: StreamDiagnosticAttribution? = null): Modifier {
+    // A construction in composition observes only attach/detach, even when initially OFF.
+    StreamPerformanceDiagnostics.sessionGeneration.longValue
     if (!StreamPerformanceDiagnostics.enabled) return this
     return this.then(StreamDiagnosticMeasureElement(stage, attribution))
 }
@@ -43,6 +46,8 @@ private class StreamDiagnosticMeasureNode(var stage: String, var attribution: St
 
 /** Disabled construction preserves modifier identity; enabled draws content exactly once. */
 internal fun Modifier.streamDiagnosticDraw(stage: String, attribution: StreamDiagnosticAttribution? = null): Modifier {
+    // A construction in composition observes only attach/detach, even when initially OFF.
+    StreamPerformanceDiagnostics.sessionGeneration.longValue
     if (!StreamPerformanceDiagnostics.enabled) return this
     return drawWithContent {
         StreamPerformanceDiagnostics.withRenderAttribution(attribution) {
@@ -53,6 +58,8 @@ internal fun Modifier.streamDiagnosticDraw(stage: String, attribution: StreamDia
 
 /** Placement-only observer. Existing measure/draw observers keep their original semantics. */
 internal fun Modifier.streamDiagnosticPlacement(stage: String, attribution: StreamDiagnosticAttribution? = null): Modifier {
+    // A construction in composition observes only attach/detach, even when initially OFF.
+    StreamPerformanceDiagnostics.sessionGeneration.longValue
     if (!StreamPerformanceDiagnostics.enabled) return this
     return this.then(StreamDiagnosticPlacementElement(stage, attribution))
 }

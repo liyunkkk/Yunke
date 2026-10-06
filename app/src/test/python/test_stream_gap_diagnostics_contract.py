@@ -72,7 +72,8 @@ class StreamGapDiagnosticsContract(unittest.TestCase):
 
     def test_unknown_delay_has_independent_bounded_admission_and_residual_marker(self):
         self.assertIn("internal const val UNKNOWN_DELAY_DETAIL_NS = 8_000_000L", self.stream)
-        self.assertIn("unknown >= UNKNOWN_DELAY_DETAIL_NS) && session.details.reserveFrame()", self.stream)
+        self.assertIn("val severe = total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS", self.stream)
+        self.assertIn("if ((firstDraw || missed || severe) && session.details.reserveFrame(severe))", self.stream)
         template = self.stream.split("v=2 type=frame", 1)[1].split("val messages = log.between", 1)[0]
         for field in ("unaccountedNs", "overlapNs", "vsyncLateNs"):
             self.assertIn(field + "=${frame." + field + "}", template)

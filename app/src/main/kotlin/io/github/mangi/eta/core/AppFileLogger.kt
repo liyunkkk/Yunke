@@ -78,20 +78,25 @@ internal object AppFileLogger {
 
     fun isEnabled(): Boolean = enabled.get()
 
-    fun debug(message: String) = write("D", message, null)
+    fun debug(message: String) { write("D", message, null) }
 
-    fun info(message: String) = write("I", message, null)
+    fun info(message: String) { write("I", message, null) }
 
     /**
      * Optional redacted diagnostics share the global file-logging switch, including logcat output.
      * Check at delivery time (not when a run starts), under the write gate shared with
      * disable/clear, so retained child tasks cannot emit after logging has been disabled.
      */
-    fun diagnosticInfo(message: String) = write("I", message, null, echoLogcat = true)
+    fun diagnosticInfo(message: String) { write("I", message, null, echoLogcat = true) }
 
-    fun warn(message: String) = write("W", message, null)
+    /** Worker-only append+flush under the SAME privacy gate; false is never called completion. */
+    fun diagnosticCompletion(message: String): Boolean = write("I", message, null, echoLogcat = true, flush = true)
+    val diagnosticRejected = java.util.concurrent.atomic.AtomicLong()
+    val diagnosticFailed = java.util.concurrent.atomic.AtomicLong()
 
-    fun error(message: String, throwable: Throwable? = null) = write("E", message, throwable)
+    fun warn(message: String) { write("W", message, null) }
+
+    fun error(message: String, throwable: Throwable? = null) { write("E", message, throwable) }
 
     fun flush() {
         lock.withLock {
@@ -148,12 +153,14 @@ internal object AppFileLogger {
         message: String,
         throwable: Throwable?,
         echoLogcat: Boolean = false,
-    ) {
-        if (!enabled.get()) return
-        val sink = appSink ?: return
-        writeLock.withLock {
+        flush: Boolean = false,
+    ): Boolean {
+        fun reject(): Boolean { if (echoLogcat) diagnosticRejected.incrementAndGet(); return false }
+        if (!enabled.get()) return reject()
+        val sink = appSink ?: return reject()
+        return writeLock.withLock {
             // A caller delayed across clear/re-enable must not write to the new session.
-            if (!enabled.get() || appSink !== sink) return
+            if (!enabled.get() || appSink !== sink) return reject()
             if (echoLogcat) runCatching { Log.i(ModuleConfig.TAG, message) }
             val builder = StringBuilder(message.length + 80)
             builder.append(timeFormatter.format(Instant.now()))
@@ -166,10 +173,15 @@ internal object AppFileLogger {
             if (throwable != null) {
                 builder.append('\n').append(Log.getStackTraceString(throwable).trimEnd())
             }
-            runCatching { sink.append(builder.toString()) }.onFailure { failure ->
+            val result = runCatching {
+                sink.append(builder.toString())
+                if (flush) sink.flush()
+            }.onFailure { failure ->
+                if (echoLogcat) diagnosticFailed.incrementAndGet()
                 // Report only the type: paths and message contents may contain private data.
                 runCatching { Log.w(ModuleConfig.TAG, "diagnostic append failed: ${failure.safeLogType()}") }
             }
+            result.isSuccess
         }
     }
 

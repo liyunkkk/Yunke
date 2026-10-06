@@ -115,13 +115,70 @@ class FrameSpanCorrelationTest {
     @Test fun geometryNeverBorrowsAFutureSampleAndKeepsBoundedVisibleSlots() {
         val samples = DiagnosticListSamples(2)
         fun sample(at: Long) = DiagnosticListSnapshot(at, 3, 12, 14, 8, 4, 0, 900, 1,
-            listOf(DiagnosticListRow(5, 8, -4, 90)))
+            listOf(DiagnosticListRow(5, 8, -4, 90)), page = 5, segment = 1)
+        val sourceFrame = frame().copy(page = 5, pageEnd = 5, pageSegment = 1)
         samples.add(sample(150)); samples.add(sample(250))
-        assertEquals(150L, samples.forFrame(frame())!!.atNs)
-        assertNull(samples.forFrame(frame(0, 100)))
+        assertEquals(150L, samples.forFrame(sourceFrame)!!.atNs)
+        assertNull(samples.forFrame(sourceFrame.copy(intendedNs = 0, totalNs = 100)))
         samples.add(sample(300))
         assertEquals(1L, samples.overwritten)
-        assertNull(samples.forFrame(frame()))
+        assertNull(samples.forFrame(sourceFrame))
+    }
+
+    @Test fun sourceGeometryPrefersMatchedListAndRejectsTransitionsUnknownAndAmbiguity() {
+        val samples = DiagnosticListSamples()
+        fun sample(list: Long, page: Int = 5, segment: Long = 7) = DiagnosticListSnapshot(150, list,
+            1, 1, 0, 0, 0, 100, 1, emptyList(), page, segment)
+        samples.add(sample(11)); samples.add(sample(22)); samples.add(sample(33, page = 4))
+        val target = frame().copy(page = 5, pageEnd = 5, pageSegment = 7)
+        fun listSpan(list: Long) = span(list, 100, 200, attr = StreamDiagnosticAttribution(1, list = list))
+        assertNull(samples.forFrame(target))
+        assertEquals(11L, samples.forFrame(target, listOf(listSpan(11)))!!.list)
+        assertNull(samples.forFrame(target, listOf(listSpan(11), listSpan(22))))
+        assertNull(samples.forFrame(target, listOf(listSpan(33))))
+        assertNull(samples.forFrame(target, listOf(span(99, 100, 200))))
+        assertNull(samples.forFrame(target.copy(changed = true), listOf(listSpan(11))))
+        assertNull(samples.forFrame(target.copy(pageSegment = 8), listOf(listSpan(11))))
+        assertNull(samples.forFrame(target.copy(page = 0), listOf(listSpan(11))))
+    }
+
+    @Test fun slowBudgetFullStillAdmitsNewSevereSpanForProtection() {
+        val ring = BoundedDiagnosticDetails(0, capacity = 2, slowLimit = 1)
+        add(ring, span(1, 0, 4_000_000))
+        add(ring, span(2, 100_000_000, 140_000_000))
+        val target = frame(100_000_000, 50_000_000)
+        ring.protectFrame(target)
+        repeat(10) { add(ring, span(3L + it, 200_000_000L + it, 200_000_001L + it)) }
+        ring.frame(target)
+        val selected = ring.drain(300_000_000)
+        assertEquals(1L, selected.slowBudgetDropped)
+        assertEquals(2L, selected.spans.single().span)
+    }
+
+    @Test fun deadlineOnlyCannotConsumeSevereReserveAndSevereCanReplaceLightFrame() {
+        val ring = BoundedDiagnosticDetails(0, frameLimit = 4)
+        repeat(3) { assertTrue(ring.reserveFrame(severe = false)); ring.frame(frame(it.toLong())) }
+        assertFalse(ring.reserveFrame(severe = false))
+        val severe = frame(1000, 40_000_000)
+        assertTrue(ring.reserveFrame(severe = true)); ring.frame(severe)
+        assertTrue(ring.reserveFrame(severe = true)); ring.frame(severe.copy(intendedNs = 2000))
+        val selected = ring.drain(50_000_000)
+        assertEquals(4, selected.frames.size)
+        assertEquals(2, selected.frames.count { it.severe })
+        assertEquals(1L, selected.frameBudgetDropped)
+        assertEquals(1L, selected.frameBudgetEvicted)
+    }
+
+    @Test fun openDispatchAtStopIsPartialAndNeverHasFabricatedCpu() {
+        val log = MainThreadMessageLog(cpuClock = { 42L })
+        log.onLine(">>>>> Dispatching to Handler (test.Handler) {1} test.Callback@1: 0", 0)
+        log.addCovered("row.measure", 10)
+        log.closeOpen(100)
+        val partial = log.timingsBetween(0, 100).single()
+        assertTrue(partial.partial); assertEquals(-1L, partial.cpuNs)
+        assertEquals(100L, partial.endNs); assertEquals(10L, partial.coveredNs)
+        log.onLine("<<<<< Finished", 200)
+        assertEquals(1, log.timingsBetween(0, 300).size)
     }
 
     @Test fun cpuCounterIsOptionalInjectableAndNeverClaimsThatWallMinusCpuIsBlocking() {

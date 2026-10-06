@@ -30,14 +30,16 @@ internal const val CHAT_SCROLL_TRACE_MAX_IDENTITIES = 256
  */
 @Composable
 internal fun rememberChatScrollTraceEnabled(): Boolean {
+    val allowed = StreamDiagnosticControl.allowed.also { StreamDiagnosticControl.changes.intValue }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val enabled = remember(lifecycle) { mutableStateOf(false) }
-    LaunchedEffect(lifecycle) {
+    LaunchedEffect(lifecycle, allowed) {
+        if (!allowed) { enabled.value = false; return@LaunchedEffect }
         try {
             lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 try {
                     while (true) {
-                        enabled.value = Trace.isEnabled()
+                        enabled.value = StreamDiagnosticControl.allowed && Trace.isEnabled()
                         delay(CHAT_SCROLL_TRACE_POLL_MS)
                     }
                 } finally {
@@ -110,7 +112,7 @@ internal fun ChatScrollMonitor(state: LazyListState, enabled: Boolean): ChatScro
  * successful owner invocation; neither marker measures composition/render time.
  */
 internal fun traceChatListOwnerExecution(trace: ChatScrollListTraceState, enabled: Boolean) {
-    trace.execute(enabled || Trace.isEnabled())
+    trace.execute(StreamDiagnosticControl.allowed && (enabled || Trace.isEnabled()))
 }
 
 /** Call from the owner's SideEffect with its already-read Boolean values. */
@@ -126,7 +128,7 @@ internal fun traceChatListOwnerCommit(
     navigationActive: Boolean,
 ) {
     trace.commit(
-        enabled || Trace.isEnabled(),
+        StreamDiagnosticControl.allowed && (enabled || Trace.isEnabled()),
         isUserDragging, isUserScrolling, isBottomSettling, keepBottomAnchored,
         shouldClipTail, shouldFollowBottom, navigationActive,
     )
@@ -214,7 +216,7 @@ internal fun ChatRowTrace(rowKey: String, rowType: String, enabled: Boolean) {
 
 /** A point marker at the user toggle, with no probe attachment or logging. */
 internal fun traceChatToggle(kind: String, expanded: Boolean) {
-    if (!Trace.isEnabled()) return
+    if (!StreamDiagnosticControl.allowed || !Trace.isEnabled()) return
     emitChatScrollToggle(true, kind, expanded, AndroidChatScrollTraceSink)
 }
 
@@ -259,10 +261,13 @@ internal interface ChatScrollTraceSink {
 
 private object AndroidChatScrollTraceSink : ChatScrollTraceSink {
     override fun counter(name: String, value: Long) {
+        if (!StreamDiagnosticControl.allowed || !Trace.isEnabled()) return
         Trace.setCounter(name, value)
     }
 
     override fun section(name: String) {
+        if (!StreamDiagnosticControl.allowed || !Trace.isEnabled()) return
+        // Check once before begin; keep begin/end paired if OFF changes concurrently.
         // A short point marker, not an elapsed row-composition measurement.
         Trace.beginSection(name)
         Trace.endSection()

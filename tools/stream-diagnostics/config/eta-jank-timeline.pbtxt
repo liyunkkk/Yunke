@@ -1,3 +1,5 @@
+# LEGACY compatibility profile, not recommended. Use docs/diagnostics/eta-jank.perfetto
+# and manual capture checks. This file's presence is not device validation.
 # Local opt-in capture. No app payload logs or heap object snapshots.
 # Exact trace loss must be queried after recording.
 buffers { size_kb: 131072 fill_policy: RING_BUFFER }

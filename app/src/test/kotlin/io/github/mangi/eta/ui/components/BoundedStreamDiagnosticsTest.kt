@@ -81,10 +81,11 @@ class BoundedStreamDiagnosticsTest {
         assertTrue(ring.reserveFrame()); ring.frame(frame())
         assertFalse(ring.reserveFrame())
         val first = ring.drain(10_000_000)
-        assertEquals(1L, first.overwritten)
+        assertEquals(2L, first.overwritten)
         assertEquals(1L, first.slowBudgetDropped)
         assertEquals(1L, first.frameBudgetDropped)
         assertEquals(listOf(2L, 3L), first.spans.map { it.span })
+        assertEquals(1L, first.spanOutputTruncated) // fourth slow span still entered the ordinary ring
         assertTrue(first.spans.all { it.value == 42L })
         assertTrue(first.frames.single().missed) // <33ms is still abnormal.
         assertEquals(0L, first.fromNs); assertEquals(10_000_000L, first.toNs)

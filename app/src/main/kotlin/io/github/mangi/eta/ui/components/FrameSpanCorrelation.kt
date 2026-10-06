@@ -124,7 +124,7 @@ internal fun diagnosticBlockType(raw: String): String = when (raw) {
 internal data class DiagnosticListRow(val token: Int, val index: Int, val offset: Int, val size: Int)
 internal data class DiagnosticListSnapshot(val atNs: Long, val list: Long, val messageCount: Int,
     val totalCount: Int, val firstIndex: Int, val firstOffset: Int, val viewportStart: Int, val viewportEnd: Int,
-    val visibleCount: Int, val rows: List<DiagnosticListRow>)
+    val visibleCount: Int, val rows: List<DiagnosticListRow>, val page: Int = 0, val segment: Long = 0)
 
 /** Post-layout samples are not a claim of the exact geometry measured by the frame. Staleness is printed. */
 internal class DiagnosticListSamples(private val capacity: Int = 128) {
@@ -136,10 +136,20 @@ internal class DiagnosticListSamples(private val capacity: Int = 128) {
         if (ring[next] != null) overwritten++
         ring[next] = sample; next = (next + 1) % capacity
     }
-    fun forFrame(frame: DiagnosticFrameRecord): DiagnosticListSnapshot? {
+    fun forFrame(frame: DiagnosticFrameRecord, spans: List<DiagnosticSpanRecord> = emptyList()): DiagnosticListSnapshot? {
+        if (frame.changed || frame.page == 0 || frame.pageSegment == 0L) return null
         val detached = synchronized(this) { ring.copyOf() }
-        // Never borrow a later layout or another page's geometry as evidence for this frame.
-        return detached.filterNotNull().filter { it.atNs <= frame.intendedNs + frame.totalNs }
-            .maxByOrNull { it.atNs }
+        val candidates = detached.filterNotNull().filter {
+            it.atNs <= frame.intendedNs + frame.totalNs && it.page == frame.page && it.segment == frame.pageSegment
+        }
+        // A matched list scope takes precedence, but multiple matched lists are ambiguous.
+        val listSpans = spans.filter { it.stage == "list.measure" || it.stage == "list.place" }
+            .filter { diagnosticOverlapNs(it.beginNs, it.endNs, frame.intendedNs, frame.intendedNs + frame.totalNs) > 0 }
+        if (listSpans.any { (it.attribution?.list ?: 0L) == 0L }) return null
+        val matched = listSpans.mapNotNull { it.attribution?.list }.distinct()
+        if (matched.size > 1) return null
+        val sources = candidates.map { it.list }.distinct()
+        val list = matched.singleOrNull() ?: sources.singleOrNull() ?: return null
+        return candidates.filter { it.list == list }.maxByOrNull { it.atNs }
     }
 }

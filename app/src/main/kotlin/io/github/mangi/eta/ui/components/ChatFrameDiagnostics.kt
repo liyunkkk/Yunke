@@ -43,6 +43,7 @@ internal fun diagnosticComponentType(raw: String): String = when (raw) {
 }
 
 internal fun androidx.compose.ui.Modifier.settingsSectionDiagnostics(section: String): androidx.compose.ui.Modifier {
+    StreamPerformanceDiagnostics.sessionGeneration.longValue
     if (!StreamPerformanceDiagnostics.enabled) return this
     val attr = StreamPerformanceDiagnostics.componentAttribution(section)
     return streamDiagnosticMeasure("settings.section.measure", attr).streamDiagnosticDraw("settings.section.draw", attr)

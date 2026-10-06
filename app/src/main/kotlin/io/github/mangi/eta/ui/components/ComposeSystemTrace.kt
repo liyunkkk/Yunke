@@ -18,7 +18,7 @@ internal object ComposeSystemTrace {
         val mainThread = Looper.getMainLooper().thread
         Composer.setTracer(MainThreadCompositionTracer(
             owner = mainThread,
-            enabled = { AppFileLogger.isEnabled() && Trace.isEnabled() },
+            enabled = { StreamDiagnosticControl.allowed && AppFileLogger.isEnabled() && Trace.isEnabled() },
             begin = Trace::beginSection,
             end = Trace::endSection,
         ))

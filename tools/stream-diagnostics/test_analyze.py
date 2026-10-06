@@ -26,23 +26,30 @@ WINDOW = PREFIX.format(kind="window") + (
     "frameBudgetDropped=4 spanOutputTruncated=5 tokenSaturated=6 "
     "eventLinksOverwritten=7 mainRingOverwritten=8 mainOutputTruncated=9 noteBudgetDropped=10 "
     "admission=open openSpansAtCutoff=1 closedRejectedRecords=0 lateSpans=0 "
-    "postCloseObservation=notTracked"
+    "lateAfterFinal=notTracked completeCpu=notClaimed gitSha=" + "a" * 40 + " "
+    "protectedSpanCapacity=2048 protectedBudgetDropped=0 frameCaptureTruncated=0 previousWindowSpans=0 "
+    "rowTokenSaturated=0 listSampleOverwritten=0 frameBudgetEvicted=0 callbackRejected=0 openAtStop=0 "
+    "openIdDropped=0 stopCutoffNs=-1 partial=false anchorUncertaintyNs=10 osPid=100 javaThreadId=7 osTid=107"
 )
+RENDER_FIELDS = ("listToken=1 rowToken=2 rowType=agent blockIndex=0 blockType=paragraph blockChars=12 "
+                 "component=unknown renderIdentity=anonymousSessionLocalNotEventCausality")
 SPAN = PREFIX.format(kind="span") + (
     "span=1 parent=0 stage=ui.flush beginNs=120 endNs=280 thread=1 main=true "
     "duration=inclusive value=5 runToken=3 conversationToken=7 visibility=Selected "
-    "kind=delta.text replay=false eventSeq=4 sourceSpan=0 page=Chat pageEnd=Chat"
+    "kind=delta.text replay=false eventSeq=4 sourceSpan=0 page=Chat pageEnd=Chat "
+    "javaThreadId=1 osTid=100 osTidUnknown=-1 partialAtCutoff=false " + RENDER_FIELDS
 )
 FRAME = PREFIX.format(kind="frame") + (
     "abnormalFrame=0 page=Chat pageEnd=Settings pageChanged=true pageSource=route "
     "intendedVsyncNs=150 vsyncNs=155 totalNs=40 deadlineNs=30 deadlineMiss=true "
     "metricsDropped=2 unknownNs=1 inputNs=2 animationNs=3 layoutNs=4 drawNs=5 "
     "syncNs=6 commandNs=7 swapNs=8 gpuNs=9 unaccountedNs=4 overlapNs=0 vsyncLateNs=5 "
-    "accounting=frameMetricsResidualNotAdditive"
+    "accounting=frameMetricsResidualNotAdditive firstDraw=false partialAtCutoff=false pageSegment=1"
 )
 MAIN_MESSAGE = PREFIX.format(kind="mainMessage") + (
     "beginNs=140 endNs=220 frameDispatch=true coveredNs=30 revealNs=10 "
-    "uninstrumentedNs=50 nonRevealNs=70 accounting=dispatchSubsetsNotAdditive"
+    "uninstrumentedNs=50 nonRevealNs=70 accounting=dispatchSubsetsNotAdditive partial=false "
+    "cpuNs=20 wallMinusCpuNs=60 cpuAccounting=threadCpuCounterNotBlockedDiagnosis"
 )
 RUNTIME = PREFIX.format(kind="runtime") + (
     "runtimeCounter=art.gc.bytes-allocated supported=false"
@@ -50,6 +57,20 @@ RUNTIME = PREFIX.format(kind="runtime") + (
 RUNTIME_SUPPORTED = PREFIX.format(kind="runtime") + (
     "runtimeCounter=art.gc.bytes-freed supported=true cumulative=10 delta=unknown"
 )
+# Independent complete P0 correlation fixtures; synthetic numbers, no device data.
+CORRELATION = {
+    "frameCorrelation": "abnormalFrame=0 intendedVsyncNs=150 frameTotalNs=40 matched=1 emitted=1 omitted=0 mainSpanUnionNs=40 frameWallOutsideSpansNs=0 evidenceIncomplete=false coverage=instrumentedCompletedSpansOnly evidenceComplete=notClaimed zeroMatch=notProofOfNoMainWork capture=anomalyCallbackAndAdmissionSnapshot rule=mainSpanOverlapNotCausality accounting=wallUnionNotCpuOrFrameParts",
+    "spanOverlap": "abnormalFrame=0 span=1 parent=0 stage=ui.flush beginNs=120 endNs=280 overlapNs=40 durationNs=160 selfUpperBoundNs=160 selfAccounting=directChildUnionUpperBoundIfMissingChildren duration=inclusiveNotAdditive value=5 eventSeq=4 runToken=3 conversationToken=7 " + RENDER_FIELDS,
+    "frameLookback": "abnormalFrame=0 span=2 parent=0 stage=list.place beginNs=110 endNs=140 durationNs=30 lookbackNs=200000000 relation=precedingNotFrameOverlap " + RENDER_FIELDS,
+    "frameList": "abnormalFrame=0 listToken=1 sampleNs=140 ageAtFrameEndNs=50 sourcePage=Chat sourceSegment=1 relation=sourceMatchedObservedPostLayoutNotExactFrame visibility=layoutSlotsNotClippedPixels messageCount=12 totalRows=14 firstIndex=8 firstOffset=4 viewportStart=-10 viewportEnd=900 visibleCount=1 emittedRows=1 omittedRows=0",
+    "frameListRow": "abnormalFrame=0 listToken=1 sampleNs=140 rowToken=2 index=8 offset=-4 size=90",
+    "frameMainMessage": "abnormalFrame=0 beginNs=140 endNs=220 overlapNs=40 relation=overlap frameDispatch=true coveredNs=30 uninstrumentedNs=50 cpuNs=-1 wallMinusCpuNs=-1 accounting=dispatchWallNotFrameParts cpuAccounting=threadCpuCounterNotBlockedDiagnosis omitted=0",
+}
+P0_EXTRA = {
+    "observerCost": "observerPhase=Enter count=1 totalNs=2 maxNs=2 accounting=observerWallNotCpu includesLockWait=true recursiveMeasurement=false scope=sessionCumulative",
+    "openSpan": "span=1 partial=true atCutoff=true stillOpenAtFinal=false cpuNs=unknown",
+    "finalCompletion": "cutoffNs=300 loggerRejected=0 loggerFailed=0 drainGraceMs=250 completion=appendAndFlush privacyGate=honored evidenceComplete=notClaimed",
+}
 # Independently pinned da5c render/data/recorder input, not derived from the
 # parser's allowlist: an omitted real static label must fail compatibility.
 RENDER_LABELS = frozenset("""
@@ -104,7 +125,7 @@ class ParserTests(unittest.TestCase):
         prefix = source.split('val prefix = "StreamDiag id=${session.id} windowStartNs=', 1)[1].split("AppFileLogger.diagnosticInfo", 1)[0]
         common = {"id", "windowStartNs"} | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", prefix))
         templates = {
-            "window": source.split("v=2 type=window", 1)[1].split("postCloseObservation=notTracked", 1)[0] + "postCloseObservation=notTracked",
+            "window": source.split("v=2 type=window", 1)[1].split("completeCpu=notClaimed", 1)[0] + "completeCpu=notClaimed",
             "span": source.split("v=2 type=span", 1)[1].split("log.timingsBetween", 1)[0],
             "mainMessage": source.split("v=2 type=mainMessage", 1)[1].split("detail.frames.forEachIndexed", 1)[0],
             "frame": source.split("v=2 type=frame", 1)[1].split("val messages = log.between", 1)[0],
@@ -115,7 +136,9 @@ class ParserTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 emitted = common | {"v", "type"} | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", template))
                 if kind == "window":
-                    emitted |= {"package", "versionCode", "versionName", "buildType"}
+                    emitted |= {"package", "versionCode", "versionName", "buildType", "gitSha"}
+                if kind == "span":
+                    emitted |= set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", RENDER_FIELDS))
                 if kind == "frame":
                     emitted |= {"page", "pageEnd", "pageChanged", "pageSource"}
                 self.assertEqual(emitted, set(diag.parse_line(golden[kind])))
@@ -126,7 +149,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(record["openSpansAtCutoff"], 1)
         self.assertEqual(record["closedRejectedRecords"], 0)
         self.assertEqual(record["lateSpans"], 0)
-        self.assertEqual(record["postCloseObservation"], "notTracked")
+        self.assertEqual(record["lateAfterFinal"], "notTracked")
         closed = diag.parse_line(WINDOW.replace("final=false", "final=true")
                                  .replace("admission=open", "admission=closed")
                                  .replace("closedRejectedRecords=0", "closedRejectedRecords=2")
@@ -136,7 +159,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(closed["lateSpans"], 1)
         attacks = [WINDOW.replace("admission=open", "admission=" + value)
                    for value in ("Open", "PRIVATE", "0")]
-        attacks += [WINDOW.replace("postCloseObservation=notTracked", "postCloseObservation=" + value)
+        attacks += [WINDOW.replace("lateAfterFinal=notTracked", "lateAfterFinal=" + value)
                     for value in ("tracked", "unknown", "PRIVATE")]
         attacks += [WINDOW.replace("openSpansAtCutoff=1", "openSpansAtCutoff=-1"),
                     WINDOW.replace("closedRejectedRecords=0", "closedRejectedRecords=-1"),
@@ -144,6 +167,40 @@ class ParserTests(unittest.TestCase):
         for line in attacks:
             with self.assertRaises(diag.Rejected):
                 diag.parse_line(line)
+
+    def test_complete_p0_correlation_and_final_fixtures_round_trip_without_rejection(self):
+        lines = [WINDOW, SPAN, FRAME, MAIN_MESSAGE, RUNTIME_SUPPORTED]
+        lines += [PREFIX.format(kind=kind) + fields for kind, fields in {**CORRELATION, **P0_EXTRA}.items()]
+        records, audit = diag.parse_lines(lines)
+        self.assertEqual(0, audit["rejectedLines"])
+        self.assertEqual(len(lines), len(records))
+        self.assertEqual(-4, next(r for r in records if r["type"] == "frameListRow")["offset"])
+        self.assertEqual(-1, next(r for r in records if r["type"] == "frameMainMessage")["cpuNs"])
+        self.assertFalse(any("PRIVATE" in json.dumps(r) for r in records))
+        self.assertEqual(0, diag.parse_line(PREFIX.format(kind="finalCompletion") + P0_EXTRA["finalCompletion"])["loggerFailed"])
+        for kind, fields in CORRELATION.items():
+            with self.assertRaises(diag.Rejected):
+                diag.parse_line(PREFIX.format(kind=kind) + fields + " messageId=PRIVATE")
+
+    def test_correlation_emitter_fields_match_independent_full_golden(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "app/src/main/kotlin/io/github/mangi/eta/ui/components/StreamPerformanceDiagnostics.kt").read_text()
+        end_markers = {"frameCorrelation": "correlation.overlaps.forEach", "spanOverlap": "correlation.preceding.forEach",
+                       "frameLookback": "frame.listSnapshot?.let", "frameList": "sample.rows.forEach",
+                       "frameListRow": "} ?: AppFileLogger", "frameMainMessage": "val correlation ="}
+        common = {"id", "windowStartNs", "windowEndNs", "boundary", "final", "v", "type"}
+        for kind, fixture in CORRELATION.items():
+            template = source.split("v=2 type=" + kind + " ", 1)[1].split(end_markers[kind], 1)[0]
+            emitted = common | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", template))
+            if kind in {"spanOverlap", "frameLookback"}:
+                emitted |= set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", RENDER_FIELDS))
+            self.assertEqual(emitted, set(diag.parse_line(PREFIX.format(kind=kind) + fixture)), kind)
+
+    def test_info_level_overwritten_and_delta_loss_are_not_hidden(self):
+        for name in ("traced_buf_bytes_overwritten", "ftrace_setup_errors", "ftrace_cpu_overrun_delta", "traced_buf_chunks_discarded", "traced_buf_trace_writer_packet_loss"):
+            result = diag.parse_stats_csv("name,idx,value,severity,source\n" + name + ",0,3,info,trace\n")
+            if "setup_errors" not in name:
+                self.assertTrue(result["problemRows"], name)
 
     def test_retokens_id_no_reverse_mapping(self):
         records, audit = diag.parse_lines([SPAN, SPAN.replace("12ab34cd", "87654321")])
@@ -502,6 +559,23 @@ class IntegrityAndCLITests(unittest.TestCase):
             self.assertNotIn("PRIVATE_SENTINEL", output)
             self.assertNotIn("12ab34cd", output)
             self.assertEqual(json.loads(output)["parser"]["rejectedLines"], 1)
+
+    def test_cli_refuses_existing_output_input_and_symlinks_without_modifying_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            source, target, link = (Path(root) / name for name in ("input.txt", "report.json", "alias"))
+            raw = SPAN + "\n"
+            source.write_text(raw, encoding="utf-8")
+            target.write_text("original report", encoding="utf-8")
+            link.symlink_to(source)
+            dangling = Path(root) / "dangling"
+            dangling.symlink_to(Path(root) / "missing")
+            for output in (source, target, link, dangling):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    code = diag.main(["summary", str(source), "--start-ns", "100", "--end-ns", "300", "--output", str(output)])
+                self.assertEqual(code, 2)
+                self.assertEqual(source.read_text(encoding="utf-8"), raw)
+                self.assertEqual(target.read_text(encoding="utf-8"), "original report")
+                self.assertFalse((Path(root) / "missing").exists())
 
     def test_cli_explicit_window_required(self):
         stderr = io.StringIO()

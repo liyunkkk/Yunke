@@ -25,7 +25,10 @@ val parts = "${page.fields()} totalUs=${total / 1000} deadlineUs=${deadline / 10
 # The listener minus the relocated, gate-only formatting. Keep aggregation/admission/expiry exact.
 LISTENER_WITHOUT_PARTS = '''
 val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
-    if (active === session && enabled && frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) != 1L) {
+    val delivered = System.nanoTime()
+    val intendedFrame = frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
+    if (session.admitFrame(intendedFrame, AppFileLogger.isEnabled())) {
+        val firstDraw = frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) == 1L
         val total = frame.getMetric(FrameMetrics.TOTAL_DURATION)
         val deadline = frame.getMetric(FrameMetrics.DEADLINE)
         val unknown = frame.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION)
@@ -44,20 +47,31 @@ val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
         fun metric(stage: String, ns: Long, value: Long) {
             session.recordMetric(page.aggregatePage.ordinal, stage, ns, value)
         }
-        if ((missed || total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) && session.details.reserveFrame()) {
+        session.observerCosts.add(DiagnosticObserverCosts.Phase.CallbackLag, delivered - (intended + total))
+        val severe = total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS
+        if ((firstDraw || missed || severe) && session.details.reserveFrame(severe)) {
             val record = DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
                 total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
-                unknown, input, animation, layout, draw, sync, command, swap, gpu)
+                unknown, input, animation, layout, draw, sync, command, swap, gpu,
+                firstDraw = firstDraw, pageSegment = page.startSegment)
             // Only severe/unknown-delay anomalies copy evidence, not every 120Hz frame or deadline miss.
-            if (total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) session.details.protectFrame(record)
+            if (severe) session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
+                session.details.protectFrame(record)
+            }
             val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
-                session.listSamples.forFrame(record) else null
+                session.listSamples.forFrame(record, session.details.recentForFrame(record)) else null
             val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
                 .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
             session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages))
         }
+        // Capture first-draw evidence without changing legacy steady-frame/probe statistics.
+        if (firstDraw) {
+            metric("frame.firstDraw", total, if (missed) 1 else 0)
+            return@OnFrameMetricsAvailableListener
+        }
         session.record(page.aggregatePage.frameStage, total, if (missed) 1 else 0)
         metric("frame.total", total, if (missed) 1 else 0)
+        metric("frame.steady", total, if (missed) 1 else 0)
         metric("frame.layout", layout, 0)
         metric("frame.draw", draw, 0)
         metric("frame.sync", sync, 0)
@@ -114,6 +128,12 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
         self.assertEqual(listener_lines.count(parts_lines), 1)
         without_parts = listener_lines.replace(parts_lines + "\n", "", 1)
         self.assertEqual(normalized_lines(LISTENER_WITHOUT_PARTS), without_parts)
+        first_draw, steady = self.listener.split("return@OnFrameMetricsAvailableListener", 1)
+        self.assertIn('metric("frame.firstDraw", total, if (missed) 1 else 0)', first_draw)
+        self.assertIn('session.details.frame(record.copy(', first_draw)
+        self.assertNotIn('metric("frame.total"', first_draw)
+        self.assertNotIn('target.addFrame(', first_draw)
+        self.assertIn('metric("frame.steady", total, if (missed) 1 else 0)', steady)
 
     def test_probe_precision_capacity_and_expiry_are_unchanged(self):
         for exact in (
@@ -146,6 +166,8 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
             self.assertNotIn(forbidden, measure_code)
         self.assertEqual(normalized_lines(draw), normalized_lines('''
             (stage: String, attribution: StreamDiagnosticAttribution? = null): Modifier {
+                // A construction in composition observes only attach/detach, even when initially OFF.
+                StreamPerformanceDiagnostics.sessionGeneration.longValue
                 if (!StreamPerformanceDiagnostics.enabled) return this
                 return drawWithContent {
                     StreamPerformanceDiagnostics.withRenderAttribution(attribution) {

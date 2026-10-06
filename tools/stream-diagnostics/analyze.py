@@ -55,7 +55,7 @@ STAGES = frozenset("""
     follow.initialSnap follow.decision follow.frameGap follow.scroll follow.step follow.cancelled
     follow.viewportRecovery heap.usedBytes main.frameMessages main.otherMessages main.message main.doFrame
     frame.total frame.layout frame.draw frame.sync frame.gpu frame.input frame.unknown frame.animation
-    frame.command frame.swap frame.unaccounted frame.overlap frame.vsyncLate frame.metricsDropped frame.deadline
+    frame.command frame.swap frame.unaccounted frame.overlap frame.vsyncLate frame.metricsDropped frame.deadline frame.firstDraw frame.steady diagnostic.clockSync
     persistence.write persistence.read persistence.serialize persistence.queueWait
     render.measure render.draw render.compose
     render.unknown markdown.unknown reveal.unknown settings.unknown persistence.unknown
@@ -72,7 +72,7 @@ STAGES = frozenset("""
     settings.transform usage.commitTail usage.editEntryWait usage.ledger.encodeEvents usage.ledger.serialize
     usage.ledger.update usage.load.dao.conversations usage.load.dao.liveIds usage.load.dao.messages
     usage.load.dao.perDay usage.load.decode usage.lockWait usage.transform
-    main.uninstrumented main.nonReveal chat.content.commit list.measure list.place
+    main.uninstrumented main.nonReveal chat.content.commit list.measure list.place row.measure row.place row.draw settings.section.measure settings.section.draw
 """.split()) | frozenset("ui.event." + kind for kind in KINDS) | frozenset("frame.page." + page for page in PAGES)
 # Fixed enums only. A new emitter enum requires explicit review, never a regex.
 RUNTIME_COUNTERS = frozenset({
@@ -123,6 +123,44 @@ ENUMS = {
     "accounting": {"frameMetricsResidualNotAdditive", "dispatchSubsetsNotAdditive"},
 }
 
+
+# P0 emitter contract: all new fields remain fixed enums or bounded numbers, not payload strings.
+RENDER_FIELDS = {"listToken", "rowToken", "rowType", "blockIndex", "blockType", "blockChars", "component", "renderIdentity"}
+COUNTERS = COUNTERS | {"protectedBudgetDropped", "frameCaptureTruncated", "previousWindowSpans", "rowTokenSaturated",
+                       "listSampleOverwritten", "frameBudgetEvicted", "callbackRejected", "openAtStop", "openIdDropped"}
+FIELDS["window"] |= COUNTERS | {"protectedSpanCapacity", "gitSha", "stopCutoffNs", "partial", "lateAfterFinal", "completeCpu", "anchorUncertaintyNs", "osPid", "javaThreadId", "osTid"}
+FIELDS["span"] |= RENDER_FIELDS | {"javaThreadId", "osTid", "osTidUnknown", "partialAtCutoff"}
+FIELDS["frame"] |= {"firstDraw", "pageSegment", "partialAtCutoff"}
+FIELDS["mainMessage"] |= {"partial", "cpuNs", "wallMinusCpuNs", "cpuAccounting"}
+FIELDS.update({
+    "observerCost": COMMON | {"observerPhase", "count", "totalNs", "maxNs", "accounting", "includesLockWait", "recursiveMeasurement", "scope"},
+    "openSpan": COMMON | {"span", "partial", "atCutoff", "stillOpenAtFinal", "cpuNs"},
+    "finalCompletion": COMMON | {"cutoffNs", "loggerRejected", "loggerFailed", "drainGraceMs", "completion", "privacyGate", "evidenceComplete"},
+    "frameCorrelation": COMMON | {"abnormalFrame", "intendedVsyncNs", "frameTotalNs", "matched", "emitted", "omitted", "mainSpanUnionNs", "frameWallOutsideSpansNs", "evidenceIncomplete", "coverage", "evidenceComplete", "zeroMatch", "capture", "rule", "accounting"},
+    "spanOverlap": COMMON | RENDER_FIELDS | {"abnormalFrame", "span", "parent", "stage", "beginNs", "endNs", "overlapNs", "durationNs", "selfUpperBoundNs", "selfAccounting", "duration", "value", "eventSeq", "runToken", "conversationToken"},
+    "frameLookback": COMMON | RENDER_FIELDS | {"abnormalFrame", "span", "parent", "stage", "beginNs", "endNs", "durationNs", "lookbackNs", "relation"},
+    "frameList": COMMON | {"abnormalFrame", "available", "listToken", "sampleNs", "ageAtFrameEndNs", "sourcePage", "sourceSegment", "relation", "visibility", "messageCount", "totalRows", "firstIndex", "firstOffset", "viewportStart", "viewportEnd", "visibleCount", "emittedRows", "omittedRows"},
+    "frameListRow": COMMON | {"abnormalFrame", "listToken", "sampleNs", "rowToken", "index", "offset", "size"},
+    "frameMainMessage": COMMON | {"abnormalFrame", "beginNs", "endNs", "overlapNs", "relation", "frameDispatch", "coveredNs", "uninstrumentedNs", "cpuNs", "wallMinusCpuNs", "accounting", "cpuAccounting", "omitted"},
+})
+BOOLEANS |= {"firstDraw", "partial", "partialAtCutoff", "evidenceIncomplete", "available", "atCutoff", "stillOpenAtFinal", "includesLockWait", "recursiveMeasurement"}
+ENUMS.update({
+    "rowType": {"unknown", "user", "agent", "thinking", "tool", "message", "work-header", "work-tool", "work-thinking", "work-summary"},
+    "blockType": {"unknown", "paragraph", "heading", "list", "quote", "code", "table", "html", "image", "rule", "other"},
+    "component": {"unknown", "agent", "model_features", "context_extensions", "general", "tools", "haptics", "assistant_takeover", "oem_assistant_compatibility", "gemini", "circle_to_search", "diagnostics", "permissions", "about"},
+    "renderIdentity": {"anonymousSessionLocalNotEventCausality"}, "sourcePage": PAGES,
+    "observerPhase": {"Enter", "Finish", "Protect", "Snapshot", "Output", "CallbackLag"},
+    "scope": {"sessionCumulative"}, "completion": {"appendAndFlush"}, "privacyGate": {"honored"},
+    "evidenceComplete": {"notClaimed"}, "lateAfterFinal": {"notTracked"}, "completeCpu": {"notClaimed"},
+    "selfAccounting": {"directChildUnionUpperBoundIfMissingChildren"}, "coverage": {"instrumentedCompletedSpansOnly"},
+    "zeroMatch": {"notProofOfNoMainWork"}, "capture": {"anomalyCallbackAndAdmissionSnapshot"}, "rule": {"mainSpanOverlapNotCausality"},
+    "relation": {"precedingNotFrameOverlap", "sourceMatchedObservedPostLayoutNotExactFrame", "overlap", "preceding"},
+    "cpuAccounting": {"threadCpuCounterNotBlockedDiagnosis"},
+})
+ENUMS["visibility"] |= {"layoutSlotsNotClippedPixels"}
+ENUMS["duration"] |= {"inclusiveNotAdditive"}
+ENUMS["accounting"] |= {"wallUnionNotCpuOrFrameParts", "dispatchWallNotFrameParts", "observerWallNotCpu"}
+SIGNED_FIELDS = {"value", "delta", "blockIndex", "osTid", "osTidUnknown", "stopCutoffNs", "cpuNs", "wallMinusCpuNs", "firstOffset", "viewportStart", "viewportEnd", "offset"}
 
 class Rejected(ValueError):
     """Reason codes only, never attach the raw line/field/value/path."""
@@ -182,10 +220,14 @@ def parse_line(line):
             if value != "unknown" and not re.fullmatch(r"[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}", value):
                 raise Rejected("unapproved_version_name")
             result[key] = value
-        elif key in {"cumulative", "delta"} and value == "unknown":
+        elif key == "gitSha":
+            if value != "unknown" and not re.fullmatch(r"[0-9a-fA-F]{40}", value):
+                raise Rejected("invalid_git_sha")
+            result[key] = value.lower()
+        elif key in {"cumulative", "delta", "cpuNs"} and value == "unknown":
             result[key] = None
         else:
-            result[key] = integer(value, signed=key in {"value", "delta"})
+            result[key] = integer(value, signed=key in SIGNED_FIELDS)
     if result["windowEndNs"] < result["windowStartNs"]:
         raise Rejected("reversed_window")
     if kind == "span":
@@ -524,7 +566,7 @@ def parse_stats_csv(text):
     except (csv.Error, TypeError):
         raise Rejected("invalid_stats_csv") from None
     problem = [r for r in rows if r["value"] != 0 and (r["severity"] in {"error", "data_loss", "warning", "warn"}
-               or re.search(r"lost|drop|overrun|overwrite|discard|trunc", r["name"]))]
+               or re.search(r"lost|loss|drop|overrun|overwrit|discard|trunc", r["name"]))]
     if not rows:
         status = "missing_stats"
     elif any(r["severity"] in {"error", "data_loss"} for r in problem):
@@ -580,7 +622,9 @@ def main(argv=None):
             output = json.dumps(report, indent=2, sort_keys=True) + "\n"
             rejected = audit["rejectedLines"] > 0 or audit["exporterTruncatedRecords"] > 0
         if args.output:
-            args.output.write_text(output, encoding="utf-8")
+            # Evidence must never be overwritten by a report, even through a link.
+            with args.output.open("x", encoding="utf-8") as destination:
+                destination.write(output)
         else:
             sys.stdout.write(output)
         # A safe summary may still be written, but invalid/truncated input fails

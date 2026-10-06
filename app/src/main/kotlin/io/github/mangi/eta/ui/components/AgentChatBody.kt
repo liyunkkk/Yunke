@@ -655,7 +655,10 @@ internal fun AgentConversationMessages(
     // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
     val scrollTraceEnabled = rememberChatScrollTraceEnabled()
     val chatListTrace = ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
-    val diagnosticList = remember(scrollState) { nextStreamDiagnosticListId() }
+    // Observe attach/detach only; never change lazy keys or remount completed content.
+    val diagnosticGeneration = StreamPerformanceDiagnostics.sessionGeneration.longValue
+    val diagnosticList = remember(scrollState, diagnosticGeneration) { nextStreamDiagnosticListId() }
+    val diagnosticListAttribution = StreamPerformanceDiagnostics.listAttribution(diagnosticList)
     traceChatListOwnerExecution(chatListTrace, scrollTraceEnabled)
     // Retain successful parses beyond individual lazy-row compositions.
     val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
@@ -1318,8 +1321,8 @@ internal fun AgentConversationMessages(
                 Arrangement.Top
             },
             modifier = Modifier
-                .streamDiagnosticMeasure("list.measure")
-                .streamDiagnosticPlacement("list.place")
+                .streamDiagnosticMeasure("list.measure", diagnosticListAttribution)
+                .streamDiagnosticPlacement("list.place", diagnosticListAttribution)
                 .fillMaxSize()
                 .graphicsLayer {
                     val overflow = scrollState.followTailOverflow()

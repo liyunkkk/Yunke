@@ -410,6 +410,73 @@ class StreamDiagnosticModifierTest {
         }
     }
 
+    @Test fun initialCompositionBeforeAttachAndUnchangedContentRefreshesAcrossLoggingAndResume() {
+        val loggerField = AppFileLogger::class.java.getDeclaredField("enabled").apply { isAccessible = true }
+        val loggerEnabled = loggerField.get(null) as AtomicBoolean
+        val previousEnabled = loggerEnabled.get()
+        val logging = mutableStateOf(false)
+        val owner = object : androidx.lifecycle.LifecycleOwner {
+            override val lifecycle = androidx.lifecycle.LifecycleRegistry(this)
+        }
+        var identity: StreamDiagnosticAttribution? = null
+        var retained: Any? = null
+        var mounted = 0
+        val activeField = StreamPerformanceDiagnostics::class.java.getDeclaredField("active").apply { isAccessible = true }
+        fun session() = activeField.get(null) as StreamPerformanceDiagnostics.Session
+        loggerEnabled.set(true)
+        owner.lifecycle.currentState = androidx.lifecycle.Lifecycle.State.RESUMED
+        try {
+            compose.setContent {
+                CompositionLocalProvider(androidx.lifecycle.compose.LocalLifecycleOwner provides owner) {
+                    StreamPerformanceMonitor(logging.value, FrameDiagnosticPage.Chat)
+                    val generation = StreamPerformanceDiagnostics.sessionGeneration.longValue
+                    val list = androidx.compose.runtime.remember(generation) { nextStreamDiagnosticListId() }
+                    val row = StreamPerformanceDiagnostics.rowAttribution(list, "PRIVATE_UNCHANGED", "agent")
+                    val frozen = androidx.compose.runtime.remember { mounted++; Any() }
+                    SideEffect { identity = row; retained = frozen }
+                    Layout(content = {}, modifier = Modifier.width(20.dp).height(10.dp)
+                        .streamDiagnosticMeasure("row.measure", row)
+                        .streamDiagnosticDraw("row.draw", row)) { _, constraints ->
+                        layout(constraints.maxWidth, constraints.maxHeight) {}
+                    }
+                }
+            }
+            compose.runOnIdle { assertEquals(null, identity); logging.value = true }
+            compose.waitForIdle()
+            var firstSerial = 0L
+            var frozen: Any? = null
+            compose.runOnIdle {
+                firstSerial = identity!!.session; frozen = retained
+                assertTrue((session().snapshot(false).stats["row.measure"]?.count ?: 0) > 0)
+                logging.value = false
+            }
+            compose.waitForIdle()
+            compose.runOnIdle { assertEquals(null, identity); logging.value = true }
+            compose.waitForIdle()
+            var secondSerial = 0L
+            compose.runOnIdle {
+                secondSerial = identity!!.session
+                assertTrue(secondSerial != firstSerial)
+                assertSame(frozen, retained)
+                owner.lifecycle.currentState = androidx.lifecycle.Lifecycle.State.STARTED
+            }
+            compose.waitForIdle()
+            compose.runOnIdle { assertEquals(null, identity); owner.lifecycle.currentState = androidx.lifecycle.Lifecycle.State.RESUMED }
+            compose.waitForIdle()
+            compose.runOnIdle {
+                assertTrue(identity!!.session != secondSerial)
+                assertSame(frozen, retained); assertEquals(1, mounted)
+                assertTrue((session().snapshot(false).stats["row.measure"]?.count ?: 0) > 0)
+                logging.value = false
+            }
+            compose.waitForIdle()
+        } finally {
+            compose.runOnIdle { logging.value = false }
+            compose.waitForIdle()
+            loggerEnabled.set(previousEnabled)
+        }
+    }
+
     /** Exactly the previous helper, intentionally outside composition's lambda memoization. */
     private fun Modifier.legacyDiagnosticMeasure(stage: String): Modifier = layout { measurable, constraints ->
         StreamPerformanceDiagnostics.measureDetail(stage) {

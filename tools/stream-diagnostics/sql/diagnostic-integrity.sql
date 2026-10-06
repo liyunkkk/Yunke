@@ -5,7 +5,7 @@ SELECT name, idx, value, severity, source FROM stats ORDER BY severity, name, id
 SELECT name, idx, value, severity, source FROM stats
 WHERE severity IN ('error', 'data_loss', 'warning', 'warn')
    OR name GLOB '*lost*' OR name GLOB '*drop*' OR name GLOB '*overrun*'
-   OR name GLOB '*overwrite*' OR name GLOB '*discard*' OR name GLOB '*trunc*'
+   OR name GLOB '*overwrit*' OR name GLOB '*loss*' OR name GLOB '*discard*' OR name GLOB '*trunc*'
 ORDER BY name, idx;
 SELECT COUNT(*) AS sched_rows FROM sched;
 SELECT COUNT(*) AS frames FROM actual_frame_timeline_slice;

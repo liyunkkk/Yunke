@@ -11,20 +11,21 @@ class StreamDiagnosticV2Contract(unittest.TestCase):
         source = (ROOT / 'ui/components/StreamPerformanceDiagnostics.kt').read_text()
         for kind in ('window', 'span', 'frame', 'runtime'):
             self.assertIn('v=2 type=' + kind, source)
-        self.assertNotIn('BuildConfig', source)
+        self.assertIn('BuildConfig.BUILD_TYPE', source)
+        self.assertIn('BuildConfig.GIT_SHA', source)
         self.assertIn('getPackageInfo(packageName, 0)', source)
         self.assertIn('Debug.getRuntimeStats()', source)
         self.assertIn('gcTime=runtimeCounterNotPause', source)
         self.assertIn('windowStartNs=', source)
         self.assertIn('windowEndNs=', source)
-        self.assertIn('(missed || total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) && session.details.reserveFrame()', source)
+        self.assertIn('(firstDraw || missed || severe) && session.details.reserveFrame(severe)', source)
         self.assertIn('deadline > 0 && total > deadline', source)
         self.assertNotIn('spikes < SPIKE_MAX_PER_WINDOW', source)
         self.assertIn('onMessage?.invoke(started, now, isFrame, coveredNs, revealNs)', source)
         code = code_only(source)
         self.assertRegex(code, r'@Synchronized\s+fun reserveNote\(\): Int\? = if \(closed\) null else notes\.reserve\(\)')
         self.assertIn('private val notes = DiagnosticNoteBudget(NOTE_MAX_PER_SESSION)', code)
-        self.assertRegex(code, r'private fun enabledSession\(\): Session\?\s*\{\s*val session = active \?: return null\s*return session\.takeIf \{ AppFileLogger\.isEnabled\(\) && !it\.closed \}\s*\}')
+        self.assertRegex(code, r'private fun enabledSession\(\): Session\?\s*\{\s*val session = active \?: return null\s*return session\.takeIf \{ StreamDiagnosticControl\.allowed && AppFileLogger\.isEnabled\(\) && !it\.closed && it\.stopCutoffNs == null \}\s*\}')
         note_start = code.index('noteSink = fun(')
         opening = code.index('{', note_start)
         note_end = balanced_end(code, opening, '{', '}')
@@ -58,7 +59,7 @@ class StreamDiagnosticV2Contract(unittest.TestCase):
                       'openSpansAtCutoff=${snapshot.openSpans}',
                       'closedRejectedRecords=${snapshot.closedRejectedRecords}',
                       'lateSpans=${snapshot.lateSpans}',
-                      'postCloseObservation=notTracked'):
+                      'lateAfterFinal=notTracked'):
             self.assertIn(field, window)
         self.assertIn('boundary=admissionSnapshot final=$final', source)
 

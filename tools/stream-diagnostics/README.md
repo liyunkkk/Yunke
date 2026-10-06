@@ -6,6 +6,40 @@ runs persistently. The only app change in this module is
 `<profileable android:shell="true" />` inside `application`; no `debuggable` flag,
 new permission, exported activity, business/visual or persistence change.
 
+## Canonical capture and acceptance boundary
+
+For a 45-second unsampled capture, use `docs/diagnostics/eta-jank.perfetto`.
+The longer and CPU-only profiles below are separate diagnostic passes, not a
+matched performance baseline. **No automatic ON/OFF success oracle is supplied.**
+Missing counters, missing source coverage, an unclosed session, or missing proof
+of the effective OFF setting remain unknown and must not be replaced with zero.
+
+On this Root/KernelSU Android device, passing a caller-opened output FD with `-o`
+can be rejected by the tracing service. Generate a private copy of the canonical
+config, append one `output_path: "/data/misc/perfetto-traces/eta-UNIQUE.pftrace"`,
+where the destination does not already exist, and run:
+
+```sh
+perfetto --txt -c /data/local/tmp/eta-UNIQUE.pbtxt
+```
+
+Do **not** pass `-o` together with that service-owned output path, force Android
+`primary_trace_clock: MONOTONIC`, disable SELinux, or overwrite an existing trace.
+Default Android trace time is BOOTTIME; map the app nanoTime window using measured
+clock bridges at both ends and actual PID/Linux TID, not Java Thread.id.
+Preserve exact APK hash, Git SHA, signing certificate, process lifetime, OFF key
+readback and actual absence/presence evidence with each matched reproduction.
+
+Before attribution, inspect complete stats (including `*overwrit*`, per-buffer
+and per-CPU loss), source-specific time ranges, and emitted final completion.
+Trace bounds alone do not prove all 45 seconds survived. Unfinished slices,
+negative timestamps, truncation and unknown symbols require explicit accounting;
+any exception must be tied to the exact affected source/process, not suppressed.
+The exploratory 45-second probe is not a matched long-text performance result.
+
+Analyzer `--output` uses exclusive creation: choose a new path. Existing files,
+input aliases and symlinks are refused to preserve original evidence.
+
 ## Evidence and limits of validation
 
 - The parent supplied both configs and the initial integrity SQL. The 180-second
@@ -67,10 +101,10 @@ adb shell rm /data/local/tmp/eta-jank-timeline.pbtxt /data/local/tmp/eta-jank-sa
 adb shell rm /data/misc/perfetto-traces/eta-jank-timeline.pftrace /data/misc/perfetto-traces/eta-jank-sampled-stacks.pftrace
 ```
 
-Pass 2 adds `linux.perf` CPU-clock **99 Hz** callstack sampling and heapprofd
-**16 KiB** allocation sampling for `libc.malloc` and `com.android.art`, with
-5-second dumps. Supported Android/ART build, profileable permission, producer
-availability and unwind/symbol support are prerequisites. Present tables with
+Pass 2 is **CPU-only**: `linux.perf` CPU-clock **99 Hz** callstack sampling.
+It does not enable heapprofd, ART heap snapshots, or allocation-stack capture.
+Supported Android/ART build, profileable permission, producer availability and
+unwind/symbol support are prerequisites. Present tables with
 zero rows, target-window zero samples, missing tables, unresolved stacks and
 sampling producer errors are different findings; none means “no allocations” or
 “CPU did no work”. Startup/runtime restrictions may require repeating the
@@ -95,8 +129,8 @@ Official references (provided/checked by parent; not browsed by this agent):
 `profileable` permits trusted local shell profiling on a user build (needed for
 local stack profiling on the reported Android 15 device), not arbitrary app
 memory reading and not debugging. The official profileable discussion does not
-promise a heap object/body view. Heapprofd uses the native/ART heap names above.
-It is not a Java heap dump, and the app's `heap=proxyNotAllocationStack` counter
+promise a heap object/body view. No heap producer is enabled in the CPU-only pass;
+if separately enabled, heapprofd is not a Java heap dump, and the app's `heap=proxyNotAllocationStack` counter
 is only a runtime heap proxy, not an allocation stack trace.
 
 Keep R8 `mapping.txt`, native unstripped ELF/debug symbols/build IDs, source

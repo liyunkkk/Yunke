@@ -83,7 +83,7 @@ internal fun traceChatBodyRun(kind: String, mountId: Long) {
     if (StreamPerformanceDiagnostics.enabled) {
         emitChatBodyDiagnosticCommit(kind, enabled = true, sink = AndroidChatBodyCommitSink)
     }
-    emitChatBodyTrace(kind, mountId, Trace.isEnabled(), AndroidChatBodyTraceSink)
+    emitChatBodyTrace(kind, mountId, StreamDiagnosticControl.allowed && Trace.isEnabled(), AndroidChatBodyTraceSink)
 }
 
 private object AndroidChatBodyCommitSink : ChatBodyCommitSink {

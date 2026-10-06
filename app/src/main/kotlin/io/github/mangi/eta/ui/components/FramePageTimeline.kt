@@ -12,6 +12,8 @@ internal data class FramePageAttribution(
     val start: FrameDiagnosticPage,
     val end: FrameDiagnosticPage,
     val changed: Boolean,
+    val startSegment: Long = 0,
+    val endSegment: Long = 0,
 ) {
     val aggregatePage: FrameDiagnosticPage get() = when {
         start == FrameDiagnosticPage.Unknown || end == FrameDiagnosticPage.Unknown -> FrameDiagnosticPage.Unknown
@@ -23,7 +25,8 @@ internal data class FramePageAttribution(
 
 /** Bounded route history. Read immutable snapshots without contending with the UI thread. */
 internal class FramePageTimeline(private val capacity: Int = 64) {
-    private data class Entry(val atNs: Long, val page: FrameDiagnosticPage)
+    private data class Entry(val atNs: Long, val page: FrameDiagnosticPage, val segment: Long)
+    private var nextSegment = 0L
     @Volatile private var entries: List<Entry> = emptyList()
 
     init { require(capacity >= 2) }
@@ -32,7 +35,7 @@ internal class FramePageTimeline(private val capacity: Int = 64) {
         val last = entries.lastOrNull()
         if (last?.page == page) return
         require(last == null || nowNs >= last.atNs)
-        entries = (entries.takeLast(capacity - 1) + Entry(nowNs, page))
+        entries = (entries.takeLast(capacity - 1) + Entry(nowNs, page, ++nextSegment))
     }
 
     fun attributeFrame(intendedNs: Long, totalNs: Long): FramePageAttribution {
@@ -52,6 +55,7 @@ internal class FramePageTimeline(private val capacity: Int = 64) {
         while (startIndex >= 0 && snapshot[startIndex].atNs > startNs) startIndex--
         val start = snapshot.getOrNull(startIndex)?.page ?: FrameDiagnosticPage.Unknown
         val end = snapshot.getOrNull(endIndex)?.page ?: FrameDiagnosticPage.Unknown
-        return FramePageAttribution(start, end, startIndex != endIndex)
+        return FramePageAttribution(start, end, startIndex != endIndex,
+            snapshot.getOrNull(startIndex)?.segment ?: 0, snapshot.getOrNull(endIndex)?.segment ?: 0)
     }
 }

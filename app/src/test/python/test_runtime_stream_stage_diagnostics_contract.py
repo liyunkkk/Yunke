@@ -59,13 +59,13 @@ class RuntimeStreamStageDiagnosticsContract(unittest.TestCase):
         self.assertIsNotNone(enabled_session)
         self.assertEqual(compact(enabled_session.group(1)), compact('''
             val session = active ?: return null
-            return session.takeIf { AppFileLogger.isEnabled() && !it.closed }
+            return session.takeIf { StreamDiagnosticControl.allowed && AppFileLogger.isEnabled() && !it.closed && it.stopCutoffNs == null }
         '''))
         self.assertEqual(len(re.findall(r"\bactive\b", enabled_session.group(1))), 1)
         self.assertIn("val enabled: Boolean get() = enabledSession() != null", self.diag)
         self.assertIn("@Volatile var closed = false", self.diag)
         self.assertIn("lifecycleState.isAtLeast(Lifecycle.State.RESUMED)", self.diag)
-        self.assertIn("loggingEnabled && resumed && window != null", self.diag)
+        self.assertIn("loggingEnabled && diagnosticAllowed && resumed && window != null", self.diag)
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return block()", self.adapter)
         self.assertIn("internal inline fun <T> measureRuntimeStreamStage", self.adapter)
         self.assertIn("return StreamPerformanceDiagnostics.measure(stage) { block() }", self.adapter)

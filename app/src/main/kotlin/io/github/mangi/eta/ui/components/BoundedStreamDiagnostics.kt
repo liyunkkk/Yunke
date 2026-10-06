@@ -25,7 +25,7 @@ internal object StreamDiagnosticLabels {
         "heap.usedBytes", "main.frameMessages", "main.otherMessages", "main.message", "main.doFrame",
         "frame.total", "frame.layout", "frame.draw", "frame.sync", "frame.gpu", "frame.input", "frame.unknown",
         "frame.animation", "frame.command", "frame.swap", "frame.unaccounted", "frame.overlap", "frame.vsyncLate",
-        "frame.metricsDropped", "frame.deadline",
+        "frame.metricsDropped", "frame.deadline", "frame.firstDraw", "frame.steady", "diagnostic.clockSync",
         "persistence.write", "persistence.read", "persistence.serialize", "persistence.queueWait",
         "render.measure", "render.draw", "render.compose",
         "markdown.annotated.build", "markdown.annotated.cell", "markdown.annotated.raw", "markdown.citation.strip",
@@ -148,7 +148,7 @@ internal data class DiagnosticSpanRecord(
 /** Dispatch wall time, not CPU time or a FrameTimeline frame. Subsets must not be added. */
 internal data class DiagnosticMainMessageRecord(
     val beginNs: Long, val endNs: Long, val frameDispatch: Boolean,
-    val coveredNs: Long, val revealNs: Long, val cpuNs: Long = -1,
+    val coveredNs: Long, val revealNs: Long, val cpuNs: Long = -1, val partial: Boolean = false,
 ) {
     val uninstrumentedNs: Long get() = endNs - beginNs - coveredNs
     val nonRevealNs: Long get() = endNs - beginNs - revealNs
@@ -161,7 +161,10 @@ internal data class DiagnosticFrameRecord(
     val drawNs: Long, val syncNs: Long, val commandNs: Long, val swapNs: Long, val gpuNs: Long,
     val listSnapshot: DiagnosticListSnapshot? = null,
     val mainMessages: List<DiagnosticMainMessageRecord> = emptyList(),
+    val firstDraw: Boolean = false,
+    val pageSegment: Long = 0,
 ) {
+    val severe: Boolean get() = totalNs >= 33_000_000L || unknownNs >= 8_000_000L
     val missed: Boolean get() = deadlineNs > 0 && totalNs > deadlineNs
     // Signed residual of FrameMetrics components; GPU overlaps command/swap and is excluded.
     private val residualNs: Long get() = totalNs -
@@ -180,6 +183,7 @@ internal data class DiagnosticDetailSnapshot(
     val protectedBudgetDropped: Long = 0,
     val frameCaptureTruncated: Long = 0,
     val previousWindowSpans: Long = 0,
+    val frameBudgetEvicted: Long = 0,
 )
 
 /** Primitive columns detached under the admission lock; selection and record construction are outside it. */
@@ -197,6 +201,7 @@ internal class DiagnosticRawDetailSnapshot internal constructor(
     private val protectedDropped: Long = 0,
     private val captureTruncated: Long = 0,
     private val previousWindowSpans: Long = 0,
+    private val frameEvicted: Long = 0,
 ) {
     private fun candidates(includeProtected: Boolean): List<DiagnosticSpanRecord> {
         val out = linkedMapOf<Long, DiagnosticSpanRecord>()
@@ -235,7 +240,7 @@ internal class DiagnosticRawDetailSnapshot internal constructor(
         val out = prioritized.take(slowLimit)
         return DiagnosticDetailSnapshot(fromNs, toNs, out, frameSnapshot,
             overwritten, slowDropped, frameDropped, (prioritized.size - out.size).toLong(),
-            protectedDropped, captureTruncated, previousWindowSpans)
+            protectedDropped, captureTruncated, previousWindowSpans, frameEvicted)
     }
 }
 
@@ -298,9 +303,12 @@ internal class BoundedDiagnosticDetails(
         if (closed) { closedRejectedSpans++; return }
         require(endNs >= beginNs)
         if (endNs - beginNs >= slowNs) {
-            if (slowAccepted >= slowLimit) { slowDropped++; return }
-            slowAccepted++
-            slowColumns.add(stage, span, parent, beginNs, endNs, thread, main, attribution, page, pageEnd, value)
+            if (slowAccepted >= slowLimit) slowDropped++
+            else {
+                slowAccepted++
+                slowColumns.add(stage, span, parent, beginNs, endNs, thread, main, attribution, page, pageEnd, value)
+            }
+            // Exhausting independent slow retention must NEVER reject ordinary ring admission.
         }
         if (size == capacity) overwritten++ else size++
         stages[next] = stage; spans[next] = span; parents[next] = parent
@@ -310,16 +318,29 @@ internal class BoundedDiagnosticDetails(
     }
 
     private var frameReserved = 0
-    /** Called before building a detailed frame object or a string. */
-    fun reserveFrame(): Boolean = synchronized(admissionLock) {
+    private var lightReserved = 0
+    private val lightLimit = (frameLimit - maxOf(1, frameLimit / 4)).coerceAtLeast(0)
+    private var frameEvicted = 0L
+    /** Reserve at least a quarter exclusively for severe evidence; severe can replace light evidence. */
+    fun reserveFrame(severe: Boolean = true): Boolean = synchronized(admissionLock) {
         if (closed) { closedRejectedFrames++; return false }
-        if (maxOf(frameReserved, frameSize) >= frameLimit) { frameDropped++; return false }
+        if (!severe && lightReserved >= lightLimit) { frameDropped++; return false }
+        if (maxOf(frameReserved, frameSize) >= frameLimit) {
+            if (severe && (0 until frameSize).any { frames[it]?.severe == false }) return true
+            frameDropped++; return false
+        }
         frameReserved++
+        if (!severe) lightReserved++
         true
     }
     fun frame(frame: DiagnosticFrameRecord): Unit = synchronized(admissionLock) {
         if (closed) { closedRejectedFrames++; return }
-        if (frameSize >= frameLimit) { frameDropped++; return }
+        if (frameSize >= frameLimit) {
+            val replace = if (frame.severe) (0 until frameSize).firstOrNull { frames[it]?.severe == false } else null
+            if (replace == null) { frameDropped++; return }
+            frames[replace] = frame; frameEvicted++
+            return
+        }
         frames[frameSize++] = frame
     }
 
@@ -350,6 +371,11 @@ internal class BoundedDiagnosticDetails(
         }
     }
 
+    fun recentForFrame(frame: DiagnosticFrameRecord): List<DiagnosticSpanRecord> {
+        val raw = synchronized(admissionLock) { recentSnapshot(frame.intendedNs + frame.totalNs) }
+        return raw.recentForFrame(frame)
+    }
+
     private fun recentSnapshot(toNs: Long) = DiagnosticRawDetailSnapshot(fromNs, maxOf(fromNs, toNs),
         stages.copyOf(), spans.copyOf(), parents.copyOf(), begins.copyOf(), ends.copyOf(), threads.copyOf(),
         mains.copyOf(), attrs.copyOf(), pages.copyOf(), pageEnds.copyOf(), values.copyOf(), emptyArray(),
@@ -363,11 +389,11 @@ internal class BoundedDiagnosticDetails(
             stages.copyOf(), spans.copyOf(), parents.copyOf(), begins.copyOf(), ends.copyOf(), threads.copyOf(),
             mains.copyOf(), attrs.copyOf(), pages.copyOf(), pageEnds.copyOf(), values.copyOf(), frames.copyOf(frameSize),
             overwritten, slowDropped, frameDropped, slowLimit, slowNs, (next - size + capacity) % capacity, size,
-            slowColumns.detached(), protectedSpans.copyOf(protectedSize), protectedDropped, captureTruncated, previousWindowSpans)
+            slowColumns.detached(), protectedSpans.copyOf(protectedSize), protectedDropped, captureTruncated, previousWindowSpans, frameEvicted)
         previousWindow = raw // One detached generation only; raw snapshots never reference each other.
         stages.fill(null); attrs.fill(null); frames.fill(null)
         fromNs = toNs; size = 0; next = 0; overwritten = 0
-        slowAccepted = 0; slowDropped = 0; frameDropped = 0; frameSize = 0; frameReserved = 0
+        slowAccepted = 0; slowDropped = 0; frameDropped = 0; frameSize = 0; frameReserved = 0; lightReserved = 0; frameEvicted = 0
         slowColumns.reset(); protectedSpans.fill(null); protectedIds.clear(); protectedSize = 0
         protectedDropped = 0; captureTruncated = 0; previousWindowSpans = 0
         if (final) previousWindow = null

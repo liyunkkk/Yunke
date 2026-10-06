@@ -112,6 +112,58 @@ class StreamPerformanceDiagnosticsTest {
         assertEquals(0L, final.lateSpans)
     }
 
+    @Test fun twoPhaseStopRejectsNewSpansButDrainsOriginalFramesAndExistingSpansAtFixedCutoff() {
+        var now = 0L
+        val old = StreamPerformanceDiagnostics.Session { now }
+        val span = old.beginSpan()!!
+        now = 20_000_000
+        assertEquals(now, old.stopAdmission())
+        now = 40_000_000
+        assertEquals(20_000_000L, old.stopAdmission())
+        assertNull(old.beginSpan())
+        assertTrue(old.admitFrame(10_000_000))
+        assertFalse(old.admitFrame(30_000_000))
+        val fresh = StreamPerformanceDiagnostics.Session { now }
+        old.finishSpan("markdown.parse", span, 0, 0, 30_000_000, 1, true, null, 0, 0, 0, 0)
+        val final = old.snapshot(true)
+        assertEquals(20_000_000L, final.rawDetails.toNs)
+        assertEquals(1L, final.openAtStop); assertEquals(0L, final.openSpans)
+        assertEquals(listOf(span), final.openIdsAtStop)
+        assertEquals(1L, final.callbackRejected); assertEquals(1L, final.lateSpans)
+        assertFalse(old.admitFrame(10_000_000))
+        assertTrue(fresh.snapshot(false).stats.isEmpty())
+    }
+
+    @Test fun observerBucketsAreBoundedNonRecursiveAndIncludeInjectedWallCost() {
+        var now = 10L
+        val costs = DiagnosticObserverCosts { now }
+        assertEquals(42, costs.observe(DiagnosticObserverCosts.Phase.Enter) { now = 30; 42 })
+        repeat(1000) { costs.add(DiagnosticObserverCosts.Phase.CallbackLag, 5) }
+        val lines = costs.summary()
+        assertEquals(6, lines.size)
+        assertTrue(lines.single { "observerPhase=Enter " in it }.contains("totalNs=20"))
+        assertTrue(lines.single { "observerPhase=CallbackLag " in it }.contains("count=1000"))
+        val ids = DiagnosticThreadIds(1)
+        assertEquals(-1, ids.osTid(100))
+        ids.register(100, 42); ids.register(101, 43)
+        assertEquals(42, ids.osTid(100)); assertEquals(-1, ids.osTid(101))
+        assertEquals(1L, ids.saturated)
+    }
+
+    @Test fun globalOffDoesNotToggleFileLoggingAndOnlyChangesOnSwitch() {
+        StreamDiagnosticControl.update(null)
+        val before = StreamDiagnosticControl.changes.intValue
+        StreamDiagnosticControl.update("0")
+        assertEquals(before, StreamDiagnosticControl.changes.intValue)
+        StreamDiagnosticControl.update("1")
+        assertFalse(StreamDiagnosticControl.allowed)
+        assertEquals(before + 1, StreamDiagnosticControl.changes.intValue)
+        StreamDiagnosticControl.update("1")
+        assertEquals(before + 1, StreamDiagnosticControl.changes.intValue)
+        StreamDiagnosticControl.update(null)
+        assertTrue(StreamDiagnosticControl.allowed)
+    }
+
     @Test fun noteBudgetIsReservedBeforeLazyDetailAndResetsOnlyWithNewSession() {
         val session = StreamPerformanceDiagnostics.Session()
         var evaluations = 0

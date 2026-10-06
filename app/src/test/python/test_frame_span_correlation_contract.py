@@ -31,7 +31,7 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         self.assertLess(capture.index('recentSnapshot('), capture.index('.recentForFrame(frame)'))
         self.assertIn('all.take(FRAME_CAPTURE_MAX_SPANS)', capture)
         self.assertIn('if (protectedSize == protectedSpans.size) protectedDropped++', capture)
-        recent = self.bounded.split('fun recentForFrame', 1)[1].split('fun select()', 1)[0]
+        recent = class_body(self.bounded, 'DiagnosticRawDetailSnapshot').split('fun recentForFrame', 1)[1].split('fun select()', 1)[0]
         self.assertNotIn('synchronized', recent)
         self.assertIn('candidates(includeProtected = false)', recent)
         self.assertIn('slowColumns.add(', self.bounded)
@@ -42,7 +42,9 @@ class FrameSpanCorrelationContract(unittest.TestCase):
     def test_expensive_capture_is_severe_anomaly_only_and_on_existing_worker(self):
         self.assertIn('Window.OnFrameMetricsAvailableListener', self.stream)
         self.assertIn('window.addOnFrameMetricsAvailableListener(listener, handler)', self.stream)
-        self.assertIn('if (total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) session.details.protectFrame(record)', self.stream)
+        self.assertIn('val severe = total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS', self.stream)
+        self.assertIn('if (severe) session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect)', self.stream)
+        self.assertIn('session.details.protectFrame(record)', self.stream)
         self.assertNotIn('protectFrame(', body(code_only(self.stream), 'measure'))
 
     def test_render_and_geometry_are_generation_gated_before_keys_or_snapshot_reads(self):
