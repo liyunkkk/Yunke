@@ -143,6 +143,8 @@ import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.SliderDefaults
 import top.yukonga.miuix.kmp.basic.ListPopupDefaults
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.squircle.squircleBorder
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
@@ -441,7 +443,7 @@ internal fun AgentChatInputBar(
                     .squircleBorder(
                         width = 0.5.dp,
                         color = MiuixTheme.colorScheme.outline.copy(alpha = 0.30f),
-                        shape = InputContainerShape,
+                        cornerRadius = EtaInputCornerRadius,
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
