@@ -4,6 +4,7 @@ import android.content.Context
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.config.InteractiveModePreference
 import io.github.mangi.eta.agent.delegation.*
 import io.github.mangi.eta.agent.browser.ChildBrowserSession
 import io.github.mangi.eta.agent.model.AgentToolCatalog
@@ -77,6 +78,8 @@ internal class AgentRuntimeRunExecutor(
         val allowDirect = request.config.deviceDirectTools
         val allowSensitiveRead = request.config.deviceSensitiveReadTools
         val allowSensitiveAction = request.config.deviceSensitiveActionTools
+        // Parent-only prompt policy, frozen for this run rather than re-read between rounds.
+        val interactiveModeEnabled = InteractiveModePreference.read()
         var response: AgentModelClient.ModelResponse.Text? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
@@ -373,6 +376,7 @@ internal class AgentRuntimeRunExecutor(
                 terminalSessionIdentityProvider = executor::terminalSessionIdentity,
                 compactPolicy = compactPolicy,
                 onHistorySnapshot = session::publishHistorySnapshot,
+                interactiveModeEnabled = interactiveModeEnabled,
                 onEvent = { event ->
                     timing.accept(event)
                     foregroundReplay.accept(event)
