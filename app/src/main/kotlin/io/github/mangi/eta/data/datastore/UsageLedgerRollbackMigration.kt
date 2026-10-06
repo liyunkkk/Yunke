@@ -4,7 +4,6 @@ import android.util.Log
 import androidx.datastore.core.DataMigration
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.core.toMutablePreferences
 import io.github.mangi.eta.data.repository.validateModelUsageJson
 import java.io.File
 import java.io.IOException
