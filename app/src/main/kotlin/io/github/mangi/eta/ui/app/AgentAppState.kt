@@ -231,6 +231,7 @@ internal class AgentAppState(
     private val runMessageProjector = AgentRunMessageProjector()
     private val runReplayBatch = AgentRunReplayBatch()
     private val runEventCoalescer = AgentRunEventCoalescer()
+    private val conversationSummaryCache = ConversationSummaryCache()
     private val runEventFlushJobs = mutableMapOf<String, Job>()
     private val runJobs = androidx.compose.runtime.mutableStateMapOf<String, Job>()
     private val imageGenerationRunIds = mutableSetOf<String>()
@@ -911,12 +912,13 @@ internal class AgentAppState(
         scope.launch {
             combine(SettingsDataStore.settingsFlow(), ProviderRepository.providersFlow()) { settings, providers ->
                 Triple(settings.selectedProviderId, settings.selectedModelId, providers)
-            }.collectLatest { (providerId, modelId, providers) ->
-                updateSelectionProviders(providers)
-                defaultProviderId = providerId
-                defaultModelId = modelId
-                refreshBoundModelPicker()
-            }
+            }.distinctUntilChanged(::runtimeSelectionUnchanged)
+                .collectLatest { (providerId, modelId, providers) ->
+                    updateSelectionProviders(providers)
+                    defaultProviderId = providerId
+                    defaultModelId = modelId
+                    refreshBoundModelPicker()
+                }
         }
     }
 
@@ -4740,8 +4742,12 @@ internal class AgentAppState(
         if (runEventFlushJobs[runId]?.isActive == true) return
         val scheduledAtNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else null
         val diagnosticAttribution = StreamPerformanceDiagnostics.captureAttribution()
-        runEventFlushJobs[runId] = scope.launch {
+        runEventFlushJobs[runId] = scope.launch(Dispatchers.Main.immediate) {
             delay(STREAM_UI_UPDATE_INTERVAL_MS)
+            // Keep the coarse publication cadence/reveal separation. Only align a due delta
+            // projection with the next VSync; synchronous block/non-delta/result flushes cancel
+            // this wait and apply immediately. The timeout retains progress without a UI frame.
+            withTimeoutOrNull(STREAM_UI_FRAME_WAIT_MS) { awaitRunDeltaFrame() }
             if (scheduledAtNs != null && StreamPerformanceDiagnostics.enabled) {
                 StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
             }
@@ -6071,6 +6077,20 @@ internal class AgentAppState(
     }
 
     private fun refreshConversationSummariesNow() {
+        // Date labels depend on the local day (including year), locale, zone and clock format.
+        // Capture once per refresh, not once per conversation; midnight/config changes invalidate
+        // all entries without changing the createdAt-before-updatedAt ordering/label semantics.
+        val nowMillis = System.currentTimeMillis()
+        val timeZone = java.util.TimeZone.getDefault()
+        val locale = appContext.resources.configuration.locales[0]
+        val use24HourClock = DateFormat.is24HourFormat(appContext)
+        val environment = ConversationSummaryEnvironment(
+            configuration = appContext.resources.configuration.toString(),
+            localDay = java.time.Instant.ofEpochMilli(nowMillis).atZone(timeZone.toZoneId()).toLocalDate().toEpochDay(),
+            timeZone = timeZone,
+            use24HourClock = use24HourClock,
+        )
+        conversationSummaryCache.retain(conversationsById.keys)
         val summaries = conversationsById.entries
             .sortedWith(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
@@ -6081,57 +6101,72 @@ internal class AgentAppState(
             )
             .map { (id, state) ->
                 val lastMessage = state.messages.lastOrNull()
-                ConversationSummaryUi(
-                    id = id,
-                    title = conversationTitles[id].orEmpty().ifBlank {
-                        appContext.getString(R.string.conversation_unnamed)
-                    },
-                    preview = when (lastMessage) {
-                        is UserMessageUi -> AgentFileReferencePromptCodec
-                            .parse(lastMessage.content)
-                            .let { parsed ->
-                                AgentFileReferencePolicy.titleSource(
-                                    request = parsed.request,
-                                    references = parsed.references,
-                                )
-                            }
-                        is AgentMessageUi -> lastMessage.content.ifBlank {
-                            appContext.getString(R.string.conversation_preview_reasoning)
-                        }
-                        is SystemNoticeMessageUi -> appContext.getString(
-                            when (lastMessage.code) {
-                                SystemNoticeCode.Stopped -> R.string.system_notice_stopped
-                                SystemNoticeCode.EmptyResult -> R.string.system_notice_empty_result
-                                SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
-                                SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
-                                SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
-                                SystemNoticeCode.Completed -> R.string.system_notice_completed
-                            },
-                        )
-                        is ThinkingMessageUi -> appContext.getString(R.string.conversation_preview_reasoning)
-                        is ToolActivityMessageUi -> appContext.getString(
-                            R.string.conversation_preview_tool_call,
-                            lastMessage.toolName,
-                        )
-                        else -> appContext.getString(R.string.conversation_preview_empty)
-                    }.take(MAX_PREVIEW_CHARS),
-                    timeLabel = (conversationCreatedAt[id] ?: conversationUpdatedAt[id])?.let { timestamp ->
-                        ConversationTimeLabels.label(
-                            timestampMillis = timestamp,
-                            locale = appContext.resources.configuration.locales[0],
-                            use24HourClock = DateFormat.is24HourFormat(appContext),
-                            yesterdayLabel = appContext.getString(R.string.time_yesterday),
-                            recentLabel = appContext.getString(R.string.time_recent),
-                        )
-                    } ?: appContext.getString(R.string.time_recent),
-                    updatedAtMillis = conversationUpdatedAt[id] ?: 0L,
-                    createdAtMillis = conversationCreatedAt[id] ?: conversationUpdatedAt[id] ?: 0L,
-                    mode = ConversationModeUi.Chat,
+                val key = ConversationSummaryKey(
+                    title = conversationTitles[id].orEmpty(),
+                    previewInput = conversationSummaryPreviewInput(lastMessage),
+                    createdAtMillis = conversationCreatedAt[id],
+                    updatedAtMillis = conversationUpdatedAt[id],
                     isPinned = id in conversationPinned,
                     isActiveRun = state.isStreaming,
                     hasCompletionMarker = id in conversationCompletionMarkers,
                     folderId = conversationFolderIds[id],
+                    environment = environment,
                 )
+                conversationSummaryCache.getOrBuild(id, key) {
+                    ConversationSummaryUi(
+                        id = id,
+                        title = conversationTitles[id].orEmpty().ifBlank {
+                            appContext.getString(R.string.conversation_unnamed)
+                        },
+                        preview = when (lastMessage) {
+                            is UserMessageUi -> AgentFileReferencePromptCodec
+                                .parse(lastMessage.content)
+                                .let { parsed ->
+                                    AgentFileReferencePolicy.titleSource(
+                                        request = parsed.request,
+                                        references = parsed.references,
+                                    )
+                                }
+                            is AgentMessageUi -> lastMessage.content.ifBlank {
+                                appContext.getString(R.string.conversation_preview_reasoning)
+                            }
+                            is SystemNoticeMessageUi -> appContext.getString(
+                                when (lastMessage.code) {
+                                    SystemNoticeCode.Stopped -> R.string.system_notice_stopped
+                                    SystemNoticeCode.EmptyResult -> R.string.system_notice_empty_result
+                                    SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
+                                    SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
+                                    SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
+                                    SystemNoticeCode.Completed -> R.string.system_notice_completed
+                                },
+                            )
+                            is ThinkingMessageUi -> appContext.getString(R.string.conversation_preview_reasoning)
+                            is ToolActivityMessageUi -> appContext.getString(
+                                R.string.conversation_preview_tool_call,
+                                lastMessage.toolName,
+                            )
+                            else -> appContext.getString(R.string.conversation_preview_empty)
+                        }.take(MAX_PREVIEW_CHARS),
+                        timeLabel = (conversationCreatedAt[id] ?: conversationUpdatedAt[id])?.let { timestamp ->
+                            ConversationTimeLabels.label(
+                                timestampMillis = timestamp,
+                                nowMillis = nowMillis,
+                                locale = locale,
+                                timeZone = timeZone,
+                                use24HourClock = use24HourClock,
+                                yesterdayLabel = appContext.getString(R.string.time_yesterday),
+                                recentLabel = appContext.getString(R.string.time_recent),
+                            )
+                        } ?: appContext.getString(R.string.time_recent),
+                        updatedAtMillis = conversationUpdatedAt[id] ?: 0L,
+                        createdAtMillis = conversationCreatedAt[id] ?: conversationUpdatedAt[id] ?: 0L,
+                        mode = ConversationModeUi.Chat,
+                        isPinned = id in conversationPinned,
+                        isActiveRun = state.isStreaming,
+                        hasCompletionMarker = id in conversationCompletionMarkers,
+                        folderId = conversationFolderIds[id],
+                    )
+                }
             }
         val folderVisible = summaries.filterForFolder(selectedFolderId)
         conversationPaneState = conversationPaneState.copy(
@@ -6350,6 +6385,7 @@ internal class AgentAppState(
         // 数据状态以较粗粒度发布，文字显现由独立的帧时钟连续推进。
         // 这与 Kimi 将流式数据和视觉动画分层的做法一致。
         const val STREAM_UI_UPDATE_INTERVAL_MS = 150L
+        const val STREAM_UI_FRAME_WAIT_MS = 32L
 
         fun emptyChatState(thinkingEnabled: Boolean): AgentChatHomeUiState =
             AgentChatHomeUiState(
@@ -7107,5 +7143,90 @@ private fun hasAppListAccess(context: Context): Boolean {
         packages.size > 10
     } catch (e: Exception) {
         false
+    }
+}
+
+/** Full provider/model value comparison, never an ID-only or picker-option comparison.
+ * Repository emissions are immutable domain data classes (including nested model/config lists).
+ * A settings-only preferences re-emission retains the providers reference, so the common path
+ * does no list walk. A newly loaded list is compared in order and includes every config field.
+ */
+internal fun runtimeSelectionUnchanged(
+    previous: Triple<String?, String?, List<io.github.mangi.eta.data.model.ProviderSetting>>,
+    next: Triple<String?, String?, List<io.github.mangi.eta.data.model.ProviderSetting>>,
+): Boolean = previous.first == next.first && previous.second == next.second &&
+    (previous.third === next.third || previous.third == next.third)
+
+internal data class ConversationSummaryEnvironment(
+    val configuration: String,
+    val localDay: Long,
+    val timeZone: java.util.TimeZone,
+    val use24HourClock: Boolean,
+)
+
+/** Do not retain attachments/history or invalidate on usage, thinking text and reveal flags. */
+internal data class ConversationSummaryPreviewInput(val kind: String, val text: String = "", val notice: SystemNoticeCode? = null)
+
+internal fun conversationSummaryPreviewInput(message: AgentChatMessageUi?): ConversationSummaryPreviewInput = when (message) {
+    is UserMessageUi -> ConversationSummaryPreviewInput("user", message.content)
+    is AgentMessageUi -> ConversationSummaryPreviewInput("assistant", message.content)
+    is SystemNoticeMessageUi -> ConversationSummaryPreviewInput("notice", notice = message.code)
+    is ThinkingMessageUi -> ConversationSummaryPreviewInput("thinking")
+    is ToolActivityMessageUi -> ConversationSummaryPreviewInput("tool", message.toolName)
+    else -> ConversationSummaryPreviewInput("empty")
+}
+
+/** Only inputs read by the existing summary projection, not the full transcript/history. */
+internal data class ConversationSummaryKey(
+    val title: String,
+    val previewInput: ConversationSummaryPreviewInput,
+    val createdAtMillis: Long?,
+    val updatedAtMillis: Long?,
+    val isPinned: Boolean,
+    val isActiveRun: Boolean,
+    val hasCompletionMarker: Boolean,
+    val folderId: String?,
+    val environment: ConversationSummaryEnvironment,
+)
+
+private suspend fun awaitRunDeltaFrame() = awaitRunDeltaFrame { ready ->
+    val choreographer = android.view.Choreographer.getInstance()
+    val callback = android.view.Choreographer.FrameCallback { ready() }
+    choreographer.postFrameCallback(callback)
+    val cancel: () -> Unit = {
+        // Jobs and the timeout are Main-owned, but disposal can cancel their scope off Main.
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            choreographer.removeFrameCallback(callback)
+        } else {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                choreographer.removeFrameCallback(callback)
+            }
+        }
+    }
+    cancel
+}
+
+/** Injectable frame registration; cancellation removes a frame before a boundary/result flush. */
+internal suspend fun awaitRunDeltaFrame(schedule: (() -> Unit) -> (() -> Unit)) =
+    kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+        val cancel = schedule {
+            if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
+        }
+        continuation.invokeOnCancellation { cancel() }
+    }
+
+/** Main-owned, one entry per live conversation; deleted/archive-replaced IDs are pruned. */
+internal class ConversationSummaryCache {
+    private data class Entry(val key: ConversationSummaryKey, val summary: ConversationSummaryUi)
+    private val entries = mutableMapOf<String, Entry>()
+
+    fun retain(ids: Set<String>) {
+        entries.keys.retainAll(ids)
+    }
+
+    fun getOrBuild(id: String, key: ConversationSummaryKey, build: () -> ConversationSummaryUi): ConversationSummaryUi {
+        val previous = entries[id]
+        if (previous?.key == key) return previous.summary
+        return build().also { entries[id] = Entry(key, it) }
     }
 }

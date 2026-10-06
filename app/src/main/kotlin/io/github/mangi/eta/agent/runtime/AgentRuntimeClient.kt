@@ -58,9 +58,11 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             ?: return AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务绑定失败")
         val serviceMessenger = lease.messenger
         val deathRecipient = IBinder.DeathRecipient {
-            if (resultRef.get() == null) {
-                resultRef.set(AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务连接已断开"))
-                resultLatch.countDown()
+            dispatchRuntimeTerminalBarrier {
+                if (resultRef.get() == null) {
+                    resultRef.set(AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务连接已断开"))
+                    resultLatch.countDown()
+                }
             }
         }
         try {
@@ -348,7 +350,9 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
                 resultRef.set(result); attachLatch.countDown(); terminalLatch.countDown()
             }).also { it.diagnosticRunId = runId })
         val lease = AgentRuntimeConnection.acquire(context, logger) ?: return AttachOutcome.Unavailable
-        val deathRecipient = IBinder.DeathRecipient { attachLatch.countDown(); terminalLatch.countDown() }
+        val deathRecipient = IBinder.DeathRecipient {
+            dispatchRuntimeTerminalBarrier { attachLatch.countDown(); terminalLatch.countDown() }
+        }
         try {
             lease.binder.linkToDeath(deathRecipient, 0)
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_ATTACH_RUN)
@@ -383,6 +387,8 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
     private class ClientHandler(private val onEvent: (AgentEvent) -> Unit,
         private val onResult: (AgentRuntimeWire.RunResult) -> Unit,
         private val onRequestIngested: () -> Unit) : Handler(Looper.getMainLooper()) {
+        // Constructed by run's IO caller: pay the one-time decoder startup before receiving.
+        init { RuntimeStreamDispatch.decoder }
         var diagnosticRunId: String? = null
         override fun handleMessage(msg: Message) {
             when (msg.what) {
@@ -391,13 +397,15 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
                     withRuntimeDiagnosticEvent(diagnosticRunId, replay = false) {
                         measureRuntimeStreamStage("ipc.client.receive") {
                             recordDeliveryTiming(data, live = true)
-                            val event = measureRuntimeStreamStage("ipc.client.decode.live") {
-                                AgentRuntimeWire.eventFromBundle(data)
-                            }
-                            bindRuntimeDiagnosticEvent(event)
-                            event?.let {
-                                withRuntimeDecodedEvent(it) {
-                                    measureRuntimeStreamStage("ipc.client.callback.live") { onEvent(it) }
+                            dispatchRuntimeDecoded {
+                                val event = measureRuntimeStreamStage("ipc.client.decode.live") {
+                                    AgentRuntimeWire.eventFromBundle(data)
+                                }
+                                bindRuntimeDiagnosticEvent(event)
+                                event?.let {
+                                    { withRuntimeDecodedEvent(it) {
+                                        measureRuntimeStreamStage("ipc.client.callback.live") { onEvent(it) }
+                                    } }
                                 }
                             }
                         }
@@ -405,13 +413,13 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return
-                    val result = runCatching { AgentRuntimeWire.runResultFromBundle(data) }.getOrElse { throwable ->
-                        AgentRuntimeWire.RunResult(AgentRuntimeWire.runIdFromBundle(data), false, "",
-                            "Agent Runtime 结果解析失败（${throwable.javaClass.simpleName}）")
+                    dispatchRuntimeDecoded {
+                        val result = decodeRunResult(data)
+                        val apply: () -> Unit = { onResult(result) }
+                        apply
                     }
-                    onResult(result)
                 }
-                AgentRuntimeWire.MSG_REQUEST_INGESTED -> onRequestIngested()
+                AgentRuntimeWire.MSG_REQUEST_INGESTED -> dispatchRuntimeDecoded { onRequestIngested }
             }
         }
     }
@@ -429,7 +437,9 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
     }
     private class AttachHandler(onReplay: ((List<AgentEvent>) -> Unit)?, onEvent: (AgentEvent) -> Unit,
         onAttachResponse: (Boolean) -> Unit, onResult: (AgentRuntimeWire.RunResult) -> Unit) : Handler(Looper.getMainLooper()) {
+        init { RuntimeStreamDispatch.decoder }
         var diagnosticRunId: String? = null
+        private val receiveGate = RuntimeAttachReceiveGate()
         // Replay callbacks run at attach ACK/result, not while MSG_EVENT buffers replay history.
         // Keep delivery's null-onReplay fallback: invoke the original onEvent once per replay item.
         private val delivery = AgentRuntimeAttachDelivery(
@@ -458,32 +468,46 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
                     val data = msg.data ?: return
-                    val live = delivery.isLive
+                    // ACK application can still be queued behind decoding. Classify from receive
+                    // order, not from the asynchronously updated replay delivery state.
+                    val live = receiveGate.isLive
                     withRuntimeDiagnosticEvent(diagnosticRunId, replay = !live) {
                         measureRuntimeStreamStage("ipc.attach.receive") {
                             recordDeliveryTiming(data, live = live)
-                            val event = measureRuntimeStreamStage(
-                                if (live) "ipc.attach.decode.live" else "ipc.attach.decode.replay",
-                            ) { AgentRuntimeWire.eventFromBundle(data) }
-                            bindRuntimeDiagnosticEvent(event)
-                            event?.let(delivery::event)
+                            dispatchRuntimeDecoded {
+                                val event = measureRuntimeStreamStage(
+                                    if (live) "ipc.attach.decode.live" else "ipc.attach.decode.replay",
+                                ) { AgentRuntimeWire.eventFromBundle(data) }
+                                bindRuntimeDiagnosticEvent(event)
+                                event?.let { { delivery.event(it) } }
+                            }
                         }
                     }
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return
-                    val result = runCatching { AgentRuntimeWire.runResultFromBundle(data) }.getOrElse { throwable ->
-                        AgentRuntimeWire.RunResult(AgentRuntimeWire.runIdFromBundle(data), false, "",
-                            "Agent Runtime 结果解析失败（${throwable.javaClass.simpleName}）")
+                    receiveGate.result()
+                    dispatchRuntimeDecoded {
+                        val result = decodeRunResult(data)
+                        val apply: () -> Unit = { delivery.result(result) }
+                        apply
                     }
-                    delivery.result(result)
                 }
-                AgentRuntimeWire.MSG_ATTACH_RUN_RESPONSE ->
-                    delivery.attachResponse(AgentRuntimeWire.attachRunSucceeded(msg.data ?: return))
+                AgentRuntimeWire.MSG_ATTACH_RUN_RESPONSE -> {
+                    val attached = AgentRuntimeWire.attachRunSucceeded(msg.data ?: return)
+                    receiveGate.attachResponse(attached)
+                    dispatchRuntimeDecoded { { delivery.attachResponse(attached) } }
+                }
             }
         }
     }
     internal companion object {
+        private fun decodeRunResult(data: Bundle): AgentRuntimeWire.RunResult =
+            runCatching { AgentRuntimeWire.runResultFromBundle(data) }.getOrElse { throwable ->
+                AgentRuntimeWire.RunResult(AgentRuntimeWire.runIdFromBundle(data), false, "",
+                    "Agent Runtime 结果解析失败（${throwable.javaClass.simpleName}）")
+            }
+
         fun recordDeliveryTiming(data: android.os.Bundle, live: Boolean) {
             StreamDeliveryTiming.delayNs(data.getLong(StreamDeliveryTiming.KEY, 0L),
                 android.os.SystemClock.elapsedRealtimeNanos(), live)?.let {
