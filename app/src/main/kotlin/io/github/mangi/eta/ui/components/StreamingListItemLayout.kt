@@ -1,7 +1,13 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.MeasureResult
+import androidx.compose.ui.layout.MeasureScope
+import androidx.compose.ui.node.LayoutModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.unit.Constraints
 
 /**
  * 流式回答里尚未开始显现的列表项：整行（marker、正文以及其后的上下 padding）折叠为 0 高度。
@@ -13,7 +19,34 @@ import androidx.compose.ui.layout.layout
  * 必须放在上下 padding 之外，否则 padding 仍会把每个未开始的行撑出高度。
  */
 internal fun Modifier.streamingListItemLayout(visible: Boolean): Modifier =
-    this.layout { measurable, constraints ->
+    this then StreamingListItemLayoutElement(visible)
+
+// The list observes the coordinator's entire started-key set. Starting another item
+// can recompose this row without changing its visibility. A captured layout lambda
+// has a new identity on each such call and needlessly invalidates measurement;
+// value equality here only updates the node when this row's visibility changes.
+private data class StreamingListItemLayoutElement(
+    val visible: Boolean,
+) : ModifierNodeElement<StreamingListItemLayoutNode>() {
+    override fun create(): StreamingListItemLayoutNode = StreamingListItemLayoutNode(visible)
+
+    override fun update(node: StreamingListItemLayoutNode) {
+        node.visible = visible
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "streamingListItemLayout"
+        properties["visible"] = visible
+    }
+}
+
+private class StreamingListItemLayoutNode(
+    var visible: Boolean,
+) : Modifier.Node(), LayoutModifierNode {
+    override fun MeasureScope.measure(
+        measurable: Measurable,
+        constraints: Constraints,
+    ): MeasureResult {
         val diagnoseHidden = !visible && StreamPerformanceDiagnostics.enabled
         val measureItem = {
             // 始终测量一次：保留节点注册与 onTextLayout 回调。
@@ -31,9 +64,10 @@ internal fun Modifier.streamingListItemLayout(visible: Boolean): Modifier =
                 layout(placeable.width, constraints.minHeight) {}
             }
         }
-        if (diagnoseHidden) {
+        return if (diagnoseHidden) {
             StreamPerformanceDiagnostics.measureDetail("markdown.hidden.measure", block = measureItem)
         } else {
             measureItem()
         }
     }
+}
