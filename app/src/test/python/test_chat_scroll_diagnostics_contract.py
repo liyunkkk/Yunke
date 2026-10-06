@@ -67,9 +67,10 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         self.assertIn('pages.attributeFrame(intended, total)', attach)
         self.assertIn('page.aggregatePage.frameStage', attach)
         self.assertIn('${page.fields()}', (ROOT / 'StreamPerformanceDiagnostics.kt').read_text())
-        self.assertIn('emit(false)\n                spikes = 0', attach)
+        self.assertIn('session.details.drain(now)', attach)
+        self.assertIn('session.details.reserveFrame()', attach)
         self.assertIn('handler.postDelayed(this, 5000)', attach)
-        self.assertIn('AppFileLogger.isEnabled()', attach)
+        self.assertIn('active === session && enabled', attach)
 
     def test_trace_gate_polls_only_while_resumed(self):
         gate = body(self.helper, 'rememberChatScrollTraceEnabled')

@@ -53,6 +53,7 @@ class RuntimeStreamStageDiagnosticsContract(unittest.TestCase):
 
     def test_stage_vocabulary_is_finite_and_no_payload_is_measured(self):
         expected = {
+            "ipc.client.receive", "ipc.attach.receive",
             "ipc.client.decode.live", "ipc.client.callback.live",
             "ipc.attach.decode.live", "ipc.attach.decode.replay",
             "ipc.attach.callback.live", "ipc.attach.callback.replay", "ipc.attach.callback.replayBatch",
