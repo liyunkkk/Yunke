@@ -65,6 +65,7 @@ import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -103,6 +104,9 @@ import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
 import io.github.mangi.eta.ui.components.AppUpdateDialog
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
+import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
+import io.github.mangi.eta.ui.components.streamDiagnosticDraw
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -141,6 +145,12 @@ internal fun SettingsScreen(
     currentProviderId: String? = null,
     currentModelId: String? = null,
 ) {
+    // Counts only successfully applied compositions; never writes snapshot state.
+    SideEffect {
+        if (StreamPerformanceDiagnostics.enabled) {
+            StreamPerformanceDiagnostics.record("settings.composition")
+        }
+    }
     val coroutineScope = rememberCoroutineScope()
     val taskBackendInstalled = rememberTaskBackendInstalled()
     val capabilities = rememberDeviceCapabilities()
@@ -291,6 +301,9 @@ internal fun SettingsScreen(
     MiuixScaffoldPage(
         title = stringResource(R.string.ui_set_up_7debf9),
         onBack = onBack,
+        modifier = Modifier
+            .streamDiagnosticMeasure("settings.root.measure")
+            .streamDiagnosticDraw("settings.root.draw"),
     ) {
             // ── LLM 提供商 ──────────────────────────────────────────────
             item(key = "section_agent") {

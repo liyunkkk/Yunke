@@ -1,5 +1,6 @@
 package io.github.mangi.eta.data.repository
 
+import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -265,8 +266,10 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     } else {
         events
     }
-    model.put("events", encodeEvents(trimmed))
-    return root.toString()
+    model.put("events", StreamPerformanceDiagnostics.measure("usage.ledger.encodeEvents", trimmed.size.toLong()) {
+        encodeEvents(trimmed)
+    })
+    return StreamPerformanceDiagnostics.measure("usage.ledger.serialize") { root.toString() }
 }
 
 private fun decodeEvents(array: JSONArray?): List<ModelUsageEvent> {

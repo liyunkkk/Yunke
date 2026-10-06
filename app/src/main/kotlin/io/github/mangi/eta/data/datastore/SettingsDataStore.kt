@@ -19,6 +19,7 @@ import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
 import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.model.Settings
+import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import java.io.IOException
 import java.time.LocalDate
 import org.json.JSONObject
@@ -98,7 +99,7 @@ internal object SettingsDataStore {
 
     suspend fun updateSettings(transform: (Settings) -> Settings) {
         ensureInitialized()
-        dataStore.edit { prefs ->
+        diagnosticEdit("settings.editEntryWait", "settings.transform", "settings.commitTail") { prefs ->
             val current = prefs.toSettings()
             val updated = transform(current)
             prefs.putOrRemove(SELECTED_PROVIDER_ID, updated.selectedProviderId)
@@ -433,7 +434,49 @@ internal object SettingsDataStore {
 
     suspend fun updateModelUsage(transform: (String) -> String) {
         ensureInitialized()
-        dataStore.edit { prefs -> prefs[MODEL_USAGE_JSON] = transform(prefs[MODEL_USAGE_JSON].orEmpty()) }
+        diagnosticEdit("usage.editEntryWait", "usage.transform", "usage.commitTail") { prefs ->
+            prefs[MODEL_USAGE_JSON] = transform(prefs[MODEL_USAGE_JSON].orEmpty())
+        }
+    }
+
+    /**
+     * There is no caller mutex here: entry wait is DataStore's edit-entry wall time.
+     * commitTail is transform exit to edit return/throw (queueing, dispatch and persistence),
+     * NOT pure disk time. The thread-local attribution surrounds synchronous slices only.
+     */
+    private suspend fun diagnosticEdit(
+        entryStage: String,
+        transformStage: String,
+        tailStage: String,
+        transform: (MutablePreferences) -> Unit,
+    ) {
+        if (!StreamPerformanceDiagnostics.enabled) {
+            dataStore.edit { prefs -> transform(prefs) }
+            return
+        }
+        val attribution = StreamPerformanceDiagnostics.captureAttribution()
+        val started = System.nanoTime()
+        var transformExited: Long? = null
+        try {
+            dataStore.edit { prefs ->
+                StreamPerformanceDiagnostics.withAttribution(attribution) {
+                    StreamPerformanceDiagnostics.record(entryStage, System.nanoTime() - started)
+                    try {
+                        StreamPerformanceDiagnostics.measure(transformStage) { transform(prefs) }
+                    } finally {
+                        transformExited = System.nanoTime()
+                    }
+                }
+            }
+        } finally {
+            val exited = transformExited
+            if (exited != null) {
+                val elapsed = System.nanoTime() - exited
+                StreamPerformanceDiagnostics.withAttribution(attribution) {
+                    StreamPerformanceDiagnostics.record(tailStage, elapsed)
+                }
+            }
+        }
     }
 
     private fun decodeHeatmap(raw: String?): Map<LocalDate, Int> {

@@ -14,14 +14,26 @@ import androidx.compose.ui.layout.layout
  */
 internal fun Modifier.streamingListItemLayout(visible: Boolean): Modifier =
     this.layout { measurable, constraints ->
-        // 始终测量：保留节点注册与 onTextLayout 回调。
-        val placeable = measurable.measure(constraints)
-        if (visible) {
-            layout(placeable.width, placeable.height) {
-                placeable.placeRelative(0, 0)
+        val diagnoseHidden = !visible && StreamPerformanceDiagnostics.enabled
+        val measureItem = {
+            // 始终测量一次：保留节点注册与 onTextLayout 回调。
+            val placeable = measurable.measure(constraints)
+            if (visible) {
+                layout(placeable.width, placeable.height) {
+                    placeable.placeRelative(0, 0)
+                }
+            } else {
+                if (diagnoseHidden) {
+                    StreamPerformanceDiagnostics.record("markdown.hidden.childHeight", value = placeable.height.toLong())
+                    StreamPerformanceDiagnostics.record("markdown.hidden.reportHeight", value = constraints.minHeight.toLong())
+                }
+                // 父级若强制最小高度则只能折叠到该下限；列表 Column 中 minHeight 为 0。
+                layout(placeable.width, constraints.minHeight) {}
             }
+        }
+        if (diagnoseHidden) {
+            StreamPerformanceDiagnostics.measureDetail("markdown.hidden.measure", block = measureItem)
         } else {
-            // 父级若强制最小高度则只能折叠到该下限；列表 Column 中 minHeight 为 0。
-            layout(placeable.width, constraints.minHeight) {}
+            measureItem()
         }
     }

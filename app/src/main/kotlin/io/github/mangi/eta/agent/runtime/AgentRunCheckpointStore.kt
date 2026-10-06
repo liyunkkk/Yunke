@@ -4,6 +4,7 @@ import android.content.Context
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.RuntimeInFlightEventEntity
 import io.github.mangi.eta.data.db.RuntimeInFlightRunEntity
+import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 
@@ -56,15 +57,31 @@ internal object AgentRunCheckpointStore {
         event: AgentEvent,
         now: Long = System.currentTimeMillis(),
     ) {
+        val diagnose = StreamPerformanceDiagnostics.enabled
+        val attribution = if (diagnose) StreamPerformanceDiagnostics.captureAttribution() else null
         runBlocking(Dispatchers.IO) {
-            EtaDatabase.get(context.applicationContext).runtimeRunDao().appendInFlightEvent(
-                event = RuntimeInFlightEventEntity(
-                    runId = runId,
-                    sortIndex = sortIndex,
-                    eventJson = AgentEventJsonCodec.encode(event),
-                ),
-                updatedAt = now,
+            // Keep DAO acquisition before encoding, as in the original call expression.
+            val dao = EtaDatabase.get(context.applicationContext).runtimeRunDao()
+            val eventJson = StreamPerformanceDiagnostics.withAttribution(attribution) {
+                StreamPerformanceDiagnostics.measure("runtime.checkpoint.encode") { AgentEventJsonCodec.encode(event) }
+            }
+            val entity = RuntimeInFlightEventEntity(
+                runId = runId,
+                sortIndex = sortIndex,
+                eventJson = eventJson,
             )
+            val started = if (diagnose) System.nanoTime() else 0L
+            try {
+                // This is suspend DAO caller wall time, not a claim of pure disk time.
+                dao.appendInFlightEvent(event = entity, updatedAt = now)
+            } finally {
+                if (diagnose) {
+                    val elapsed = System.nanoTime() - started
+                    StreamPerformanceDiagnostics.withAttribution(attribution) {
+                        StreamPerformanceDiagnostics.record("runtime.checkpoint.write", elapsed, eventJson.length.toLong())
+                    }
+                }
+            }
         }
     }
 
