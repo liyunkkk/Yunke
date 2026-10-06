@@ -50,6 +50,7 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationParser
 import io.github.mangi.eta.agent.runtime.AgentEvent
+import io.github.mangi.eta.agent.runtime.dispatchRuntimeTerminalBarrier
 import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionRequest
@@ -4694,12 +4695,15 @@ internal class AgentAppState(
         stopSealWatchdogJobs.remove(runId)?.cancel()
         stopSealWatchdogJobs[runId] = scope.launch {
             delay(timeout.timeoutMillis)
-            withContext(Dispatchers.Main.immediate) {
-                if (!timeout.claimUnlock(ticket)) return@withContext
+            // Runtime messages already received on Main may still be queued for background
+            // decoding. Expire only behind that same decoder -> Main FIFO, so a real terminal
+            // result that arrived first is applied (and releases this seal) before we claim it.
+            dispatchRuntimeTerminalBarrier {
+                if (!timeout.claimUnlock(ticket)) return@dispatchRuntimeTerminalBarrier
                 stopSealWatchdogJobs.remove(runId)
                 // applyRunResult consumes the stoppingRuns entry itself; removing it here would
                 // erase the retry flag that decides which stop notice the user sees.
-                if (!stoppingRuns.containsKey(runId)) return@withContext
+                if (!stoppingRuns.containsKey(runId)) return@dispatchRuntimeTerminalBarrier
                 AndroidAgentLogger.warn("Stop seal timed out without a terminal result for run=$runId")
                 applyRunResult(
                     runId,

@@ -38,6 +38,42 @@ class RuntimeOrderedDecodeDeliveryTest {
         assertEquals(decoded, applied)
     }
 
+    /**
+     * Stop watchdog regression: a real result already received on Main but still queued for
+     * decoding must be applied before a later expiry barrier, even when Main is drained first
+     * while the decoder is paused.
+     */
+    @Test fun terminalBarrierCannotOvertakeAResultStillWaitingForDecode() {
+        val order = mutableListOf<String>()
+        var sealPending = true
+        dispatchRuntimeDecoded {
+            val apply: () -> Unit = { order += "real-result"; sealPending = false }
+            apply
+        }
+        // Watchdog expiry from Main while the decoder has not run yet.
+        dispatchRuntimeTerminalBarrier {
+            if (sealPending) order += "synthetic-timeout" else order += "watchdog-noop"
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(order.isEmpty())
+        shadowOf(RuntimeStreamDispatch.decoder.looper).idle()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf("real-result", "watchdog-noop"), order)
+    }
+
+    @Test fun terminalBarrierPostedFromBackgroundIsStillOrderedAfterEarlierMainReceives() {
+        val order = mutableListOf<String>()
+        dispatchRuntimeDecoded { val apply: () -> Unit = { order += "event" }; apply }
+        val worker = Thread { dispatchRuntimeTerminalBarrier { order += "barrier" } }
+        worker.start(); worker.join()
+        repeat(3) {
+            shadowOf(Looper.getMainLooper()).idle()
+            shadowOf(RuntimeStreamDispatch.decoder.looper).idle()
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf("event", "barrier"), order)
+    }
+
     @Test fun binderDeathBoundaryCannotOvertakeEarlierMainReceives() {
         val applied = mutableListOf<String>()
         RuntimeStreamDispatch.main.post { dispatchRuntimeDecoded { { applied += "event" } } }
