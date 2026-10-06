@@ -9,6 +9,8 @@ final class BackgroundTaskApi {
     private final Object organizer;
     private final Constructor<?> transaction;
     private final Method create, delete, children, hidden, focusable, reparent, reorder, apply;
+    /** Resolved argument count of createRootTask (3 or 6 on current ROMs). */
+    private final int createArity;
 
     static BackgroundTaskApi resolve() throws Exception {
         return new BackgroundTaskApi(Class.forName("android.window.TaskOrganizer"),
@@ -22,8 +24,28 @@ final class BackgroundTaskApi {
             Class<?> tokenClass, Class<?> binderClass) throws Exception {
         Constructor<?> organizerConstructor = organizerClass.getConstructor();
         transaction = transactionClass.getConstructor();
-        create = organizerClass.getMethod("createRootTask", int.class, int.class, binderClass,
-                boolean.class);
+        // Android 17 changed createRootTask: the documented 4-arg
+        // createRootTask(int, int, IBinder, boolean) no longer exists; this ROM exposes
+        // void createRootTask(int, int, IBinder) and a 6-arg overload. Resolve either shape and
+        // remember the arity so invoke() fills the optional booleans with false (no onTop, no
+        // removeWithTaskOrganizer), which is exactly what the old 4-arg call passed.
+        Method createMethod = null;
+        for (Method candidate : organizerClass.getMethods()) {
+            if (!"createRootTask".equals(candidate.getName())) continue;
+            Class<?>[] params = candidate.getParameterTypes();
+            if (params.length < 3 || params[0] != int.class || params[1] != int.class
+                    || params[2] != binderClass) continue;
+            boolean booleansOk = true;
+            for (int i = 3; i < params.length; i++) {
+                if (params[i] != boolean.class) { booleansOk = false; break; }
+            }
+            if (!booleansOk) continue;
+            if (params.length == 3) { createMethod = candidate; break; }
+            if (createMethod == null) createMethod = candidate;
+        }
+        if (createMethod == null) throw new NoSuchMethodException("createRootTask");
+        create = createMethod;
+        createArity = createMethod.getParameterTypes().length;
         delete = organizerClass.getMethod("deleteRootTask", tokenClass);
         children = organizerClass.getMethod("getChildTasks", tokenClass, int[].class);
         hidden = transactionClass.getMethod("setHidden", tokenClass, boolean.class);
@@ -45,7 +67,13 @@ final class BackgroundTaskApi {
         // Android 15 TaskOrganizerController.createRootTask builds an empty organizer root in
         // display 0's default TDA. Task.Builder.mOnTop defaults to false. The final boolean is
         // removeWithTaskOrganizer, NOT onTop. Do not replace this with an ATMS display move.
-        create.invoke(organizer, 0, 1 /* fullscreen */, cookie, false);
+        Object[] createArgs = new Object[createArity];
+        createArgs[0] = 0;
+        createArgs[1] = 1 /* fullscreen */;
+        createArgs[2] = cookie;
+        // Optional booleans keep the documented defaults: no onTop, no removeWithTaskOrganizer.
+        for (int i = 3; i < createArity; i++) createArgs[i] = false;
+        create.invoke(organizer, createArgs);
     }
 
     List<?> children(Object token) throws Exception {
