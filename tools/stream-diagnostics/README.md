@@ -107,15 +107,16 @@ Do not decode anonymous conversation/run tokens back to user identifiers.
 ## SQL analysis: explicit trace-time window, explicit UPID
 
 Use a compatible local `trace_processor_shell` binary; it is not bundled or
-installed by this tool. Save its version. Check its `--help` if flag/output
-format differs. For example:
+installed by this tool. Save its version. The examples below use the verified
+**v58.2** `query` subcommand; older versions may use different flags. Check
+`query --help`, and never reinterpret an SQL string as a filename. For example:
 
 ```sh
-trace_processor_shell -q tools/stream-diagnostics/sql/diagnostic-integrity.sql eta-jank-timeline.pftrace
-trace_processor_shell -Q 'SELECT start_ts,end_ts FROM trace_bounds' eta-jank-timeline.pftrace
+trace_processor_shell query -f tools/stream-diagnostics/sql/diagnostic-integrity.sql eta-jank-timeline.pftrace
+trace_processor_shell query eta-jank-timeline.pftrace 'SELECT start_ts,end_ts FROM trace_bounds'
 # Replace numbers with actual TRACE-TIME ns and the app UPID from integrity SQL.
 python3 tools/stream-diagnostics/analyze.py render-sql --template window-analysis --start-ns 123000000000 --end-ns 124000000000 --upid 42 --output window.sql
-trace_processor_shell -q window.sql eta-jank-timeline.pftrace
+trace_processor_shell query -f window.sql eta-jank-timeline.pftrace
 ```
 
 Do **not** use those example numbers as a real measurement or omit bounds and
@@ -149,9 +150,9 @@ After integrity confirms the optional table exists, run sampling templates on
 
 ```sh
 python3 tools/stream-diagnostics/analyze.py render-sql --template cpu-samples --start-ns 123000000000 --end-ns 124000000000 --upid 42 --output cpu.sql
-trace_processor_shell -q cpu.sql eta-jank-sampled-stacks.pftrace
+trace_processor_shell query -f cpu.sql eta-jank-sampled-stacks.pftrace
 python3 tools/stream-diagnostics/analyze.py render-sql --template heap-samples --start-ns 123000000000 --end-ns 124000000000 --upid 42 --output heap.sql
-trace_processor_shell -q heap.sql eta-jank-sampled-stacks.pftrace
+trace_processor_shell query -f heap.sql eta-jank-sampled-stacks.pftrace
 ```
 
 Each optional query distinguishes present-but-zero trace rows from target-window
@@ -223,7 +224,7 @@ Example (replace bounds with actual **System.nanoTime ns**, not trace/wall time)
 ```sh
 python3 tools/stream-diagnostics/analyze.py summary extracted-streamdiag-v2.txt --start-ns 123000000000 --end-ns 124000000000 --output summary.json
 # Optional: export this dedicated query in trace_processor's CSV output format.
-trace_processor_shell -Q 'SELECT name,idx,value,severity,source FROM stats ORDER BY name,idx' eta-jank-timeline.pftrace > stats.csv
+trace_processor_shell query eta-jank-timeline.pftrace 'SELECT name,idx,value,severity,source FROM stats ORDER BY name,idx' > stats.csv
 python3 tools/stream-diagnostics/analyze.py summary extracted-streamdiag-v2.txt --start-ns 123000000000 --end-ns 124000000000 --stats-csv stats.csv --output summary-with-health.json
 python3 -m unittest discover -s tools/stream-diagnostics -p 'test_analyze.py' -v
 ```
