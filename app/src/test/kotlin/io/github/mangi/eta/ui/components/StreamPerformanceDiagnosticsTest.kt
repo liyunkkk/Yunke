@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -31,6 +32,105 @@ class StreamPerformanceDiagnosticsTest {
         assertTrue(lines.last().contains("droppedRecords=1"))
         session.record("after.close", 1, 0)
         assertTrue(session.report(final = true).single().contains("empty=1"))
+    }
+
+    @Test fun admissionCutoffIsAtomicAndLateTimestampBelongsToNextSnapshot() {
+        val cutoffEntered = java.util.concurrent.CountDownLatch(1)
+        val releaseCutoff = java.util.concurrent.CountDownLatch(1)
+        val admissionAttempted = java.util.concurrent.CountDownLatch(1)
+        val admitted = java.util.concurrent.CountDownLatch(1)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val captured = java.util.concurrent.atomic.AtomicReference<StreamPerformanceDiagnostics.SessionSnapshot?>()
+        val session = StreamPerformanceDiagnostics.Session {
+            when (calls.getAndIncrement()) {
+                0 -> 0L
+                1 -> {
+                    cutoffEntered.countDown()
+                    check(releaseCutoff.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    20_000_000L
+                }
+                else -> 40_000_000L
+            }
+        }
+        val span = session.beginSpan()!!
+        val snapshotThread = Thread {
+            try { captured.set(session.snapshot(false)) } catch (error: Throwable) { failure.set(error) }
+        }
+        val admissionThread = Thread {
+            try {
+                admissionAttempted.countDown()
+                session.finishSpan("markdown.parse", span, 0, 0, 10_000_000, 1, true, null, 0, 0, 0, 7)
+            } catch (error: Throwable) { failure.set(error) } finally { admitted.countDown() }
+        }
+        snapshotThread.start()
+        try {
+            assertTrue(cutoffEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            admissionThread.start()
+            assertTrue(admissionAttempted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(1L, admitted.count) // Snapshot owns the same lock as aggregate + detail admission.
+        } finally {
+            releaseCutoff.countDown()
+            snapshotThread.join(5000)
+            if (admissionThread.state != Thread.State.NEW) admissionThread.join(5000)
+        }
+        assertFalse(snapshotThread.isAlive); assertFalse(admissionThread.isAlive)
+        failure.get()?.let { throw it }
+        val first = captured.get()!!
+        assertTrue(first.stats.isEmpty()); assertTrue(first.rawDetails.select().spans.isEmpty())
+        assertEquals(1L, first.openSpans)
+        val next = session.snapshot(false)
+        assertEquals(20_000_000L, next.rawDetails.fromNs)
+        assertEquals(1L, next.stats.getValue("markdown.parse").count)
+        assertEquals(span, next.rawDetails.select().spans.single().span)
+        assertTrue(next.rawDetails.select().spans.single().endNs < next.rawDetails.fromNs)
+        assertEquals(0L, next.openSpans)
+        assertTrue(next.report("golden", 0, false).all { "boundary=admissionSnapshot" in it })
+        assertFalse(next.report("golden", 0, false).any { "halfOpenCompletion" in it })
+        session.record("markdown.parse", 1, 0)
+        assertEquals(1L, next.stats.getValue("markdown.parse").count) // Detached aggregates cannot be mutated.
+    }
+
+    @Test fun finalClosesAdmissionAndLateSpansCannotLeaveDetailResidue() {
+        var now = 0L
+        val session = StreamPerformanceDiagnostics.Session { now }
+        val span = session.beginSpan()!!
+        now = 20_000_000L
+        val final = session.snapshot(true)
+        assertTrue(session.closed); assertTrue(session.details.closed)
+        assertEquals(1L, final.openSpans)
+        session.finishSpan("markdown.parse", span, 0, 0, 30_000_000, 1, true, null, 0, 0, 0, 0)
+        repeat(1000) { session.record("markdown.parse", 1, 0) }
+        assertNull(session.beginSpan()); assertNull(session.reserveNote())
+        assertEquals(1002L to 1L, session.closedCounts())
+        now = 40_000_000L
+        val after = session.snapshot(true)
+        assertTrue(after.stats.isEmpty()); assertTrue(after.pages.isEmpty())
+        assertTrue(after.rawDetails.select().spans.isEmpty()); assertTrue(after.rawDetails.select().frames.isEmpty())
+        assertEquals(0L, after.openSpans); assertEquals(1L, after.lateSpans)
+        // The first final snapshot intentionally does not claim observation of later completions.
+        assertEquals(0L, final.lateSpans)
+    }
+
+    @Test fun noteBudgetIsReservedBeforeLazyDetailAndResetsOnlyWithNewSession() {
+        val session = StreamPerformanceDiagnostics.Session()
+        var evaluations = 0
+        val detail = { evaluations++; "fixed=1" }
+        repeat(NOTE_MAX_PER_SESSION + 5) {
+            if (session.reserveNote() != null) detail()
+        }
+        assertEquals(NOTE_MAX_PER_SESSION, evaluations)
+        assertEquals(5L, session.snapshot(false).noteDropped)
+        assertNull(session.reserveNote())
+        assertEquals(6L, session.snapshot(false).noteDropped)
+        assertEquals(1, StreamPerformanceDiagnostics.Session().reserveNote())
+    }
+
+    @Test fun versionNameIsNumericDottedOrUnknown() {
+        for (version in listOf("1.2", "1.23.456.7890", "0001.0002")) assertEquals(version, diagnosticVersionName(version))
+        for (version in listOf(null, "1", "1.2.3.4.5", "12345.2", "1.2-beta", "deadbeef", "１.２", "1.2 private")) {
+            assertEquals("unknown", diagnosticVersionName(version))
+        }
     }
 
     @Test fun unaccountedIsTotalMinusNonOverlappingParts() {
