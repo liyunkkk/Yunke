@@ -17,6 +17,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.view.WindowInsets
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +39,9 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentHapticFeedback
 import io.github.mangi.eta.agent.overlay.AgentOverlayBubble
 import io.github.mangi.eta.agent.overlay.AgentOverlayOrb
+import io.github.mangi.eta.agent.overlay.AgentOrbPosition
+import io.github.mangi.eta.agent.overlay.AgentOrbBounds
+import io.github.mangi.eta.agent.overlay.AgentOrbPlacement
 import io.github.mangi.eta.agent.overlay.AgentResultCard
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
 import io.github.mangi.eta.agent.overlay.AgentOverlayState
@@ -54,6 +58,7 @@ import kotlinx.coroutines.flow.collect
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
+import kotlin.math.roundToInt
 import kotlinx.coroutines.runBlocking
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -102,6 +107,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private var orbParams: WindowManager.LayoutParams? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var resultCardParams: WindowManager.LayoutParams? = null
+    // Retain the user's placement across hide/show while this service is alive.
+    private var orbPosition: AgentOrbPosition? = null
+    private var orbDragStart = AgentOrbPosition(0f, 0f)
 
     private val state = mutableStateOf(AgentOverlayState.Initial)
     // The compact orb does not display tool details or round counters.
@@ -128,6 +136,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         lifecycleScope.launch {
             AgentChildTaskGroups.revision.collect { stopIfRuntimeIdle() }
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        positionOverlayWindows()
     }
 
     override fun onBind(intent: Intent): IBinder? {
@@ -1097,11 +1110,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         windowManager = wm
 
         // No full-screen decorative window: it shared the UI/RenderThread with chat scrolling.
-        // ── 光球窗口：始终显示，右侧中下 ──────────────────────────────
+        // ── 光球窗口：默认右侧中下，可拖动 ──────────────────────────
         val orb = createOverlayComposeView {
             AgentOverlayOrb(
                 phase = orbPhase.value,
+                collapsed = collapsed.value,
                 onToggleCollapse = ::toggleCollapse,
+                onDragStart = ::beginOrbDrag,
+                onDrag = ::handleDrag,
             )
         }
         val orbLp = orbLayoutParams()
@@ -1114,6 +1130,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         orbView = orb
         orbParams = orbLp
         orb.visibility = View.VISIBLE
+        orb.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
+            if (orbView === orb && (r - l != or - ol || b - t != ob - ot)) positionOverlayWindows()
+        }
+        positionOverlayWindows()
 
         // ── 小气泡窗口：展开态显示，跟随光球，窗口外触摸穿透 ─────────
         if (!collapsed.value) {
@@ -1157,6 +1177,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         bubbleView = bubble
         bubbleParams = lp
+        bubble.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
+            if (bubbleView === bubble && (r - l != or - ol || b - t != ob - ot)) positionOverlayWindows()
+        }
+        positionOverlayWindows()
     }
 
     private fun showResultCard(wm: WindowManager, session: AgentRuntimeSession) {
@@ -1198,14 +1222,59 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             }
         }
 
-    @Suppress("unused")
-    private fun handleDrag(dx: Float, dy: Float) {
+    private fun beginOrbDrag() {
         val lp = orbParams ?: return
+        orbDragStart = orbPosition ?: AgentOrbPosition(lp.x.toFloat(), lp.y.toFloat())
+    }
+
+    // dx/dy are total raw-screen displacement from DOWN, not local frame deltas.
+    private fun handleDrag(dx: Float, dy: Float) {
+        if (!dx.isFinite() || !dy.isFinite()) return
+        orbPosition = AgentOrbPosition(orbDragStart.x + dx, orbDragStart.y + dy)
+        positionOverlayWindows()
+    }
+
+    private fun overlayBounds(wm: WindowManager): AgentOrbBounds = runCatching {
+        val metrics = wm.currentWindowMetrics
+        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
+            WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
+        )
+        AgentOrbBounds(
+            metrics.bounds.left + insets.left, metrics.bounds.top + insets.top,
+            metrics.bounds.right - insets.right,
+            metrics.bounds.bottom - insets.bottom,
+        )
+    }.getOrElse {
+        AgentOrbBounds(0, 0, resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+    }
+
+    private fun positionOverlayWindows() {
         val wm = windowManager ?: return
-        val view = orbView ?: return
-        lp.x += dx.toInt()
-        lp.y += dy.toInt()
-        runCatching { wm.updateViewLayout(view, lp) }
+        val orb = orbView ?: return
+        val lp = orbParams ?: return
+        val bounds = overlayBounds(wm)
+        val orbWidth = orb.width.takeIf { it > 0 } ?: dpToPx(56)
+        val orbHeight = orb.height.takeIf { it > 0 } ?: dpToPx(56)
+        val desired = orbPosition ?: AgentOrbPlacement.initial(bounds, orbWidth, orbHeight, dpToPx(8))
+        val position = AgentOrbPlacement.clamp(desired, bounds, orbWidth, orbHeight)
+        orbPosition = position
+        if (lp.x != position.x.roundToInt() || lp.y != position.y.roundToInt()) {
+            lp.x = position.x.roundToInt()
+            lp.y = position.y.roundToInt()
+            runCatching { wm.updateViewLayout(orb, lp) }
+        }
+        val bubble = bubbleView ?: return
+        val bubbleLp = bubbleParams ?: return
+        val bubbleWidth = bubble.width.takeIf { it > 0 } ?: dpToPx(136)
+        val bubbleHeight = bubble.height.takeIf { it > 0 } ?: dpToPx(56)
+        val bubblePosition = AgentOrbPlacement.bubble(
+            position, orbWidth, orbHeight, bubbleWidth, bubbleHeight, bounds, dpToPx(8),
+        )
+        if (bubbleLp.x != bubblePosition.x.roundToInt() || bubbleLp.y != bubblePosition.y.roundToInt()) {
+            bubbleLp.x = bubblePosition.x.roundToInt()
+            bubbleLp.y = bubblePosition.y.roundToInt()
+            runCatching { wm.updateViewLayout(bubble, bubbleLp) }
+        }
     }
 
     private fun orbLayoutParams(): WindowManager.LayoutParams =
@@ -1215,15 +1284,23 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             overlayType(),
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             title = "Eta Agent Orb"
-            // 右侧中下，贴近右边缘
-            gravity = Gravity.END or Gravity.TOP
-            x = dpToPx(8)
-            y = (resources.displayMetrics.heightPixels * 0.6f).toInt()
+            // We clamp system-bar/cutout insets ourselves, in physical display coordinates.
+            setFitInsetsTypes(0)
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            // Physical top-left coordinates make raw dragging consistent in LTR and RTL.
+            gravity = Gravity.LEFT or Gravity.TOP
+            val bounds = overlayBounds(windowManager ?: overlayContext().getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+            val position = AgentOrbPlacement.clamp(
+                orbPosition ?: AgentOrbPlacement.initial(bounds, dpToPx(56), dpToPx(56), dpToPx(8)),
+                bounds, dpToPx(56), dpToPx(56),
+            )
+            x = position.x.roundToInt()
+            y = position.y.roundToInt()
         }
 
     private fun bubbleLayoutParams(): WindowManager.LayoutParams =
@@ -1234,15 +1311,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             title = "Eta Agent Controls"
-            // 跟随光球：右侧中下，窗口外触摸穿透
-            gravity = Gravity.END or Gravity.TOP
-            x = dpToPx(72)
-            y = (resources.displayMetrics.heightPixels * 0.6f).toInt()
+            setFitInsetsTypes(0)
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            // Follow the orb; measured layout later refines this initial placement.
+            gravity = Gravity.LEFT or Gravity.TOP
+            x = orbParams?.x ?: 0
+            y = orbParams?.y ?: 0
             windowAnimations = 0
         }
 
