@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.components
 
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.isSteerSupplement
 
 /**
  * Cache only the last projection, not individual historical messages forever.
@@ -84,5 +86,77 @@ internal class AgentTimelineProjectionCache(
             if (message is AgentMessageUi && mapping[index] < 0) return null
         }
         return mapping
+    }
+}
+
+/**
+ * Prefaces are strings only; never cache a footer's message/callback owner here.
+ * A selected owner depends on all earlier assistant bodies since its ordinary
+ * user boundary. Precompute those dependency slots after each full traversal.
+ * Unlike the entry projection, historical body edits are NOT a compatible delta.
+ */
+internal class AgentSpeechPrefaceCache(
+    private val fullProjection: (List<AgentChatMessageUi>, Set<String>) -> Map<String, String> =
+        ::visibleTurnSpeechPrefaces,
+) {
+    private var source: List<AgentChatMessageUi>? = null
+    private var finalIds: Set<String> = emptySet()
+    private var ownerDependentSlots: BooleanArray? = null
+    private var prefaces: Map<String, String> = emptyMap()
+
+    fun project(messages: List<AgentChatMessageUi>, selectedIds: Set<String>): Map<String, String> {
+        val previous = source
+        val dependent = ownerDependentSlots
+        if (previous != null && dependent != null && previous.size == messages.size && finalIds == selectedIds) {
+            var compatible = true
+            for (index in messages.indices) {
+                val old = previous[index]
+                val current = messages[index]
+                if (old === current) continue
+                if (old !is AgentMessageUi || current !is AgentMessageUi || old.id != current.id ||
+                    !old.isStreaming || !current.content.startsWith(old.content) || dependent[index]
+                ) {
+                    compatible = false
+                    break
+                }
+            }
+            if (compatible) {
+                source = messages.toList()
+                return prefaces
+            }
+        }
+        val input = messages.toList()
+        val ids = selectedIds.toSet()
+        val result = fullProjection(input, ids)
+        source = input
+        finalIds = ids
+        prefaces = result
+        ownerDependentSlots = ownerDependencies(input, ids)
+        return result
+    }
+
+    private fun ownerDependencies(messages: List<AgentChatMessageUi>, ids: Set<String>): BooleanArray? {
+        val seen = HashSet<String>(messages.size)
+        messages.forEach { if (!seen.add(it.id)) return null }
+        val dependent = BooleanArray(messages.size)
+        var ownerAhead = false
+        for (index in messages.indices.reversed()) {
+            val message = messages[index]
+            // The legacy algorithm captures a selected user's preface BEFORE
+            // clearing parts. Respect that order even for unusual owner sets.
+            if (message is UserMessageUi && !message.isSteerSupplement()) ownerAhead = false
+            if (message.id in ids) ownerAhead = true
+            dependent[index] = ownerAhead
+        }
+        // Fail closed for an already selected owner behind a changed slot too:
+        // no selected owner may lie between a delta and its ordinary user boundary.
+        var ownerBehind = false
+        for (index in messages.indices) {
+            val message = messages[index]
+            if (message is UserMessageUi && !message.isSteerSupplement()) ownerBehind = false
+            if (message.id in ids) ownerBehind = true
+            dependent[index] = dependent[index] || ownerBehind
+        }
+        return dependent
     }
 }

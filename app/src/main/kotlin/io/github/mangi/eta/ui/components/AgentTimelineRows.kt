@@ -60,6 +60,103 @@ internal fun List<AgentTimelineEntry>.toLazyTimelineRows(
     }
 }
 
+/**
+ * Keep the exact row policy and work groups from the full projection. Only plain
+ * assistant Message rows can be patched, at the same entry slot and ID. Changes
+ * to expansion, retained exit rows, streaming defaults or structure fall back.
+ */
+internal class AgentTimelineRowsCache(
+    private val fullProjection: (
+        List<AgentTimelineEntry>, Map<String, Boolean>, Boolean, Map<String, Set<String>>,
+    ) -> List<AgentTimelineRow> = { entries, overrides, streaming, retained ->
+        entries.toLazyTimelineRows(overrides, streaming, retained)
+    },
+) {
+    private var source: List<AgentTimelineEntry>? = null
+    private var expanded: Map<String, Boolean> = emptyMap()
+    private var streaming = false
+    private var retained: Map<String, Set<String>> = emptyMap()
+    private var rows: List<AgentTimelineRow> = emptyList()
+    private var entryToRow: IntArray? = null
+
+    fun project(
+        entries: List<AgentTimelineEntry>,
+        expandedOverrides: Map<String, Boolean>,
+        isStreaming: Boolean,
+        retainedSteps: Map<String, Set<String>> = emptyMap(),
+    ): List<AgentTimelineRow> {
+        val previous = source
+        val mapping = entryToRow
+        if (previous != null && mapping != null && previous.size == entries.size &&
+            expanded == expandedOverrides && streaming == isStreaming && retained == retainedSteps
+        ) {
+            var changed = false
+            var compatible = true
+            for (index in entries.indices) {
+                val old = previous[index]
+                val current = entries[index]
+                if (old === current) continue
+                val oldMessage = (old as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
+                val newMessage = (current as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
+                if (oldMessage == null || newMessage == null || oldMessage.id != newMessage.id || mapping[index] < 0) {
+                    compatible = false
+                    break
+                }
+                changed = true
+            }
+            if (compatible) {
+                if (!changed) return rows
+                val updated = rows.toMutableList()
+                for (index in entries.indices) {
+                    if (previous[index] !== entries[index]) {
+                        updated[mapping[index]] = AgentTimelineRow.Message((entries[index] as AgentTimelineEntry.Message).message)
+                    }
+                }
+                source = entries.toList()
+                rows = updated
+                return updated
+            }
+        }
+        val input = entries.toList()
+        val result = fullProjection(input, expandedOverrides, isStreaming, retainedSteps)
+        source = input
+        expanded = expandedOverrides.toMap()
+        streaming = isStreaming
+        retained = retainedSteps.mapValues { it.value.toSet() }
+        rows = result
+        entryToRow = mapAssistantRows(input, result)
+        return result
+    }
+
+    private fun mapAssistantRows(entries: List<AgentTimelineEntry>, rows: List<AgentTimelineRow>): IntArray? {
+        val seen = HashSet<String>()
+        val assistantSlots = HashMap<String, Int>()
+        entries.forEachIndexed { index, entry ->
+            when (entry) {
+                is AgentTimelineEntry.Message -> {
+                    if (!seen.add(entry.message.id)) return null
+                    if (entry.message is AgentMessageUi) assistantSlots[entry.message.id] = index
+                }
+                is AgentTimelineEntry.WorkProcess -> entry.messages.forEach {
+                    if (!seen.add(it.id)) return null
+                }
+            }
+        }
+        // Duplicate lazy keys must not become an ambiguous mapping either.
+        if (rows.map { it.key }.toSet().size != rows.size) return null
+        val mapping = IntArray(entries.size) { -1 }
+        rows.forEachIndexed { rowIndex, row ->
+            val message = (row as? AgentTimelineRow.Message)?.message as? AgentMessageUi
+                ?: return@forEachIndexed
+            val entryIndex = assistantSlots[message.id] ?: return null
+            if ((entries[entryIndex] as AgentTimelineEntry.Message).message !== message || mapping[entryIndex] >= 0) return null
+            mapping[entryIndex] = rowIndex
+        }
+        assistantSlots.values.forEach { if (mapping[it] < 0) return null }
+        return mapping
+    }
+}
+
 internal fun List<AgentTimelineRow>.lazyUserMessageIndices(): List<Int> = mapIndexedNotNull { index, row ->
     val user = (row as? AgentTimelineRow.Message)?.message as? UserMessageUi
     index.takeIf { user != null && !user.isResumeAfterCompress() }

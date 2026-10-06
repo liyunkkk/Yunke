@@ -661,8 +661,11 @@ internal fun AgentConversationMessages(
     // AgentChatBody supplies this projection so the initial tail anchor and the
     // rendered rows share one remembered full-list derivation. The standalone voice
     // panel still computes it here when it calls this renderer directly.
+    val standaloneTimelineProjection = remember { AgentTimelineProjectionCache() }
     val projectedTimelineEntries = timelineEntries ?: remember(visibleMessages) {
-        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
+        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) {
+            standaloneTimelineProjection.project(visibleMessages)
+        }
     }
     val expansionSaver = remember {
         listSaver<Map<String, Boolean>, String>(
@@ -706,8 +709,11 @@ internal fun AgentConversationMessages(
         }
     }
     val retainedWorkSteps = workAnimations.mapValues { it.value.retainedStepKeys }
+    val timelineRowsProjection = remember { AgentTimelineRowsCache() }
     val timelineRows = remember(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps) {
-        projectedTimelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming, retainedWorkSteps)
+        StreamPerformanceDiagnostics.measure("timeline.project", projectedTimelineEntries.size.toLong()) {
+            timelineRowsProjection.project(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps)
+        }
     }
     LaunchedEffect(scrollToMessageId, timelineRows) {
         val target = scrollToMessageId ?: return@LaunchedEffect
@@ -1283,9 +1289,10 @@ internal fun AgentConversationMessages(
                 clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
             },
     ) {
+        val speechPrefaceProjection = remember { AgentSpeechPrefaceCache() }
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
-                visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
+                speechPrefaceProjection.project(visibleMessages, finalResultMessageIds)
             }
         }
         val messageActions = remember { ChatMessageActions() }
