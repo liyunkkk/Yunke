@@ -28,9 +28,23 @@ internal fun diagnosticUnionNs(intervals: List<Pair<Long, Long>>, from: Long, to
 internal data class DiagnosticFrameCorrelation(
     val overlaps: List<DiagnosticSpanRecord>, val preceding: List<DiagnosticSpanRecord>,
     val totalOverlaps: Int, val overlapUnionNs: Long, val frameWallOutsideSpansNs: Long,
+    val totalPreceding: Int,
 ) {
     val omitted: Int get() = totalOverlaps - overlaps.size
+    val precedingOmitted: Int get() = totalPreceding - preceding.size
 }
+
+/** Single bounded callback capture, reused for protection and list-source matching. */
+internal data class DiagnosticFrameEvidence(
+    val spans: List<DiagnosticSpanRecord>,
+    val sourceWindowLoss: Boolean = false,
+    val sourceWindowUnknown: Boolean = false,
+)
+
+internal fun diagnosticFrameEvidenceIncomplete(frame: DiagnosticFrameRecord, detail: DiagnosticDetailSnapshot,
+    openSpans: Long): Boolean = frame.sourceWindowLoss || frame.sourceWindowUnknown ||
+    detail.overwritten > 0 || detail.slowBudgetDropped > 0 || detail.spanOutputTruncated > 0 ||
+    detail.protectedBudgetDropped > 0 || detail.frameCaptureTruncated > 0 || openSpans > 0
 
 internal fun correlateDiagnosticFrame(frame: DiagnosticFrameRecord, spans: List<DiagnosticSpanRecord>,
     limit: Int = FRAME_CORRELATION_MAX_SPANS): DiagnosticFrameCorrelation {
@@ -43,10 +57,10 @@ internal fun correlateDiagnosticFrame(frame: DiagnosticFrameRecord, spans: List<
             .thenBy { it.beginNs }.thenBy { it.span })
     val preceding = main.filter { it.endNs <= from &&
         diagnosticOverlapNs(it.beginNs, it.endNs, from - FRAME_CORRELATION_LOOKBACK_NS, from) > 0 }
-        .sortedByDescending { it.endNs }.take(8)
+        .sortedByDescending { it.endNs }
     val union = diagnosticUnionNs(matching.map { it.beginNs to it.endNs }, from, to)
-    return DiagnosticFrameCorrelation(matching.take(limit), preceding, matching.size, union,
-        (frame.totalNs - union).coerceAtLeast(0))
+    return DiagnosticFrameCorrelation(matching.take(limit), preceding.take(8), matching.size, union,
+        (frame.totalNs - union).coerceAtLeast(0), preceding.size)
 }
 
 /** A diagnostic upper bound if any direct child was not retained. Inclusive spans must not be summed. */

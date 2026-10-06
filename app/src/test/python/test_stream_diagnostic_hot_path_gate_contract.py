@@ -54,15 +54,17 @@ val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
                 total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
                 unknown, input, animation, layout, draw, sync, command, swap, gpu,
                 firstDraw = firstDraw, pageSegment = page.startSegment)
-            // Only severe/unknown-delay anomalies copy evidence, not every 120Hz frame or deadline miss.
-            if (severe) session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
-                session.details.protectFrame(record)
+            // One bounded capture per retained frame, never for normal or budget-rejected frames.
+            // Include retention, source matching and dispatch capture in non-recursive observer cost.
+            session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
+                val evidence = session.details.protectFrame(record)
+                val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
+                    session.listSamples.forFrame(record, evidence.spans) else null
+                val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
+                    .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
+                session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages,
+                    sourceWindowLoss = evidence.sourceWindowLoss, sourceWindowUnknown = evidence.sourceWindowUnknown))
             }
-            val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
-                session.listSamples.forFrame(record, session.details.recentForFrame(record)) else null
-            val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
-                .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
-            session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages))
         }
         // Capture first-draw evidence without changing legacy steady-frame/probe statistics.
         if (firstDraw) {

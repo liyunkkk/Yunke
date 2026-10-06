@@ -34,18 +34,36 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         recent = class_body(self.bounded, 'DiagnosticRawDetailSnapshot').split('fun recentForFrame', 1)[1].split('fun select()', 1)[0]
         self.assertNotIn('synchronized', recent)
         self.assertIn('candidates(includeProtected = false)', recent)
+        raw_capture = body(code_only(self.bounded), 'recentSnapshot')
+        self.assertNotIn('.copyOf()', raw_capture)
+        self.assertIn('endIndex = size', raw_capture)
         self.assertIn('slowColumns.add(', self.bounded)
         self.assertIn('slowColumns.detached()', self.bounded)
         self.assertIn('previousWindow = raw', self.bounded)
         self.assertNotIn('previousWindow:', class_body(code_only(self.bounded), 'DiagnosticRawDetailSnapshot'))
 
-    def test_expensive_capture_is_severe_anomaly_only_and_on_existing_worker(self):
-        self.assertIn('Window.OnFrameMetricsAvailableListener', self.stream)
+    def test_single_observed_capture_is_only_for_budget_admitted_frames_on_existing_worker(self):
         self.assertIn('window.addOnFrameMetricsAvailableListener(listener, handler)', self.stream)
-        self.assertIn('val severe = total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS', self.stream)
-        self.assertIn('if (severe) session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect)', self.stream)
-        self.assertIn('session.details.protectFrame(record)', self.stream)
+        listener = self.stream.split('val listener = Window.OnFrameMetricsAvailableListener', 1)[1].split(
+            'window.addOnFrameMetricsAvailableListener(listener, handler)', 1)[0]
+        retained = listener.split('if ((firstDraw || missed || severe) && session.details.reserveFrame(severe)) {', 1)[1].split(
+            '// Capture first-draw evidence', 1)[0]
+        self.assertEqual(listener.count('session.details.protectFrame(record)'), 1)
+        self.assertNotIn('recentForFrame(', listener)
+        self.assertNotIn('if (severe) session.observerCosts', listener)
+        self.assertLess(retained.index('observerCosts.observe(DiagnosticObserverCosts.Phase.Protect)'),
+                        retained.index('session.details.protectFrame(record)'))
+        self.assertIn('session.listSamples.forFrame(record, evidence.spans)', retained)
+        self.assertIn('sourceWindowLoss = evidence.sourceWindowLoss', retained)
+        self.assertIn('sourceWindowUnknown = evidence.sourceWindowUnknown', retained)
+        self.assertIn('diagnosticFrameEvidenceIncomplete(frame, detail, snapshot.openSpans)', self.stream)
         self.assertNotIn('protectFrame(', body(code_only(self.stream), 'measure'))
+
+    def test_lookback_omission_and_thread_mapping_saturation_are_emitted(self):
+        for field in ('lookbackMatched=${correlation.totalPreceding}',
+                      'lookbackEmitted=${correlation.preceding.size}',
+                      'lookbackOmitted=${correlation.precedingOmitted}', 'session.threadIds.fields()'):
+            self.assertIn(field, self.stream)
 
     def test_render_and_geometry_are_generation_gated_before_keys_or_snapshot_reads(self):
         for name, expensive in [('rowAttribution', 'session.rowTokens.token'),

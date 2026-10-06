@@ -33,4 +33,5 @@ internal class DiagnosticThreadIds(private val capacity: Int = 128) {
         tids[javaThreadId] = osTid.takeIf { it > 0 } ?: -1
     }
     @Synchronized fun osTid(javaThreadId: Long): Int = tids[javaThreadId] ?: -1
+    @Synchronized fun fields(): String = "threadIdCapacity=$capacity threadIdSaturated=$saturated"
 }

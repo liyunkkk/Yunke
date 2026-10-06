@@ -29,7 +29,8 @@ WINDOW = PREFIX.format(kind="window") + (
     "lateAfterFinal=notTracked completeCpu=notClaimed gitSha=" + "a" * 40 + " "
     "protectedSpanCapacity=2048 protectedBudgetDropped=0 frameCaptureTruncated=0 previousWindowSpans=0 "
     "rowTokenSaturated=0 listSampleOverwritten=0 frameBudgetEvicted=0 callbackRejected=0 openAtStop=0 "
-    "openIdDropped=0 stopCutoffNs=-1 partial=false anchorUncertaintyNs=10 osPid=100 javaThreadId=7 osTid=107"
+    "openIdDropped=0 stopCutoffNs=-1 partial=false anchorUncertaintyNs=10 osPid=100 javaThreadId=7 osTid=107 "
+    "threadIdCapacity=128 threadIdSaturated=1"
 )
 RENDER_FIELDS = ("listToken=1 rowToken=2 rowType=agent blockIndex=0 blockType=paragraph blockChars=12 "
                  "component=unknown renderIdentity=anonymousSessionLocalNotEventCausality")
@@ -59,7 +60,7 @@ RUNTIME_SUPPORTED = PREFIX.format(kind="runtime") + (
 )
 # Independent complete P0 correlation fixtures; synthetic numbers, no device data.
 CORRELATION = {
-    "frameCorrelation": "abnormalFrame=0 intendedVsyncNs=150 frameTotalNs=40 matched=1 emitted=1 omitted=0 mainSpanUnionNs=40 frameWallOutsideSpansNs=0 evidenceIncomplete=false coverage=instrumentedCompletedSpansOnly evidenceComplete=notClaimed zeroMatch=notProofOfNoMainWork capture=anomalyCallbackAndAdmissionSnapshot rule=mainSpanOverlapNotCausality accounting=wallUnionNotCpuOrFrameParts",
+    "frameCorrelation": "abnormalFrame=0 intendedVsyncNs=150 frameTotalNs=40 matched=1 emitted=1 omitted=0 lookbackMatched=9 lookbackEmitted=8 lookbackOmitted=1 sourceWindowLoss=false sourceWindowUnknown=false mainSpanUnionNs=40 frameWallOutsideSpansNs=0 evidenceIncomplete=false coverage=instrumentedCompletedSpansOnly evidenceComplete=notClaimed zeroMatch=notProofOfNoMainWork capture=anomalyCallbackAndAdmissionSnapshot rule=mainSpanOverlapNotCausality accounting=wallUnionNotCpuOrFrameParts",
     "spanOverlap": "abnormalFrame=0 span=1 parent=0 stage=ui.flush beginNs=120 endNs=280 overlapNs=40 durationNs=160 selfUpperBoundNs=160 selfAccounting=directChildUnionUpperBoundIfMissingChildren duration=inclusiveNotAdditive value=5 eventSeq=4 runToken=3 conversationToken=7 " + RENDER_FIELDS,
     "frameLookback": "abnormalFrame=0 span=2 parent=0 stage=list.place beginNs=110 endNs=140 durationNs=30 lookbackNs=200000000 relation=precedingNotFrameOverlap " + RENDER_FIELDS,
     "frameList": "abnormalFrame=0 listToken=1 sampleNs=140 ageAtFrameEndNs=50 sourcePage=Chat sourceSegment=1 relation=sourceMatchedObservedPostLayoutNotExactFrame visibility=layoutSlotsNotClippedPixels messageCount=12 totalRows=14 firstIndex=8 firstOffset=4 viewportStart=-10 viewportEnd=900 visibleCount=1 emittedRows=1 omittedRows=0",
@@ -137,6 +138,8 @@ class ParserTests(unittest.TestCase):
                 emitted = common | {"v", "type"} | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", template))
                 if kind == "window":
                     emitted |= {"package", "versionCode", "versionName", "buildType", "gitSha"}
+                    tid_source = (root / "app/src/main/kotlin/io/github/mangi/eta/ui/components/DiagnosticObserverCosts.kt").read_text()
+                    emitted |= set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", tid_source.split("fun fields()", 1)[1]))
                 if kind == "span":
                     emitted |= set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", RENDER_FIELDS))
                 if kind == "frame":
@@ -181,6 +184,29 @@ class ParserTests(unittest.TestCase):
         for kind, fields in CORRELATION.items():
             with self.assertRaises(diag.Rejected):
                 diag.parse_line(PREFIX.format(kind=kind) + fields + " messageId=PRIVATE")
+
+    def test_cross_window_unknown_loss_lookback_omission_and_tid_saturation_are_exported(self):
+        correlation = PREFIX.format(kind="frameCorrelation") + CORRELATION["frameCorrelation"]
+        record = diag.parse_line(correlation)
+        self.assertEqual(9, record["lookbackMatched"])
+        self.assertEqual(8, record["lookbackEmitted"])
+        self.assertEqual(1, record["lookbackOmitted"])
+        self.assertFalse(record["sourceWindowLoss"])
+        self.assertFalse(record["sourceWindowUnknown"])
+        for source in ("sourceWindowLoss", "sourceWindowUnknown"):
+            delayed = diag.parse_line(correlation.replace(source + "=false", source + "=true")
+                                      .replace("evidenceIncomplete=false", "evidenceIncomplete=true"))
+            self.assertTrue(delayed[source]); self.assertTrue(delayed["evidenceIncomplete"])
+            with self.assertRaises(diag.Rejected):
+                diag.parse_line(correlation.replace(source + "=false", source + "=unknown"))
+        window = diag.parse_line(WINDOW)
+        self.assertEqual(128, window["threadIdCapacity"])
+        self.assertEqual(1, window["threadIdSaturated"])
+        for field in ("lookbackMatched", "lookbackEmitted", "lookbackOmitted"):
+            with self.assertRaises(diag.Rejected):
+                diag.parse_line(correlation.replace(field + "=" + str(record[field]), field + "=-1"))
+        with self.assertRaises(diag.Rejected):
+            diag.parse_line(WINDOW.replace("threadIdSaturated=1", "threadIdSaturated=-1"))
 
     def test_correlation_emitter_fields_match_independent_full_golden(self):
         root = Path(__file__).resolve().parents[2]

@@ -150,6 +150,19 @@ class StreamPerformanceDiagnosticsTest {
         assertEquals(1L, ids.saturated)
     }
 
+    @Test fun defaultThreadIdCapacitySaturationIsObservableAndNeverGuessesSchedulerTid() {
+        val ids = DiagnosticThreadIds()
+        repeat(128) { ids.register(it.toLong() + 1, it + 1001) }
+        ids.register(129, 9999)
+        assertEquals(1L, ids.saturated)
+        assertEquals(-1, ids.osTid(129))
+        assertEquals(1001, ids.osTid(1))
+        assertEquals("threadIdCapacity=128 threadIdSaturated=1", ids.fields())
+        ids.register(1, 9999) // Existing mappings remain stable even after saturation.
+        assertEquals(1L, ids.saturated); assertEquals(1001, ids.osTid(1))
+        assertEquals("threadIdCapacity=128 threadIdSaturated=0", DiagnosticThreadIds().fields())
+    }
+
     @Test fun globalOffDoesNotToggleFileLoggingAndOnlyChangesOnSwitch() {
         StreamDiagnosticControl.update(null)
         val before = StreamDiagnosticControl.changes.intValue

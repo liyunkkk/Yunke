@@ -79,8 +79,10 @@ class BoundedStreamDiagnosticsTest {
         span(ring, 3, 0, 5_000_000)
         span(ring, 4, 0, 6_000_000)
         assertTrue(ring.reserveFrame()); ring.frame(frame())
-        assertFalse(ring.reserveFrame())
-        val first = ring.drain(10_000_000)
+        assertFalse(ring.reserveFrame(severe = false)) // A severe reservation may evict this light frame.
+        val raw = ring.snapshot(10_000_000)
+        assertEquals(listOf(2L, 3L, 4L), raw.recentForFrame(frame()).map { it.span })
+        val first = raw.select()
         assertEquals(2L, first.overwritten)
         assertEquals(1L, first.slowBudgetDropped)
         assertEquals(1L, first.frameBudgetDropped)

@@ -22,6 +22,111 @@ class FrameSpanCorrelationTest {
         assertEquals(99L, result.frameWallOutsideSpansNs)
     }
 
+    @Test fun ninePrecedingMainSpansReportTheOneLookbackOmission() {
+        val from = 500_000_000L
+        val preceding = (1L..9L).map { span(it, from - it * 10_000_000, from - it * 10_000_000 + 1) }
+        val result = correlateDiagnosticFrame(frame(from, 24_000_000), preceding +
+            span(10, from - FRAME_CORRELATION_LOOKBACK_NS - 1, from - FRAME_CORRELATION_LOOKBACK_NS))
+        assertEquals(0, result.totalOverlaps)
+        assertEquals(9, result.totalPreceding)
+        assertEquals((1L..8L).toList(), result.preceding.map { it.span })
+        assertEquals(1, result.precedingOmitted)
+    }
+
+    @Test fun lateNonSevereDeadlineMissRetainsSubFourMsEvidenceAcrossSnapshot() {
+        val ring = BoundedDiagnosticDetails(0)
+        add(ring, span(1, 4_991_000_000, 4_993_000_000))
+        assertTrue(ring.snapshot(5_000_000_000).select().spans.isEmpty())
+        val delayed = frame(4_990_000_000, 24_000_000).copy(deadlineNs = 16_000_000)
+        assertTrue(delayed.missed); assertFalse(delayed.severe); assertEquals(0L, delayed.unknownNs)
+        assertTrue(ring.reserveFrame(severe = false))
+        val evidence = ring.protectFrame(delayed)
+        ring.frame(delayed.copy(sourceWindowLoss = evidence.sourceWindowLoss,
+            sourceWindowUnknown = evidence.sourceWindowUnknown))
+        val detail = ring.drain(10_000_000_000)
+        assertEquals(listOf(1L), evidence.spans.map { it.span })
+        assertEquals(1L, detail.previousWindowSpans)
+        assertEquals(1, correlateDiagnosticFrame(detail.frames.single(), detail.spans).totalOverlaps)
+        assertFalse(diagnosticFrameEvidenceIncomplete(detail.frames.single(), detail, openSpans = 0))
+    }
+
+    @Test fun overwrittenPreviousWindowCannotClaimCompleteDelayedSevereFrameEvidence() {
+        val ring = BoundedDiagnosticDetails(0, capacity = 1)
+        add(ring, span(1, 4_991_000_000, 4_993_000_000))
+        add(ring, span(2, 4_994_000_000, 4_995_000_000, main = false))
+        assertEquals(1L, ring.snapshot(5_000_000_000).select().overwritten)
+        val delayed = frame(4_990_000_000, 40_000_000).copy(deadlineNs = 16_000_000)
+        assertTrue(delayed.severe); assertTrue(ring.reserveFrame(severe = true))
+        val evidence = ring.protectFrame(delayed)
+        ring.frame(delayed.copy(sourceWindowLoss = evidence.sourceWindowLoss,
+            sourceWindowUnknown = evidence.sourceWindowUnknown))
+        val detail = ring.drain(10_000_000_000)
+        assertEquals(0L, detail.overwritten) // The loss was in the previous admission window.
+        assertEquals(0, correlateDiagnosticFrame(detail.frames.single(), detail.spans).totalOverlaps)
+        assertTrue(detail.frames.single().sourceWindowLoss)
+        assertTrue(diagnosticFrameEvidenceIncomplete(detail.frames.single(), detail, openSpans = 0))
+    }
+
+    @Test fun previousAdmissionLossIsNotHiddenByLateCompletionTimestampsOutsideItsNominalWindow() {
+        val ring = BoundedDiagnosticDetails(0, capacity = 1)
+        ring.snapshot(5_000_000_000)
+        add(ring, span(1, 4_991_000_000, 4_993_000_000)) // Late admission belongs to [5s, 10s).
+        add(ring, span(2, 5_100_000_000, 5_100_000_001, main = false))
+        ring.snapshot(10_000_000_000)
+        val evidence = ring.protectFrame(frame(4_990_000_000, 40_000_000))
+        assertTrue(evidence.sourceWindowLoss)
+        assertTrue(evidence.sourceWindowUnknown)
+    }
+
+    @Test fun frameOlderThanTheSingleRetainedGenerationIsExplicitlyUnknownButFreshFramesAreNot() {
+        val ring = BoundedDiagnosticDetails(0)
+        add(ring, span(1, 4_991_000_000, 4_993_000_000))
+        ring.snapshot(5_000_000_000); ring.snapshot(10_000_000_000)
+        val old = frame(4_990_000_000, 24_000_000)
+        val oldEvidence = ring.protectFrame(old)
+        assertTrue(oldEvidence.sourceWindowUnknown)
+        ring.frame(old.copy(sourceWindowLoss = oldEvidence.sourceWindowLoss,
+            sourceWindowUnknown = oldEvidence.sourceWindowUnknown))
+        val oldDetail = ring.drain(15_000_000_000)
+        assertEquals(0, correlateDiagnosticFrame(oldDetail.frames.single(), oldDetail.spans).totalOverlaps)
+        assertTrue(diagnosticFrameEvidenceIncomplete(oldDetail.frames.single(), oldDetail, openSpans = 0))
+        val fresh = frame(15_500_000_000, 24_000_000)
+        val evidence = ring.protectFrame(fresh)
+        assertFalse(evidence.sourceWindowUnknown); assertFalse(evidence.sourceWindowLoss)
+        ring.frame(fresh.copy(sourceWindowLoss = evidence.sourceWindowLoss,
+            sourceWindowUnknown = evidence.sourceWindowUnknown))
+        val detail = ring.drain(20_000_000_000)
+        assertFalse(diagnosticFrameEvidenceIncomplete(detail.frames.single(), detail, openSpans = 0))
+    }
+
+    @Test fun oneBoundedCaptureIsReusedForChatGeometryAndShortSpanRetention() {
+        val ring = BoundedDiagnosticDetails(0, capacity = 2)
+        val attr = StreamDiagnosticAttribution(1, list = 11)
+        add(ring, span(1, 500_000_001, 500_000_002, attr = attr))
+        val target = frame(500_000_000, 24_000_000).copy(page = 5, pageEnd = 5, pageSegment = 7)
+        val samples = DiagnosticListSamples()
+        samples.add(DiagnosticListSnapshot(500_000_010, 11, 1, 1, 0, 0, 0, 100, 1, emptyList(), 5, 7))
+        samples.add(DiagnosticListSnapshot(500_000_010, 22, 1, 1, 0, 0, 0, 100, 1, emptyList(), 5, 7))
+        var clock = 10L
+        val costs = DiagnosticObserverCosts { clock }
+        val captured = costs.observe(DiagnosticObserverCosts.Phase.Protect) {
+            val evidence = ring.protectFrame(target)
+            repeat(4) { add(ring, span(2L + it, 600_000_000L + it, 600_000_001L + it)) }
+            clock += 20
+            val geometry = samples.forFrame(target, evidence.spans)
+            clock += 7
+            target.copy(listSnapshot = geometry, sourceWindowLoss = evidence.sourceWindowLoss,
+                sourceWindowUnknown = evidence.sourceWindowUnknown)
+        }
+        ring.frame(captured)
+        val detail = ring.drain(1_000_000_000)
+        assertEquals(11L, detail.frames.single().listSnapshot!!.list)
+        assertEquals(listOf(1L), detail.spans.map { it.span })
+        val cost = costs.summary().single { "observerPhase=Protect " in it }
+        assertTrue(cost.contains("count=1 ")); assertTrue(cost.contains("totalNs=27 "))
+        assertTrue(cost.contains("recursiveMeasurement=false"))
+    }
+
     @Test fun nestedInclusiveSpansUseUnionNotSumAndDirectChildrenForSelfUpperBound() {
         val parent = span(1, 90, 210)
         val child1 = span(2, 100, 160, parent = 1)

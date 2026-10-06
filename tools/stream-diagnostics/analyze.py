@@ -127,8 +127,8 @@ ENUMS = {
 # P0 emitter contract: all new fields remain fixed enums or bounded numbers, not payload strings.
 RENDER_FIELDS = {"listToken", "rowToken", "rowType", "blockIndex", "blockType", "blockChars", "component", "renderIdentity"}
 COUNTERS = COUNTERS | {"protectedBudgetDropped", "frameCaptureTruncated", "previousWindowSpans", "rowTokenSaturated",
-                       "listSampleOverwritten", "frameBudgetEvicted", "callbackRejected", "openAtStop", "openIdDropped"}
-FIELDS["window"] |= COUNTERS | {"protectedSpanCapacity", "gitSha", "stopCutoffNs", "partial", "lateAfterFinal", "completeCpu", "anchorUncertaintyNs", "osPid", "javaThreadId", "osTid"}
+                       "listSampleOverwritten", "frameBudgetEvicted", "callbackRejected", "openAtStop", "openIdDropped", "threadIdSaturated"}
+FIELDS["window"] |= COUNTERS | {"protectedSpanCapacity", "gitSha", "stopCutoffNs", "partial", "lateAfterFinal", "completeCpu", "anchorUncertaintyNs", "osPid", "javaThreadId", "osTid", "threadIdCapacity"}
 FIELDS["span"] |= RENDER_FIELDS | {"javaThreadId", "osTid", "osTidUnknown", "partialAtCutoff"}
 FIELDS["frame"] |= {"firstDraw", "pageSegment", "partialAtCutoff"}
 FIELDS["mainMessage"] |= {"partial", "cpuNs", "wallMinusCpuNs", "cpuAccounting"}
@@ -136,14 +136,14 @@ FIELDS.update({
     "observerCost": COMMON | {"observerPhase", "count", "totalNs", "maxNs", "accounting", "includesLockWait", "recursiveMeasurement", "scope"},
     "openSpan": COMMON | {"span", "partial", "atCutoff", "stillOpenAtFinal", "cpuNs"},
     "finalCompletion": COMMON | {"cutoffNs", "loggerRejected", "loggerFailed", "drainGraceMs", "completion", "privacyGate", "evidenceComplete"},
-    "frameCorrelation": COMMON | {"abnormalFrame", "intendedVsyncNs", "frameTotalNs", "matched", "emitted", "omitted", "mainSpanUnionNs", "frameWallOutsideSpansNs", "evidenceIncomplete", "coverage", "evidenceComplete", "zeroMatch", "capture", "rule", "accounting"},
+    "frameCorrelation": COMMON | {"abnormalFrame", "intendedVsyncNs", "frameTotalNs", "matched", "emitted", "omitted", "lookbackMatched", "lookbackEmitted", "lookbackOmitted", "sourceWindowLoss", "sourceWindowUnknown", "mainSpanUnionNs", "frameWallOutsideSpansNs", "evidenceIncomplete", "coverage", "evidenceComplete", "zeroMatch", "capture", "rule", "accounting"},
     "spanOverlap": COMMON | RENDER_FIELDS | {"abnormalFrame", "span", "parent", "stage", "beginNs", "endNs", "overlapNs", "durationNs", "selfUpperBoundNs", "selfAccounting", "duration", "value", "eventSeq", "runToken", "conversationToken"},
     "frameLookback": COMMON | RENDER_FIELDS | {"abnormalFrame", "span", "parent", "stage", "beginNs", "endNs", "durationNs", "lookbackNs", "relation"},
     "frameList": COMMON | {"abnormalFrame", "available", "listToken", "sampleNs", "ageAtFrameEndNs", "sourcePage", "sourceSegment", "relation", "visibility", "messageCount", "totalRows", "firstIndex", "firstOffset", "viewportStart", "viewportEnd", "visibleCount", "emittedRows", "omittedRows"},
     "frameListRow": COMMON | {"abnormalFrame", "listToken", "sampleNs", "rowToken", "index", "offset", "size"},
     "frameMainMessage": COMMON | {"abnormalFrame", "beginNs", "endNs", "overlapNs", "relation", "frameDispatch", "coveredNs", "uninstrumentedNs", "cpuNs", "wallMinusCpuNs", "accounting", "cpuAccounting", "omitted"},
 })
-BOOLEANS |= {"firstDraw", "partial", "partialAtCutoff", "evidenceIncomplete", "available", "atCutoff", "stillOpenAtFinal", "includesLockWait", "recursiveMeasurement"}
+BOOLEANS |= {"firstDraw", "partial", "partialAtCutoff", "evidenceIncomplete", "available", "atCutoff", "stillOpenAtFinal", "includesLockWait", "recursiveMeasurement", "sourceWindowLoss", "sourceWindowUnknown"}
 ENUMS.update({
     "rowType": {"unknown", "user", "agent", "thinking", "tool", "message", "work-header", "work-tool", "work-thinking", "work-summary"},
     "blockType": {"unknown", "paragraph", "heading", "list", "quote", "code", "table", "html", "image", "rule", "other"},

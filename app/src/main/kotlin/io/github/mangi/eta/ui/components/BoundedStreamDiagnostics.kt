@@ -163,6 +163,8 @@ internal data class DiagnosticFrameRecord(
     val mainMessages: List<DiagnosticMainMessageRecord> = emptyList(),
     val firstDraw: Boolean = false,
     val pageSegment: Long = 0,
+    val sourceWindowLoss: Boolean = false,
+    val sourceWindowUnknown: Boolean = false,
 ) {
     val severe: Boolean get() = totalNs >= 33_000_000L || unknownNs >= 8_000_000L
     val missed: Boolean get() = deadlineNs > 0 && totalNs > deadlineNs
@@ -224,6 +226,9 @@ internal class DiagnosticRawDetailSnapshot internal constructor(
                 frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS, frame.intendedNs + frame.totalNs) > 0
         }
 
+    /** Lost timestamps are unavailable: conservatively propagate loss in any inspected admission generation. */
+    fun sourceWindowLoss(): Boolean = overwritten > 0 || slowDropped > 0
+
     fun select(): DiagnosticDetailSnapshot {
         val frameSnapshot = frames.filterNotNull()
         val eligible = candidates(includeProtected = true).filter { span ->
@@ -250,7 +255,7 @@ internal class DiagnosticRawDetailSnapshot internal constructor(
  * The shared session lock only copies bounded raw columns and resets admission budgets.
  */
 internal class BoundedDiagnosticDetails(
-    startedNs: Long,
+    private val startedNs: Long,
     private val capacity: Int = 2048,
     private val slowLimit: Int = 512,
     private val frameLimit: Int = 120,
@@ -344,10 +349,10 @@ internal class BoundedDiagnosticDetails(
         frames[frameSize++] = frame
     }
 
-    /** Worker-only capture: locks copy columns/admit bounded references; overlap selection is outside the lock. */
-    fun protectFrame(frame: DiagnosticFrameRecord) {
+    /** Worker-only, budget-admitted frame capture, reused for retention and list-source matching. */
+    fun protectFrame(frame: DiagnosticFrameRecord): DiagnosticFrameEvidence {
         val pair = synchronized(admissionLock) {
-            if (closed) return
+            if (closed) return DiagnosticFrameEvidence(emptyList(), sourceWindowUnknown = true)
             recentSnapshot(frame.intendedNs + frame.totalNs) to previousWindow
         }
         val current = pair.first.recentForFrame(frame)
@@ -358,8 +363,13 @@ internal class BoundedDiagnosticDetails(
         val selected = all.take(FRAME_CAPTURE_MAX_SPANS)
         val previousIds = previous.map { it.span }.toHashSet()
         val selectedFromPrevious = selected.count { it.span in previousIds }
+        // Only one detached generation is retained. Older evidence is unknown, never assumed complete.
+        val earliest = pair.second?.fromNs ?: pair.first.fromNs
+        val evidence = DiagnosticFrameEvidence(selected,
+            sourceWindowLoss = pair.first.sourceWindowLoss() || pair.second?.sourceWindowLoss() == true,
+            sourceWindowUnknown = frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS < earliest && earliest > startedNs)
         synchronized(admissionLock) {
-            if (closed) return
+            if (closed) return DiagnosticFrameEvidence(emptyList(), sourceWindowUnknown = true)
             captureTruncated += all.size - selected.size
             previousWindowSpans += selectedFromPrevious
             selected.forEach { span ->
@@ -369,18 +379,19 @@ internal class BoundedDiagnosticDetails(
                 }
             }
         }
+        return evidence
     }
 
-    fun recentForFrame(frame: DiagnosticFrameRecord): List<DiagnosticSpanRecord> {
-        val raw = synchronized(admissionLock) { recentSnapshot(frame.intendedNs + frame.totalNs) }
-        return raw.recentForFrame(frame)
+    private fun recentSnapshot(toNs: Long): DiagnosticRawDetailSnapshot {
+        // Until full, valid slots are [0, size); once full, size == capacity. Never copy unused columns.
+        val rawStages = arrayOfNulls<String>(size)
+        stages.copyInto(rawStages, endIndex = size)
+        return DiagnosticRawDetailSnapshot(fromNs, maxOf(fromNs, toNs),
+            rawStages, spans.copyOf(size), parents.copyOf(size), begins.copyOf(size), ends.copyOf(size), threads.copyOf(size),
+            mains.copyOf(size), attrs.copyOf(size), pages.copyOf(size), pageEnds.copyOf(size), values.copyOf(size), emptyArray(),
+            overwritten, slowDropped, frameDropped, slowLimit, slowNs, (next - size + capacity) % capacity, size,
+            slowColumns.detached())
     }
-
-    private fun recentSnapshot(toNs: Long) = DiagnosticRawDetailSnapshot(fromNs, maxOf(fromNs, toNs),
-        stages.copyOf(), spans.copyOf(), parents.copyOf(), begins.copyOf(), ends.copyOf(), threads.copyOf(),
-        mains.copyOf(), attrs.copyOf(), pages.copyOf(), pageEnds.copyOf(), values.copyOf(), emptyArray(),
-        overwritten, slowDropped, frameDropped, slowLimit, slowNs, (next - size + capacity) % capacity, size,
-        slowColumns.detached())
 
     /** No overlap scanning, span construction, or formatting while holding this lock. */
     fun snapshot(toNs: Long, final: Boolean = false): DiagnosticRawDetailSnapshot = synchronized(admissionLock) {

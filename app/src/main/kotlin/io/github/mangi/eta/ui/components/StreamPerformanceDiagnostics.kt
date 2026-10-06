@@ -795,7 +795,7 @@ internal object StreamPerformanceDiagnostics {
                     "frameCaptureTruncated=${detail.frameCaptureTruncated} previousWindowSpans=${detail.previousWindowSpans} " +
                     "rowTokenSaturated=${session.rowTokens.saturated} listSampleOverwritten=${session.listSamples.overwritten} " +
                     "slowBudgetDropped=${detail.slowBudgetDropped} frameBudgetDropped=${detail.frameBudgetDropped} frameBudgetEvicted=${detail.frameBudgetEvicted} " +
-                    "spanOutputTruncated=${detail.spanOutputTruncated} tokenSaturated=${session.tokens.saturated} " +
+                    "spanOutputTruncated=${detail.spanOutputTruncated} tokenSaturated=${session.tokens.saturated} ${session.threadIds.fields()} " +
                     "eventLinksOverwritten=${session.eventLinks.overwritten} mainRingOverwritten=${log.overwritten} " +
                     "mainOutputTruncated=${log.outputTruncated} noteBudgetDropped=${snapshot.noteDropped} " +
                     "admission=${if (final) "closed" else "open"} openSpansAtCutoff=${snapshot.openSpans} " +
@@ -867,11 +867,12 @@ internal object StreamPerformanceDiagnostics {
                             "omitted=${(frame.mainMessages.size - 24).coerceAtLeast(0)}")
                     }
                     val correlation = correlateDiagnosticFrame(frame, detail.spans)
-                    val incomplete = detail.overwritten > 0 || detail.slowBudgetDropped > 0 || detail.spanOutputTruncated > 0 ||
-                        detail.protectedBudgetDropped > 0 || detail.frameCaptureTruncated > 0 || snapshot.openSpans > 0
+                    val incomplete = diagnosticFrameEvidenceIncomplete(frame, detail, snapshot.openSpans)
                     AppFileLogger.diagnosticInfo("$prefix v=2 type=frameCorrelation abnormalFrame=$index " +
                         "intendedVsyncNs=${frame.intendedNs} frameTotalNs=${frame.totalNs} " +
                         "matched=${correlation.totalOverlaps} emitted=${correlation.overlaps.size} omitted=${correlation.omitted} " +
+                        "lookbackMatched=${correlation.totalPreceding} lookbackEmitted=${correlation.preceding.size} lookbackOmitted=${correlation.precedingOmitted} " +
+                        "sourceWindowLoss=${frame.sourceWindowLoss} sourceWindowUnknown=${frame.sourceWindowUnknown} " +
                         "mainSpanUnionNs=${correlation.overlapUnionNs} frameWallOutsideSpansNs=${correlation.frameWallOutsideSpansNs} " +
                         "evidenceIncomplete=$incomplete coverage=instrumentedCompletedSpansOnly evidenceComplete=notClaimed zeroMatch=notProofOfNoMainWork " +
                         "capture=anomalyCallbackAndAdmissionSnapshot rule=mainSpanOverlapNotCausality accounting=wallUnionNotCpuOrFrameParts")
@@ -945,15 +946,17 @@ internal object StreamPerformanceDiagnostics {
                         total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
                         unknown, input, animation, layout, draw, sync, command, swap, gpu,
                         firstDraw = firstDraw, pageSegment = page.startSegment)
-                    // Only severe/unknown-delay anomalies copy evidence, not every 120Hz frame or deadline miss.
-                    if (severe) session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
-                        session.details.protectFrame(record)
+                    // One bounded capture per retained frame, never for normal or budget-rejected frames.
+                    // Include retention, source matching and dispatch capture in non-recursive observer cost.
+                    session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
+                        val evidence = session.details.protectFrame(record)
+                        val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
+                            session.listSamples.forFrame(record, evidence.spans) else null
+                        val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
+                            .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
+                        session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages,
+                            sourceWindowLoss = evidence.sourceWindowLoss, sourceWindowUnknown = evidence.sourceWindowUnknown))
                     }
-                    val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
-                        session.listSamples.forFrame(record, session.details.recentForFrame(record)) else null
-                    val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
-                        .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
-                    session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages))
                 }
                 // Capture first-draw evidence without changing legacy steady-frame/probe statistics.
                 if (firstDraw) {
