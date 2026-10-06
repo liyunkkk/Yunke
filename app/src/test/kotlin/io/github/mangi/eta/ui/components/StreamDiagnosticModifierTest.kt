@@ -59,6 +59,7 @@ class StreamDiagnosticModifierTest {
             .drawWithContent { drawContent() }
         assertSame(original, original.streamDiagnosticMeasure("settings.root.measure"))
         assertSame(original, original.streamDiagnosticDraw("settings.root.draw"))
+        assertSame(original, original.streamDiagnosticPlacement("list.place"))
         assertSame(original, original
             .streamDiagnosticMeasure("settings.root.measure")
             .streamDiagnosticDraw("settings.root.draw"))
@@ -69,8 +70,41 @@ class StreamDiagnosticModifierTest {
         assertRtlPlacementAndAllIntrinsicBoundaries()
     }
 
-    @Test fun enabledObserverPreservesRtlPlacementAndAllIntrinsicBoundaries() = withDiagnosticSession {
+    @Test fun enabledObserverPreservesRtlPlacementAndAllIntrinsicBoundaries() = withDiagnosticSession { session ->
         assertRtlPlacementAndAllIntrinsicBoundaries()
+        compose.runOnIdle {
+            assertTrue((session.snapshot(final = false).stats["list.place"]?.count ?: 0L) > 0)
+        }
+    }
+
+    @Test fun enabledMeasureCountsOnlyOutermostScopesAndPreservesCapturedSourceSpan() = withDiagnosticSession { session ->
+        val mainField = StreamPerformanceDiagnostics::class.java.getDeclaredField("mainLog").apply { isAccessible = true }
+        val previous = mainField.get(null)
+        val log = MainThreadMessageLog(capacity = 2)
+        mainField.set(null, log)
+        try {
+            compose.setContent { }
+            compose.runOnIdle {
+                val begin = System.nanoTime()
+                log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {1} test@2: 0", begin)
+                StreamPerformanceDiagnostics.withAttribution(StreamDiagnosticAttribution(session.serial, sourceSpan = 999)) {
+                    StreamPerformanceDiagnostics.measure("ui.flush") {
+                        StreamPerformanceDiagnostics.measure("reveal.step") {
+                            StreamPerformanceDiagnostics.measure("reveal.measure") { Unit }
+                        }
+                    }
+                }
+                log.onLine("<<<<< Finished", maxOf(System.nanoTime(), begin + 100_000_000))
+                val sample = log.timingsBetween(begin, Long.MAX_VALUE).single()
+                val stats = session.snapshot(final = false).stats
+                assertEquals(stats.getValue("ui.flush").totalNs, sample.coveredNs)
+                assertEquals(stats.getValue("reveal.step").totalNs, sample.revealNs)
+                assertTrue(sample.revealNs <= sample.coveredNs)
+                assertEquals(sample.endNs - sample.beginNs - sample.coveredNs, sample.uninstrumentedNs)
+            }
+        } finally {
+            mainField.set(null, previous)
+        }
     }
 
     private fun assertRtlPlacementAndAllIntrinsicBoundaries() {
@@ -108,7 +142,8 @@ class StreamDiagnosticModifierTest {
                         Layout(content = {}, measurePolicy = policy, modifier = Modifier
                             .onGloballyPositioned { childX = it.positionInRoot().x }
                             .streamDiagnosticMeasure("settings.root.measure")
-                            .streamDiagnosticDraw("settings.root.draw"))
+                            .streamDiagnosticDraw("settings.root.draw")
+                            .streamDiagnosticPlacement("list.place"))
                     },
                     modifier = Modifier.width(100.dp).height(40.dp)
                         .onGloballyPositioned { parentX = it.positionInRoot().x },
@@ -169,6 +204,7 @@ class StreamDiagnosticModifierTest {
                     .drawWithContent { parentDraws++; drawContent() }
                     .streamDiagnosticMeasure("settings.root.measure")
                     .streamDiagnosticDraw("settings.root.draw")
+                    .streamDiagnosticPlacement("list.place")
                     .drawWithContent { childDraws++; drawContent() },
             ) { _, constraints ->
                 childMeasures++

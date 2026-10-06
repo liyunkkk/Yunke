@@ -44,7 +44,7 @@ val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
         fun metric(stage: String, ns: Long, value: Long) {
             session.recordMetric(page.aggregatePage.ordinal, stage, ns, value)
         }
-        if ((missed || total >= SPIKE_FRAME_NS) && session.details.reserveFrame()) {
+        if ((missed || total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) && session.details.reserveFrame()) {
             session.details.frame(DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
                 total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
                 unknown, input, animation, layout, draw, sync, command, swap, gpu))
@@ -121,6 +121,7 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
     def test_measure_observer_uses_stage_equality_and_default_node_invalidation(self):
         helper = (COMPONENTS / "StreamDiagnosticModifier.kt").read_text(encoding="utf-8")
         measure, draw = helper.split("internal fun Modifier.streamDiagnosticDraw", 1)
+        draw = draw.split("/** Placement-only observer.", 1)[0]
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", measure)
         self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage))", measure)
         self.assertIn("private data class StreamDiagnosticMeasureElement(val stage: String)", measure)

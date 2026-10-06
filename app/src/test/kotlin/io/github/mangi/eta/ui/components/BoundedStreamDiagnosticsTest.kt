@@ -59,6 +59,19 @@ class BoundedStreamDiagnosticsTest {
     private fun frame(intended: Long = 0) = DiagnosticFrameRecord(intended, intended, 10_000_000, 8_333_333,
         0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
+    @Test fun frameResidualIsSignedAndGpuAndVsyncAreNotExtraParts() {
+        val residual = frame().copy(totalNs = 100, unknownNs = 40, inputNs = 5, animationNs = 5,
+            layoutNs = 10, drawNs = 10, syncNs = 5, commandNs = 10, swapNs = 5,
+            gpuNs = 99, intendedNs = 1000, vsyncNs = 1020)
+        assertEquals(10L, residual.unaccountedNs)
+        assertEquals(0L, residual.overlapNs)
+        assertEquals(20L, residual.vsyncLateNs)
+        val overlapping = residual.copy(totalNs = 80)
+        assertEquals(0L, overlapping.unaccountedNs)
+        assertEquals(10L, overlapping.overlapNs)
+        assertEquals(0L, residual.copy(vsyncNs = 900).vsyncLateNs)
+    }
+
     @Test fun ringOverwriteBudgetAndWindowReset() {
         val ring = BoundedDiagnosticDetails(0, capacity = 2, slowLimit = 2, frameLimit = 1)
         span(ring, 1, 0, 1)

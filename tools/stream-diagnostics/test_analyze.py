@@ -37,7 +37,12 @@ FRAME = PREFIX.format(kind="frame") + (
     "abnormalFrame=0 page=Chat pageEnd=Settings pageChanged=true pageSource=route "
     "intendedVsyncNs=150 vsyncNs=155 totalNs=40 deadlineNs=30 deadlineMiss=true "
     "metricsDropped=2 unknownNs=1 inputNs=2 animationNs=3 layoutNs=4 drawNs=5 "
-    "syncNs=6 commandNs=7 swapNs=8 gpuNs=9"
+    "syncNs=6 commandNs=7 swapNs=8 gpuNs=9 unaccountedNs=4 overlapNs=0 vsyncLateNs=5 "
+    "accounting=frameMetricsResidualNotAdditive"
+)
+MAIN_MESSAGE = PREFIX.format(kind="mainMessage") + (
+    "beginNs=140 endNs=220 frameDispatch=true coveredNs=30 revealNs=10 "
+    "uninstrumentedNs=50 nonRevealNs=70 accounting=dispatchSubsetsNotAdditive"
 )
 RUNTIME = PREFIX.format(kind="runtime") + (
     "runtimeCounter=art.gc.bytes-allocated supported=false"
@@ -100,11 +105,12 @@ class ParserTests(unittest.TestCase):
         common = {"id", "windowStartNs"} | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", prefix))
         templates = {
             "window": source.split("v=2 type=window", 1)[1].split("postCloseObservation=notTracked", 1)[0] + "postCloseObservation=notTracked",
-            "span": source.split("v=2 type=span", 1)[1].split("detail.frames.forEachIndexed", 1)[0],
+            "span": source.split("v=2 type=span", 1)[1].split("log.timingsBetween", 1)[0],
+            "mainMessage": source.split("v=2 type=mainMessage", 1)[1].split("detail.frames.forEachIndexed", 1)[0],
             "frame": source.split("v=2 type=frame", 1)[1].split("val messages = log.between", 1)[0],
             "runtime": source.split("v=2 type=runtime", 1)[1].split("previousGc = currentGc", 1)[0],
         }
-        golden = {"window": WINDOW, "span": SPAN, "frame": FRAME, "runtime": RUNTIME_SUPPORTED}
+        golden = {"window": WINDOW, "span": SPAN, "frame": FRAME, "mainMessage": MAIN_MESSAGE, "runtime": RUNTIME_SUPPORTED}
         for kind, template in templates.items():
             with self.subTest(kind=kind):
                 emitted = common | {"v", "type"} | set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)=", template))
@@ -346,6 +352,107 @@ class WindowTests(unittest.TestCase):
         minimal = PREFIX.format(kind="window").rstrip()
         counters = self.summary([minimal])["groups"][0]["windows"][0]["counters"]
         self.assertTrue(all(value is None for value in counters.values()))
+
+
+class WhereTimeTests(unittest.TestCase):
+    def report(self, lines, start=100, end=300, tables=None):
+        records, audit = diag.parse_lines(lines)
+        self.assertEqual(audit["rejectedLines"], 0)
+        return diag.where_time(records, audit, start, end, tables=tables)["whereTime"]
+
+    def test_nested_span_union_and_independent_metric_axis(self):
+        parent = SPAN.replace("beginNs=120 endNs=280", "beginNs=155 endNs=175")
+        child = parent.replace("span=1 parent=0", "span=2 parent=1").replace("stage=ui.flush", "stage=reveal.step")
+        child = child.replace("beginNs=155 endNs=175", "beginNs=160 endNs=170")
+        entry = self.report([WINDOW, FRAME, parent, child, MAIN_MESSAGE])["frames"][0]
+        self.assertEqual(entry["instrumentation"]["mainSpanUnionNs"], 20)
+        self.assertEqual(entry["instrumentation"]["revealSpanUnionNs"], 10)
+        self.assertEqual(entry["instrumentation"]["observedOutsideRevealNs"], 10)
+        self.assertEqual(entry["instrumentation"]["noRetainedSpanCoverageNs"], 20)
+        self.assertEqual(entry["metrics"]["unaccountedNs"], 4)
+        self.assertEqual(entry["metrics"]["overlapNs"], 0)
+        self.assertEqual(entry["metrics"]["vsyncLateNsOverlappingUnknown"], 5)
+        self.assertEqual(entry["recordIntegrity"]["status"], "records_lost_or_truncated")
+        self.assertEqual(entry["instrumentation"]["gapMeaning"], "unattributed_or_record_loss")
+        message = entry["slowMainDispatches"]["fullDispatchAccountingNotProrated"][0]
+        self.assertEqual(message["coveredNs"], 30)  # Not multiplied by overlap/full duration.
+        self.assertEqual(message["nonRevealNs"], 70)
+        self.assertEqual(entry["slowMainDispatches"]["overlappingEnvelopeUnionNs"], 40)
+
+    def test_no_observations_not_observed_zero(self):
+        absent = self.report([FRAME])["frames"][0]
+        self.assertEqual(absent["instrumentation"]["status"], "unavailable")
+        self.assertIsNone(absent["instrumentation"]["mainSpanUnionNs"])
+        self.assertEqual(absent["recordIntegrity"]["status"], "integrity_unavailable")
+        self.assertEqual(absent["slowMainDispatches"]["status"], "unavailable")
+        outside = SPAN.replace("beginNs=120 endNs=280", "beginNs=110 endNs=130")
+        observed_zero = self.report([FRAME, outside])["frames"][0]
+        self.assertEqual(observed_zero["instrumentation"]["status"], "observed")
+        self.assertEqual(observed_zero["instrumentation"]["mainSpanUnionNs"], 0)
+        self.assertEqual(observed_zero["instrumentation"]["noRetainedSpanCoverageNs"], 40)
+
+    def test_duplicate_envelopes_and_spans_use_union_not_sum(self):
+        report = self.report([FRAME, SPAN, SPAN, MAIN_MESSAGE, MAIN_MESSAGE])
+        entry = report["frames"][0]
+        self.assertEqual(entry["instrumentation"]["mainSpanUnionNs"], 40)
+        self.assertEqual(entry["slowMainDispatches"]["overlappingEnvelopeUnionNs"], 40)
+        self.assertEqual(len(entry["slowMainDispatches"]["fullDispatchAccountingNotProrated"]), 2)
+
+    def test_missing_component_not_fake_residual_zero(self):
+        old = FRAME.replace(" unaccountedNs=4 overlapNs=0 vsyncLateNs=5 accounting=frameMetricsResidualNotAdditive", "")
+        entry = self.report([old])["frames"][0]
+        self.assertEqual(entry["metrics"]["residualSource"], "derived")
+        self.assertEqual(entry["metrics"]["unaccountedNs"], 4)
+        entry = self.report([old.replace(" unknownNs=1", "")])["frames"][0]
+        self.assertEqual(entry["metrics"]["residualSource"], "unavailable")
+        self.assertIsNone(entry["metrics"]["unaccountedNs"])
+        self.assertIsNone(entry["metrics"]["components"]["unknownNs"])
+
+    def test_missing_table_unavailable_present_empty_is_zero(self):
+        tables = diag.parse_table_status_json(json.dumps({"schema": "eta.streamdiag.tables.v2", "tables": {
+            "thread_state": {"available": False, "rows": None},
+            "actual_frame_timeline_slice": {"available": True, "rows": 0},
+            "slice": {"available": True, "rows": None},
+        }}))
+        status = self.report([FRAME], tables=tables)["traceTables"]
+        self.assertEqual(status["thread_state"], {"status": "unavailable", "rows": None})
+        self.assertEqual(status["actual_frame_timeline_slice"], {"status": "observed_zero", "rows": 0})
+        self.assertEqual(status["cpu_profile_stack_sample"], {"status": "unavailable", "rows": None})
+        self.assertEqual(status["slice"], {"status": "available_count_unknown", "rows": None})
+        self.assertEqual(self.report([FRAME], tables=tables)["frameTimeline"]["status"], "unavailable")
+
+    def test_strict_table_status_and_main_frame_fields_never_echo_private_text(self):
+        attacks = [
+            '{"schema":"eta.streamdiag.tables.v2","tables":{"PRIVATE_SENTINEL":{"available":false,"rows":null}}}',
+            '{"schema":"eta.streamdiag.tables.v2","tables":{"slice":{"available":false,"rows":0}}}',
+            '{"schema":"eta.streamdiag.tables.v2","tables":{"slice":{"available":true,"rows":true}}}',
+            '{"schema":"eta.streamdiag.tables.v2","tables":{},"reason":"PRIVATE_SENTINEL"}',
+            '{"schema":"eta.streamdiag.tables.v2","tables":{},"tables":{}}',
+        ]
+        for text in attacks:
+            with self.assertRaises(diag.Rejected) as ctx:
+                diag.parse_table_status_json(text)
+            self.assertNotIn("PRIVATE_SENTINEL", str(ctx.exception))
+        for line in [MAIN_MESSAGE + " name=PRIVATE_SENTINEL",
+                     MAIN_MESSAGE.replace("coveredNs=30", "coveredNs=90"),
+                     MAIN_MESSAGE.replace("uninstrumentedNs=50", "uninstrumentedNs=0"),
+                     FRAME.replace("unaccountedNs=4", "unaccountedNs=0"),
+                     FRAME.replace("accounting=frameMetricsResidualNotAdditive", "accounting=dispatchSubsetsNotAdditive")]:
+            with self.assertRaises(diag.Rejected):
+                diag.parse_line(line)
+
+    def test_where_time_cli_preserves_parser_failure_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "input.txt"
+            output = Path(directory) / "output.json"
+            source.write_text(FRAME + "\n" + MAIN_MESSAGE + "\n" + SPAN + " private=PRIVATE_SENTINEL\n")
+            self.assertEqual(diag.main(["where-time", str(source), "--start-ns", "100", "--end-ns", "300",
+                                        "--output", str(output)]), 2)
+            text = output.read_text()
+            self.assertNotIn("PRIVATE_SENTINEL", text)
+            parsed = json.loads(text)
+            self.assertEqual(parsed["whereTime"]["traceTables"]["sched"]["status"], "unavailable")
+            self.assertEqual(parsed["parser"]["rejectedLines"], 1)
 
 
 class IntegrityAndCLITests(unittest.TestCase):

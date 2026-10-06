@@ -72,6 +72,7 @@ STAGES = frozenset("""
     settings.transform usage.commitTail usage.editEntryWait usage.ledger.encodeEvents usage.ledger.serialize
     usage.ledger.update usage.load.dao.conversations usage.load.dao.liveIds usage.load.dao.messages
     usage.load.dao.perDay usage.load.decode usage.lockWait usage.transform
+    main.uninstrumented main.nonReveal chat.content.commit list.measure list.place
 """.split()) | frozenset("ui.event." + kind for kind in KINDS) | frozenset("frame.page." + page for page in PAGES)
 # Fixed enums only. A new emitter enum requires explicit review, never a regex.
 RUNTIME_COUNTERS = frozenset({
@@ -88,6 +89,7 @@ FRAME_NUMBERS = frozenset({
     "abnormalFrame", "intendedVsyncNs", "vsyncNs", "totalNs",
     "deadlineNs", "metricsDropped", "unknownNs", "inputNs", "animationNs",
     "layoutNs", "drawNs", "syncNs", "commandNs", "swapNs", "gpuNs",
+    "unaccountedNs", "overlapNs", "vsyncLateNs",
 })
 COMMON = frozenset({"v", "type", "id", "windowStartNs", "windowEndNs", "final", "boundary"})
 FIELDS = {
@@ -102,10 +104,14 @@ FIELDS = {
         "value", "runToken", "conversationToken", "visibility", "kind", "replay",
         "eventSeq", "sourceSpan", "page", "pageEnd",
     },
-    "frame": COMMON | FRAME_NUMBERS | {"page", "pageEnd", "pageChanged", "pageSource", "deadlineMiss"},
+    "frame": COMMON | FRAME_NUMBERS | {"page", "pageEnd", "pageChanged", "pageSource", "deadlineMiss", "accounting"},
+    "mainMessage": COMMON | {
+        "beginNs", "endNs", "frameDispatch", "coveredNs", "revealNs",
+        "uninstrumentedNs", "nonRevealNs", "accounting",
+    },
     "runtime": COMMON | {"runtimeCounter", "supported", "cumulative", "delta"},
 }
-BOOLEANS = frozenset({"final", "main", "replay", "pageChanged", "deadlineMiss", "supported"})
+BOOLEANS = frozenset({"final", "main", "replay", "pageChanged", "deadlineMiss", "supported", "frameDispatch"})
 ENUMS = {
     "visibility": {"Unknown", "Selected", "Hidden"}, "kind": KINDS,
     "stage": STAGES, "runtimeCounter": RUNTIME_COUNTERS,
@@ -114,6 +120,7 @@ ENUMS = {
     "package": {"io.github.mangi.eta"}, "duration": {"inclusive"},
     "heap": {"proxyNotAllocationStack"}, "gcTime": {"runtimeCounterNotPause"},
     "admission": {"open", "closed"}, "postCloseObservation": {"notTracked"},
+    "accounting": {"frameMetricsResidualNotAdditive", "dispatchSubsetsNotAdditive"},
 }
 
 
@@ -186,6 +193,30 @@ def parse_line(line):
             raise Rejected("missing_span_fields")
         if result["endNs"] < result["beginNs"]:
             raise Rejected("reversed_span")
+    if kind in {"frame", "mainMessage"} and "accounting" in result:
+        expected = "frameMetricsResidualNotAdditive" if kind == "frame" else "dispatchSubsetsNotAdditive"
+        if result["accounting"] != expected:
+            raise Rejected("invalid_accounting_relation")
+    if kind == "mainMessage":
+        if not {"beginNs", "endNs", "frameDispatch", "coveredNs", "revealNs",
+                "uninstrumentedNs", "nonRevealNs", "accounting"} <= set(result):
+            raise Rejected("missing_main_message_fields")
+        duration = result["endNs"] - result["beginNs"]
+        if not (0 <= result["revealNs"] <= result["coveredNs"] <= duration):
+            raise Rejected("invalid_dispatch_subsets")
+        if (result["uninstrumentedNs"] != duration - result["coveredNs"] or
+                result["nonRevealNs"] != duration - result["revealNs"]):
+            raise Rejected("invalid_dispatch_residual")
+    if kind == "frame":
+        parts = ("unknownNs", "inputNs", "animationNs", "layoutNs", "drawNs", "syncNs", "commandNs", "swapNs")
+        if "totalNs" in result and all(key in result for key in parts):
+            residual = result["totalNs"] - sum(result[key] for key in parts)
+            for key, expected in (("unaccountedNs", max(0, residual)), ("overlapNs", max(0, -residual))):
+                if key in result and result[key] != expected:
+                    raise Rejected("invalid_frame_residual")
+        if {"vsyncNs", "intendedVsyncNs", "vsyncLateNs"} <= set(result):
+            if result["vsyncLateNs"] != max(0, result["vsyncNs"] - result["intendedVsyncNs"]):
+                raise Rejected("invalid_vsync_lateness")
     if kind == "runtime" and not {"runtimeCounter", "supported"} <= set(result):
         raise Rejected("missing_runtime_fields")
     if kind == "runtime" and not result["supported"]:
@@ -223,7 +254,7 @@ def parse_lines(lines, max_records=MAX_RECORDS):
 
 
 def interval(record):
-    if record["type"] == "span":
+    if record["type"] in {"span", "mainMessage"}:
         return record["beginNs"], record["endNs"]
     if record["type"] == "frame" and "intendedVsyncNs" in record and "totalNs" in record:
         start = record["intendedVsyncNs"]
@@ -325,6 +356,152 @@ def summarize(records, audit, start, end, stats=None):
     }
 
 
+# Optional Perfetto tables are declared explicitly; a missing declaration never means zero rows.
+TRACE_TABLES = frozenset({
+    "actual_frame_timeline_slice", "thread_state", "slice", "sched",
+    "cpu_profile_stack_sample", "heap_profile_allocation",
+})
+LOSS_COUNTERS = ("ringOverwritten", "spanOutputTruncated", "slowBudgetDropped",
+                 "frameBudgetDropped", "mainRingOverwritten", "mainOutputTruncated")
+FRAME_PARTS = ("unknownNs", "inputNs", "animationNs", "layoutNs", "drawNs",
+               "syncNs", "commandNs", "swapNs")
+
+
+def strict_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Rejected("duplicate_json_key")
+        result[key] = value
+    return result
+
+
+def parse_table_status_json(text):
+    """A fixed-schema inventory only; no SQL, paths, free-form reasons or names."""
+    try:
+        value = json.loads(text, object_pairs_hook=strict_object)
+    except (ValueError, TypeError):
+        raise Rejected("invalid_table_status_json") from None
+    if (not isinstance(value, dict) or set(value) != {"schema", "tables"} or
+            value["schema"] != "eta.streamdiag.tables.v2" or not isinstance(value["tables"], dict)):
+        raise Rejected("invalid_table_status_schema")
+    tables = value["tables"]
+    if set(tables) - TRACE_TABLES:
+        raise Rejected("unapproved_table")
+    for entry in tables.values():
+        if (not isinstance(entry, dict) or set(entry) != {"available", "rows"} or
+                type(entry["available"]) is not bool):
+            raise Rejected("invalid_table_status_entry")
+        rows = entry["rows"]
+        if rows is not None and (type(rows) is not int or not 0 <= rows <= MAX_INTEGER):
+            raise Rejected("invalid_table_row_count")
+        if not entry["available"] and rows is not None:
+            raise Rejected("unavailable_table_with_count")
+    return tables
+
+
+def table_availability(tables=None):
+    out = {}
+    for name in sorted(TRACE_TABLES):
+        entry = (tables or {}).get(name)
+        if entry is None or not entry["available"]:
+            out[name] = {"status": "unavailable", "rows": None}
+        elif entry["rows"] is None:
+            out[name] = {"status": "available_count_unknown", "rows": None}
+        else:
+            out[name] = {"status": "observed_zero" if entry["rows"] == 0 else "observed", "rows": entry["rows"]}
+    return out
+
+
+def frame_accounting(frame):
+    residual = None
+    if "totalNs" in frame and all(key in frame for key in FRAME_PARTS):
+        residual = frame["totalNs"] - sum(frame[key] for key in FRAME_PARTS)
+    lateness = (max(0, frame["vsyncNs"] - frame["intendedVsyncNs"])
+                if "vsyncNs" in frame and "intendedVsyncNs" in frame else None)
+    return {
+        "relation": "frameMetricsResidualNotAdditive",
+        "totalNs": frame.get("totalNs"),
+        "components": {key: frame.get(key) for key in FRAME_PARTS},
+        "gpuNsOverlappingCommandSwap": frame.get("gpuNs"),
+        "unaccountedNs": frame.get("unaccountedNs", max(0, residual) if residual is not None else None),
+        "overlapNs": frame.get("overlapNs", max(0, -residual) if residual is not None else None),
+        "vsyncLateNsOverlappingUnknown": frame.get("vsyncLateNs", lateness),
+        "residualSource": "emitted" if "unaccountedNs" in frame else ("derived" if residual is not None else "unavailable"),
+        "unknownTiming": "componentDurationNotAnInstrumentedSpanGap",
+    }
+
+
+def where_time(records, audit, start, end, stats=None, tables=None):
+    """Two independent axes: FrameMetrics components and retained main-thread interval union.
+
+    Do not locate unknownNs on a guessed prefix, equate a Looper dispatch with
+    FrameTimeline, prorate whole-message coverage, or add nested spans.
+    """
+    result = summarize(records, audit, start, end, stats)
+    frames = []
+    for frame in result["selectedRecords"]:
+        if frame["type"] != "frame":
+            continue
+        group = [r for r in records if r["session"] == frame["session"]]
+        windows = [r for r in group if r["type"] == "window" and overlaps(interval(r), *interval(frame))]
+        counters = {key: (max(r[key] for r in windows if key in r)
+                          if any(key in r for r in windows) else None) for key in LOSS_COUNTERS}
+        lost = any(value is not None and value > 0 for value in counters.values())
+        loss_status = ("records_lost_or_truncated" if lost else
+                       "integrity_unavailable" if any(value is None for value in counters.values()) else
+                       "no_loss_reported_not_complete_coverage")
+        entry = {
+            "session": frame["session"], "abnormalFrame": frame.get("abnormalFrame"),
+            "page": frame.get("page"), "metrics": frame_accounting(frame),
+            "recordIntegrity": {"status": loss_status, "counters": counters,
+                                "scope": "overlapping_report_windows_not_localized_to_frame"},
+        }
+        if "totalNs" not in frame or "intendedVsyncNs" not in frame:
+            entry["instrumentation"] = {"status": "unavailable"}
+            frames.append(entry)
+            continue
+        left, right = interval(frame)
+        left, right = max(left, start), min(right, end)
+        spans = [r for r in group if r["type"] == "span" and r.get("main") is True]
+        clipped = [(max(r["beginNs"], left), min(r["endNs"], right))
+                   for r in spans if overlaps(interval(r), left, right)]
+        reveal = [(max(r["beginNs"], left), min(r["endNs"], right))
+                  for r in spans if r["stage"].startswith("reveal.") and overlaps(interval(r), left, right)]
+        observed = union_ns(clipped)
+        reveal_observed = union_ns(reveal)
+        # None means no main span table was supplied for this session; 0 means
+        # some main spans were supplied but none overlap this particular frame.
+        entry["instrumentation"] = {
+            "status": "observed" if spans else "unavailable",
+            "clippedFrameIntervalNs": right - left,
+            "mainSpanUnionNs": observed if spans else None,
+            "revealSpanUnionNs": reveal_observed if spans else None,
+            "observedOutsideRevealNs": observed - reveal_observed if spans else None,
+            "noRetainedSpanCoverageNs": right - left - observed if spans else None,
+            "gapMeaning": "unattributed_or_record_loss" if lost else "unattributed_not_proven_idle",
+            "relation": "revealSubsetOfUnionNotAdditive",
+        }
+        messages = [r for r in group if r["type"] == "mainMessage" and overlaps(interval(r), left, right)]
+        entry["slowMainDispatches"] = {
+            "status": "observed" if messages else "unavailable",
+            "source": "looperSlowDispatchNotFrameTimelineOrCpuTime",
+            "overlappingEnvelopeUnionNs": union_ns((max(r["beginNs"], left), min(r["endNs"], right))
+                                                  for r in messages) if messages else None,
+            "fullDispatchAccountingNotProrated": [{key: r[key] for key in
+                ("beginNs", "endNs", "frameDispatch", "coveredNs", "revealNs", "uninstrumentedNs", "nonRevealNs", "accounting")}
+                for r in messages],
+        }
+        frames.append(entry)
+    result["whereTime"] = {
+        "frames": frames, "traceTables": table_availability(tables),
+        "frameTimeline": {"status": "unavailable", "appDeadlineMissed": None},
+        "clockRelation": "frameAndNanoTimeAlignmentRequiresDeviceVerification",
+        "relationship": "metricsDispatchAndSpanAxesOverlapDoNotAdd",
+    }
+    return result
+
+
 def parse_stats_csv(text):
     """Dedicated SELECT name,idx,value,severity,source FROM stats CSV only."""
     try:
@@ -374,10 +551,14 @@ def main(argv=None):
     summary = sub.add_parser("summary", help="Export extracted exact v2 diagnostic lines only")
     summary.add_argument("input", type=Path)
     summary.add_argument("--stats-csv", type=Path)
+    breakdown = sub.add_parser("where-time", help="Frame components, retained-span union and slow main dispatch accounting")
+    breakdown.add_argument("input", type=Path)
+    breakdown.add_argument("--stats-csv", type=Path)
+    breakdown.add_argument("--table-status-json", type=Path)
     render = sub.add_parser("render-sql", help="Render SQL with explicit TRACE-TIME bounds and UPID")
     render.add_argument("--template", choices=["window-analysis", "cpu-samples", "heap-samples"], required=True)
     render.add_argument("--upid", type=int, required=True)
-    for cmd in (summary, render):
+    for cmd in (summary, breakdown, render):
         cmd.add_argument("--start-ns", type=int, required=True)
         cmd.add_argument("--end-ns", type=int, required=True)
         cmd.add_argument("--output", type=Path)
@@ -391,7 +572,12 @@ def main(argv=None):
             with args.input.open(encoding="utf-8") as source:
                 records, audit = parse_lines(source)
             stats = parse_stats_csv(args.stats_csv.read_text(encoding="utf-8")) if args.stats_csv else None
-            output = json.dumps(summarize(records, audit, args.start_ns, args.end_ns, stats), indent=2, sort_keys=True) + "\n"
+            if args.command == "where-time":
+                tables = parse_table_status_json(args.table_status_json.read_text(encoding="utf-8")) if args.table_status_json else None
+                report = where_time(records, audit, args.start_ns, args.end_ns, stats, tables)
+            else:
+                report = summarize(records, audit, args.start_ns, args.end_ns, stats)
+            output = json.dumps(report, indent=2, sort_keys=True) + "\n"
             rejected = audit["rejectedLines"] > 0 or audit["exporterTruncatedRecords"] > 0
         if args.output:
             args.output.write_text(output, encoding="utf-8")

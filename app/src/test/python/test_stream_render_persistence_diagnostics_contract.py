@@ -51,7 +51,9 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         self.assertIn("measureDetail(stage) { drawContent() }", draw)
         for forbidden in ("semantics", "graphicsLayer", "mutableState", "post", "note(", "launch", "coroutineScope", "onAttach", "onDetach"):
             self.assertNotIn(forbidden, helper)
-        self.assertEqual(helper.count("!StreamPerformanceDiagnostics.enabled"), 2)
+        original_helpers = helper.split("internal fun Modifier.streamDiagnosticPlacement", 1)[0]
+        self.assertEqual(original_helpers.count("!StreamPerformanceDiagnostics.enabled"), 2)
+        self.assertEqual(helper.count("!StreamPerformanceDiagnostics.enabled"), 3)
 
     def test_hidden_item_still_measures_once_and_never_places_hidden_child(self):
         hidden = code(source("ui/components/StreamingListItemLayout.kt"))

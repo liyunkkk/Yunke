@@ -174,7 +174,7 @@ capture health, privacy provenance or performance acceptance.
 
 The supplied core interface is parsed strictly:
 
-- Common: `StreamDiag v=2 type=window|span|frame|runtime id=<8 lowercase hex>`
+- Common: `StreamDiag v=2 type=window|span|frame|mainMessage|runtime id=<8 lowercase hex>`
   `windowStartNs=<long> windowEndNs=<long> final=true|false`. Diagnostic `id` is
   immediately re-tokenized into `s1`, `s2`, ...; its reverse mapping is not exported.
 - Window: exact `anchorNanoNs`, `uptimeMs`, `elapsedRealtimeNs`, fixed `package`,
@@ -248,6 +248,129 @@ paste the Python bounds into SQL. Sleep, ms quantization, anchor read skew and
 trace clock conversion require explicit correlation and uncertainty. Frame
 intended-vsync-domain compatibility also needs a golden/device check. The tool
 makes no verified trace-alignment claim and never defaults to full trace.
+
+## Where did these frame times go? (v2 gap analysis)
+
+The supplied 041900cc / 5.3.8 / 2026100406 evidence is from application file
+logs, not a verified FrameTimeline trace: 97 frames with `unknownNs >= 8ms`,
+59 without retained main spans; separately, 61 frames with `totalNs > 33ms`,
+32 without coverage. The narrower intersection (`>33ms`, `unknown>=8ms`, no
+coverage) is **17**, not 59 or 32. These denominators must not be interchanged.
+`mainRingOverwritten` reached 4542, `ringOverwritten` 5107,
+`spanOutputTruncated` 818, and `eventLinksOverwritten` 651; zero slow/frame budget
+drops do **not** cancel that loss. Retained-span gaps can overestimate the actual
+instrumentation gap. This change is diagnostic preparation, not a new capture
+or proof that those original frames are now attributed.
+
+Use the same strict extracted v2 input as `summary`:
+
+```sh
+python3 tools/stream-diagnostics/analyze.py where-time extracted-streamdiag-v2.txt --start-ns 123000000000 --end-ns 124000000000 --output where-time.json
+# Optional, fixed-schema inventory independently checked with your trace processor:
+python3 tools/stream-diagnostics/analyze.py where-time extracted-streamdiag-v2.txt --start-ns 123000000000 --end-ns 124000000000 --table-status-json table-status.json --output where-time-with-tables.json
+```
+
+`whereTime.frames` reports **two overlapping axes, never one additive pie chart**:
+
+1. FrameMetrics components and the signed residual accounting below.
+2. Union of retained `main=true` span intervals clipped to the frame interval,
+   reveal subset, observed time outside reveal, and time with no retained span
+   coverage. Nested/duplicate intervals are unioned, not added. A duration named
+   `unknownNs` is **not** the uncovered span duration and is not assumed to occupy
+   an invented prefix of the frame interval.
+
+The new `mainMessage` records preserve numeric-only slow Looper dispatch
+`beginNs/endNs/frameDispatch/coveredNs/revealNs/uninstrumentedNs/nonRevealNs`
+and fixed `accounting=dispatchSubsetsNotAdditive`. They do not export class names,
+message names, mount numbers, business IDs, or text. `coveredNs` sums only live,
+synchronous outermost measurements, independent of whether the span detail ring
+later loses those spans. `revealNs` counts only outermost reveal scopes (including
+reveal nested inside another stage). `uninstrumentedNs = dispatch - covered`;
+`nonRevealNs = dispatch - reveal`, so **uninstrumented is contained in nonReveal,
+and reveal is contained in covered; do not add them**. These are **dispatch wall
+times**, potentially including scheduling/waits/diagnostic overhead, not CPU
+self-time. No timing scope is left installed across suspension.
+
+Only dispatches >=4ms are retained in the bounded 256-entry main ring. Main
+records are selected by overlap with the reporting window, unlike the span
+admission/drain set; a boundary-crossing record can appear twice. Full dispatch
+subset counters are not prorated onto its overlapping portion. Fast dispatches,
+messages open at detach, work before printer installation, and overwritten
+records remain unobserved. `frameDispatch=true` means the Looper callback was a
+Choreographer FrameDisplayEventReceiver; **`main.doFrame` is this dispatch envelope,
+not a FrameTimeline slice, a unique displayed frame, or a deadline miss**. The
+script keeps the FrameTimeline result unavailable until independently supplied
+trace analysis; an inventory row count alone is not a jank result.
+
+Frame detail admission now also includes `unknownNs >= 8_000_000`, even without a
+reported deadline miss or a >=33ms total. It uses the existing 120-frame budget,
+not an unbounded event stream. `recordIntegrity.status` distinguishes
+`records_lost_or_truncated`, `integrity_unavailable`, and
+`no_loss_reported_not_complete_coverage`. The counters belong to overlapping report
+windows (main overwrite count is cumulative), not a proved loss on that exact
+frame. `gapMeaning` retains this distinction: absence of evidence is neither
+idle time nor proof that Compose caused the gap.
+
+### Residual / overlap / vsyncLate: containment, NOT additive
+
+Let `parts = unknown + input + animation + layout + draw + sync + command + swap`.
+Then `residual = total - parts`, `unaccounted = max(residual, 0)`, and
+`overlap = max(-residual, 0)`. GPU is excluded from `parts` because it overlaps
+command/swap. `frame.unaccounted` is the nonnegative **residual within total**, not
+a decomposition of `unknown`. `frame.overlap` is excess component accounting,
+**not extra time**. `frame.vsyncLate = max(vsync - intendedVsync, 0)` describes a
+lateness interval that overlaps/is ordinarily contained in unknown delay; it is
+**not an additional component**, nor a guarantee of exact equality on every API.
+Both `unknown` and `unaccounted` are already accounted relative to total; **do not
+add total, unknown, unaccounted, overlap, vsyncLate, or GPU together**. New frame
+records explicitly carry `unaccountedNs/overlapNs/vsyncLateNs` and
+`accounting=frameMetricsResidualNotAdditive`. Old v2 records derive residual only
+when all required components exist; missing components produce null/unavailable,
+never a fabricated zero.
+
+### Complete literal table for new or connected labels
+
+New labels are registered only in `StreamPerformanceDiagnostics.kt`'s
+`StreamDiagnosticGapLabels.stages`; the existing registry delegates validation to
+that fixed set. No dynamic suffix or content-derived label is accepted.
+
+| Exact stage literal | State / interpretation |
+| --- | --- |
+| `main.uninstrumented` | New; all completed dispatch aggregates, dispatch minus outermost measured time |
+| `main.nonReveal` | New; all completed dispatch aggregates, dispatch minus outermost reveal time; contains uninstrumented |
+| `chat.content.commit` | New; registered for the integration call in the actual conversation content scope; point/count only |
+| `list.measure` | New; registered for conversation LazyColumn measure; inclusive child measure, not placement |
+| `list.place` | New; registered for conversation LazyColumn placement via the new placement-only modifier |
+| `render.compose` | Existing; connected through the already installed ChatBodyTrace SideEffects; successful content-body commits, **not composition cost** |
+| `frame.unaccounted` | Existing; residual metric now also exported per detailed frame |
+| `frame.overlap` | Existing; overlap accounting now also exported per detailed frame; never extra wall time |
+| `frame.vsyncLate` | Existing; lateness now also exported per detailed frame; overlaps unknown |
+| `main.doFrame` | Existing; main frame dispatch aggregate, separate from FrameTimeline |
+| `main.message` | Existing; non-frame dispatch aggregate |
+
+Existing fixed markdown labels `markdown.stable.measure`, `markdown.tail.measure`,
+`markdown.hidden.measure`, `markdown.stable.draw`, `markdown.tail.draw`, and
+`markdown.blockDraw` remain wired in their existing paths. The generic registered
+`render.measure`/`render.draw` can cover the document-level block container during
+integration; they must not be added to their inclusive markdown children. Existing
+`ui.flush`, `ui.flush.blockSwitch`, `ui.flush.nonDelta`, `ui.flush.timer` remain
+fixed; the common flush/coalescer boundary still needs the integration edit in
+its owner file. See [PENDING_WIRING.md](PENDING_WIRING.md) for exact anchors and APIs.
+
+### Missing tables are unavailable, NOT zero
+
+`table-status.template.json` is a schema template, **not trace evidence**. Delete
+unverified declarations or leave them unavailable. Its fixed schema is
+`eta.streamdiag.tables.v2` with only the reviewed table names in `analyze.py`;
+entries have exactly `{available: bool, rows: nonnegative integer|null}`. No free
+text, query, path, reason, or arbitrary table name is accepted. Duplicate/unknown
+keys or `available=false, rows=0` reject. Missing declarations and absent tables
+produce `{status: unavailable, rows: null}`; an independently observed existing
+empty table produces `{status: observed_zero, rows: 0}`. `available=true, rows=null`
+is available with unknown count, not zero. Inventory counts are trace-wide, not
+requested-window samples. The analysis script does not query Perfetto or recover
+missing tables silently. Check table existence with `diagnostic-integrity.sql`
+first; a query failure remains unsupported/unavailable, never a zero-row result.
 
 ## Acceptance report checklist
 

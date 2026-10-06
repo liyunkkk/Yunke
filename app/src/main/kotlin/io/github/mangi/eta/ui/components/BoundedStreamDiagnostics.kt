@@ -58,7 +58,7 @@ internal object StreamDiagnosticLabels {
         if (label.startsWith("runtime.checkpoint.")) return "runtime.checkpoint.unknown"
         return null
     }
-    fun stage(label: String): Boolean = label in stages ||
+    fun stage(label: String): Boolean = label in stages || label in StreamDiagnosticGapLabels.stages ||
         (label.startsWith("ui.event.") && label.removePrefix("ui.event.") in kinds) ||
         label in pageStages
     // Keep this pure Kotlin: compiled static route names, never arbitrary frame.page.* input.
@@ -112,6 +112,8 @@ internal data class StreamDiagnosticAttribution(
 internal data class DiagnosticSpanContext(
     val attribution: StreamDiagnosticAttribution?,
     val span: Long = 0,
+    val insideReveal: Boolean = false,
+    val insideMeasure: Boolean = false,
 )
 
 /** Synchronous scopes only: never leave this installed across a coroutine suspension. */
@@ -136,6 +138,15 @@ internal data class DiagnosticSpanRecord(
     val attribution: StreamDiagnosticAttribution?, val page: Int, val pageEnd: Int, val value: Long,
 )
 
+/** Dispatch wall time, not CPU time or a FrameTimeline frame. Subsets must not be added. */
+internal data class DiagnosticMainMessageRecord(
+    val beginNs: Long, val endNs: Long, val frameDispatch: Boolean,
+    val coveredNs: Long, val revealNs: Long,
+) {
+    val uninstrumentedNs: Long get() = endNs - beginNs - coveredNs
+    val nonRevealNs: Long get() = endNs - beginNs - revealNs
+}
+
 internal data class DiagnosticFrameRecord(
     val intendedNs: Long, val vsyncNs: Long, val totalNs: Long, val deadlineNs: Long,
     val page: Int, val pageEnd: Int, val changed: Boolean, val metricsDropped: Int,
@@ -143,6 +154,13 @@ internal data class DiagnosticFrameRecord(
     val drawNs: Long, val syncNs: Long, val commandNs: Long, val swapNs: Long, val gpuNs: Long,
 ) {
     val missed: Boolean get() = deadlineNs > 0 && totalNs > deadlineNs
+    // Signed residual of FrameMetrics components; GPU overlaps command/swap and is excluded.
+    private val residualNs: Long get() = totalNs -
+        (unknownNs + inputNs + animationNs + layoutNs + drawNs + syncNs + commandNs + swapNs)
+    val unaccountedNs: Long get() = residualNs.coerceAtLeast(0)
+    val overlapNs: Long get() = (-residualNs).coerceAtLeast(0)
+    // Vsync lateness overlaps unknown delay: it is NOT an additional frame component.
+    val vsyncLateNs: Long get() = (vsyncNs - intendedNs).coerceAtLeast(0)
 }
 
 internal data class DiagnosticDetailSnapshot(

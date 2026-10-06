@@ -46,3 +46,27 @@ internal fun Modifier.streamDiagnosticDraw(stage: String): Modifier {
         StreamPerformanceDiagnostics.measureDetail(stage) { drawContent() }
     }
 }
+
+/** Placement-only observer. Existing measure/draw observers keep their original semantics. */
+internal fun Modifier.streamDiagnosticPlacement(stage: String): Modifier {
+    if (!StreamPerformanceDiagnostics.enabled) return this
+    return this.then(StreamDiagnosticPlacementElement(stage))
+}
+
+private data class StreamDiagnosticPlacementElement(val stage: String) : ModifierNodeElement<StreamDiagnosticPlacementNode>() {
+    override fun create() = StreamDiagnosticPlacementNode(stage)
+    override fun update(node: StreamDiagnosticPlacementNode) { node.stage = stage }
+    override fun InspectorInfo.inspectableProperties() {
+        name = "streamDiagnosticPlacement"
+        properties["stage"] = stage
+    }
+}
+
+private class StreamDiagnosticPlacementNode(var stage: String) : Modifier.Node(), LayoutModifierNode {
+    override fun MeasureScope.measure(measurable: Measurable, constraints: Constraints): MeasureResult {
+        val child = measurable.measure(constraints)
+        return layout(child.width, child.height) {
+            StreamPerformanceDiagnostics.measureDetail(stage) { child.placeRelative(0, 0) }
+        }
+    }
+}

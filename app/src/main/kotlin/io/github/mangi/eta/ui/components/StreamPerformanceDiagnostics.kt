@@ -64,8 +64,15 @@ internal class StreamTimingStats {
  * printer 只在主线程被调用；读取在诊断线程，存取环形缓冲时加锁。
  * 只保留 Handler/回调类名和耗时，不保留消息正文或 ID。
  */
+/** New stages are registered here, never inferred from callback names or payloads. */
+internal object StreamDiagnosticGapLabels {
+    val stages: Set<String> = setOf(
+        "main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place",
+    )
+}
+
 internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACITY,
-    private val onMessage: ((Long, Long, Boolean) -> Unit)? = null) {
+    private val onMessage: ((Long, Long, Boolean, Long, Long) -> Unit)? = null) {
     @Volatile var overwritten = 0L
         private set
     @Volatile var outputTruncated = 0L
@@ -81,9 +88,12 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
     private var messageLine: String? = null
     // 当前这条消息里被 measure 包住的主线程耗时，以及其中最长的那一段。
     private var openCoveredNs = 0L
+    private var openRevealNs = 0L
     private var openTopStage: String? = null
     private var openTopNs = 0L
     private val covered = LongArray(capacity)
+    private val reveals = LongArray(capacity)
+    private val isFrames = BooleanArray(capacity)
     private val tops = arrayOfNulls<String>(capacity)
     @Volatile var frameMessages = 0L
         private set
@@ -98,6 +108,7 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             messageOpen = true
             messageLine = line
             openCoveredNs = 0L
+            openRevealNs = 0L
             openTopStage = null
             openTopNs = 0L
             return
@@ -112,13 +123,18 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
         if (!open || name == null) return
         val isFrame = name.contains(CHOREOGRAPHER_FRAME_RECEIVER)
         if (isFrame) frameMessages++ else otherMessages++
-        onMessage?.invoke(started, now, isFrame)
-        if (now - started < SLOW_MAIN_MESSAGE_NS) return
+        val duration = (now - started).coerceAtLeast(0)
+        val coveredNs = openCoveredNs.coerceIn(0, duration)
+        val revealNs = openRevealNs.coerceIn(0, coveredNs)
+        onMessage?.invoke(started, now, isFrame, coveredNs, revealNs)
+        if (duration < SLOW_MAIN_MESSAGE_NS) return
         synchronized(this) {
             starts[next] = started
             ends[next] = now
             names[next] = name
-            covered[next] = openCoveredNs
+            covered[next] = coveredNs
+            reveals[next] = revealNs
+            isFrames[next] = isFrame
             tops[next] = openTopStage?.let { "$it:${openTopNs / 1000}" }
             next = (next + 1) % capacity
             if (size < capacity) size++ else overwritten++
@@ -133,6 +149,24 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             openTopNs = ns
             openTopStage = stage
         }
+    }
+
+    /** Called once per outermost reveal scope, even when nested inside another measured stage. */
+    internal fun addReveal(ns: Long) {
+        if (messageOpen) openRevealNs += ns.coerceAtLeast(0)
+    }
+
+    /** Numeric-only slow dispatch envelopes; no Handler/Runnable name enters v2 output. */
+    @Synchronized fun timingsBetween(fromNs: Long, toNs: Long): List<DiagnosticMainMessageRecord> {
+        val out = ArrayList<DiagnosticMainMessageRecord>()
+        val first = (next - size + capacity) % capacity
+        for (i in 0 until size) {
+            val slot = (first + i) % capacity
+            if (ends[slot] <= fromNs || starts[slot] >= toNs) continue
+            out += DiagnosticMainMessageRecord(starts[slot], ends[slot], isFrames[slot],
+                covered[slot], reveals[slot])
+        }
+        return out
     }
 
     /** 与 [fromNs, toNs] 有重叠的慢消息，时间相对 originNs。 */
@@ -249,6 +283,7 @@ private const val CHOREOGRAPHER_FRAME_RECEIVER = "Choreographer\$FrameDisplayEve
 private const val FRAME_PROBE_LEAD_NS = 17_000_000L
 // 点击窗口以外超过这个值的帧单独记一条，每个五秒报告窗口最多 SPIKE_MAX_PER_WINDOW 条。
 internal const val SPIKE_FRAME_NS = 33_000_000L
+internal const val UNKNOWN_DELAY_DETAIL_NS = 8_000_000L
 private const val SPIKE_MAX_PER_WINDOW = 40
 private const val SPIKE_LOOKBACK_NS = 200_000_000L
 internal const val NOTE_MAX_PER_SESSION = 120
@@ -504,7 +539,9 @@ internal object StreamPerformanceDiagnostics {
         val session = enabledSession() ?: return block()
         if (attribution == null || attribution.session != session.serial) return block()
         val parent = context.current()?.span ?: attribution.sourceSpan
-        return context.with(DiagnosticSpanContext(attribution, parent), block)
+        return context.with(DiagnosticSpanContext(attribution, parent,
+            insideReveal = context.current()?.insideReveal ?: false,
+            insideMeasure = context.current()?.insideMeasure ?: false), block)
     }
 
     fun record(stage: String, ns: Long = 0, value: Long = 0) {
@@ -533,7 +570,9 @@ internal object StreamPerformanceDiagnostics {
         val onMain = Looper.myLooper() === Looper.getMainLooper()
         val started = System.nanoTime()
         Trace.beginSection("Eta.$label")
-        try { return context.with(DiagnosticSpanContext(attr, span), block) } finally {
+        val revealScope = label.startsWith("reveal.")
+        try { return context.with(DiagnosticSpanContext(attr, span,
+            insideReveal = revealScope || previous?.insideReveal == true, insideMeasure = true), block) } finally {
             Trace.endSection()
             val ended = System.nanoTime()
             val elapsed = ended - started
@@ -542,7 +581,11 @@ internal object StreamPerformanceDiagnostics {
             session.finishSpan(label, span, parent, started, ended, Thread.currentThread().id, onMain, attr,
                 (page?.start ?: FrameDiagnosticPage.Unknown).ordinal, (page?.end ?: FrameDiagnosticPage.Unknown).ordinal,
                 aggregatePage.ordinal, value)
-            if (onMain && (previous?.span ?: 0L) == 0L) mainLog?.addCovered(label, elapsed)
+            if (onMain && enabledSession() === session) {
+                // Only synchronous outermost scopes count; nested inclusive spans are not added twice.
+                if (previous?.insideMeasure != true) mainLog?.addCovered(label, elapsed)
+                if (revealScope && previous?.insideReveal != true) mainLog?.addReveal(elapsed)
+            }
         }
     }
 
@@ -555,9 +598,12 @@ internal object StreamPerformanceDiagnostics {
         probe?.let { previous -> probeReporter?.let { finishProbe(previous, it) } }
         // 整个诊断会话都记主线程慢消息：点击窗口和窗口外的尖峰都要能对上当时主线程在干什么。
         // 这是项目里唯一设置 Looper 日志的地方；会话结束时恢复为 null。
-        val log = MainThreadMessageLog(onMessage = { begin, end, frame ->
+        val log = MainThreadMessageLog(onMessage = { begin, end, frame, covered, reveal ->
             if (active === session && enabled) {
                 session.record(if (frame) "main.doFrame" else "main.message", end - begin, 0)
+                // These are subsets of dispatch wall time, not extra frame components or CPU time.
+                session.record("main.uninstrumented", (end - begin - covered).coerceAtLeast(0), 0)
+                session.record("main.nonReveal", (end - begin - reveal).coerceAtLeast(0), 0)
             }
         })
         mainLog = log
@@ -653,13 +699,21 @@ internal object StreamPerformanceDiagnostics {
                         "replay=${a?.replay ?: false} eventSeq=${a?.event ?: 0} sourceSpan=${a?.sourceSpan ?: 0} " +
                         "page=${FrameDiagnosticPage.entries[span.page].name} pageEnd=${FrameDiagnosticPage.entries[span.pageEnd].name}")
                 }
+                log.timingsBetween(detail.fromNs, detail.toNs).forEach { message ->
+                    AppFileLogger.diagnosticInfo("$prefix v=2 type=mainMessage beginNs=${message.beginNs} endNs=${message.endNs} " +
+                        "frameDispatch=${message.frameDispatch} coveredNs=${message.coveredNs} revealNs=${message.revealNs} " +
+                        "uninstrumentedNs=${message.uninstrumentedNs} nonRevealNs=${message.nonRevealNs} " +
+                        "accounting=dispatchSubsetsNotAdditive")
+                }
                 detail.frames.forEachIndexed { index, frame ->
                     val page = FramePageAttribution(FrameDiagnosticPage.entries[frame.page], FrameDiagnosticPage.entries[frame.pageEnd], frame.changed)
                     AppFileLogger.diagnosticInfo("$prefix v=2 type=frame abnormalFrame=$index ${page.fields()} intendedVsyncNs=${frame.intendedNs} " +
                         "vsyncNs=${frame.vsyncNs} totalNs=${frame.totalNs} deadlineNs=${frame.deadlineNs} deadlineMiss=${frame.missed} " +
                         "metricsDropped=${frame.metricsDropped} unknownNs=${frame.unknownNs} inputNs=${frame.inputNs} animationNs=${frame.animationNs} " +
                         "layoutNs=${frame.layoutNs} drawNs=${frame.drawNs} syncNs=${frame.syncNs} commandNs=${frame.commandNs} " +
-                        "swapNs=${frame.swapNs} gpuNs=${frame.gpuNs}")
+                        "swapNs=${frame.swapNs} gpuNs=${frame.gpuNs} unaccountedNs=${frame.unaccountedNs} " +
+                        "overlapNs=${frame.overlapNs} vsyncLateNs=${frame.vsyncLateNs} " +
+                        "accounting=frameMetricsResidualNotAdditive")
                     val messages = log.between(frame.intendedNs - SPIKE_LOOKBACK_NS, frame.intendedNs + frame.totalNs, frame.intendedNs, 12)
                     messages.forEach { AppFileLogger.diagnosticInfo("$prefix abnormalFrame=$index main $it") }
                 }
@@ -692,7 +746,7 @@ internal object StreamPerformanceDiagnostics {
                 fun metric(stage: String, ns: Long, value: Long) {
                     session.recordMetric(page.aggregatePage.ordinal, stage, ns, value)
                 }
-                if ((missed || total >= SPIKE_FRAME_NS) && session.details.reserveFrame()) {
+                if ((missed || total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS) && session.details.reserveFrame()) {
                     session.details.frame(DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
                         total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
                         unknown, input, animation, layout, draw, sync, command, swap, gpu))

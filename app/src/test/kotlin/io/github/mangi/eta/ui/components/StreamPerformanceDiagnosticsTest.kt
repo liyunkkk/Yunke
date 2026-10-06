@@ -255,6 +255,59 @@ class StreamPerformanceDiagnosticsTest {
         assertEquals(1, log.between(0, Long.MAX_VALUE, 0, 10).size)
     }
 
+    @Test fun numericDispatchAccountingKeepsNestedRevealAsASubsetAndDoesNotLeakNames() {
+        var callback: List<Long>? = null
+        val log = MainThreadMessageLog(capacity = 4, onMessage = { begin, end, _, covered, reveal ->
+            callback = listOf(begin, end, covered, reveal)
+        })
+        log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} PRIVATE_PAYLOAD@4: 0", 0)
+        // The collector receives only outermost scopes, so a child reveal is not covered twice.
+        log.addCovered("ui.flush", 12_000_000)
+        log.addReveal(3_000_000)
+        log.onLine("<<<<< Finished", 30_000_000)
+        assertEquals(listOf(0L, 30_000_000L, 12_000_000L, 3_000_000L), callback)
+        val sample = log.timingsBetween(0, 30_000_000).single()
+        assertEquals(18_000_000L, sample.uninstrumentedNs)
+        assertEquals(27_000_000L, sample.nonRevealNs)
+        assertFalse(sample.frameDispatch)
+        assertFalse(sample.toString().contains("PRIVATE_PAYLOAD"))
+        assertTrue(log.timingsBetween(30_000_000, 40_000_000).isEmpty())
+    }
+
+    @Test fun revealAndCoveredCountersResetAndAreClampedToDispatchWallTime() {
+        val log = MainThreadMessageLog(capacity = 2)
+        log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} x@4: 0", 0)
+        log.addCovered("ui.flush", 30_000_000)
+        log.addReveal(50_000_000)
+        log.onLine("<<<<< Finished", 10_000_000)
+        log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} x@4: 0", 20_000_000)
+        log.onLine("<<<<< Finished", 30_000_000)
+        val samples = log.timingsBetween(0, 40_000_000)
+        assertEquals(0L, samples[0].uninstrumentedNs)
+        assertEquals(0L, samples[0].nonRevealNs)
+        assertEquals(10_000_000L, samples[1].uninstrumentedNs)
+        assertEquals(10_000_000L, samples[1].nonRevealNs)
+    }
+
+    @Test fun disabledMeasureRunsTheOriginalBlockExactlyOnceWithoutAnyRecord() {
+        assertFalse(StreamPerformanceDiagnostics.enabled)
+        var calls = 0
+        val result = StreamPerformanceDiagnostics.measure("main.uninstrumented") { ++calls; "result" }
+        assertEquals("result", result)
+        assertEquals(1, calls)
+    }
+
+    @Test fun supplementalStageRegistryContainsOnlyFixedShortLiterals() {
+        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place"),
+            StreamDiagnosticGapLabels.stages)
+        for (stage in StreamDiagnosticGapLabels.stages) {
+            assertTrue(Regex("[a-z]+(?:\\.[a-zA-Z]+)+").matches(stage))
+            assertEquals(stage, StreamDiagnosticLabels.canonicalStage(stage))
+        }
+        assertNull(StreamDiagnosticLabels.canonicalStage("list.PRIVATE_PAYLOAD"))
+        assertNull(StreamDiagnosticLabels.canonicalStage("main.PRIVATE_PAYLOAD"))
+    }
+
     @Test fun mainLogIgnoresMessageThatStartedBeforePrinterWasInstalled() {
         val log = MainThreadMessageLog(capacity = 4)
         log.onLine("<<<<< Finished to Handler (android.os.Handler) {3} x", 50_000_000)
