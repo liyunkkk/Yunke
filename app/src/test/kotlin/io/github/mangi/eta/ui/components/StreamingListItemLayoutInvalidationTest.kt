@@ -36,6 +36,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** Actual measurement negative control, not just ModifierNodeElement equality.
  * The legacy modifier below is the pre-fix implementation. Both subjects use
@@ -44,6 +45,7 @@ import org.robolectric.annotation.Config
  * These counts establish redundant work removal, not device frame-time gains.
  */
 @RunWith(RobolectricTestRunner::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [36], qualifiers = "w480dp-h900dp-mdpi")
 class StreamingListItemLayoutInvalidationTest {
     @get:Rule val compose = createComposeRule()

@@ -131,9 +131,11 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
         self.assertEqual(measure.count("measurable.measure(constraints)"), 1)
         self.assertEqual(measure.count("layout(child.width, child.height) { child.placeRelative(0, 0) }"), 1)
         self.assertLess(measure.index("measureDetail(stage)"), measure.index("measurable.measure(constraints)"))
+        measure_code = re.sub(r"/\*.*?\*/", "", measure, flags=re.S)
+        measure_code = re.sub(r"//[^\n]*", "", measure_code)
         for forbidden in ("shouldAutoInvalidate", "invalidateMeasurement", "override fun minIntrinsic",
                           "override fun maxIntrinsic", "mutableState", "semantics", "graphicsLayer"):
-            self.assertNotIn(forbidden, measure)
+            self.assertNotIn(forbidden, measure_code)
         self.assertEqual(normalized_lines(draw), normalized_lines('''
             (stage: String): Modifier {
                 if (!StreamPerformanceDiagnostics.enabled) return this
