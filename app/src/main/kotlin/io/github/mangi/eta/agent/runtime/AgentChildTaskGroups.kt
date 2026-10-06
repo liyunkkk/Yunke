@@ -58,7 +58,6 @@ internal object AgentChildTaskGroups {
     private val changes = MutableStateFlow(0L)
     val revision: StateFlow<Long> = changes
     private fun changed() { changes.update { it + 1 } }
-    private fun releaseChild(block: () -> Unit) = AgentChildToolOwnership.releaseChild(block)
 
     fun register(context: Context, ownerId: String, runId: String, coordinator: SubAgentCoordinator,
         releaseTools: () -> Unit, workers: List<Worker> = emptyList(), workspaceEnvironment: String? = null): String? {
@@ -253,7 +252,7 @@ internal object AgentChildTaskGroups {
         try { coordinator.releaseExecutionResources() } finally {
             if (held) AgentExecutionService.release(group.leaseId)
             binding?.close()
-            release?.let { runCatching { releaseChild(it) } }
+            release?.let { runCatching { it() } }
             prune()
         }
     }

@@ -213,7 +213,7 @@ internal class AgentRuntimeRunExecutor(
                 if (childModels.isEmpty()) return null
                 val frozenParallelLimits = childModels.map { childConfig.parallelLimit(SubAgentParallelModel(it.providerId, it.model)) }
                 // Retain BEFORE construction, which allocates scheduler and pool leases. Transfer only after registration.
-                check(ownership.retain()) { "父任务已终止，无法创建子任务" }
+                val childLease = checkNotNull(ownership.retain()) { "父任务已终止，无法创建子任务" }
                 var childOwnershipTransferred = false
                 var children: SubAgentCoordinator? = null
                 try {
@@ -279,7 +279,7 @@ internal class AgentRuntimeRunExecutor(
                         runTextChild(config, prompt, controller, "", null, false)
                     }
                     val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
-                        releaseTools = { ownership.release() }, workspaceEnvironment = workspaceEnvironment,
+                        releaseTools = childLease::close, workspaceEnvironment = workspaceEnvironment,
                         workers = AgentChildWorkerAvailability.workers(candidates))
                     if (registered == null) error("无法启动子代理前台执行服务，请返回 Eta 后重试")
                     childOwnershipTransferred = true
@@ -291,7 +291,7 @@ internal class AgentRuntimeRunExecutor(
                 } finally {
                     if (!childOwnershipTransferred) {
                         try { children?.close() }
-                        finally { AgentChildToolOwnership.releaseChild { ownership.release() } }
+                        finally { childLease.close() }
                     }
                 }
             }

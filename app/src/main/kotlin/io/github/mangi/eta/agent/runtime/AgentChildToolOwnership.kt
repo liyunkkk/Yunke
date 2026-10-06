@@ -1,34 +1,48 @@
 package io.github.mangi.eta.agent.runtime
 
-/** Parent cancellation/finally are the SAME reference; the child retains its own reference.
- * Register and terminal cancellation can race with the parent worker's finally block. */
+/**
+ * Cancellation and parent finally release the SAME parent reference. Each run-local
+ * child group receives its own lease; frozen ordinary and current replacement groups
+ * can coexist without closing each other's tool dependencies.
+ */
 internal class AgentChildToolOwnership(private val closeTools: () -> Unit) {
     private var parentHeld = true
-    private var childHeld = false
+    private val children = mutableSetOf<ChildLease>()
     private var closed = false
 
-    @Synchronized fun retain(): Boolean {
-        if (closed || childHeld) return false
-        childHeld = true
-        return true
+    @Synchronized fun retain(): ChildLease? {
+        // Parent cancellation forbids NEW groups even while existing detached groups live.
+        if (closed || !parentHeld) return null
+        return ChildLease(this).also { children.add(it) }
     }
 
     /** Called from parent controller cleanup OR parent worker finally; idempotent. */
     fun release() {
         val shouldClose = synchronized(this) {
-            if (childScope.get() == true) childHeld = false else parentHeld = false
-            if (!parentHeld && !childHeld && !closed) { closed = true; true } else false
+            parentHeld = false
+            closeIfUnowned()
         }
         if (shouldClose) closeTools()
     }
 
-    companion object {
-        private val childScope = ThreadLocal<Boolean>()
-        /** Wraps the release callback handed to a task group; not a parent-controller callback. */
-        fun releaseChild(block: () -> Unit) {
-            val previous = childScope.get()
-            childScope.set(true)
-            try { block() } finally { childScope.set(previous) }
+    private fun releaseChild(lease: ChildLease) {
+        val shouldClose = synchronized(this) {
+            // Registration-stop and failed-construction cleanup can both own this callback.
+            // Removing this exact lease only once cannot release another group's reference.
+            if (!children.remove(lease)) return
+            closeIfUnowned()
         }
+        if (shouldClose) closeTools()
+    }
+
+    // Caller holds this owner's monitor; claim close before invoking arbitrary cleanup.
+    private fun closeIfUnowned(): Boolean {
+        if (parentHeld || children.isNotEmpty() || closed) return false
+        closed = true
+        return true
+    }
+
+    internal class ChildLease internal constructor(private val owner: AgentChildToolOwnership) : AutoCloseable {
+        override fun close() = owner.releaseChild(this)
     }
 }
