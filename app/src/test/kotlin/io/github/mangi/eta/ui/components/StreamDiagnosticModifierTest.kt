@@ -19,6 +19,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertHeightIsEqualTo
 import androidx.compose.ui.test.assertWidthIsEqualTo
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.Constraints
@@ -35,6 +36,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** Behavior check for the default disabled path; enabled wiring is also source-guarded. */
 @RunWith(RobolectricTestRunner::class)
@@ -121,6 +123,7 @@ class StreamDiagnosticModifierTest {
         }
     }
 
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     @Test fun disabledObserverPreservesConstraintsSizeAndSingleChildPass() {
         assertFalse(StreamPerformanceDiagnostics.enabled)
         var parentMeasures = 0
@@ -151,13 +154,18 @@ class StreamDiagnosticModifierTest {
             }
         }
         compose.waitForIdle()
-        compose.onNodeWithTag("observed").assertWidthIsEqualTo(73.dp).assertHeightIsEqualTo(41.dp)
+        val observed = compose.onNodeWithTag("observed")
+        observed.assertWidthIsEqualTo(73.dp).assertHeightIsEqualTo(41.dp)
+        // Idle synchronization alone does not guarantee a draw in Robolectric's legacy graphics.
+        // Capture with native graphics so these counters observe an actual rendered frame.
+        observed.captureToImage()
         compose.runOnIdle {
             assertTrue(parentMeasures > 0)
             assertEquals(parentMeasures, childMeasures)
             assertEquals(passedConstraints, receivedConstraints)
             // Compare actual draw passes rather than assuming a fixed Robolectric frame count.
             assertTrue(parentDraws > 0)
+            assertTrue(childDraws > 0)
             assertEquals(parentDraws, childDraws)
         }
     }
