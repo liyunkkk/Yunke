@@ -64,7 +64,9 @@ class WireRequestEstimateContractTest(unittest.TestCase):
             publish = next(line for line in code.splitlines() if 'AgentWireRequestEstimate.publish(' in line)
             body_var = 'body' if name == 'OpenAiResponsesProvider' else 'requestBody'
             self.assertIn(f'{body_var}.contentLength()', publish)
-            self.assertIn(f'val {body_var} = requestJson.toString()', code)
+            self.assertIn('val serializedBody = requestJson.toString()', code)
+            self.assertIn(f'val {body_var} = serializedBody', code)
+            self.assertIn('serializedBody)', publish)
             self.assertIn(f'.post({body_var})', code)
 
     def test_no_ciphertext_tokenizer_or_payload_logging(self):

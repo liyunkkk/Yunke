@@ -21,6 +21,24 @@ class UsageRecordingProviderTest {
     }
     private fun answer() = ProviderResponse(JSONObject().put("content", "done").put("finish_reason", "stop"))
 
+    @Test fun rawDiagnosticReceiptsStaySeparateFromIdempotentAccounting() {
+        val logs = mutableListOf<String>()
+        val diagnostics = AgentToolCallDiagnostics(enabled = { true }, sink = { logs += it })
+        val records = mutableListOf<ModelUsageDelta>()
+        val received = AgentTokenUsage(inputTokens = 326594, cachedTokens = 3328)
+        val decorated = UsageRecordingProvider(provider { emit ->
+            repeat(2) { emit(ProviderEvent.Usage(received)) }
+            answer()
+        }) { records += it }
+        val tagged = request.copy(toolDiagnosticAttempt = diagnostics.beginAttempt(23, "provider"))
+        decorated.complete(tagged, AgentRunController()) {}
+        val receipts = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }.filter { it.optString("stage") == "usage" }
+        assertEquals(2, receipts.size)
+        assertEquals(listOf(1L, 2L), receipts.map { it.getLong("receipt_ordinal") })
+        assertTrue(receipts.all { it.getInt("input_tokens") == 326594 && it.getInt("round") == 23 })
+        assertEquals(1, records.size)
+    }
+
     @Test fun identicalUsageEventsAreIdempotentAndNewInvocationsAccumulate() {
         var raw = ""
         val records = mutableListOf<ModelUsageDelta>()

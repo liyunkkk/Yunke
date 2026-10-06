@@ -109,12 +109,15 @@ class AgentWireRequestEstimateTest {
             val b = body(c, m, t)
             val before = b.toString()
             val events = mutableListOf<ProviderEvent>()
-            AgentWireRequestEstimate.publish(b, endpoint, request, events::add, before.toByteArray(Charsets.UTF_8).size.toLong())
+            AgentWireRequestEstimate.publish(b, endpoint, request, events::add, before.toByteArray(Charsets.UTF_8).size.toLong(), before)
             assertEquals(shape(c, b).tokens, (events.single() as ProviderEvent.RequestEstimate).tokens)
             assertEquals(before, b.toString())
             val record = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }.single { it.optString("stage") == "request_shape" }
             assertEquals(shape(c, b).tokens, record.getInt("request_tokens_est"))
             assertEquals(before.toByteArray(Charsets.UTF_8).size.toLong(), record.getLong("body_utf8_bytes"))
+            assertEquals(before.length, record.getInt("body_chars"))
+            assertEquals("serialized_utf8", record.getString("body_hmac_basis"))
+            assertTrue(record.getString("body_hmac").matches(Regex("[0-9a-f]{32}")))
             for (field in listOf("instructions", "text", "reasoning_text", "tool_calls", "tool_results", "tool_schema", "format", "media")) {
                 assertTrue(record.get("${field}_chars") is Number)
                 assertTrue(record.get("${field}_utf8_bytes") is Number)

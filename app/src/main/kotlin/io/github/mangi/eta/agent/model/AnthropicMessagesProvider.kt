@@ -43,7 +43,8 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             }
             .build()
         val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools), capabilities.endpoint)
-        val requestBody = requestJson.toString().toRequestBody(JSON_MEDIA_TYPE)
+        val serializedBody = requestJson.toString()
+        val requestBody = serializedBody.toRequestBody(JSON_MEDIA_TYPE)
         val httpRequest = Request.Builder()
             .url(ProviderUrls.anthropicMessagesUrl(config.baseUrl))
             .headers(headers)
@@ -53,7 +54,7 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
-            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength())
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength(), serializedBody)
             val assistant = readStreamingAssistantMessage(httpRequest, runController, onEvent, request.requiresCompleteStream)
             onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistant)

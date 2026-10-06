@@ -36,7 +36,8 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         }
         val prepared = ResponsesToolEnvelopeRecovery.prepare(request)
         val requestJson = request.restrictReconnectPayload(buildRequestJson(config, prepared.messages, prepared.tools, prepared.sessionId, prepared.singleToolCall), capabilities.endpoint)
-        val body = requestJson.toString()
+        val serializedBody = requestJson.toString()
+        val body = serializedBody
             .toRequestBody(JSON_MEDIA_TYPE)
         val headers = okhttp3.Headers.Builder()
             .add("Content-Type", "application/json")
@@ -62,7 +63,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             deliver(ProviderEvent.RequestStarted)
-            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, prepared, deliver, body.contentLength())
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, prepared, deliver, body.contentLength(), serializedBody)
             val assistant = readStreamingResponse(
                 request = httpRequest,
                 runController = runController,

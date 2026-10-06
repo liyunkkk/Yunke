@@ -45,7 +45,7 @@ class ChildGroupLifecycleTest {
             synchronized(registry) { groups()[generation] = group }
         }
         fun target() = registry.captureRunStopTargets(run).single()
-        fun get(id: String) = JSONObject(registry.execute(owner, null, call("get_task_result", JSONObject().put("task_id", id))).content)
+        fun get(id: String, field: String? = null) = JSONObject(registry.execute(owner, null, call("get_task_result", JSONObject().put("task_id", id).apply { field?.let { put("text_field", it) } })).content)
         override fun close() {
             coordinator.close()
             awaitCondition { !coordinator.hasActiveTasks() }
@@ -211,7 +211,8 @@ class ChildGroupLifecycleTest {
                 awaitCondition { f.get(id).optBoolean("archived") }
                 val archived = f.get(id)
                 assertEquals("cancelled", archived.getString("status"))
-                assertEquals("verified", archived.getString("partial_result"))
+                assertEquals("", archived.getString("partial_result"))
+                assertEquals("verified", f.get(id, "partial_result").getString("partial_result"))
                 assertFalse(archived.toString().contains("private"))
                 assertTrue(archived.getJSONObject("supervision").getString("checkpoint").contains("Verified"))
                 assertTrue(archived.getBoolean("execution_exited"))

@@ -93,7 +93,10 @@ class SubAgentDeliveryEvidenceTest {
                 assertFalse(result.getBoolean("acceptance_verified"))
                 assertFalse(result.getBoolean("can_replace"))
                 assertFalse(result.getString("result").contains("all tests passed"))
-                assertEquals("Everything wired; all tests passed!", result.getString("model_report_unverified"))
+                assertEquals("", result.getString("model_report_unverified"))
+                val prose = JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", result.getString("task_id"))
+                    .put("text_field", "model_report_unverified"))).content)
+                assertEquals("Everything wired; all tests passed!", prose.getString("model_report_unverified"))
             }
         }
     }
@@ -107,7 +110,10 @@ class SubAgentDeliveryEvidenceTest {
             assertEquals("artifact_ready_pending_review", result.getString("delivery_state"))
             assertTrue(result.getBoolean("artifact_verified"))
             assertFalse(result.getBoolean("acceptance_verified"))
-            assertEquals("edited", result.getString("model_report_unverified"))
+            assertEquals("", result.getString("model_report_unverified"))
+            val prose = JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", result.getString("task_id"))
+                .put("text_field", "model_report_unverified"))).content)
+            assertEquals("edited", prose.getString("model_report_unverified"))
             assertEquals(SubAgentDeliveryFixture.COMMIT, result.getJSONObject("artifact_evidence").getString("artifact_commit"))
         }
     }

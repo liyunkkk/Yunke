@@ -1289,7 +1289,9 @@ internal class AgentLoop(
     ) {
         // Provider 要求同一 assistant 批次的全部 tool result 连续出现；图片观察统一放在批次之后。
         outcomes.forEach { outcome ->
-            messages.put(AgentConversationCodec.toolResultMessage(outcome.call, outcome.result).put(AgentTurnIdentity.JSON_KEY, turnId))
+            val message = AgentConversationCodec.toolResultMessage(outcome.call, outcome.result).put(AgentTurnIdentity.JSON_KEY, turnId)
+            messages.put(message)
+            toolDiagnosticAttempt?.historyResult(outcome.call, message)
         }
 
         val imageOutcomes = outcomes.filter { outcome -> outcome.result.images.isNotEmpty() }

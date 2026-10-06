@@ -58,6 +58,7 @@ internal class UsageRecordingProvider(
         try {
             return delegate.complete(request, runController) { event ->
                 if (event is ProviderEvent.Usage) {
+                    request.toolDiagnosticAttempt?.usage(event.usage)
                     val previous = latest
                     latest = event.usage.copy(
                         inputTokens = event.usage.inputTokens ?: previous?.inputTokens,

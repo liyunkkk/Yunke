@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.model.AgentModelClient.ToolCall
 import io.github.mangi.eta.agent.model.AgentModelClient.ToolResult
 import io.github.mangi.eta.core.AppFileLogger
+import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import java.security.SecureRandom
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -18,8 +19,8 @@ import org.json.JSONObject
 /**
  * One instance per run, never a process singleton. Evidence only: no tool execution or repair.
  * All retained external identifiers are keyed hashes; no event, argument or result is retained.
- * Hashes are HMAC-SHA256 (128-bit display), domain separated, over UTF-16BE code units. This
- * preserves exact strings, including surrogate pairs split between streaming argument deltas.
+ * Hashes are HMAC-SHA256 (128-bit display), domain separated. Identifier/argument hashes use
+ * UTF-16BE code units, preserving split streaming pairs. Body/result hashes use final UTF-8 bytes.
  * The random run key is lazy, never exported, and is shared by all attempts in this instance.
  */
 internal class AgentToolCallDiagnostics(
@@ -29,13 +30,16 @@ internal class AgentToolCallDiagnostics(
     private val lock = Any()
     private var key: SecretKeySpec? = null
     private var runId: String? = null
-    private var records = 0
-    private var attempts = 0
-    private var calls = 0
+    private var records = 0L
+    private var attempts = 0L
+    private var droppedDetails = 0L
+    private var oversizedRecords = 0L
+    private var sinkFailures = 0L
+    private var calls = 0L
 
     fun beginAttempt(round: Int, providerId: String): Attempt? = try {
         if (!isEnabled()) null else synchronized(lock) {
-            if (!isEnabled() || records >= MAX_RUN_RECORDS || attempts >= MAX_RUN_RECORDS) null else {
+            if (!isEnabled()) null else {
                 if (key == null) {
                     val random = SecureRandom()
                     key = SecretKeySpec(ByteArray(32).also(random::nextBytes), "HmacSHA256")
@@ -48,8 +52,11 @@ internal class AgentToolCallDiagnostics(
         }
     } catch (_: Throwable) { null }
 
-    inner class Attempt internal constructor(private val attemptId: Int, private val round: Int) {
+    inner class Attempt internal constructor(private val attemptId: Long, private val round: Int) {
         private var records = 0
+        private var detailDropped = 0L
+        private var usageOrdinal = 0L
+        private val criticalRecords = HashMap<String, Int>()
         private val tracked = ArrayList<CallState>()
         private val aliases = HashMap<String, CallState>()
         private val positions = HashMap<Int, CallState>()
@@ -166,7 +173,9 @@ internal class AgentToolCallDiagnostics(
         fun result(call: ToolCall, result: ToolResult, index: Int? = null, rawResult: ToolResult? = null) = safely {
             val state = resolveCall(call, index) ?: return@safely
             val fields = callMetadata(call)
-            // No result fingerprint/length, stdout, stderr, message, images or sensitive content.
+            // Only lengths and run-keyed fingerprints, never stdout/stderr/message or sensitive prose.
+            contentMetadata(fields, "raw_result", rawResult?.content ?: result.content)
+            contentMetadata(fields, "guarded_result", result.content)
             val parsed = parseObject(result.content, MAX_RESULT_CHARS)
             fields.put("result_state", parsed.first)
             val body = parsed.second
@@ -193,6 +202,56 @@ internal class AgentToolCallDiagnostics(
             }
             shellGuardFields(body?.optJSONObject("shell_failure_diagnostic"), fields)
             emit("result", fields, state)
+        }
+
+        fun historyResult(call: ToolCall, message: JSONObject) = safely {
+            val state = resolveCall(call, null) ?: return@safely
+            emit("history_result", JSONObject().also {
+                contentMetadata(it, "history_result", message.optString("content"))
+            }, state)
+        }
+
+        /** Receipt as received, not merged with earlier usage and not an accounting change. */
+        fun usage(usage: AgentTokenUsage) = safely {
+            val fields = JSONObject().put("receipt_ordinal", ++usageOrdinal)
+            for ((name, value) in listOf("input_tokens" to usage.inputTokens, "output_tokens" to usage.outputTokens,
+                "cached_tokens" to usage.cachedTokens, "cache_creation_tokens" to usage.cacheCreationTokens,
+                "context_tokens" to usage.contextTokens, "reasoning_tokens" to usage.reasoningTokens)) {
+                fields.put("${name}_present", value != null)
+                value?.let { fields.put(name, it) }
+            }
+            emit("usage", fields)
+        }
+
+        /** Called with the very string used to create the HTTP request body. No retained body. */
+        fun requestShape(fields: JSONObject, serializedBody: String?, body: JSONObject) = safely {
+            if (serializedBody != null) {
+                fields.put("body_hmac", utf8Fingerprint("serialized_body", serializedBody))
+                fields.put("body_hmac_basis", "serialized_utf8")
+                fields.put("body_chars", serializedBody.length)
+            }
+            val seen = HashSet<String>()
+            var missing = 0L; var duplicate = 0L; var untracked = 0L
+            val input = body.optJSONArray("input")
+            for (i in 0 until (input?.length() ?: 0)) {
+                val item = input?.optJSONObject(i) ?: continue
+                if (item.optString("type") != "reasoning") continue
+                val id = item.opt("id") as? String
+                if (id.isNullOrBlank()) { missing++; continue }
+                val hash = fingerprint("reasoning_id", id)
+                if (hash in seen) duplicate++
+                else if (seen.size < MAX_REASONING_IDS) seen.add(hash) else untracked++
+            }
+            fields.put("reasoning_id_missing", missing).put("reasoning_id_duplicates", duplicate)
+                .put("reasoning_id_tracking_capped", untracked > 0).put("reasoning_ids_untracked", untracked)
+                .put("reasoning_duplicate_count_is_lower_bound", untracked > 0)
+            emit("request_shape", fields)
+        }
+
+        private fun contentMetadata(fields: JSONObject, prefix: String, content: String) {
+            fields.put("${prefix}_chars", content.length)
+                .put("${prefix}_utf8_bytes", utf8Size(content))
+                .put("${prefix}_hmac", utf8Fingerprint("tool_result", content))
         }
 
         /** Only fixed counters and flags; never the executable name or command text. */
@@ -341,27 +400,44 @@ internal class AgentToolCallDiagnostics(
             try {
                 if (!isEnabled()) return
                 synchronized(lock) {
-                    if (isEnabled() && records < MAX_ATTEMPT_RECORDS && this@AgentToolCallDiagnostics.records < MAX_RUN_RECORDS) block()
+                    if (isEnabled()) block()
                 }
             } catch (_: Throwable) { /* Diagnostics must never change provider/tool outcomes. */ }
         }
 
         internal fun emit(stage: String, fields: JSONObject, call: CallState? = null) {
-            if (!isEnabled() || records >= MAX_ATTEMPT_RECORDS || this@AgentToolCallDiagnostics.records >= MAX_RUN_RECORDS) return
+            if (!isEnabled()) return
+            val critical = stage in CRITICAL_STAGES
+            if (!critical && records >= MAX_ATTEMPT_RECORDS) {
+                detailDropped = add(detailDropped, 1)
+                droppedDetails = add(droppedDetails, 1)
+                return
+            }
+            // Separate bounded quota per critical stage, reset for every request attempt.
+            val used = criticalRecords[stage] ?: 0
+            if (critical && used >= MAX_CRITICAL_STAGE_RECORDS) {
+                detailDropped = add(detailDropped, 1)
+                droppedDetails = add(droppedDetails, 1)
+                return
+            }
             fields.put("stage", stage).put("run", runId).put("attempt", attemptId).put("round", round)
                 .put("seq", this@AgentToolCallDiagnostics.records + 1)
+            if (critical) fields.put("detail_dropped_attempt", detailDropped).put("detail_dropped_total", droppedDetails)
+                .put("detail_exhausted", records >= MAX_ATTEMPT_RECORDS).put("oversized_records", oversizedRecords)
+                .put("sink_failures", sinkFailures)
             if (call != null) fields.put("call", call.sequence).put("positional_correlation", call.positional)
                 .put("ambiguous_anonymous", call.ambiguousAnonymous)
             val line = PREFIX + fields.toString()
             // All output is generated ASCII, fixed keys/enums and hashes. Keep JSON intact.
-            if (line.length > MAX_LINE_CHARS) return
-            records++
+            if (line.length > MAX_LINE_CHARS) { oversizedRecords = add(oversizedRecords, 1); return }
+            if (critical) criticalRecords[stage] = used + 1 else records++
             this@AgentToolCallDiagnostics.records++
-            try { if (isEnabled()) sink(line) } catch (_: Throwable) { /* Isolate even a broken sink. */ }
+            // FileLogSink is a bounded rolling log. Never permanently stop later run attempts.
+            try { if (isEnabled()) sink(line) } catch (_: Throwable) { sinkFailures = add(sinkFailures, 1) }
         }
     }
 
-    internal class CallState(val sequence: Int) {
+    internal class CallState(val sequence: Long) {
         var raw = false
         var outputIndex: Int? = null
         var positional = false
@@ -545,6 +621,33 @@ internal class AgentToolCallDiagnostics(
         it.update(0.toByte())
     }
 
+    private fun utf8Size(value: String): Long {
+        var size = 0L; var i = 0
+        while (i < value.length) {
+            val c = value[i++]
+            size += when {
+                c.code < 0x80 -> 1
+                c.code < 0x800 -> 2
+                c.isHighSurrogate() && i < value.length && value[i].isLowSurrogate() -> { i++; 4 }
+                c.isSurrogate() -> 1 // JVM UTF-8 replacement byte, same as RequestBody encoding.
+                else -> 3
+            }
+        }
+        return size
+    }
+
+    private fun utf8Fingerprint(domain: String, value: String): String = newMac(domain).let { mac ->
+        // Bounded chunks, never allocate another whole large body or split a surrogate pair.
+        var start = 0
+        while (start < value.length) {
+            var end = minOf(value.length, start + 4096)
+            if (end < value.length && value[end - 1].isHighSurrogate() && value[end].isLowSurrogate()) end--
+            mac.update(value.substring(start, end).toByteArray(Charsets.UTF_8))
+            start = end
+        }
+        hex(mac.doFinal().copyOf(16))
+    }
+
     private fun fingerprint(domain: String, value: String): String = newMac(domain).let {
         update(it, value)
         hex(it.doFinal().copyOf(16))
@@ -578,8 +681,10 @@ internal class AgentToolCallDiagnostics(
     private companion object {
         const val PREFIX = "ToolCallDiag "
         const val HEX = "0123456789abcdef"
-        const val MAX_LINE_CHARS = 4096
-        const val MAX_RUN_RECORDS = 512
+        const val MAX_LINE_CHARS = 3968 // Reserve space for AppFileLogger framing.
+        const val MAX_CRITICAL_STAGE_RECORDS = 64
+        const val MAX_REASONING_IDS = 4096
+        val CRITICAL_STAGES = setOf("request_shape", "request_context", "usage", "result", "history_result", "failed", "provider_parsed_summary", "raw_terminal_summary")
         const val MAX_ATTEMPT_RECORDS = 128
         const val MAX_CALLS = 32
         const val MAX_ALIASES = 256
