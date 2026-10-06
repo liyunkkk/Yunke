@@ -23,7 +23,7 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(application = io.github.mangi.eta.EtaApp::class, sdk = [36])
 class SettingsLedgerIsolationTest {
-    @Test fun independentWritesAndDistinctProjectionsKeepAllRealChanges() = runBlocking {
+    @Test fun atomicUsageWritesAndDistinctProjectionsKeepAllRealChanges() = runBlocking {
         SettingsDataStore.init(RuntimeEnvironment.getApplication())
         val baseline = SettingsDataStore.backupSnapshot()
         SettingsDataStore.addModelUsage("{}")
@@ -62,7 +62,7 @@ class SettingsLedgerIsolationTest {
             delay(50)
             assertTrue(selected.tryReceive().isFailure)
             assertTrue(usage.tryReceive().isFailure)
-            // Backup includes the independent ledger; import replaces it and its cached totals.
+            // Backup contains one Preferences version; restore replaces ledger + settings atomically.
             val exported = SettingsDataStore.backupSnapshot()
             SettingsDataStore.addModelUsage("{}")
             SettingsDataStore.restoreBackup(exported)

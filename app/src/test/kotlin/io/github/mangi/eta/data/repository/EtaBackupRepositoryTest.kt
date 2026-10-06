@@ -27,6 +27,7 @@ import java.util.UUID
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -70,6 +71,87 @@ class EtaBackupRepositoryTest {
         AgentMemoryRepository.init(context)
         AssistantRepository.init(context)
         McpServerRepository.init(context)
+    }
+
+    @Test
+    fun failureAfterSettingsCommitRollsBackRichUsageImmediatelyAndThroughStartupJournal() = runBlocking {
+        val preferences = io.github.mangi.eta.data.datastore.FaultPreferencesStore()
+        io.github.mangi.eta.data.datastore.withSettingsStore(preferences) {
+            for (failureCount in listOf(1, 2)) {
+                val incomingRaw = applyModelUsageDelta(null, ModelUsageDelta(
+                    "ledger-provider", "Ledger", "model", "Model", 19, 3, 7, 2,
+                    conversationId = "ledger-owner", requestId = "incoming", atMillis = 1000,
+                ))
+                SettingsDataStore.restoreBackup(io.github.mangi.eta.data.datastore.EtaSettingsBackup(
+                    memoryEnabled = false, modelUsageJson = incomingRaw,
+                    retiredInputTokens = 21, retiredOutputTokens = 4, retiredCachedTokens = 8,
+                    retiredConversations = 2, retiredMessages = 3, retiredHeatmapJson = "{\"2026-01-01\":2}",
+                ))
+                val incoming = SettingsDataStore.backupSnapshot()
+                val archive = ByteArrayOutputStream()
+                EtaBackupRepository.export(context, archive)
+                val oldRaw = applyModelUsageDelta(null, ModelUsageDelta(
+                    "ledger-provider", "Ledger", "model", "Model", 9007199254740993L, 13, 17, 5,
+                    conversationId = "old-owner", requestId = "old", atMillis = 2000,
+                ))
+                SettingsDataStore.restoreBackup(incoming.copy(memoryEnabled = true, modelUsageJson = oldRaw,
+                    retiredInputTokens = 123, retiredOutputTokens = 456, retiredCachedTokens = 78,
+                    retiredConversations = 5, retiredMessages = 9, retiredHeatmapJson = "{\"2026-02-02\":5}"))
+                val old = SettingsDataStore.backupSnapshot()
+                val receipt = preferences.committed.value[io.github.mangi.eta.data.datastore.USAGE_ROLLBACK_RECEIPT]
+                val field = Prefs::class.java.getDeclaredField("localAgent").apply { isAccessible = true }
+                val real = requireNotNull(Prefs.localAgentPreferences())
+                var remainingFailures = failureCount
+                var commits = 0
+                val wrapped = object : SharedPreferences by real {
+                    override fun edit(): SharedPreferences.Editor {
+                        val delegate = real.edit()
+                        return object : SharedPreferences.Editor by delegate {
+                            override fun clear(): SharedPreferences.Editor { delegate.clear(); return this }
+                            override fun remove(key: String?): SharedPreferences.Editor { delegate.remove(key); return this }
+                            override fun putString(key: String?, value: String?): SharedPreferences.Editor {
+                                delegate.putString(key, value); return this
+                            }
+                            override fun commit(): Boolean {
+                                commits++
+                                // This failure is AFTER the actual Settings API committed, not in
+                                // its transform. Both import and exact undo go through the real API.
+                                val observed = runBlocking { SettingsDataStore.backupSnapshot() }
+                                assertEquals(if (commits == 1) incoming else old, observed)
+                                delegate.commit()
+                                if (commits == 1 && failureCount == 2) preferences.failures = 1
+                                if (remainingFailures > 0) { remainingFailures--; return false }
+                                return true
+                            }
+                        }
+                    }
+                }
+                field.set(Prefs, wrapped)
+                try {
+                    assertTrue(runCatching { EtaBackupRepository.import(context,
+                        ByteArrayInputStream(archive.toByteArray())) }.isFailure)
+                    assertEquals(if (failureCount == 2) incoming else old, SettingsDataStore.backupSnapshot())
+                    assertEquals(receipt, preferences.committed.value[io.github.mangi.eta.data.datastore.USAGE_ROLLBACK_RECEIPT])
+                    val operation = File(context.filesDir, "backup-restore")
+                    if (failureCount == 2) {
+                        // Injected undo Preferences commit failure leaves incoming statistics, a
+                        // durable rich undo snapshot and admission fence for startup recovery.
+                        assertTrue(operation.exists())
+                        assertTrue(io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance)
+                        remainingFailures = 0
+                        EtaBackupRepository.recoverInterruptedImport(context)
+                        assertEquals(old, SettingsDataStore.backupSnapshot())
+                    }
+                    assertEquals(9007199254740993L, SettingsDataStore.conversationUsageFlow("old-owner").first()!!.input)
+                    assertFalse(operation.exists())
+                    assertFalse(io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance)
+                } finally {
+                    field.set(Prefs, real)
+                    File(context.filesDir, "backup-restore").deleteRecursively()
+                    io.github.mangi.eta.agent.runtime.AgentExecutionService.endBackupMaintenance()
+                }
+            }
+        }
     }
 
     @Test

@@ -19,10 +19,18 @@ private val DEFAULT_USAGE_RECORD: (ModelUsageDelta) -> Unit = { delta ->
     finishAccounting { UsageStatsRepository.recordModelUsage(delta) }
 }
 
-/** Accounting belongs to a provider request, not to a UI/display round or the selected model. */
+/**
+ * Accounting belongs to a provider request, not a display round or the selected model.
+ * Each partial is an atomic durable edit. On failure the provider still returns its original
+ * result/throws its original error; accountingFailure + payload-free log expose the failure.
+ * On an exceptional result, bounded accounting causes are also attached as suppressed errors.
+ * saved advances only after a successful commit; retries retain this request's ID, so even
+ * an ambiguous commit outcome is replaced, never charged as a new request.
+ */
 internal class UsageRecordingProvider(
     private val delegate: AgentProviderClient,
     private val finish: (() -> Unit)? = null,
+    private val reportFailure: (Throwable) -> Unit = UsageStatsRepository::reportAccountingFailure,
     private val record: (ModelUsageDelta) -> Unit = DEFAULT_USAGE_RECORD,
 ) : AgentProviderClient by delegate {
     override fun complete(request: ProviderRequest, runController: AgentRunController,
@@ -31,6 +39,14 @@ internal class UsageRecordingProvider(
         val startedAt = System.currentTimeMillis()
         var latest: AgentTokenUsage? = null
         var saved: AgentTokenUsage? = null
+        var originalFailure: Throwable? = null
+        val accountingFailures = mutableListOf<Throwable>()
+        fun accountingFailed(failure: Throwable) {
+            if (accountingFailures.size < 8 && accountingFailures.none { it === failure }) accountingFailures += failure
+            try { reportFailure(failure) } catch (_: Exception) {
+                UsageStatsRepository.reportAccountingFailure(failure)
+            }
+        }
         fun persist() {
             val usage = latest ?: return
             if (usage == saved || (usage.inputTokens == null && usage.outputTokens == null && usage.cachedTokens == null && usage.cacheCreationTokens == null)) return
@@ -43,7 +59,7 @@ internal class UsageRecordingProvider(
                 AgentBilledPromptPlausibility.fitsWindow(input, config.contextWindow)
             }
             // Statistics failure must not suppress a completed model response or its error.
-            runCatching {
+            try {
                 record(ModelUsageDelta(
                     providerId = config.providerId, providerName = config.providerName,
                     modelId = config.model, modelDisplayName = config.modelDisplayName.ifBlank { config.model },
@@ -53,7 +69,10 @@ internal class UsageRecordingProvider(
                     cacheCreationTokens = (if (billedInput == null) 0 else usage.cacheCreationTokens ?: 0).toLong(),
                     conversationId = request.usageConversationId, requestId = requestId, atMillis = startedAt,
                 ))
-            }.onSuccess { saved = usage }
+                saved = usage
+            } catch (failure: Exception) {
+                accountingFailed(failure)
+            }
         }
         try {
             return delegate.complete(request, runController) { event ->
@@ -71,14 +90,19 @@ internal class UsageRecordingProvider(
                     onEvent(event)
                 }
             }
+        } catch (failure: Throwable) {
+            originalFailure = failure
+            throw failure
         } finally {
-            persist()
-            // Timed/count-bounded commits cover a long-running request; completion (including
-            // cancellation/error/consumer failure) closes its final dirty interval synchronously.
-            // As before, statistics failure must not replace the model response/error.
-            runCatching {
+            persist() // Retry only a failed receipt, with the SAME request ID and cumulative values.
+            try {
                 if (finish != null) finish.invoke()
                 else if (record === DEFAULT_USAGE_RECORD) finishAccounting { UsageStatsRepository.flushModelUsage() }
+            } catch (failure: Exception) {
+                accountingFailed(failure)
+            }
+            originalFailure?.let { original ->
+                accountingFailures.filter { it !== original }.forEach { original.addSuppressed(it) }
             }
         }
     }

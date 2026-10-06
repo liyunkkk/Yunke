@@ -1,6 +1,13 @@
 package io.github.mangi.eta.data.repository
 
 import android.content.Context
+import android.util.Log
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.UsageContentRow
@@ -40,8 +47,25 @@ internal data class UsageStatsSnapshot(
     val totalCachedTokens: Long get() = lifetimeCachedTokens
 }
 
+/** Payload-free sticky error status; successful retries do not hide a previously failed commit. */
+internal data class UsageAccountingFailure(val sequence: Long, val exceptionType: String)
+
 internal object UsageStatsRepository {
     private val modelUsageLock = Mutex()
+    private val accountingFailureSequence = AtomicLong()
+    private val accountingFailureState = MutableStateFlow<UsageAccountingFailure?>(null)
+    val accountingFailure = accountingFailureState.asStateFlow()
+
+    /** Provider preserves its response/original error, but storage exceptions are NEVER silent. */
+    fun reportAccountingFailure(failure: Throwable) {
+        val status = UsageAccountingFailure(accountingFailureSequence.incrementAndGet(), failure.javaClass.simpleName)
+        synchronized(accountingFailureState) {
+            if ((accountingFailureState.value?.sequence ?: 0L) < status.sequence) accountingFailureState.value = status
+        }
+        // Exception messages/stacks can contain provider data. Log only a fixed stage and type.
+        try { Log.e("UsageAccounting", "Usage persistence failed (${status.exceptionType})") }
+        catch (_: Exception) { /* Sticky state remains observable even if the log backend fails. */ }
+    }
 
     suspend fun load(context: Context): UsageStatsSnapshot {
         val dao = EtaDatabase.get(context.applicationContext).conversationDao()
@@ -106,21 +130,23 @@ internal object UsageStatsRepository {
         val diagnose = StreamPerformanceDiagnostics.enabled
         val attribution = if (diagnose) StreamPerformanceDiagnostics.captureAttribution() else null
         val requested = if (diagnose) System.nanoTime() else 0L
-        modelUsageLock.withLock {
-            if (diagnose) {
-                val elapsed = System.nanoTime() - requested
-                StreamPerformanceDiagnostics.withAttribution(attribution) {
-                    StreamPerformanceDiagnostics.record("usage.lockWait", elapsed)
+        withContext(NonCancellable + Dispatchers.IO) {
+            modelUsageLock.withLock {
+                if (diagnose) {
+                    val elapsed = System.nanoTime() - requested
+                    StreamPerformanceDiagnostics.withAttribution(attribution) {
+                        StreamPerformanceDiagnostics.record("usage.lockWait", elapsed)
+                    }
                 }
+                // Exactly one usage.ledger.update measure surrounds the persisted delta transform.
+                // The Preferences edit commits every partial before returning; there is no dirty tree.
+                SettingsDataStore.recordModelUsage(delta)
             }
-            // usage.ledger.update is emitted once by the ledger store itself, where the apply
-            // actually happens; never wrap it here as well.
-            SettingsDataStore.recordModelUsage(delta)
         }
     }
 
-    /** All received partials are durable before a provider request returns/throws. */
-    suspend fun flushModelUsage() {
+    /** Compatibility/read fence, not a batch flush. Successful records are already durable. */
+    suspend fun flushModelUsage() = withContext(NonCancellable + Dispatchers.IO) {
         modelUsageLock.withLock { SettingsDataStore.flushModelUsage() }
     }
 

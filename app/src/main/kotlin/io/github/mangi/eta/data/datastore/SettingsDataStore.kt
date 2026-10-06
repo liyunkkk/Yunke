@@ -5,7 +5,6 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -23,11 +22,9 @@ import io.github.mangi.eta.data.repository.ConversationUsageTotals
 import io.github.mangi.eta.data.repository.ModelUsageDelta
 import java.io.File
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
-import java.io.IOException
 import java.time.LocalDate
 import org.json.JSONObject
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -71,46 +68,38 @@ internal object SettingsDataStore {
     private val RETIRED_CONVERSATIONS = intPreferencesKey("retired_conversations")
     private val RETIRED_MESSAGES = intPreferencesKey("retired_messages")
     private val RETIRED_HEATMAP_JSON = stringPreferencesKey("retired_heatmap_json")
-    private val MODEL_USAGE_JSON = stringPreferencesKey("model_usage_json")
     private const val SELECTED_MODEL_BY_PROVIDER_PREFIX = "selected_model_id_by_provider."
     private const val LINUX_BACKEND_PREFIX = "linux_backend."
 
-    private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = STORE_NAME)
+    private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+        name = STORE_NAME,
+        produceMigrations = { context -> listOf(UsageLedgerRollbackMigration(
+            File(context.filesDir, "datastore/eta_usage_ledger.json"),
+        )) },
+    )
 
     @Volatile
     private lateinit var dataStore: DataStore<Preferences>
 
-    private lateinit var usageLedger: UsageLedgerStore
+    private lateinit var usageLedger: PreferencesUsageLedger
 
     @Synchronized
     fun init(context: Context) {
         if (!::dataStore.isInitialized) {
-            val appContext = context.applicationContext
-            val preferencesStore = appContext.dataStore
-            usageLedger = UsageLedgerStore(
-                storage = AtomicUsageLedgerFile(File(appContext.filesDir, "datastore/eta_usage_ledger.json")),
-                readLegacy = { preferencesStore.data.first()[MODEL_USAGE_JSON] },
-                clearLegacy = {
-                    // Avoid writing/re-emitting Preferences on every process launch after migration.
-                    if (preferencesStore.data.first()[MODEL_USAGE_JSON] != null) {
-                        preferencesStore.edit { it.remove(MODEL_USAGE_JSON) }
-                    }
-                },
-            )
-            dataStore = preferencesStore // Publish both stores only after the ledger is ready.
+            val preferencesStore = context.applicationContext.dataStore
+            usageLedger = PreferencesUsageLedger(preferencesStore) { transform ->
+                diagnosticEdit("usage.editEntryWait", "usage.transform", "usage.commitTail", transform)
+            }
+            // The delegate's DataMigration gates every read/edit, including non-ledger settings.
+            // Publication here is NOT migration completion; failures propagate from the first access.
+            dataStore = preferencesStore
         }
     }
 
     fun settingsFlow(): Flow<Settings> {
         ensureInitialized()
+        // Migration/read failures propagate: never emit a plausible default configuration.
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) {
-                    emit(emptyPreferences())
-                } else {
-                    throw cause
-                }
-            }
             .map { preferences -> preferences.toSettings() }
             .distinctUntilChanged()
     }
@@ -140,13 +129,6 @@ internal object SettingsDataStore {
     suspend fun selectedModelIdForProvider(providerId: String): String? {
         ensureInitialized()
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) {
-                    emit(emptyPreferences())
-                } else {
-                    throw cause
-                }
-            }
             .map { prefs -> prefs[selectedModelByProviderKey(providerId)] }
             .first()
     }
@@ -171,18 +153,13 @@ internal object SettingsDataStore {
     fun linuxDistributionFlow(): Flow<String?> {
         ensureInitialized()
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) emit(emptyPreferences()) else throw cause
-            }
             .map { preferences -> preferences[LINUX_DISTRIBUTION] }
             .distinctUntilChanged()
     }
 
     fun linuxBackendFlow(distribution: String): Flow<String?> {
         ensureInitialized()
-        return dataStore.data.catch { cause ->
-            if (cause is IOException) emit(emptyPreferences()) else throw cause
-        }.map { it[stringPreferencesKey("linux_backend.$distribution")] }.distinctUntilChanged()
+        return dataStore.data.map { it[stringPreferencesKey("linux_backend.$distribution")] }.distinctUntilChanged()
     }
 
     suspend fun setLinuxBackend(distribution: String, backend: String?) {
@@ -239,8 +216,8 @@ internal object SettingsDataStore {
 
     suspend fun backupSnapshot(): EtaSettingsBackup {
         ensureInitialized()
-        val modelUsage = usageLedger.snapshot() // Includes all pending partials before export.
-        val prefs = dataStore.data.first()
+        // One committed Preferences version contains BOTH settings and statistics.
+        val prefs = usageLedger.preferencesSnapshot()
         val settings = prefs.toSettings()
         return EtaSettingsBackup(
             selectedProviderId = settings.selectedProviderId,
@@ -252,7 +229,7 @@ internal object SettingsDataStore {
             linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
             selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
             appearance = settings.appearance,
-            modelUsageJson = modelUsage,
+            modelUsageJson = prefs[MODEL_USAGE_JSON].orEmpty(),
             retiredInputTokens = prefs[RETIRED_INPUT_TOKENS] ?: 0L,
             retiredOutputTokens = prefs[RETIRED_OUTPUT_TOKENS] ?: 0L,
             retiredCachedTokens = prefs[RETIRED_CACHED_TOKENS] ?: 0L,
@@ -264,9 +241,8 @@ internal object SettingsDataStore {
 
     suspend fun restoreBackup(snapshot: EtaSettingsBackup) {
         ensureInitialized()
-        // Retain the existing backup schema; only its storage location changes. This replacement
-        // is durable before returning and resets the process-local tree/totals together.
-        usageLedger.replace(snapshot.modelUsageJson)
+        // Keep the outer EtaBackupRepository journal intact. This function commits metadata
+        // and ledger together, or neither; no file replacement can precede this Preferences edit.
         dataStore.edit { prefs ->
             prefs.asMap().keys
                 .filter { key ->
@@ -292,13 +268,25 @@ internal object SettingsDataStore {
                     prefs[selectedModelByProviderKey(providerId)] = modelId
                 }
             }
-            prefs.remove(MODEL_USAGE_JSON)
-            prefs.putOrRemove(RETIRED_HEATMAP_JSON, snapshot.retiredHeatmapJson.takeIf { it.isNotBlank() })
-            if (snapshot.retiredInputTokens > 0L) prefs[RETIRED_INPUT_TOKENS] = snapshot.retiredInputTokens else prefs.remove(RETIRED_INPUT_TOKENS)
-            if (snapshot.retiredOutputTokens > 0L) prefs[RETIRED_OUTPUT_TOKENS] = snapshot.retiredOutputTokens else prefs.remove(RETIRED_OUTPUT_TOKENS)
-            if (snapshot.retiredCachedTokens > 0L) prefs[RETIRED_CACHED_TOKENS] = snapshot.retiredCachedTokens else prefs.remove(RETIRED_CACHED_TOKENS)
-            if (snapshot.retiredConversations > 0) prefs[RETIRED_CONVERSATIONS] = snapshot.retiredConversations else prefs.remove(RETIRED_CONVERSATIONS)
-            if (snapshot.retiredMessages > 0) prefs[RETIRED_MESSAGES] = snapshot.retiredMessages else prefs.remove(RETIRED_MESSAGES)
+            snapshot.modelUsageJson?.let { usageLedger.replaceIn(prefs, it) }
+            snapshot.retiredHeatmapJson?.let { raw ->
+                prefs.putOrRemove(RETIRED_HEATMAP_JSON, raw.takeIf { it.isNotBlank() })
+            }
+            snapshot.retiredInputTokens?.let { value ->
+                if (value > 0L) prefs[RETIRED_INPUT_TOKENS] = value else prefs.remove(RETIRED_INPUT_TOKENS)
+            }
+            snapshot.retiredOutputTokens?.let { value ->
+                if (value > 0L) prefs[RETIRED_OUTPUT_TOKENS] = value else prefs.remove(RETIRED_OUTPUT_TOKENS)
+            }
+            snapshot.retiredCachedTokens?.let { value ->
+                if (value > 0L) prefs[RETIRED_CACHED_TOKENS] = value else prefs.remove(RETIRED_CACHED_TOKENS)
+            }
+            snapshot.retiredConversations?.let { value ->
+                if (value > 0) prefs[RETIRED_CONVERSATIONS] = value else prefs.remove(RETIRED_CONVERSATIONS)
+            }
+            snapshot.retiredMessages?.let { value ->
+                if (value > 0) prefs[RETIRED_MESSAGES] = value else prefs.remove(RETIRED_MESSAGES)
+            }
         }
     }
 
@@ -315,9 +303,6 @@ internal object SettingsDataStore {
     suspend fun launchCount(): Int {
         ensureInitialized()
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) emit(emptyPreferences()) else throw cause
-            }
             .map { prefs -> prefs[APP_LAUNCH_COUNT] ?: 0 }
             .first()
     }
@@ -332,9 +317,6 @@ internal object SettingsDataStore {
     suspend fun updateDismissedVersion(): String {
         ensureInitialized()
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) emit(emptyPreferences()) else throw cause
-            }
             .map { prefs -> prefs[UPDATE_DISMISSED_VERSION].orEmpty() }
             .first()
     }
@@ -349,9 +331,6 @@ internal object SettingsDataStore {
     suspend fun updateLastCheckAt(): Long {
         ensureInitialized()
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) emit(emptyPreferences()) else throw cause
-            }
             .map { prefs -> prefs[UPDATE_LAST_CHECK_AT] ?: 0L }
             .first()
     }
@@ -365,10 +344,8 @@ internal object SettingsDataStore {
 
     suspend fun retiredUsage(): RetiredUsage {
         ensureInitialized()
+        // Storage/migration failure is not a successfully loaded zero-statistics snapshot.
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) emit(emptyPreferences()) else throw cause
-            }
             .map { prefs ->
                 RetiredUsage(
                     inputTokens = prefs[RETIRED_INPUT_TOKENS] ?: 0L,
@@ -456,7 +433,8 @@ internal object SettingsDataStore {
 
     suspend fun flushModelUsage() {
         ensureInitialized()
-        usageLedger.flush()
+        // Compatibility fence only: each record already returned AFTER its atomic commit.
+        usageLedger.snapshot()
     }
 
     suspend fun addModelUsage(deltaJson: String) {
@@ -467,7 +445,7 @@ internal object SettingsDataStore {
 
     suspend fun updateModelUsage(transform: (String) -> String) {
         ensureInitialized()
-        usageLedger.update("usage.editEntryWait", "usage.transform", "usage.commitTail", transform)
+        usageLedger.update(transform)
     }
 
     /**
@@ -617,13 +595,15 @@ internal data class EtaSettingsBackup(
     val linuxBackends: Map<String, String> = emptyMap(),
     val selectedModelByProvider: Map<String, String> = emptyMap(),
     val appearance: AppearanceSettings = AppearanceSettings(),
-    val modelUsageJson: String = "",
-    val retiredInputTokens: Long = 0L,
-    val retiredOutputTokens: Long = 0L,
-    val retiredCachedTokens: Long = 0L,
-    val retiredConversations: Int = 0,
-    val retiredMessages: Int = 0,
-    val retiredHeatmapJson: String = "",
+    // Missing in an older/partial backup means preserve; explicit "" still means reset.
+    val modelUsageJson: String? = null,
+    // Missing retired fields also preserve; explicit zero/empty is still an exact restore.
+    val retiredInputTokens: Long? = null,
+    val retiredOutputTokens: Long? = null,
+    val retiredCachedTokens: Long? = null,
+    val retiredConversations: Int? = null,
+    val retiredMessages: Int? = null,
+    val retiredHeatmapJson: String? = null,
     // Use a nullable string so older, null and future backup values restore safely to NONE.
     val errorReconnectPolicy: String? = ErrorReconnectPolicy.NONE.persistedValue,
 )

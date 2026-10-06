@@ -111,6 +111,57 @@ internal data class ModelUsageDelta(
     val day: LocalDate = Instant.ofEpochMilli(atMillis).atZone(ZoneId.systemDefault()).toLocalDate(),
 )
 
+/** Durable boundaries reject damaged JSON instead of invoking the legacy empty-tree fallback. */
+internal fun validateModelUsageJson(raw: String?): JSONObject {
+    if (raw.isNullOrBlank()) return JSONObject() // The original writer used "" for unused ledgers.
+    try {
+        val parser = org.json.JSONTokener(raw)
+        val root = parser.nextValue() as? JSONObject ?: error("Usage ledger must be an object")
+        check(parser.nextClean() == '\u0000') { "Trailing usage ledger data" }
+        fun objectField(parent: JSONObject, key: String): JSONObject? {
+            if (!parent.has(key)) return null
+            return parent.optJSONObject(key) ?: error("Invalid usage ledger object")
+        }
+        fun numericFields(item: JSONObject, fields: List<String>) {
+            fields.forEach { field ->
+                if (item.has(field)) {
+                    val value = item.get(field)
+                    // Legacy decimal/string counters keep their original coercion semantics.
+                    check((value is Number || value is String) && value.toString().toBigDecimalOrNull() != null) {
+                        "Invalid usage ledger counter"
+                    }
+                }
+            }
+        }
+        // Unknown fields are kept, but broken known containers/counters must not become zero.
+        objectField(root, "conversationTotalsV1")?.let { totals ->
+            totals.keys().forEach { id -> objectField(totals, id)?.let { numericFields(it, listOf("in", "out", "k", "w")) } }
+        }
+        objectField(root, "providers")?.let { providers ->
+            providers.keys().forEach { providerId ->
+                objectField(providers, providerId)?.let { provider ->
+                    objectField(provider, "models")?.let { models ->
+                        models.keys().forEach { modelId -> objectField(models, modelId)?.let { model ->
+                            numericFields(model, listOf("inputTokens", "outputTokens", "cachedTokens", "cacheCreationTokens"))
+                            if (model.has("events")) {
+                                val events = model.optJSONArray("events") ?: error("Invalid usage events")
+                                for (index in 0 until events.length()) {
+                                    val event = events.optJSONObject(index) ?: error("Invalid usage event")
+                                    numericFields(event, listOf("t", "in", "out", "k", "w"))
+                                }
+                            }
+                        } }
+                    }
+                }
+            }
+        }
+        return root
+    } catch (failure: Exception) {
+        // Do not include JSON or org.json's potentially payload-bearing error message.
+        throw java.io.IOException("Invalid usage ledger JSON")
+    }
+}
+
 internal fun decodeModelUsageSnapshot(raw: String?): ModelUsageSnapshot {
     if (raw.isNullOrBlank()) return ModelUsageSnapshot()
     val root = runCatching { JSONObject(raw) }.getOrNull() ?: return ModelUsageSnapshot()
@@ -273,7 +324,8 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
 }
 
 /**
- * Single-owner, process-local working ledger. The owner serializes access and bounds dirty time.
+ * Single-owner working ledger for numerical batch-equivalence helpers, not a durable store.
+ * Production recording commits each delta in Preferences; no process-local dirty interval.
  * Normal ledgers are parsed once; touched models keep their detail window and sets in memory.
  * Every partial is applied in order (never just keep the latest delta): intermediate days,
  * conversations and detail trimming are part of the existing cumulative semantics.

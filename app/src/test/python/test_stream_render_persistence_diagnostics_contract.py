@@ -165,23 +165,18 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         store = source("data/datastore/SettingsDataStore.kt")
         for suffix in ("editEntryWait", "transform", "commitTail"):
             self.assertIn('"settings.' + suffix + '"', store)
-        # The ledger moved to its own store; the same three usage stages must still be emitted
-        # there, with the same ordering and the same nullable-exit semantics as before.
-        ledger_store = source("data/datastore/UsageLedgerStore.kt")
+        # Atomic ledger edits reuse SettingsDataStore's SAME diagnosticEdit queue/commit timer.
+        # No second file-store timing, no renamed stages, no suspend inside measure.
+        ledger_store = source("data/datastore/PreferencesUsageLedger.kt")
         for suffix in ("editEntryWait", "transform", "commitTail"):
-            self.assertIn('"usage.' + suffix + '"', ledger_store)
-        self.assertEqual(ledger_store.count('update("usage.editEntryWait", "usage.transform", "usage.commitTail")'), 2)
-        ledger_update = between(ledger_store, "suspend fun update(", "private suspend fun ensureLoaded")
-        self.assertIn('measure(transformStage) { transform(current) }', ledger_update)
-        self.assertIn("var transformExited: Long? = null", ledger_update)
-        self.assertIn("val exited = transformExited", ledger_update)
-        self.assertIn("if (exited != null && StreamPerformanceDiagnostics.enabled)", ledger_update)
-        self.assertIn("System.nanoTime() - exited", ledger_update)
-        self.assertNotIn("transformExited = 0L", ledger_update)
-        self.assertNotIn("transformExited != 0L", ledger_update)
-        self.assertIn('record(entryStage, System.nanoTime() - requested)', ledger_update)
-        self.assertIn("finally", ledger_update)
-        self.assertNotIn("measure(entryStage)", ledger_update)
+            self.assertIn('"usage.' + suffix + '"', store)
+        self.assertIn('usageLedger = PreferencesUsageLedger(preferencesStore) { transform ->', store)
+        self.assertEqual(store.count('diagnosticEdit("usage.editEntryWait", "usage.transform", "usage.commitTail", transform)'), 1)
+        ledger_update = between(ledger_store, "suspend fun update(", "suspend fun replace(")
+        self.assertIn("withContext(NonCancellable + Dispatchers.IO)", ledger_update)
+        self.assertIn("edit { prefs ->", ledger_update)
+        self.assertIn("replaceIn(prefs, transform(current))", ledger_update)
+        self.assertNotIn("storage.write", ledger_store)
         self.assertNotIn("pureDisk", ledger_store)
         helper = between(store, "private suspend fun diagnosticEdit", "\n    }\n")
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled)", helper)
@@ -202,10 +197,10 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         for stage in ("usage.load.dao.perDay", "usage.load.dao.conversations", "usage.load.dao.messages",
                       "usage.load.dao.liveIds", "usage.load.decode", "usage.lockWait"):
             self.assertIn('"' + stage + '"', usage)
-        # Exactly one apply site emits usage.ledger.update, and it is the ledger store's apply.
-        joined = usage + source("data/datastore/UsageLedgerStore.kt")
+        # Exactly one apply site emits usage.ledger.update: the atomic Preferences transform.
+        joined = usage + source("data/datastore/PreferencesUsageLedger.kt")
         self.assertEqual(joined.count('measure("usage.ledger.update"'), 1)
-        self.assertIn('measure("usage.ledger.update") { working.apply(delta) }', joined)
+        self.assertIn('measure("usage.ledger.update") { applyModelUsageDelta(raw, delta) }', joined)
         for call in ("dao.conversationCountPerDay(startAt)", "dao.conversationCount()", "dao.totalMessageCount()", "dao.conversations()"):
             self.assertEqual(usage.count(call), 1)
         record = between(usage, "suspend fun recordModelUsage", "// Suspend DAO calls")
