@@ -50,7 +50,10 @@ class AnthropicPromptCachingTest {
         assertEquals(3, markerCount(body))
         assertEquals("ephemeral", control(body.getJSONArray("tools").getJSONObject(1)).getString("type"))
         assertFalse(body.getJSONArray("tools").getJSONObject(0).has("cache_control"))
-        assertFalse(control(body.getJSONArray("system").getJSONObject(0)).has("ttl"))
+        assertEquals("1h", control(body.getJSONArray("system").getJSONObject(0)).getString("ttl"))
+        assertEquals("1h", control(body.getJSONArray("tools").getJSONObject(1)).getString("ttl"))
+        assertEquals("1h", control(body.getJSONArray("messages").getJSONObject(0)
+            .getJSONArray("content").getJSONObject(0)).getString("ttl"))
         assertTrue(body.getJSONArray("messages").getJSONObject(0).getJSONArray("content")
             .getJSONObject(0).has("cache_control"))
         assertEquals(beforeMessages, messages.toString())
@@ -130,13 +133,28 @@ class AnthropicPromptCachingTest {
         assertFalse(body.has(AnthropicPromptCaching.CONFIG_KEY))
     }
 
-    @Test fun oneHourAppliesToAllDefaultBoundaries() {
+    @Test fun explicitOneHourAppliesToAllDefaultBoundaries() {
         val body = build(JSONArray().put(msg("system", "stable")).put(msg("user", "hello")),
             JSONArray().put(tool("tool")), listOf(custom(AnthropicPromptCaching.CONFIG_KEY, "\"1h\"")))
         assertEquals("1h", control(body.getJSONArray("tools").getJSONObject(0)).getString("ttl"))
         assertEquals("1h", control(body.getJSONArray("system").getJSONObject(0)).getString("ttl"))
         assertEquals("1h", control(body.getJSONArray("messages").getJSONObject(0)
             .getJSONArray("content").getJSONObject(0)).getString("ttl"))
+        assertFalse(body.has(AnthropicPromptCaching.CONFIG_KEY))
+    }
+
+    @Test fun explicitFiveMinutesOverridesOneHourDefault() {
+        val body = build(JSONArray().put(msg("system", "stable")).put(msg("user", "hello")),
+            JSONArray().put(tool("tool")), listOf(custom(AnthropicPromptCaching.CONFIG_KEY, "\"5m\"")))
+        assertEquals(3, markerCount(body))
+        for (block in listOf(
+            body.getJSONArray("tools").getJSONObject(0),
+            body.getJSONArray("system").getJSONObject(0),
+            body.getJSONArray("messages").getJSONObject(0).getJSONArray("content").getJSONObject(0),
+        )) {
+            assertEquals("ephemeral", control(block).getString("type"))
+            assertFalse(control(block).has("ttl"))
+        }
         assertFalse(body.has(AnthropicPromptCaching.CONFIG_KEY))
     }
 

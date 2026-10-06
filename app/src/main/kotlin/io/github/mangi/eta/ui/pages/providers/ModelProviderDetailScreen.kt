@@ -249,6 +249,8 @@ private fun ProviderConfigTab(
     val context = LocalContext.current
     val view = LocalView.current
     var headersExpanded by rememberSaveable { mutableStateOf(false) }
+    var bodiesExpanded by rememberSaveable { mutableStateOf(false) }
+    val bodiesResult = remember(draft.bodies) { parseProviderBodies(draft.bodies) }
     var gatewayExpanded by rememberSaveable { mutableStateOf(false) }
     var apiKeyVisible by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -401,6 +403,7 @@ private fun ProviderConfigTab(
                                         hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                                         anthropicVersion = draft.anthropicVersion,
                                         customHeaders = draft.headers.map { it.header },
+                                        customBody = bodiesResult.getOrThrow(),
                                         balanceOption = draft.balanceOption,
                                         sessionGatewayJson = draft.encodedSessionGateway(),
                                     )
@@ -440,6 +443,13 @@ private fun ProviderConfigTab(
             onHeadersChange = { onDraftChange(draft.copy(headers = it)) },
         )
 
+        providerBodiesEditor(
+            bodies = draft.bodies,
+            expanded = bodiesExpanded,
+            onExpandedChange = { bodiesExpanded = it },
+            onBodiesChange = { onDraftChange(draft.copy(bodies = it)) },
+        )
+
         item(key = "preferences_and_prompt") {
             ProviderSection(title = stringResource(R.string.ui_preferences_and_strategies_2abd3c)) {
                 SwitchPreference(
@@ -467,6 +477,7 @@ private fun ProviderConfigTab(
                         hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                         anthropicVersion = draft.anthropicVersion,
                         customHeaders = draft.headers.map { it.header },
+                        customBody = bodiesResult.getOrElse { provider.customBody },
                         balanceOption = draft.balanceOption,
                         sessionGatewayJson = draft.encodedSessionGateway(),
                     ),
@@ -519,6 +530,7 @@ private fun ProviderConfigTab(
                                 hostedWebSearchEnabled = draft.hostedWebSearchEnabled,
                                 anthropicVersion = draft.anthropicVersion,
                                 customHeaders = draft.headers.map { it.header },
+                                customBody = bodiesResult.getOrThrow(),
                                 balanceOption = draft.balanceOption,
                                 sessionGatewayJson = draft.encodedSessionGateway(),
                             )
@@ -667,6 +679,9 @@ private fun ProviderConfigTab(
                         isWorking = true
                         try {
                             ProviderRepository.resetBuiltIn(provider.id)
+                            ProviderRepository.providerById(provider.id)?.let {
+                                onDraftChange(ProviderConfigDraft.from(it))
+                            }
                             RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
                             status = context.getString(R.string.page_reset_a0cc65)
                             showResetDialog = false

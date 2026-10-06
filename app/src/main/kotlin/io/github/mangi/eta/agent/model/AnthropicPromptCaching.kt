@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /** Native Anthropic prefix-cache defaults. This is not a local response cache. */
 internal object AnthropicPromptCaching {
-    // Local custom-body preference: none, 5m (default), or 1h. Never sent upstream.
+    // Local custom-body preference: none, 5m, or 1h (default). Never sent upstream.
     const val CONFIG_KEY = "eta_prompt_cache"
     // Local system-message metadata, used only by the Anthropic prompt builder/adapter.
     const val SYSTEM_BOUNDARY_KEY = "eta_prompt_cache_boundary"
@@ -17,7 +17,7 @@ internal object AnthropicPromptCaching {
      */
     fun applyDefaults(request: JSONObject, stableSystemBlockIndex: Int? = null) {
         val preference = request.remove(CONFIG_KEY)
-        val retention = if (preference == null) "5m" else preference.toString()
+        val retention = if (preference == null) "1h" else preference.toString()
         require(retention in setOf("none", "5m", "1h")) {
             "$CONFIG_KEY must be none, 5m, or 1h"
         }

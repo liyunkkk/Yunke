@@ -6,6 +6,7 @@ import io.github.mangi.eta.agent.model.CustomHeaderFilter
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.BalanceOption
 import io.github.mangi.eta.data.model.CustomHeader
+import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderAuthMode
@@ -29,6 +30,7 @@ internal data class ProviderConfigDraft(
     val hostedWebSearchEnabled: Boolean,
     val anthropicVersion: String,
     val headers: List<ProviderHeaderDraft> = emptyList(),
+    val bodies: List<ProviderBodyDraft> = emptyList(),
     val balanceOption: BalanceOption = BalanceOption(),
     val sessionModelPattern: String = SessionGatewayRule.DEFAULT_MODEL,
     val sessionPathPattern: String = SessionGatewayRule.DEFAULT_PATH,
@@ -39,6 +41,7 @@ internal data class ProviderConfigDraft(
     companion object {
         fun from(provider: ProviderSetting): ProviderConfigDraft = ProviderConfigDraft(
             headers = provider.customHeaders.map { ProviderHeaderDraft(header = it) },
+            bodies = provider.customBody.map { ProviderBodyDraft(key = it.key, valueJson = it.value.toString()) },
             name = provider.name,
             baseUrl = provider.baseUrl,
             apiKey = provider.apiKey,
@@ -67,6 +70,7 @@ internal val ProviderConfigDraftSaver = mapSaver(
     save = { draft ->
         mapOf(
             "headers" to ArrayList(draft.headers.flatMap { listOf(it.id, it.header.name, it.header.value) }),
+            "bodies" to ArrayList(draft.bodies.flatMap { listOf(it.id, it.key, it.valueJson) }),
             "name" to draft.name,
             "baseUrl" to draft.baseUrl,
             "apiKey" to draft.apiKey,
@@ -93,6 +97,11 @@ internal val ProviderConfigDraftSaver = mapSaver(
         ProviderConfigDraft(
             headers = (state["headers"] as? List<*>)?.chunked(3)?.map {
                 ProviderHeaderDraft(it[0] as String, CustomHeader(it[1] as String, it[2] as String))
+            }.orEmpty(),
+            bodies = (state["bodies"] as? List<*>)?.chunked(3)?.mapNotNull { fields ->
+                if (fields.size == 3 && fields.all { it is String }) {
+                    ProviderBodyDraft(fields[0] as String, fields[1] as String, fields[2] as String)
+                } else null
             }.orEmpty(),
             name = state.getValue("name") as String,
             baseUrl = state.getValue("baseUrl") as String,
@@ -132,12 +141,14 @@ internal fun buildUpdatedProvider(
     hostedWebSearchEnabled: Boolean,
     anthropicVersion: String,
     customHeaders: List<CustomHeader>,
+    customBody: List<CustomBody> = source.customBody,
     balanceOption: BalanceOption,
     sessionGatewayJson: String = "",
 ): ProviderSetting {
     return when (source) {
         is OpenAiCompatibleProviderSetting -> source.copy(
             customHeaders = customHeaders.map { it.copy(name = it.name.trim()) },
+            customBody = customBody,
             balanceOption = balanceOption,
             name = name.trim(),
             baseUrl = baseUrl.trim(),
@@ -151,6 +162,7 @@ internal fun buildUpdatedProvider(
         )
         is CustomProviderSetting -> source.copy(
             customHeaders = customHeaders.map { it.copy(name = it.name.trim()) },
+            customBody = customBody,
             balanceOption = balanceOption,
             name = name.trim(),
             baseUrl = baseUrl.trim(),
@@ -164,6 +176,7 @@ internal fun buildUpdatedProvider(
         )
         is AnthropicProviderSetting -> source.copy(
             customHeaders = customHeaders.map { it.copy(name = it.name.trim()) },
+            customBody = customBody,
             balanceOption = balanceOption,
             name = name.trim(),
             baseUrl = baseUrl.trim(),
@@ -192,5 +205,6 @@ internal fun validateProviderDraft(context: android.content.Context, draft: Prov
     if (uri == null || uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
         return context.getString(R.string.page_base_url_must_be_a_valid_http_s_address_0e7d58)
     }
-    return CustomHeaderFilter.validationError(draft.headers.map { it.header })
+    CustomHeaderFilter.validationError(draft.headers.map { it.header })?.let { return it }
+    return parseProviderBodies(draft.bodies).exceptionOrNull()?.message
 }
