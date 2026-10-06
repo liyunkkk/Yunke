@@ -59,7 +59,7 @@ val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
             session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
                 val evidence = session.details.protectFrame(record)
                 val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
-                    session.listSamples.forFrame(record, evidence.spans) else null
+                    session.listSamples.forFrame(record, evidence) else null
                 val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
                     .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
                 session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages,

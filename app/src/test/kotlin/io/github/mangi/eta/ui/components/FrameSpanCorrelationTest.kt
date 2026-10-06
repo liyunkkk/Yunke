@@ -12,6 +12,21 @@ class FrameSpanCorrelationTest {
     private fun add(ring: BoundedDiagnosticDetails, span: DiagnosticSpanRecord) = with(span) {
         ring.span(stage, this.span, parent, beginNs, endNs, thread, main, attribution, page, pageEnd, value)
     }
+    private fun listFrame() = frame(500_000_000, 24_000_000).copy(page = 5, pageEnd = 5, pageSegment = 7)
+    private fun listSamples(target: DiagnosticFrameRecord, vararg lists: Long) = DiagnosticListSamples().also { samples ->
+        lists.forEach { list ->
+            samples.add(DiagnosticListSnapshot(target.intendedNs + 10, list, 1, 1, 0, 0, 0, 100, 1,
+                emptyList(), target.page, target.pageSegment))
+        }
+    }
+    private fun addCapturePrefix(ring: BoundedDiagnosticDetails, target: DiagnosticFrameRecord) {
+        val attr = StreamDiagnosticAttribution(1, list = 11)
+        add(ring, span(1, target.intendedNs + 1, target.intendedNs + 2_000_001, attr = attr))
+        repeat(FRAME_CAPTURE_MAX_SPANS - 1) {
+            add(ring, span(2L + it, target.intendedNs + 1, target.intendedNs + 2_000_001)
+                .copy(stage = "row.measure"))
+        }
+    }
 
     @Test fun halfOpenIntervalsExcludeTouchesAndLookbackIsNotFrameOverlap() {
         val result = correlateDiagnosticFrame(frame(), listOf(span(1, 90, 100), span(2, 200, 210),
@@ -113,7 +128,7 @@ class FrameSpanCorrelationTest {
             val evidence = ring.protectFrame(target)
             repeat(4) { add(ring, span(2L + it, 600_000_000L + it, 600_000_001L + it)) }
             clock += 20
-            val geometry = samples.forFrame(target, evidence.spans)
+            val geometry = samples.forFrame(target, evidence)
             clock += 7
             target.copy(listSnapshot = geometry, sourceWindowLoss = evidence.sourceWindowLoss,
                 sourceWindowUnknown = evidence.sourceWindowUnknown)
@@ -125,6 +140,146 @@ class FrameSpanCorrelationTest {
         val cost = costs.summary().single { "observerPhase=Protect " in it }
         assertTrue(cost.contains("count=1 ")); assertTrue(cost.contains("totalNs=27 "))
         assertTrue(cost.contains("recursiveMeasurement=false"))
+    }
+
+    @Test fun secondListSourceBeyond512ProtectedSpansCannotBecomeAUniqueSource() {
+        val target = listFrame()
+        val ring = BoundedDiagnosticDetails(0, capacity = FRAME_CAPTURE_MAX_SPANS + 1)
+        addCapturePrefix(ring, target)
+        val secondId = FRAME_CAPTURE_MAX_SPANS.toLong() + 1
+        add(ring, span(secondId, target.intendedNs + 3_000_000, target.intendedNs + 3_500_000,
+            attr = StreamDiagnosticAttribution(1, list = 22)).copy(stage = "list.place"))
+        assertTrue(ring.reserveFrame(severe = false))
+        val evidence = ring.protectFrame(target)
+        assertFalse(evidence.sourceWindowLoss); assertFalse(evidence.sourceWindowUnknown)
+        assertEquals(513, evidence.spans.size)
+        assertEquals(secondId, evidence.spans.last().span) // Smaller overlap puts this source outside take(512).
+        val samples = listSamples(target, 11) // Missing list22 geometry must not make list11 unique either.
+        val geometry = samples.forFrame(target, evidence)
+        assertNull(geometry)
+        ring.frame(target.copy(listSnapshot = geometry))
+        val detail = ring.drain(1_000_000_000)
+        assertEquals(1L, detail.frameCaptureTruncated)
+        assertEquals(FRAME_CAPTURE_MAX_SPANS, detail.spans.size)
+        assertFalse(detail.spans.any { it.span == secondId })
+        assertNull(detail.frames.single().listSnapshot)
+    }
+
+    @Test fun missingAnonymousListTokenBeyond512ProtectedSpansFailsClosed() {
+        val target = listFrame()
+        for (missing in listOf<StreamDiagnosticAttribution?>(null, StreamDiagnosticAttribution(1, list = 0))) {
+            val ring = BoundedDiagnosticDetails(0, capacity = FRAME_CAPTURE_MAX_SPANS + 1)
+            addCapturePrefix(ring, target)
+            add(ring, span(FRAME_CAPTURE_MAX_SPANS.toLong() + 1,
+                target.intendedNs + 3_000_000, target.intendedNs + 3_500_000, attr = missing)
+                .copy(stage = "list.place"))
+            assertTrue(ring.reserveFrame(severe = false))
+            val evidence = ring.protectFrame(target)
+            assertFalse(evidence.sourceWindowLoss); assertFalse(evidence.sourceWindowUnknown)
+            assertEquals(513, evidence.spans.size)
+            assertEquals(0L, evidence.spans.last().attribution?.list ?: 0L)
+            assertNull(listSamples(target, 11).forFrame(target, evidence))
+            assertEquals(1L, ring.drain(1_000_000_000).frameCaptureTruncated)
+        }
+    }
+
+    @Test fun untruncatedUniqueListSourceStillMatchesAmongMultipleGeometrySources() {
+        val target = listFrame()
+        val ring = BoundedDiagnosticDetails(0, capacity = 2)
+        val attr = StreamDiagnosticAttribution(1, list = 11)
+        add(ring, span(1, target.intendedNs + 1, target.intendedNs + 2, attr = attr))
+        add(ring, span(2, target.intendedNs + 3, target.intendedNs + 4, attr = attr).copy(stage = "list.place"))
+        assertTrue(ring.reserveFrame(severe = false))
+        val evidence = ring.protectFrame(target)
+        assertFalse(evidence.sourceWindowLoss); assertFalse(evidence.sourceWindowUnknown)
+        val geometry = listSamples(target, 11, 22).forFrame(target, evidence)
+        assertEquals(11L, geometry!!.list)
+        ring.frame(target.copy(listSnapshot = geometry))
+        val detail = ring.drain(1_000_000_000)
+        assertEquals(0L, detail.frameCaptureTruncated)
+        assertEquals(11L, detail.frames.single().listSnapshot!!.list)
+    }
+
+    @Test fun previousWindowSecondSourceBeyond512ProtectedSpansStillRejectsUniqueness() {
+        val target = listFrame()
+        val ring = BoundedDiagnosticDetails(0, capacity = FRAME_CAPTURE_MAX_SPANS)
+        val secondId = FRAME_CAPTURE_MAX_SPANS.toLong() + 1
+        add(ring, span(secondId, target.intendedNs + 3_000_000, target.intendedNs + 3_500_000,
+            attr = StreamDiagnosticAttribution(1, list = 22)).copy(stage = "list.place"))
+        ring.snapshot(505_000_000)
+        addCapturePrefix(ring, target) // Late admissions of the same frame now live in the current window.
+        assertTrue(ring.reserveFrame(severe = false))
+        val evidence = ring.protectFrame(target)
+        assertFalse(evidence.sourceWindowLoss); assertFalse(evidence.sourceWindowUnknown)
+        assertEquals(513, evidence.spans.size)
+        assertEquals(secondId, evidence.spans.last().span)
+        val geometry = listSamples(target, 11, 22).forFrame(target, evidence)
+        assertNull(geometry)
+        ring.frame(target.copy(listSnapshot = geometry))
+        val detail = ring.drain(1_000_000_000)
+        assertEquals(1L, detail.frameCaptureTruncated)
+        assertEquals(0L, detail.previousWindowSpans) // Source matching sees previous evidence even if protection omits it.
+        assertNull(detail.frames.single().listSnapshot)
+    }
+
+    @Test fun previousWindowUniqueListSourceStillMatchesWithoutRecapturing() {
+        val target = listFrame()
+        val ring = BoundedDiagnosticDetails(0, capacity = 2)
+        add(ring, span(1, target.intendedNs + 1, target.intendedNs + 2,
+            attr = StreamDiagnosticAttribution(1, list = 11)))
+        ring.snapshot(505_000_000)
+        assertTrue(ring.reserveFrame(severe = false))
+        val evidence = ring.protectFrame(target)
+        assertFalse(evidence.sourceWindowLoss); assertFalse(evidence.sourceWindowUnknown)
+        assertEquals(listOf(1L), evidence.spans.map { it.span })
+        val geometry = listSamples(target, 11, 22).forFrame(target, evidence)
+        assertEquals(11L, geometry!!.list)
+        ring.frame(target.copy(listSnapshot = geometry))
+        val detail = ring.drain(1_000_000_000)
+        assertEquals(1L, detail.previousWindowSpans)
+        assertEquals(0L, detail.frameCaptureTruncated)
+        assertEquals(11L, detail.frames.single().listSnapshot!!.list)
+    }
+
+    @Test fun sourceWindowLossAndUnknownRejectEvenApparentlyUniqueCapturedSourcesAndFallback() {
+        val target = listFrame()
+        val samples = listSamples(target, 11)
+        val known = span(1, target.intendedNs + 1, target.intendedNs + 2,
+            attr = StreamDiagnosticAttribution(1, list = 11))
+        val currentLoss = BoundedDiagnosticDetails(0, capacity = 1)
+        add(currentLoss, known)
+        add(currentLoss, known.copy(span = 2, stage = "row.measure")) // The list scope was overwritten.
+        assertTrue(currentLoss.reserveFrame(severe = false))
+        val fallback = currentLoss.protectFrame(target)
+        assertTrue(fallback.sourceWindowLoss)
+        assertNull(samples.forFrame(target, fallback))
+
+        val previousLoss = BoundedDiagnosticDetails(0, capacity = 1)
+        add(previousLoss, known.copy(span = 2, attribution = StreamDiagnosticAttribution(1, list = 22)))
+        add(previousLoss, known)
+        previousLoss.snapshot(505_000_000)
+        assertTrue(previousLoss.reserveFrame(severe = false))
+        val lost = previousLoss.protectFrame(target)
+        assertTrue(lost.sourceWindowLoss)
+        assertEquals(listOf(11L), lost.spans.map { it.attribution!!.list })
+        assertNull(samples.forFrame(target, lost))
+
+        val slowLoss = BoundedDiagnosticDetails(0, capacity = 2, slowLimit = 1)
+        add(slowLoss, known.copy(endNs = known.beginNs + 4_000_000))
+        add(slowLoss, known.copy(span = 2, stage = "row.measure", endNs = known.beginNs + 4_000_000))
+        assertTrue(slowLoss.reserveFrame(severe = false))
+        val dropped = slowLoss.protectFrame(target)
+        assertTrue(dropped.sourceWindowLoss)
+        assertNull(samples.forFrame(target, dropped))
+
+        val tooOld = BoundedDiagnosticDetails(0, capacity = 1)
+        tooOld.snapshot(505_000_000); tooOld.snapshot(510_000_000)
+        add(tooOld, known) // A retained late span does not prove the older missing generation complete.
+        assertTrue(tooOld.reserveFrame(severe = false))
+        val unknown = tooOld.protectFrame(target)
+        assertTrue(unknown.sourceWindowUnknown)
+        assertEquals(listOf(11L), unknown.spans.map { it.attribution!!.list })
+        assertNull(samples.forFrame(target, unknown))
     }
 
     @Test fun nestedInclusiveSpansUseUnionNotSumAndDirectChildrenForSelfUpperBound() {
@@ -222,12 +377,13 @@ class FrameSpanCorrelationTest {
         fun sample(at: Long) = DiagnosticListSnapshot(at, 3, 12, 14, 8, 4, 0, 900, 1,
             listOf(DiagnosticListRow(5, 8, -4, 90)), page = 5, segment = 1)
         val sourceFrame = frame().copy(page = 5, pageEnd = 5, pageSegment = 1)
+        val evidence = DiagnosticFrameEvidence(emptyList())
         samples.add(sample(150)); samples.add(sample(250))
-        assertEquals(150L, samples.forFrame(sourceFrame)!!.atNs)
-        assertNull(samples.forFrame(sourceFrame.copy(intendedNs = 0, totalNs = 100)))
+        assertEquals(150L, samples.forFrame(sourceFrame, evidence)!!.atNs)
+        assertNull(samples.forFrame(sourceFrame.copy(intendedNs = 0, totalNs = 100), evidence))
         samples.add(sample(300))
         assertEquals(1L, samples.overwritten)
-        assertNull(samples.forFrame(sourceFrame))
+        assertNull(samples.forFrame(sourceFrame, evidence))
     }
 
     @Test fun sourceGeometryPrefersMatchedListAndRejectsTransitionsUnknownAndAmbiguity() {
@@ -237,14 +393,19 @@ class FrameSpanCorrelationTest {
         samples.add(sample(11)); samples.add(sample(22)); samples.add(sample(33, page = 4))
         val target = frame().copy(page = 5, pageEnd = 5, pageSegment = 7)
         fun listSpan(list: Long) = span(list, 100, 200, attr = StreamDiagnosticAttribution(1, list = list))
-        assertNull(samples.forFrame(target))
-        assertEquals(11L, samples.forFrame(target, listOf(listSpan(11)))!!.list)
-        assertNull(samples.forFrame(target, listOf(listSpan(11), listSpan(22))))
-        assertNull(samples.forFrame(target, listOf(listSpan(33))))
-        assertNull(samples.forFrame(target, listOf(span(99, 100, 200))))
-        assertNull(samples.forFrame(target.copy(changed = true), listOf(listSpan(11))))
-        assertNull(samples.forFrame(target.copy(pageSegment = 8), listOf(listSpan(11))))
-        assertNull(samples.forFrame(target.copy(page = 0), listOf(listSpan(11))))
+        val matched = DiagnosticFrameEvidence(listOf(listSpan(11)))
+        assertNull(samples.forFrame(target, DiagnosticFrameEvidence(emptyList())))
+        assertEquals(11L, samples.forFrame(target, matched)!!.list)
+        assertNull(samples.forFrame(target, DiagnosticFrameEvidence(listOf(listSpan(11), listSpan(22)))))
+        assertNull(samples.forFrame(target, DiagnosticFrameEvidence(listOf(listSpan(33)))))
+        assertNull(samples.forFrame(target, DiagnosticFrameEvidence(listOf(span(99, 100, 200)))))
+        assertNull(samples.forFrame(target.copy(changed = true), matched))
+        assertNull(samples.forFrame(target.copy(pageSegment = 8), matched))
+        assertNull(samples.forFrame(target.copy(page = 0), matched))
+        assertNull(samples.forFrame(target, matched.copy(sourceWindowLoss = true)))
+        assertNull(samples.forFrame(target, matched.copy(sourceWindowUnknown = true)))
+        assertNull(samples.forFrame(target.copy(sourceWindowLoss = true), matched))
+        assertNull(samples.forFrame(target.copy(sourceWindowUnknown = true), matched))
     }
 
     @Test fun slowBudgetFullStillAdmitsNewSevereSpanForProtection() {

@@ -34,7 +34,10 @@ internal data class DiagnosticFrameCorrelation(
     val precedingOmitted: Int get() = totalPreceding - preceding.size
 }
 
-/** Single bounded callback capture, reused for protection and list-source matching. */
+/**
+ * Single callback capture of all retained current + previous-window candidates (bounded by their rings).
+ * List-source matching must use this complete set, not the separately capped protected/output spans.
+ */
 internal data class DiagnosticFrameEvidence(
     val spans: List<DiagnosticSpanRecord>,
     val sourceWindowLoss: Boolean = false,
@@ -150,14 +153,16 @@ internal class DiagnosticListSamples(private val capacity: Int = 128) {
         if (ring[next] != null) overwritten++
         ring[next] = sample; next = (next + 1) % capacity
     }
-    fun forFrame(frame: DiagnosticFrameRecord, spans: List<DiagnosticSpanRecord> = emptyList()): DiagnosticListSnapshot? {
-        if (frame.changed || frame.page == 0 || frame.pageSegment == 0L) return null
+    fun forFrame(frame: DiagnosticFrameRecord, evidence: DiagnosticFrameEvidence): DiagnosticListSnapshot? {
+        if (frame.changed || frame.page == 0 || frame.pageSegment == 0L ||
+            frame.sourceWindowLoss || frame.sourceWindowUnknown ||
+            evidence.sourceWindowLoss || evidence.sourceWindowUnknown) return null
         val detached = synchronized(this) { ring.copyOf() }
         val candidates = detached.filterNotNull().filter {
             it.atNs <= frame.intendedNs + frame.totalNs && it.page == frame.page && it.segment == frame.pageSegment
         }
-        // A matched list scope takes precedence, but multiple matched lists are ambiguous.
-        val listSpans = spans.filter { it.stage == "list.measure" || it.stage == "list.place" }
+        // Full captured scopes take precedence; never infer uniqueness from protected/output truncation.
+        val listSpans = evidence.spans.filter { it.stage == "list.measure" || it.stage == "list.place" }
             .filter { diagnosticOverlapNs(it.beginNs, it.endNs, frame.intendedNs, frame.intendedNs + frame.totalNs) > 0 }
         if (listSpans.any { (it.attribution?.list ?: 0L) == 0L }) return null
         val matched = listSpans.mapNotNull { it.attribution?.list }.distinct()

@@ -365,7 +365,8 @@ internal class BoundedDiagnosticDetails(
         val selectedFromPrevious = selected.count { it.span in previousIds }
         // Only one detached generation is retained. Older evidence is unknown, never assumed complete.
         val earliest = pair.second?.fromNs ?: pair.first.fromNs
-        val evidence = DiagnosticFrameEvidence(selected,
+        // Protection/output budgets may omit a second source; source matching must see all candidates.
+        val evidence = DiagnosticFrameEvidence(all,
             sourceWindowLoss = pair.first.sourceWindowLoss() || pair.second?.sourceWindowLoss() == true,
             sourceWindowUnknown = frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS < earliest && earliest > startedNs)
         synchronized(admissionLock) {

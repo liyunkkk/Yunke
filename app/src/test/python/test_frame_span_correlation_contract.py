@@ -42,6 +42,27 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         self.assertIn('previousWindow = raw', self.bounded)
         self.assertNotIn('previousWindow:', class_body(code_only(self.bounded), 'DiagnosticRawDetailSnapshot'))
 
+    def test_list_source_uses_full_bounded_capture_and_fails_closed_on_source_window_loss(self):
+        capture = body(code_only(self.bounded), 'protectFrame')
+        self.assertEqual(capture.count('recentSnapshot('), 1)
+        self.assertIn('(current + previous).distinctBy { it.span }', capture)
+        self.assertIn('val selected = all.take(FRAME_CAPTURE_MAX_SPANS)', capture)
+        self.assertIn('val evidence = DiagnosticFrameEvidence(all,', capture)
+        self.assertNotIn('DiagnosticFrameEvidence(selected', capture)
+        self.assertIn('selected.forEach { span ->', capture)
+        self.assertIn('sourceWindowLoss = pair.first.sourceWindowLoss() || pair.second?.sourceWindowLoss() == true', capture)
+        matching = body(code_only(self.helper), 'forFrame')
+        before_copy = matching.split('val detached =', 1)[0]
+        for guard in ('frame.sourceWindowLoss', 'frame.sourceWindowUnknown',
+                      'evidence.sourceWindowLoss', 'evidence.sourceWindowUnknown'):
+            self.assertIn(guard, before_copy)
+        self.assertIn('val listSpans = evidence.spans.filter', matching)
+        self.assertNotIn('.take(', matching)
+        self.assertNotIn('FRAME_CAPTURE_MAX_SPANS', matching)
+        self.assertIn('if (listSpans.any { (it.attribution?.list ?: 0L) == 0L }) return null', matching)
+        self.assertIn('if (matched.size > 1) return null', matching)
+        self.assertNotIn('evidence.spans)', self.stream)
+
     def test_single_observed_capture_is_only_for_budget_admitted_frames_on_existing_worker(self):
         self.assertIn('window.addOnFrameMetricsAvailableListener(listener, handler)', self.stream)
         listener = self.stream.split('val listener = Window.OnFrameMetricsAvailableListener', 1)[1].split(
@@ -53,7 +74,7 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         self.assertNotIn('if (severe) session.observerCosts', listener)
         self.assertLess(retained.index('observerCosts.observe(DiagnosticObserverCosts.Phase.Protect)'),
                         retained.index('session.details.protectFrame(record)'))
-        self.assertIn('session.listSamples.forFrame(record, evidence.spans)', retained)
+        self.assertIn('session.listSamples.forFrame(record, evidence)', retained)
         self.assertIn('sourceWindowLoss = evidence.sourceWindowLoss', retained)
         self.assertIn('sourceWindowUnknown = evidence.sourceWindowUnknown', retained)
         self.assertIn('diagnosticFrameEvidenceIncomplete(frame, detail, snapshot.openSpans)', self.stream)
@@ -125,6 +146,13 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         tests = ROOT / 'app/src/test/kotlin/io/github/mangi/eta/ui/components'
         pure = (tests / 'FrameSpanCorrelationTest.kt').read_text()
         self.assertGreaterEqual(pure.count('@Test'), 10)
+        for scenario in ('secondListSourceBeyond512ProtectedSpansCannotBecomeAUniqueSource',
+                         'missingAnonymousListTokenBeyond512ProtectedSpansFailsClosed',
+                         'untruncatedUniqueListSourceStillMatchesAmongMultipleGeometrySources',
+                         'previousWindowSecondSourceBeyond512ProtectedSpansStillRejectsUniqueness',
+                         'previousWindowUniqueListSourceStillMatchesWithoutRecapturing',
+                         'sourceWindowLossAndUnknownRejectEvenApparentlyUniqueCapturedSourcesAndFallback'):
+            self.assertIn('@Test fun ' + scenario + '()', pure)
         modifier = (tests / 'StreamDiagnosticModifierTest.kt').read_text()
         for scenario in ('renderIdentityInheritsEventAndParent', 'staleRenderMetadataCannotCrossForegroundSessions',
                          'changedRowMetadataUpdatesExistingMeasureNode'):
