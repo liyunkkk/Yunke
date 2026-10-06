@@ -26,12 +26,17 @@ class BoundedStreamDiagnosticsTest {
         val a = StreamDiagnosticAttribution(1, event = 2)
         local.with(DiagnosticSpanContext(a, 5)) {
             val captured = local.capture()
+            val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
             val thread = Thread {
-                assertNull(local.current())
-                local.with(DiagnosticSpanContext(captured)) { assertEquals(5L, local.capture()!!.sourceSpan) }
-                assertNull(local.current())
+                try {
+                    assertNull(local.current())
+                    local.with(DiagnosticSpanContext(captured)) { assertEquals(5L, local.capture()!!.sourceSpan) }
+                    assertNull(local.current())
+                } catch (error: Throwable) { failure.set(error) }
             }
-            thread.start(); thread.join()
+            thread.start(); thread.join(5000)
+            assertFalse("worker did not finish", thread.isAlive)
+            failure.get()?.let { throw it }
         }
     }
 
@@ -86,6 +91,60 @@ class BoundedStreamDiagnosticsTest {
         val snapshot = ring.drain(11_000_000)
         assertEquals(listOf(1L), snapshot.spans.map { it.span })
         assertEquals(1L, snapshot.spanOutputTruncated)
+    }
+
+    @Test fun rawSnapshotSelectionDoesNotHoldAdmissionLockOrConsumeLaterRecords() {
+        val lock = Any()
+        val ring = BoundedDiagnosticDetails(0, admissionLock = lock)
+        span(ring, 1, 0, 5_000_000)
+        val raw = ring.snapshot(10_000_000)
+        span(ring, 2, 10_000_000, 15_000_000)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+        val selected = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread {
+            try { assertEquals(1L, raw.select().spans.single().span) }
+            catch (error: Throwable) { failure.set(error) }
+            finally { selected.countDown() }
+        }
+        synchronized(lock) {
+            worker.start()
+            assertTrue("selection must not acquire admission lock", selected.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        worker.join(5000)
+        failure.get()?.let { throw it }
+        assertEquals(2L, ring.drain(20_000_000).spans.single().span)
+    }
+
+    @Test fun finalDetailSnapshotRejectsAllLaterSpansAndFrames() {
+        val ring = BoundedDiagnosticDetails(0, capacity = 2, frameLimit = 1)
+        span(ring, 1, 0, 5_000_000)
+        val final = ring.snapshot(10_000_000, final = true).select()
+        repeat(1000) { span(ring, 2L + it, 0, 5_000_000) }
+        assertFalse(ring.reserveFrame())
+        ring.frame(frame())
+        val empty = ring.drain(20_000_000)
+        assertEquals(1L, final.spans.single().span)
+        assertTrue(empty.spans.isEmpty()); assertTrue(empty.frames.isEmpty())
+        assertEquals(0L, empty.overwritten)
+        assertEquals(1000L, ring.closedRejectedSpans)
+        assertEquals(2L, ring.closedRejectedFrames)
+    }
+
+    @Test fun fixedContextLabelsDoNotCollapseToUnknown() {
+        val labels = ("markdown.annotated.build markdown.annotated.cell markdown.annotated.raw markdown.blockDraw " +
+            "markdown.citation.strip markdown.hidden.childHeight markdown.hidden.measure markdown.hidden.reportHeight " +
+            "markdown.parse markdown.publish markdown.publishBlock markdown.queueWait markdown.stable.draw markdown.stable.measure " +
+            "markdown.tail.draw markdown.tail.measure markdown.targetToPublish reveal.drawContent reveal.graphemes.append " +
+            "reveal.graphemes.cacheHit reveal.graphemes.rebuild reveal.layout.update reveal.measure reveal.paths.append " +
+            "reveal.paths.cacheHit reveal.paths.nextGrapheme reveal.paths.rebuild reveal.record.cacheHit reveal.record.update " +
+            "reveal.saveLayer runtime.checkpoint.buffer.chars runtime.checkpoint.buffer.events runtime.checkpoint.buffer.residency " +
+            "runtime.checkpoint.encode runtime.checkpoint.flush.boundary runtime.checkpoint.lockWait runtime.checkpoint.merge " +
+            "runtime.checkpoint.write settings.commitTail settings.composition settings.editEntryWait settings.root.draw " +
+            "settings.root.measure settings.transform usage.commitTail usage.editEntryWait usage.ledger.encodeEvents " +
+            "usage.ledger.serialize usage.ledger.update usage.load.dao.conversations usage.load.dao.liveIds usage.load.dao.messages " +
+            "usage.load.dao.perDay usage.load.decode usage.lockWait usage.transform").split(' ')
+        assertEquals(56, labels.size)
+        for (label in labels) assertEquals(label, StreamDiagnosticLabels.canonicalStage(label))
     }
 
     @Test fun labelsNeverRetainUnknownSuffixOrPayload() {
