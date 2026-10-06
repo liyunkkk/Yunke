@@ -1,7 +1,7 @@
 """Emitter-schema golden lines with synthetic numbers, never real capture data.
 
-Static spellings/field order come from reviewed 81cb core output templates and
-FramePageTimeline; da5c supplies the 56 render/data/recorder labels. These are
+Static spellings come from reviewed f9f5713b core output templates and
+FramePageTimeline; 944b31c9 supplies the 56 render/data/recorder labels. These are
 schema compatibility tests, not device capture or clock-alignment evidence.
 """
 import contextlib
@@ -23,7 +23,9 @@ WINDOW = PREFIX.format(kind="window") + (
     "heap=proxyNotAllocationStack gcTime=runtimeCounterNotPause spanCapacity=2048 "
     "slowBudget=256 frameBudget=120 ringOverwritten=2 slowBudgetDropped=3 "
     "frameBudgetDropped=4 spanOutputTruncated=5 tokenSaturated=6 "
-    "eventLinksOverwritten=7 mainRingOverwritten=8 mainOutputTruncated=9 noteBudgetDropped=10"
+    "eventLinksOverwritten=7 mainRingOverwritten=8 mainOutputTruncated=9 noteBudgetDropped=10 "
+    "admission=open openSpansAtCutoff=1 closedRejectedRecords=0 lateSpans=0 "
+    "postCloseObservation=notTracked"
 )
 SPAN = PREFIX.format(kind="span") + (
     "span=1 parent=0 stage=ui.flush beginNs=120 endNs=280 thread=1 main=true "
@@ -89,6 +91,31 @@ class ParserTests(unittest.TestCase):
         for line in (SPAN, WINDOW):
             with self.assertRaises(diag.Rejected):
                 diag.parse_line(line.replace("duration=inclusive", "duration=160"))
+
+    def test_final_admission_schema_is_exact_and_preserves_cutoff_counters(self):
+        record = diag.parse_line(WINDOW)
+        self.assertEqual(record["admission"], "open")
+        self.assertEqual(record["openSpansAtCutoff"], 1)
+        self.assertEqual(record["closedRejectedRecords"], 0)
+        self.assertEqual(record["lateSpans"], 0)
+        self.assertEqual(record["postCloseObservation"], "notTracked")
+        closed = diag.parse_line(WINDOW.replace("final=false", "final=true")
+                                 .replace("admission=open", "admission=closed")
+                                 .replace("closedRejectedRecords=0", "closedRejectedRecords=2")
+                                 .replace("lateSpans=0", "lateSpans=1"))
+        self.assertEqual(closed["admission"], "closed")
+        self.assertEqual(closed["closedRejectedRecords"], 2)
+        self.assertEqual(closed["lateSpans"], 1)
+        attacks = [WINDOW.replace("admission=open", "admission=" + value)
+                   for value in ("Open", "PRIVATE", "0")]
+        attacks += [WINDOW.replace("postCloseObservation=notTracked", "postCloseObservation=" + value)
+                    for value in ("tracked", "unknown", "PRIVATE")]
+        attacks += [WINDOW.replace("openSpansAtCutoff=1", "openSpansAtCutoff=-1"),
+                    WINDOW.replace("closedRejectedRecords=0", "closedRejectedRecords=-1"),
+                    WINDOW.replace("lateSpans=0", "lateSpans=-1")]
+        for line in attacks:
+            with self.assertRaises(diag.Rejected):
+                diag.parse_line(line)
 
     def test_retokens_id_no_reverse_mapping(self):
         records, audit = diag.parse_lines([SPAN, SPAN.replace("12ab34cd", "87654321")])

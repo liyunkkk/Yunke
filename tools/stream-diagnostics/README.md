@@ -207,8 +207,11 @@ are exact emitter labels such as `delta.text`, `start.toolCall`, `replayBatch`
 and `unknown`; fake `Delta`, `Unknown`, `gcCount` and arbitrary suffixes reject.
 ART counters are exactly `art.gc.gc-count`, `art.gc.gc-time`,
 `art.gc.bytes-allocated`, `art.gc.bytes-freed`, `art.gc.blocking-gc-count`, and
-`art.gc.blocking-gc-time`. Final same-build core golden fixtures still need parent
-validation. Do not make these arbitrary strings or regex-only acceptors to “fix”
+`art.gc.blocking-gc-time`. The synthetic golden fixture is calibrated against the reviewed f9f5713b emitter;
+this validates schema spelling, not actual on-device capture. Window fields
+`admission=open|closed`, `openSpansAtCutoff`, `closedRejectedRecords`, `lateSpans`,
+and `postCloseObservation=notTracked` describe the snapshot cutoff. Final reports
+do not observe subsequent completions; zero is not proof that none occurred. Do not make these arbitrary strings or regex-only acceptors to “fix”
 a rejection. Both exporter and emitter must limit versionName to exactly
 `[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}` or `unknown`; Unicode, arbitrary revision and
 custom version labels must be redacted upstream to `unknown`, not made exportable. Numeric anonymity is an **emitter contract**: a parser cannot

@@ -82,6 +82,7 @@ COUNTERS = frozenset({
     "ringOverwritten", "slowBudgetDropped", "frameBudgetDropped",
     "spanOutputTruncated", "tokenSaturated", "eventLinksOverwritten",
     "mainRingOverwritten", "mainOutputTruncated", "noteBudgetDropped",
+    "closedRejectedRecords", "lateSpans",
 })
 FRAME_NUMBERS = frozenset({
     "abnormalFrame", "intendedVsyncNs", "vsyncNs", "totalNs",
@@ -93,7 +94,8 @@ FIELDS = {
     "window": COMMON | COUNTERS | {
         "anchorNanoNs", "uptimeMs", "elapsedRealtimeNs", "package", "versionCode",
         "versionName", "buildType", "duration", "heap", "gcTime", "spanCapacity",
-        "slowBudget", "frameBudget", "boundary",
+        "slowBudget", "frameBudget", "boundary", "admission", "openSpansAtCutoff",
+        "postCloseObservation",
     },
     "span": COMMON | {
         "span", "parent", "stage", "beginNs", "endNs", "thread", "main", "duration",
@@ -111,6 +113,7 @@ ENUMS = {
     "pageSource": {"route"}, "buildType": {"unknown", "debug", "release"},
     "package": {"io.github.mangi.eta"}, "duration": {"inclusive"},
     "heap": {"proxyNotAllocationStack"}, "gcTime": {"runtimeCounterNotPause"},
+    "admission": {"open", "closed"}, "postCloseObservation": {"notTracked"},
 }
 
 
