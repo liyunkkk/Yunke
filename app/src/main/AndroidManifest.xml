@@ -57,6 +57,9 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@mipmap/ic_launcher_round">
 
+        <!-- Opt-in local shell profiling; does not enable debugging or start a profiler. -->
+        <profileable android:shell="true" />
+
         <activity
             android:name=".agent.device.VirtualDisplayAnchorActivity"
             android:exported="false"
