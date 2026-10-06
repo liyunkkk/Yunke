@@ -69,8 +69,8 @@ Use a trusted local USB-connected device and a same-build APK. Confirm the APK
 SHA/version and workload/device refresh rate. Local traces can contain system
 process/thread names and stack symbols; do not upload them casually. These
 configs do **not** enable `android.log`, full logcat, network/prompt/reply/audio
-payload capture or heap object dumps. Allocation **sizes/stacks**, not allocation
-contents, are sampled in pass 2.
+payload capture or heap object dumps. Pass 2 samples CPU callstacks only; it does
+not capture allocation sizes, allocation stacks, or allocation contents.
 
 ### 1. Baseline timeline, 180 seconds
 
