@@ -72,8 +72,8 @@ class ConversationSummaryCacheTest {
         val assistant = AgentMessageUi("a", "same", isStreaming = true, renderMarkdown = false)
         assertEquals(conversationSummaryPreviewInput(assistant),
             conversationSummaryPreviewInput(assistant.copy(id = "different", isStreaming = false, renderMarkdown = true)))
-        assertEquals(conversationSummaryPreviewInput(io.github.mangi.eta.ui.model.ThinkingMessageUi("t", "before")),
-            conversationSummaryPreviewInput(io.github.mangi.eta.ui.model.ThinkingMessageUi("t", "after")))
+        assertEquals(conversationSummaryPreviewInput(io.github.mangi.eta.ui.model.ThinkingMessageUi("t", "before", isStreaming = false)),
+            conversationSummaryPreviewInput(io.github.mangi.eta.ui.model.ThinkingMessageUi("t", "after", isStreaming = false)))
         val notice = io.github.mangi.eta.ui.model.SystemNoticeMessageUi("n", io.github.mangi.eta.ui.model.SystemNoticeCode.Stopped, "details")
         assertEquals(conversationSummaryPreviewInput(notice), conversationSummaryPreviewInput(notice.copy(detail = "different")))
     }
