@@ -54,8 +54,12 @@ final class EndedOwnedRecent {
             present.add(root.taskId);
             Set<Integer> children = new HashSet<Integer>();
             for (int id : root.childTaskIds) {
-                if ((id != -1 && id <= 0) || !children.add(id)) return null;
-                if (id > 0) present.add(id);
+                // Some ROMs (HyperOS / Android 17) expose 0 as a real child task id: the Bubbles
+                // container is root 3 with childTaskIds [0] and task 0 is a real child. Only -1 is
+                // the non-task marker; anything below -1 or a duplicate stays unprovable. A real
+                // child id is folded into `present`, which makes an absence claim strictly harder.
+                if ((id != -1 && id < 0) || !children.add(id)) return null;
+                if (id >= 0) present.add(id);
             }
         }
         return present;

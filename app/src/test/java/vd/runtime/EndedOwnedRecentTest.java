@@ -124,7 +124,10 @@ public class EndedOwnedRecentTest {
         assertNull(EndedOwnedRecent.presentIds(Collections.<LaunchTargetOccupancy.Root>emptyList()));
         assertNull(EndedOwnedRecent.presentIds(Arrays.asList(root(1, false, 2))));
         assertNull(EndedOwnedRecent.presentIds(Arrays.asList(root(1, true, (int[]) null))));
-        assertNull(EndedOwnedRecent.presentIds(Arrays.asList(root(1, true, 0))));
+        // HyperOS / Android 17 exposes 0 as a real child task id (Bubbles container root 3
+        // has childTaskIds [0]); only -1 is the non-task marker.
+        assertEquals(new java.util.HashSet<Integer>(Arrays.asList(1, 0)),
+                EndedOwnedRecent.presentIds(Arrays.asList(root(1, true, 0))));
         assertNull(EndedOwnedRecent.presentIds(Arrays.asList(root(1, true, -2))));
         assertNull(EndedOwnedRecent.presentIds(Arrays.asList(root(1, true, 2, 2))));
         assertNull(EndedOwnedRecent.presentIds(Arrays.asList(root(1, true), root(1, true))));
