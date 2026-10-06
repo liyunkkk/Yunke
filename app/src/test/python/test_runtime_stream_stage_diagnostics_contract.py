@@ -22,6 +22,20 @@ def compact(text):
     return re.sub(r"\s+", "", code(text))
 
 
+def numeric_diagnostic_calls(text):
+    """Keep nested numeric calls such as toLong()/nanoTime() in the argument contract."""
+    pattern = r"\bStreamPerformanceDiagnostics\s*\.\s*(measure|record|recordForSession)\s*\("
+    for call in re.finditer(pattern, text):
+        depth = 1
+        for end in range(call.end(), len(text)):
+            depth += (text[end] == "(") - (text[end] == ")")
+            if depth == 0:
+                yield call.group(1), compact(text[call.end():end])
+                break
+        else:
+            raise AssertionError("Unclosed numeric diagnostic call")
+
+
 class RuntimeStreamStageDiagnosticsContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -40,7 +54,16 @@ class RuntimeStreamStageDiagnosticsContract(unittest.TestCase):
             self.assertNotIn(ANDROID + "process", node.attrib)
             self.assertNotEqual(node.get(ANDROID + "isolatedProcess"), "true")
         self.assertIn("@Volatile private var active: Session? = null", self.diag)
-        self.assertIn("val enabled: Boolean get() = active != null", self.diag)
+        enabled_session = re.search(
+            r"private fun enabledSession\(\): Session\? \{(.*?)\n    \}", code(self.diag), re.S)
+        self.assertIsNotNone(enabled_session)
+        self.assertEqual(compact(enabled_session.group(1)), compact('''
+            val session = active ?: return null
+            return session.takeIf { AppFileLogger.isEnabled() && !it.closed }
+        '''))
+        self.assertEqual(len(re.findall(r"\bactive\b", enabled_session.group(1))), 1)
+        self.assertIn("val enabled: Boolean get() = enabledSession() != null", self.diag)
+        self.assertIn("@Volatile var closed = false", self.diag)
         self.assertIn("lifecycleState.isAtLeast(Lifecycle.State.RESUMED)", self.diag)
         self.assertIn("loggingEnabled && resumed && window != null", self.diag)
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return block()", self.adapter)
@@ -58,15 +81,38 @@ class RuntimeStreamStageDiagnosticsContract(unittest.TestCase):
             "ipc.attach.decode.live", "ipc.attach.decode.replay",
             "ipc.attach.callback.live", "ipc.attach.callback.replay", "ipc.attach.callback.replayBatch",
             "runtime.checkpoint.accept", "runtime.checkpoint.append",
+            "runtime.checkpoint.lockWait", "runtime.checkpoint.merge",
+            "runtime.checkpoint.buffer.chars", "runtime.checkpoint.buffer.events",
+            "runtime.checkpoint.buffer.residency",
             "runtime.checkpoint.flush.boundary", "runtime.checkpoint.flush.size",
             "runtime.checkpoint.flush.timer", "runtime.checkpoint.flush.seal",
         }
         runtime = code(self.client + self.executor + self.recorder)
         labels = set(re.findall(r'"((?:ipc\.(?:client|attach)|runtime\.checkpoint)\.[^"\n]+)"', runtime))
         self.assertEqual(expected, labels)
-        self.assertLessEqual(len(labels), 15)
-        self.assertNotIn("value =", runtime)
+        self.assertEqual(len(labels), 20)
+
+        # Count/clock arguments are the only diagnostic values; never permit a payload value.
+        diagnostics = runtime + code(self.adapter)
+        calls = list(numeric_diagnostic_calls(diagnostics))
+        self.assertCountEqual(calls, [
+            ("record", '"ipc.delta.delay",ns=it'),
+            ("record", '"runtime.checkpoint.lockWait",System.nanoTime()-requested'),
+            ("measure", '"runtime.checkpoint.merge",checkpointEvent.deltaChars.toLong()'),
+            ("recordForSession", 'diagnosticGeneration,"runtime.checkpoint.buffer.chars",value=event.deltaChars.toLong()'),
+            ("recordForSession", 'diagnosticGeneration,"runtime.checkpoint.buffer.events",value=pendingObservedDeltas'),
+            ("recordForSession", 'diagnosticGeneration,"runtime.checkpoint.buffer.residency",System.nanoTime()-observedAt'),
+            ("measure", "stage"),  # The gated adapter forwards only the finite stage.
+        ])
+        self.assertEqual([compact(value) for value in re.findall(r"\bvalue\s*=\s*([^\n]+)", diagnostics)],
+                         ["event.deltaChars.toLong())", "pendingObservedDeltas)"])
+        for method, arguments in calls:
+            with self.subTest(method=method, arguments=arguments):
+                self.assertNotRegex(arguments, r"\.(?:delta|text|content|body|payload|prompt|arguments|toString|javaClass)\b")
+                self.assertNotRegex(arguments, r"\b(?:data|runId|diagnosticRunId|request)\b|\$")
         self.assertNotIn(".note(", runtime)
+        self.assertNotIn(".note(", code(self.adapter))
+        self.assertNotIn(".javaClass", runtime)
         self.assertNotIn(".javaClass", code(self.adapter))
 
     def test_client_keeps_delay_decode_and_callback_in_order(self):
