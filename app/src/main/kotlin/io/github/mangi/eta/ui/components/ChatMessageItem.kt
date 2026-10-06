@@ -1296,7 +1296,12 @@ private fun ChatMarkdownDocument(
     }
     val density = LocalDensity.current
     var previousVisibleType: IElementType? = null
-    Column(modifier) {
+    // Inclusive document-container range; never add it to the inner block spans.
+    Column(
+        modifier
+            .streamDiagnosticMeasure("render.measure")
+            .streamDiagnosticDraw("render.draw"),
+    ) {
         blocks.forEachIndexed { index, node ->
             if (index >= composedBlockLimit) return@forEachIndexed
             val revealKey = node.firstRevealBlockKey()

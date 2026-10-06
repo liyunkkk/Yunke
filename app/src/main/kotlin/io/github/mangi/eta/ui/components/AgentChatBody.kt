@@ -1306,6 +1306,8 @@ internal fun AgentConversationMessages(
             messageActions.onBranchMessage = onBranchMessage
             messageActions.onQuestionDraftChanged = onQuestionDraftChanged
             messageActions.onSubmitQuestionAnswer = onSubmitQuestionAnswer
+            // Commit count only (ns=0): proves this content lambda was applied, not its cost.
+            StreamPerformanceDiagnostics.record("chat.content.commit", value = 1)
         }
         LazyColumn(
             state = scrollState,
@@ -1315,6 +1317,8 @@ internal fun AgentConversationMessages(
                 Arrangement.Top
             },
             modifier = Modifier
+                .streamDiagnosticMeasure("list.measure")
+                .streamDiagnosticPlacement("list.place")
                 .fillMaxSize()
                 .graphicsLayer {
                     val overflow = scrollState.followTailOverflow()
