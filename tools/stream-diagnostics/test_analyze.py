@@ -72,6 +72,20 @@ P0_EXTRA = {
     "openSpan": "span=1 partial=true atCutoff=true stillOpenAtFinal=false cpuNs=unknown",
     "finalCompletion": "cutoffNs=300 loggerRejected=0 loggerFailed=0 drainGraceMs=250 completion=appendAndFlush privacyGate=honored evidenceComplete=notClaimed",
 }
+# Independent zero-loss window: previousWindowSpans and lateSpans are not loss
+# counts, and thread saturation is tested separately from retained span evidence.
+ZERO_WINDOW = re.sub(
+    r"\b(ringOverwritten|slowBudgetDropped|frameBudgetDropped|spanOutputTruncated|"
+    r"tokenSaturated|eventLinksOverwritten|mainRingOverwritten|mainOutputTruncated|"
+    r"noteBudgetDropped|closedRejectedRecords|lateSpans|protectedBudgetDropped|"
+    r"frameCaptureTruncated|previousWindowSpans|rowTokenSaturated|listSampleOverwritten|"
+    r"frameBudgetEvicted|callbackRejected|openAtStop|openIdDropped|threadIdSaturated|"
+    r"openSpansAtCutoff)=[0-9]+", r"\1=0", WINDOW)
+ZERO_CORRELATION = CORRELATION["frameCorrelation"].replace(
+    "matched=1 emitted=1 omitted=0", "matched=0 emitted=0 omitted=0").replace(
+    "lookbackMatched=9 lookbackEmitted=8 lookbackOmitted=1", "lookbackMatched=0 lookbackEmitted=0 lookbackOmitted=0").replace(
+    "mainSpanUnionNs=40 frameWallOutsideSpansNs=0", "mainSpanUnionNs=0 frameWallOutsideSpansNs=40")
+
 # Independently pinned da5c render/data/recorder input, not derived from the
 # parser's allowlist: an omitted real static label must fail compatibility.
 RENDER_LABELS = frozenset("""
@@ -207,6 +221,39 @@ class ParserTests(unittest.TestCase):
                 diag.parse_line(correlation.replace(field + "=" + str(record[field]), field + "=-1"))
         with self.assertRaises(diag.Rejected):
             diag.parse_line(WINDOW.replace("threadIdSaturated=1", "threadIdSaturated=-1"))
+
+    def test_correlation_arithmetic_rejects_only_emitter_contract_contradictions(self):
+        line = PREFIX.format(kind="frameCorrelation") + CORRELATION["frameCorrelation"]
+        attacks = [
+            line.replace("matched=1 emitted=1 omitted=0", "matched=1 emitted=2 omitted=0"),
+            line.replace("matched=1 emitted=1 omitted=0", "matched=1 emitted=1 omitted=1"),
+            line.replace("lookbackMatched=9", "lookbackMatched=8"),
+            line.replace("mainSpanUnionNs=40", "mainSpanUnionNs=41"),
+            line.replace("frameWallOutsideSpansNs=0", "frameWallOutsideSpansNs=1"),
+            line.replace("matched=1 emitted=1 omitted=0", "matched=0 emitted=0 omitted=0"),
+            line.replace("sourceWindowLoss=false", "sourceWindowLoss=true"),
+            line.replace("sourceWindowUnknown=false", "sourceWindowUnknown=true"),
+        ]
+        for attack in attacks:
+            with self.subTest(attack_index=attacks.index(attack)), self.assertRaises(diag.Rejected):
+                diag.parse_line(attack)
+        # The emitter computes union before limiting detail rows; output omission
+        # alone does not imply evidenceIncomplete or invalidate the wall union.
+        limited = line.replace("matched=1 emitted=1 omitted=0", "matched=2 emitted=1 omitted=1")
+        self.assertFalse(diag.parse_line(limited)["evidenceIncomplete"])
+        self.assertEqual(1, diag.parse_line(line)["lookbackOmitted"])
+        # No count is compared to the number of supplied spanOverlap/lookback
+        # lines: extracted v2 inputs are allowed to contain only a subset.
+        records, audit = diag.parse_lines([limited])
+        self.assertEqual(audit["rejectedLines"], 0)
+        self.assertEqual(len(records), 1)
+        for fields in ("sourceWindowLoss sourceWindowUnknown lookbackMatched lookbackEmitted lookbackOmitted",
+                       "emitted omitted mainSpanUnionNs frameWallOutsideSpansNs"):
+            old = re.sub(r" (?:" + "|".join(fields.split()) + r")=[^ ]+", "", line)
+            self.assertEqual(diag.parse_line(old)["matched"], 1)
+        records, audit = diag.parse_lines(attacks)
+        self.assertFalse(records)
+        self.assertEqual(audit["rejectedLines"], len(attacks))
 
     def test_correlation_emitter_fields_match_independent_full_golden(self):
         root = Path(__file__).resolve().parents[2]
@@ -442,6 +489,149 @@ class WhereTimeTests(unittest.TestCase):
         records, audit = diag.parse_lines(lines)
         self.assertEqual(audit["rejectedLines"], 0)
         return diag.where_time(records, audit, start, end, tables=tables)["whereTime"]
+
+    def test_protected_window_loss_is_not_hidden_by_six_legacy_zeros(self):
+        # Legal split #1: callback protection was capped even though all six
+        # legacy loss counters are zero. A correlation reports no retained match.
+        window = ZERO_WINDOW.replace("protectedBudgetDropped=0", "protectedBudgetDropped=1")
+        correlation = PREFIX.format(kind="frameCorrelation") + ZERO_CORRELATION.replace(
+            "evidenceIncomplete=false", "evidenceIncomplete=true")
+        def milliseconds(line):
+            return re.sub(r"\b([A-Za-z][A-Za-z0-9]*Ns)=([0-9]+)",
+                          lambda m: m[1] + "=" + str(int(m[2]) * 1000000), line)
+        entry = self.report([milliseconds(window), milliseconds(FRAME), milliseconds(correlation)],
+                            100000000, 300000000)["frames"][0]
+        integrity = entry["recordIntegrity"]
+        self.assertEqual(integrity["status"], "records_lost_or_truncated")
+        self.assertEqual(integrity["byEvidence"]["spans"]["status"], "records_lost_or_truncated")
+        self.assertEqual(integrity["counters"]["protectedBudgetDropped"], 1)
+        for key in ("ringOverwritten", "spanOutputTruncated", "slowBudgetDropped",
+                    "frameBudgetDropped", "mainRingOverwritten", "mainOutputTruncated"):
+            self.assertEqual(integrity["counters"][key], 0)
+        self.assertTrue(integrity["evidenceIncomplete"])
+        self.assertEqual(entry["frameCorrelation"]["frameWallOutsideSpansNs"], 40000000)
+        self.assertEqual(entry["instrumentation"]["gapMeaning"], "unattributed_or_record_loss")
+
+    def test_source_window_loss_survives_zero_current_window_counters(self):
+        # Legal split #2: the callback inspected a lossy preceding generation,
+        # while the current admission snapshot reports no local record drops.
+        correlation = PREFIX.format(kind="frameCorrelation") + ZERO_CORRELATION.replace(
+            "sourceWindowLoss=false", "sourceWindowLoss=true").replace(
+            "evidenceIncomplete=false", "evidenceIncomplete=true")
+        def milliseconds(line):
+            return re.sub(r"\b([A-Za-z][A-Za-z0-9]*Ns)=([0-9]+)",
+                          lambda m: m[1] + "=" + str(int(m[2]) * 1000000), line)
+        entry = self.report([milliseconds(ZERO_WINDOW), milliseconds(FRAME), milliseconds(correlation)],
+                            100000000, 300000000)["frames"][0]
+        integrity = entry["recordIntegrity"]
+        self.assertTrue(all(value == 0 for value in integrity["counters"].values()))
+        self.assertEqual(integrity["status"], "records_lost_or_truncated")
+        self.assertTrue(integrity["sourceWindowLoss"])
+        self.assertFalse(integrity["sourceWindowUnknown"])
+        self.assertTrue(integrity["evidenceIncomplete"])
+        self.assertEqual(entry["frameCorrelation"]["status"], "matched")
+        self.assertEqual(entry["instrumentation"]["gapMeaning"], "unattributed_or_record_loss")
+
+    def test_known_losses_are_classified_without_turning_every_gap_into_span_loss(self):
+        domains = {
+            "spans": ("ringOverwritten", "slowBudgetDropped", "spanOutputTruncated",
+                      "protectedBudgetDropped", "frameCaptureTruncated"),
+            "frames": ("frameBudgetDropped", "frameBudgetEvicted", "callbackRejected"),
+            "mainDispatches": ("mainRingOverwritten", "mainOutputTruncated"),
+            "listSamples": ("listSampleOverwritten",), "notes": ("noteBudgetDropped",),
+            "admission": ("closedRejectedRecords", "openIdDropped"),
+        }
+        outside = SPAN.replace("beginNs=120 endNs=280", "beginNs=110 endNs=130")
+        for domain, fields in domains.items():
+            for field in fields:
+                with self.subTest(field=field):
+                    window = ZERO_WINDOW.replace(field + "=0", field + "=1")
+                    correlation = ZERO_CORRELATION.replace("evidenceIncomplete=false", "evidenceIncomplete=true") if domain == "spans" else ZERO_CORRELATION
+                    entry = self.report([window, FRAME, outside, PREFIX.format(kind="frameCorrelation") + correlation])["frames"][0]
+                    self.assertEqual(entry["recordIntegrity"]["status"], "records_lost_or_truncated")
+                    self.assertEqual(entry["recordIntegrity"]["byEvidence"][domain]["status"], "records_lost_or_truncated")
+                    self.assertEqual(entry["instrumentation"]["gapMeaning"], "unattributed_or_record_loss"
+                                     if domain == "spans" else "unattributed_not_proven_idle")
+        for field, domain, status in (("tokenSaturated", "attribution", "attribution_incomplete"),
+                                      ("rowTokenSaturated", "attribution", "attribution_incomplete"),
+                                      ("eventLinksOverwritten", "attribution", "attribution_incomplete"),
+                                      ("threadIdSaturated", "threadMapping", "mapping_incomplete")):
+            entry = self.report([ZERO_WINDOW.replace(field + "=0", field + "=1"), FRAME, outside])["frames"][0]
+            self.assertEqual(entry["recordIntegrity"]["byEvidence"][domain]["status"], status)
+            self.assertFalse(entry["recordIntegrity"]["spanEvidenceIncomplete"])
+            self.assertEqual(entry["instrumentation"]["gapMeaning"], "unattributed_not_proven_idle")
+            self.assertEqual(entry["recordIntegrity"]["status"], "no_loss_reported_not_complete_coverage"
+                             if domain == "threadMapping" else "evidence_incomplete_not_record_loss")
+        informational = ZERO_WINDOW.replace("previousWindowSpans=0", "previousWindowSpans=1").replace("lateSpans=0", "lateSpans=1")
+        entry = self.report([informational, FRAME])["frames"][0]
+        self.assertEqual(entry["recordIntegrity"]["status"], "no_loss_reported_not_complete_coverage")
+
+    def test_source_unknown_and_pending_evidence_are_not_reported_as_zero_loss(self):
+        for window, fields in ((ZERO_WINDOW, ZERO_CORRELATION.replace("sourceWindowUnknown=false", "sourceWindowUnknown=true")),
+                               (ZERO_WINDOW.replace("openSpansAtCutoff=0", "openSpansAtCutoff=1").replace("partial=false", "partial=true"), ZERO_CORRELATION)):
+            correlation = PREFIX.format(kind="frameCorrelation") + fields.replace("evidenceIncomplete=false", "evidenceIncomplete=true")
+            entry = self.report([window, FRAME, correlation])["frames"][0]
+            self.assertEqual(entry["recordIntegrity"]["status"], "integrity_unavailable")
+            self.assertTrue(entry["recordIntegrity"]["evidenceIncomplete"])
+            self.assertTrue(entry["recordIntegrity"]["spanEvidenceIncomplete"])
+            self.assertFalse(entry["recordIntegrity"]["sourceWindowLoss"])
+            self.assertEqual(entry["instrumentation"]["gapMeaning"], "unattributed_or_incomplete_evidence")
+        entry = self.report([ZERO_WINDOW, FRAME, PREFIX.format(kind="frameCorrelation") +
+                             ZERO_CORRELATION.replace("sourceWindowUnknown=false", "sourceWindowUnknown=true").replace(
+                                 "evidenceIncomplete=false", "evidenceIncomplete=true")])["frames"][0]
+        self.assertTrue(entry["recordIntegrity"]["sourceWindowUnknown"])
+
+    def test_abnormal_frame_index_is_not_joined_across_windows_sessions_or_final_prefixes(self):
+        clean = PREFIX.format(kind="frameCorrelation") + ZERO_CORRELATION
+        lossy = clean.replace("sourceWindowLoss=false", "sourceWindowLoss=true").replace("evidenceIncomplete=false", "evidenceIncomplete=true")
+        for foreign in (lossy.replace("windowStartNs=100 windowEndNs=300", "windowStartNs=300 windowEndNs=500"),
+                        lossy.replace("id=12ab34cd", "id=87654321"), lossy.replace("final=false", "final=true")):
+            entry = self.report([ZERO_WINDOW, FRAME, foreign])["frames"][0]
+            self.assertEqual(entry["recordIntegrity"]["status"], "no_loss_reported_not_complete_coverage")
+            self.assertIsNone(entry["recordIntegrity"]["sourceWindowLoss"])
+            self.assertEqual(entry["frameCorrelation"]["status"], "unavailable")
+        def later(line):
+            return line.replace("windowStartNs=100 windowEndNs=300", "windowStartNs=300 windowEndNs=500").replace(
+                "intendedVsyncNs=150", "intendedVsyncNs=350").replace("vsyncNs=155", "vsyncNs=355")
+        entries = self.report([ZERO_WINDOW, FRAME, clean, later(ZERO_WINDOW), later(FRAME), later(lossy)], 100, 500)["frames"]
+        self.assertEqual([r["abnormalFrame"] for r in entries], [0, 0])
+        self.assertEqual([r["recordIntegrity"]["status"] for r in entries],
+                         ["no_loss_reported_not_complete_coverage", "records_lost_or_truncated"])
+        self.assertEqual([r["windowStartNs"] for r in entries], [100, 300])
+
+    def test_correlation_timing_mismatch_missing_fields_and_conflicts_are_conservative_unknown(self):
+        clean = PREFIX.format(kind="frameCorrelation") + ZERO_CORRELATION
+        lossy = clean.replace("sourceWindowLoss=false", "sourceWindowLoss=true").replace("evidenceIncomplete=false", "evidenceIncomplete=true")
+        cases = (([lossy.replace("intendedVsyncNs=150", "intendedVsyncNs=151")], "timing_mismatch"),
+                 ([lossy.replace("frameTotalNs=40", "frameTotalNs=41").replace("frameWallOutsideSpansNs=40", "frameWallOutsideSpansNs=41")], "timing_mismatch"),
+                 ([lossy.replace(" intendedVsyncNs=150", "")], "identity_or_timing_unavailable"),
+                 ([clean, lossy], "ambiguous"))
+        for correlations, status in cases:
+            entry = self.report([ZERO_WINDOW, FRAME] + correlations)["frames"][0]
+            self.assertEqual(entry["frameCorrelation"]["status"], status)
+            self.assertEqual(entry["recordIntegrity"]["status"], "integrity_unavailable")
+            self.assertIsNone(entry["recordIntegrity"]["sourceWindowLoss"])
+            self.assertEqual(entry["instrumentation"]["gapMeaning"], "unattributed_or_incomplete_evidence")
+        entry = self.report([ZERO_WINDOW, FRAME, clean, clean])["frames"][0]
+        self.assertEqual(entry["frameCorrelation"]["status"], "matched")
+        self.assertEqual(entry["recordIntegrity"]["status"], "no_loss_reported_not_complete_coverage")
+        old_correlation = clean.replace(" sourceWindowLoss=false sourceWindowUnknown=false", "")
+        entry = self.report([ZERO_WINDOW, FRAME, old_correlation])["frames"][0]
+        self.assertIsNone(entry["recordIntegrity"]["sourceWindowUnknown"])
+        self.assertEqual(entry["recordIntegrity"]["status"], "integrity_unavailable")
+        old_window = re.sub(r" (?:protectedBudgetDropped|frameCaptureTruncated|threadIdSaturated)=[0-9]+", "", ZERO_WINDOW)
+        entry = self.report([old_window, FRAME])["frames"][0]
+        self.assertIsNone(entry["recordIntegrity"]["counters"]["protectedBudgetDropped"])
+        self.assertEqual(entry["recordIntegrity"]["status"], "integrity_unavailable")
+
+    def test_delayed_frame_uses_its_admission_prefix_not_only_wall_overlapping_windows(self):
+        delayed_window = ZERO_WINDOW.replace("windowStartNs=100 windowEndNs=300", "windowStartNs=300 windowEndNs=500").replace(
+            "protectedBudgetDropped=0", "protectedBudgetDropped=1")
+        delayed_frame = FRAME.replace("windowStartNs=100 windowEndNs=300", "windowStartNs=300 windowEndNs=500")
+        entry = self.report([delayed_window, delayed_frame], 100, 200)["frames"][0]
+        self.assertEqual(entry["recordIntegrity"]["status"], "records_lost_or_truncated")
+        self.assertEqual(entry["recordIntegrity"]["counters"]["protectedBudgetDropped"], 1)
+        self.assertEqual(entry["windowStartNs"], 300)
 
     def test_nested_span_union_and_independent_metric_axis(self):
         parent = SPAN.replace("beginNs=120 endNs=280", "beginNs=155 endNs=175")

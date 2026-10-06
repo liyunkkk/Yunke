@@ -259,6 +259,31 @@ def parse_line(line):
         if {"vsyncNs", "intendedVsyncNs", "vsyncLateNs"} <= set(result):
             if result["vsyncLateNs"] != max(0, result["vsyncNs"] - result["intendedVsyncNs"]):
                 raise Rejected("invalid_vsync_lateness")
+    if kind == "frameCorrelation":
+        # These relations come from correlateDiagnosticFrame, not from an
+        # assumed complete input table. Older v2 records may omit new fields.
+        for matched, emitted, omitted in (("matched", "emitted", "omitted"),
+                                          ("lookbackMatched", "lookbackEmitted", "lookbackOmitted")):
+            if {matched, emitted} <= set(result) and result[emitted] > result[matched]:
+                raise Rejected("invalid_correlation_counts")
+            if {matched, omitted} <= set(result) and result[omitted] > result[matched]:
+                raise Rejected("invalid_correlation_counts")
+            if {matched, emitted, omitted} <= set(result):
+                if result[matched] != result[emitted] + result[omitted]:
+                    raise Rejected("invalid_correlation_counts")
+        if {"frameTotalNs", "mainSpanUnionNs"} <= set(result):
+            if result["mainSpanUnionNs"] > result["frameTotalNs"]:
+                raise Rejected("invalid_correlation_union")
+            if ("frameWallOutsideSpansNs" in result and result["frameWallOutsideSpansNs"] !=
+                    result["frameTotalNs"] - result["mainSpanUnionNs"]):
+                raise Rejected("invalid_correlation_residual")
+        if result.get("matched") == 0 and result.get("mainSpanUnionNs", 0) != 0:
+            raise Rejected("invalid_correlation_union")
+        if result.get("evidenceIncomplete") is False and (
+                result.get("sourceWindowLoss") is True or result.get("sourceWindowUnknown") is True):
+            raise Rejected("invalid_correlation_evidence")
+        # Output omitted/lookbackOmitted do NOT imply evidenceIncomplete in
+        # this emitter: its union is computed before these detail-output caps.
     if kind == "runtime" and not {"runtimeCounter", "supported"} <= set(result):
         raise Rejected("missing_runtime_fields")
     if kind == "runtime" and not result["supported"]:
@@ -403,8 +428,23 @@ TRACE_TABLES = frozenset({
     "actual_frame_timeline_slice", "thread_state", "slice", "sched",
     "cpu_profile_stack_sample", "heap_profile_allocation",
 })
-LOSS_COUNTERS = ("ringOverwritten", "spanOutputTruncated", "slowBudgetDropped",
-                 "frameBudgetDropped", "mainRingOverwritten", "mainOutputTruncated")
+# Loss of one evidence stream is not loss of every other stream. In particular,
+# frame budgets, dispatch rings and identity saturation do not erase span time.
+LOSS_DOMAINS = {
+    "spans": ("ringOverwritten", "spanOutputTruncated", "slowBudgetDropped",
+              "protectedBudgetDropped", "frameCaptureTruncated"),
+    "frames": ("frameBudgetDropped", "frameBudgetEvicted", "callbackRejected"),
+    "mainDispatches": ("mainRingOverwritten", "mainOutputTruncated"),
+    "listSamples": ("listSampleOverwritten",),
+    "notes": ("noteBudgetDropped",),
+    "admission": ("closedRejectedRecords", "openIdDropped"),
+}
+INCOMPLETE_DOMAINS = {
+    "attribution": ("tokenSaturated", "eventLinksOverwritten", "rowTokenSaturated"),
+    "threadMapping": ("threadIdSaturated",),
+    "pendingSpans": ("openSpansAtCutoff", "openAtStop"),
+}
+LOSS_COUNTERS = tuple(key for keys in LOSS_DOMAINS.values() for key in keys)
 FRAME_PARTS = ("unknownNs", "inputNs", "animationNs", "layoutNs", "drawNs",
                "syncNs", "commandNs", "swapNs")
 
@@ -474,6 +514,75 @@ def frame_accounting(frame):
     }
 
 
+def window_identity(record):
+    # abnormalFrame is only an index within this exact emitter prefix. The
+    # admission interval need not overlap a delayed callback's frame wall time.
+    return tuple(record.get(key) for key in
+                 ("session", "windowStartNs", "windowEndNs", "boundary", "final"))
+
+
+def frame_correlation(frame, candidates):
+    scope = "exact_admission_window_and_abnormalFrame_verified_timing"
+    out = {"status": "unavailable", "scope": scope}
+    if not candidates:
+        return out
+    if (frame.get("abnormalFrame") is None or
+            not {"intendedVsyncNs", "totalNs"} <= set(frame) or
+            any(not {"intendedVsyncNs", "frameTotalNs"} <= set(r) for r in candidates)):
+        return {**out, "status": "identity_or_timing_unavailable"}
+    if any(r["intendedVsyncNs"] != frame["intendedVsyncNs"] or
+           r["frameTotalNs"] != frame["totalNs"] for r in candidates):
+        return {**out, "status": "timing_mismatch"}
+    # Exact duplicate lines are harmless, but competing summaries are not an
+    # invitation to pick the most optimistic record.
+    if any(r != candidates[0] for r in candidates[1:]):
+        return {**out, "status": "ambiguous"}
+    keys = ("intendedVsyncNs", "frameTotalNs", "matched", "emitted", "omitted",
+            "lookbackMatched", "lookbackEmitted", "lookbackOmitted", "sourceWindowLoss",
+            "sourceWindowUnknown", "evidenceIncomplete", "mainSpanUnionNs", "frameWallOutsideSpansNs")
+    return {**out, "status": "matched", **{key: candidates[0].get(key) for key in keys}}
+
+
+def record_integrity(windows, correlation):
+    domains = {}
+    for name, keys in {**LOSS_DOMAINS, **INCOMPLETE_DOMAINS}.items():
+        values = {key: (max(r[key] for r in windows if key in r)
+                        if any(key in r for r in windows) else None) for key in keys}
+        nonzero = any(value is not None and value > 0 for value in values.values())
+        incomplete_status = {"attribution": "attribution_incomplete", "threadMapping": "mapping_incomplete",
+                             "pendingSpans": "pending_or_partial_spans"}.get(name, "records_lost_or_truncated")
+        domains[name] = {"status": (incomplete_status if nonzero else "integrity_unavailable"
+                                    if any(value is None for value in values.values()) else
+                                    "no_loss_reported_not_complete_coverage"), "counters": values}
+    source_loss = correlation.get("sourceWindowLoss")
+    source_unknown = correlation.get("sourceWindowUnknown")
+    evidence_incomplete = correlation.get("evidenceIncomplete")
+    span_loss = domains["spans"]["status"] == "records_lost_or_truncated" or source_loss is True
+    correlation_unknown = correlation["status"] not in {"matched", "unavailable"} or (
+        correlation["status"] == "matched" and any(correlation.get(key) is None for key in
+                                                   ("sourceWindowLoss", "sourceWindowUnknown", "evidenceIncomplete")))
+    span_unknown = (domains["spans"]["status"] == "integrity_unavailable" or
+                    domains["pendingSpans"]["status"] != "no_loss_reported_not_complete_coverage" or
+                    any(r.get("partial") is True for r in windows) or source_unknown is True or
+                    evidence_incomplete is True or correlation_unknown)
+    domains["spans"]["status"] = ("records_lost_or_truncated" if span_loss else "integrity_unavailable"
+                                   if span_unknown else "no_loss_reported_not_complete_coverage")
+    lost = any(domains[name]["status"] == "records_lost_or_truncated" for name in LOSS_DOMAINS)
+    unknown = span_unknown or any(domains[name]["status"] == "integrity_unavailable" for name in LOSS_DOMAINS)
+    # Thread mapping is deliberately a separate axis, not missing span records.
+    status = ("records_lost_or_truncated" if lost else "integrity_unavailable" if unknown else
+              "evidence_incomplete_not_record_loss" if domains["attribution"]["status"] == "attribution_incomplete" else
+              "no_loss_reported_not_complete_coverage")
+    return {
+        "status": status, "counters": {key: domains[name]["counters"][key]
+                                        for name, keys in LOSS_DOMAINS.items() for key in keys},
+        "byEvidence": domains, "sourceWindowLoss": source_loss, "sourceWindowUnknown": source_unknown,
+        "evidenceIncomplete": evidence_incomplete,
+        "spanEvidenceIncomplete": span_loss or span_unknown,
+        "scope": "exact_frame_admission_windows_not_localized_to_frame; counters_are_maxima_not_sums",
+    }
+
+
 def where_time(records, audit, start, end, stats=None, tables=None):
     """Two independent axes: FrameMetrics components and retained main-thread interval union.
 
@@ -481,23 +590,27 @@ def where_time(records, audit, start, end, stats=None, tables=None):
     FrameTimeline, prorate whole-message coverage, or add nested spans.
     """
     result = summarize(records, audit, start, end, stats)
+    window_records, correlations = defaultdict(list), defaultdict(list)
+    for record in records:
+        if record["type"] == "window":
+            window_records[window_identity(record)].append(record)
+        elif record["type"] == "frameCorrelation":
+            correlations[(window_identity(record), record.get("abnormalFrame"))].append(record)
     frames = []
     for frame in result["selectedRecords"]:
         if frame["type"] != "frame":
             continue
         group = [r for r in records if r["session"] == frame["session"]]
-        windows = [r for r in group if r["type"] == "window" and overlaps(interval(r), *interval(frame))]
-        counters = {key: (max(r[key] for r in windows if key in r)
-                          if any(key in r for r in windows) else None) for key in LOSS_COUNTERS}
-        lost = any(value is not None and value > 0 for value in counters.values())
-        loss_status = ("records_lost_or_truncated" if lost else
-                       "integrity_unavailable" if any(value is None for value in counters.values()) else
-                       "no_loss_reported_not_complete_coverage")
+        identity = window_identity(frame)
+        correlation = frame_correlation(frame, correlations[(identity, frame.get("abnormalFrame"))])
+        integrity = record_integrity(window_records[identity], correlation)
+        span_loss = integrity["byEvidence"]["spans"]["status"] == "records_lost_or_truncated"
         entry = {
             "session": frame["session"], "abnormalFrame": frame.get("abnormalFrame"),
+            "windowStartNs": frame["windowStartNs"], "windowEndNs": frame["windowEndNs"],
+            "boundary": frame["boundary"], "final": frame["final"],
             "page": frame.get("page"), "metrics": frame_accounting(frame),
-            "recordIntegrity": {"status": loss_status, "counters": counters,
-                                "scope": "overlapping_report_windows_not_localized_to_frame"},
+            "recordIntegrity": integrity, "frameCorrelation": correlation,
         }
         if "totalNs" not in frame or "intendedVsyncNs" not in frame:
             entry["instrumentation"] = {"status": "unavailable"}
@@ -521,7 +634,9 @@ def where_time(records, audit, start, end, stats=None, tables=None):
             "revealSpanUnionNs": reveal_observed if spans else None,
             "observedOutsideRevealNs": observed - reveal_observed if spans else None,
             "noRetainedSpanCoverageNs": right - left - observed if spans else None,
-            "gapMeaning": "unattributed_or_record_loss" if lost else "unattributed_not_proven_idle",
+            "gapMeaning": ("unattributed_or_record_loss" if span_loss else
+                           "unattributed_or_incomplete_evidence" if integrity["spanEvidenceIncomplete"] else
+                           "unattributed_not_proven_idle"),
             "relation": "revealSubsetOfUnionNotAdditive",
         }
         messages = [r for r in group if r["type"] == "mainMessage" and overlaps(interval(r), left, right)]
