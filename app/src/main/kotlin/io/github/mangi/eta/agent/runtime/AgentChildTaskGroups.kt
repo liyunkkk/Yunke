@@ -374,39 +374,39 @@ internal object AgentChildTaskGroups {
         }
     }
 
-    private fun hasRetainedTasks(group: Group): Boolean =
-        group.snapshots.isNotEmpty() || group.coordinator?.taskIds()?.isNotEmpty() == true
-
-    /** Ordinary dispatch may only be routed to a generation whose coordinator is still alive. */
-    private fun hasLiveRetainedTasks(group: Group): Boolean =
-        synchronized(this) { group.coordinator }?.taskIds()?.isNotEmpty() == true
+    /**
+     * Capture configuration, not execution ownership, before constructing this run's groups.
+     * A live retained coordinator can be paused (including by a successful previous parent).
+     * Its immutable candidates still govern ordinary dispatch, but new work must NOT execute
+     * through that historical coordinator. Archived result-only groups do not constrain new work.
+     * Missing frozen candidates fail closed; the current setting is only for explicit replacement.
+     */
+    fun ordinaryDispatchPlan(ownerId: String,
+        current: List<ChildTaskConfigPolicy.Candidate<ChildWorkerConfigResolver.Configuration>>,
+    ): ChildTaskOrdinaryDispatchSelection.Plan<ChildWorkerConfigResolver.Configuration> = synchronized(this) {
+        val retained = groups.values.lastOrNull { group ->
+            group.ownerId == ownerId && !group.closed && group.coordinator?.taskIds()?.isNotEmpty() == true
+        }
+        ChildTaskOrdinaryDispatchSelection.plan(current, retained?.workers?.mapNotNull { it.configuration },
+            retainedTasks = retained != null)
+    }
 
     fun execute(ownerId: String, currentGeneration: String?, call: AgentModelClient.ToolCall,
         currentRunId: String? = null, replacementGeneration: String? = currentGeneration): AgentModelClient.ToolResult {
         val args = runCatching { JSONObject(call.argumentsJson) }.getOrNull() ?: return error("INVALID_TASK_ARGUMENTS")
-        val id = args.optString("task_id")
+        // delegate_task never controls an existing task merely because task_id was supplied.
+        val id = if (call.name == "delegate_task") "" else args.optString("task_id")
         if (call.name == "get_task_result" && id.isBlank()) return list(ownerId, args)
         val candidates = ownerGroups(ownerId)
         val wantsReplacement = call.name == "delegate_task" && args.optString("replace_task_id").isNotBlank()
         val selectedGeneration = if (wantsReplacement) replacementGeneration else currentGeneration
-        val current = candidates.firstOrNull { it.generation == selectedGeneration && it.attached }
+        val current = candidates.firstOrNull { it.generation == selectedGeneration && it.attached &&
+            (currentRunId == null || it.runId == currentRunId) }
         if (wantsReplacement) return replace(candidates, current, call, args)
-        // A new parent must continue ordinary delegation through the retained coordinator when one
-        // still owns the historical task. This coordinator contains the original model snapshot.
-        // Only a live coordinator can dispatch. An archived generation holds read-only snapshots of
-        // finished tasks; routing new work there would answer TASK_FINISHED forever for this owner.
-        // A race where the chosen live generation retires before dispatch still yields TASK_FINISHED
-        // and never falls back to the current user setting for that retained generation.
-        val retained = if (id.isBlank()) candidates.lastOrNull { it !== current && hasLiveRetainedTasks(it) } else null
-        val ordinary = if (retained != null) {
-            val plan = ChildTaskOrdinaryDispatchSelection.plan(
-                current = current?.workers?.mapNotNull { it.configuration }.orEmpty(),
-                frozen = retained.workers.mapNotNull { it.configuration },
-                retainedTasks = true,
-            )
-            retained.takeIf { plan.ordinary.isNotEmpty() }
-        } else current
-        val group = if (id.isNotBlank()) candidates.firstOrNull { owns(it, id) } else ordinary
+        // New dispatch is run-local. The construction entry point supplies frozen ordinary
+        // candidates to this run's coordinator; historical coordinators remain task_id controls.
+        // Never resume, adopt or fall back to a retained group just to create a new task.
+        val group = if (id.isNotBlank()) candidates.firstOrNull { owns(it, id) } else current
         if (group == null) return error(if (id.isNotBlank()) "TASK_NOT_FOUND" else "RUN_CLOSED")
         if (synchronized(this) { group.coordinator == null && !group.retiring } && call.name != "get_task_result") return error("TASK_FINISHED")
         val response = if (call.name == "continue_task") continueOwned(group, currentRunId ?: current?.runId, call) else result(group, id, call)
