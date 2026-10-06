@@ -53,7 +53,7 @@ class RunStopSealWiringTest {
         val body = source.substring(start, end)
         assertTrue(
             "看门狗只能检查停止标志，移除必须留给 applyRunResult",
-            body.contains("if (!stoppingRuns.containsKey(runId)) return@dispatchRuntimeTerminalBarrier"),
+            body.contains("if (!stoppingRuns.containsKey(runId)) return@withContext"),
         )
         assertFalse(
             "看门狗不得移除 stoppingRuns，否则 applyRunResult 会丢掉重试标志",
@@ -93,9 +93,8 @@ class RunStopSealWiringTest {
     fun `stale watchdog cannot remove the current watchdog handle`() {
         val start = source.indexOf("private fun armStopSealWatchdog(")
         val end = source.indexOf("private fun cancelStopSealWatchdog(", start)
-        // Expiry is ordered behind the runtime decode -> Main FIFO (see RuntimeOrderedDecodeDeliveryTest).
-        val body = source.substring(start, end).substringAfter("dispatchRuntimeTerminalBarrier {")
-        val claim = body.indexOf("if (!timeout.claimUnlock(ticket)) return@dispatchRuntimeTerminalBarrier")
+        val body = source.substring(start, end).substringAfter("withContext(Dispatchers.Main.immediate)")
+        val claim = body.indexOf("if (!timeout.claimUnlock(ticket)) return@withContext")
         val remove = body.indexOf("stopSealWatchdogJobs.remove(runId)")
         assertTrue("过期回调必须先核验票据再清理句柄", claim >= 0 && claim < remove)
     }

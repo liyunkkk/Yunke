@@ -132,18 +132,15 @@ class RuntimeStreamStageDiagnosticsContract(unittest.TestCase):
     def test_attach_times_original_callbacks_not_replay_buffering(self):
         body = self.client.split("private class AttachHandler", 1)[1].split("internal companion object", 1)[0]
         self.assertIn('if (live) "ipc.attach.decode.live" else "ipc.attach.decode.replay"', body)
-        self.assertIn("val live = receiveGate.isLive", body)
-        self.assertIn("receiveGate.attachResponse(attached)", body)
-        self.assertIn("receiveGate.result()", body)
+        self.assertIn("val live = delivery.isLive", body)
         self.assertIn("recordDeliveryTiming(data, live = live)", body)
-        self.assertIn("event?.let { { delivery.event(it) } }", body)
-        self.assertIn("dispatchRuntimeDecoded", body)
+        self.assertIn("event?.let(delivery::event)", body)
         self.assertIn('measureRuntimeStreamStage("ipc.attach.callback.replayBatch") { onReplay(events) }', body)
         self.assertIn('measureRuntimeStreamStage("ipc.attach.callback.replay") { onEvent(event) }', body)
         self.assertIn('measureRuntimeStreamStage("ipc.attach.callback.live") { onEvent(event) }', body)
         self.assertEqual(body.count("onEvent(event)"), 2)  # Mutually exclusive replay/live callbacks.
         self.assertIn("delivery.result(result)", body)
-        self.assertIn("dispatchRuntimeDecoded { { delivery.attachResponse(attached) } }", body)
+        self.assertIn("delivery.attachResponse(AgentRuntimeWire.attachRunSucceeded(msg.data ?: return))", body)
 
     def test_checkpoint_accept_stays_in_both_before_dispatch_callbacks(self):
         body = self.executor.split("@Synchronized private fun acceptEvent", 1)[1]

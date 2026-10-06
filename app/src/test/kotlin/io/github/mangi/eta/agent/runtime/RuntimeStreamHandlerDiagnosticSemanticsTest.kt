@@ -12,13 +12,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.LooperMode
-import org.robolectric.Shadows.shadowOf
 
 /** Direct Handler tests: callback semantics with the UI-session gate off, not Binder/perf tests. */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, sdk = [34])
-@LooperMode(LooperMode.Mode.PAUSED)
 class RuntimeStreamHandlerDiagnosticSemanticsTest {
     @Test fun disabledAdapterReturnsOnceAndPropagatesTheOriginalFailure() {
         assertFalse(StreamPerformanceDiagnostics.enabled)
@@ -38,8 +35,8 @@ class RuntimeStreamHandlerDiagnosticSemanticsTest {
         val events = mutableListOf<AgentEvent>()
         val handler = clientHandler(events::add)
         val event = round(1)
-        deliver(handler, eventMessage(event))
-        deliver(handler, Message.obtain().apply { what = AgentRuntimeWire.MSG_EVENT })
+        handler.handleMessage(eventMessage(event))
+        handler.handleMessage(Message.obtain().apply { what = AgentRuntimeWire.MSG_EVENT })
         assertEquals(listOf(event), events)
     }
 
@@ -47,7 +44,7 @@ class RuntimeStreamHandlerDiagnosticSemanticsTest {
         val failure = IllegalStateException("client callback")
         var calls = 0
         val handler = clientHandler { calls++; throw failure }
-        assertFailure(failure) { deliver(handler, eventMessage(round(1))) }
+        assertFailure(failure) { handler.handleMessage(eventMessage(round(1))) }
         assertEquals(1, calls)
     }
 
@@ -59,12 +56,12 @@ class RuntimeStreamHandlerDiagnosticSemanticsTest {
             onEvent = { calls += "event-${(it as AgentEvent.RoundStarted).round}" },
             onAttach = { calls += "attached-$it" },
         )
-        deliver(handler, eventMessage(round(1)))
-        deliver(handler, eventMessage(round(2)))
+        handler.handleMessage(eventMessage(round(1)))
+        handler.handleMessage(eventMessage(round(2)))
         assertEquals(emptyList<String>(), calls)
-        deliver(handler, attachMessage())
-        deliver(handler, attachMessage())
-        deliver(handler, eventMessage(round(3)))
+        handler.handleMessage(attachMessage())
+        handler.handleMessage(attachMessage())
+        handler.handleMessage(eventMessage(round(3)))
         assertEquals(listOf(listOf(round(1), round(2))), replay)
         assertEquals(listOf("replay", "attached-true", "event-3"), calls)
     }
@@ -75,13 +72,13 @@ class RuntimeStreamHandlerDiagnosticSemanticsTest {
         var acks = 0
         val handler = attachHandler(onReplay = null,
             onEvent = { calls++; throw failure }, onAttach = { acks++ })
-        deliver(handler, eventMessage(round(1)))
+        handler.handleMessage(eventMessage(round(1)))
         assertEquals(0, calls)
-        assertFailure(failure) { deliver(handler, attachMessage()) }
+        assertFailure(failure) { handler.handleMessage(attachMessage()) }
         assertEquals(1, calls)
         assertEquals(0, acks)
         // Delivery was already LIVE before the replay callback, as before instrumentation.
-        assertFailure(failure) { deliver(handler, eventMessage(round(2))) }
+        assertFailure(failure) { handler.handleMessage(eventMessage(round(2))) }
         assertEquals(2, calls)
     }
 
@@ -91,17 +88,10 @@ class RuntimeStreamHandlerDiagnosticSemanticsTest {
         var acks = 0
         val handler = attachHandler(onReplay = { replays++; throw failure },
             onEvent = { fail("Unexpected live event") }, onAttach = { acks++ })
-        deliver(handler, eventMessage(round(1)))
-        assertFailure(failure) { deliver(handler, attachMessage()) }
+        handler.handleMessage(eventMessage(round(1)))
+        assertFailure(failure) { handler.handleMessage(attachMessage()) }
         assertEquals(1, replays)
         assertEquals(0, acks)
-    }
-
-    private fun deliver(handler: Handler, message: Message) {
-        handler.handleMessage(message)
-        // Receive remains Main; decoding and the callback now have separate queues.
-        shadowOf(RuntimeStreamDispatch.decoder.looper).idle()
-        shadowOf(android.os.Looper.getMainLooper()).idle()
     }
 
     // Keep production Handler visibility/API unchanged; invoke the original handlers directly.

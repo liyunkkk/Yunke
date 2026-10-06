@@ -50,7 +50,6 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationClient
 import io.github.mangi.eta.agent.model.AgentVideoGenerationParser
 import io.github.mangi.eta.agent.runtime.AgentEvent
-import io.github.mangi.eta.agent.runtime.dispatchRuntimeTerminalBarrier
 import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionRequest
@@ -4695,15 +4694,12 @@ internal class AgentAppState(
         stopSealWatchdogJobs.remove(runId)?.cancel()
         stopSealWatchdogJobs[runId] = scope.launch {
             delay(timeout.timeoutMillis)
-            // Runtime messages already received on Main may still be queued for background
-            // decoding. Expire only behind that same decoder -> Main FIFO, so a real terminal
-            // result that arrived first is applied (and releases this seal) before we claim it.
-            dispatchRuntimeTerminalBarrier {
-                if (!timeout.claimUnlock(ticket)) return@dispatchRuntimeTerminalBarrier
+            withContext(Dispatchers.Main.immediate) {
+                if (!timeout.claimUnlock(ticket)) return@withContext
                 stopSealWatchdogJobs.remove(runId)
                 // applyRunResult consumes the stoppingRuns entry itself; removing it here would
                 // erase the retry flag that decides which stop notice the user sees.
-                if (!stoppingRuns.containsKey(runId)) return@dispatchRuntimeTerminalBarrier
+                if (!stoppingRuns.containsKey(runId)) return@withContext
                 AndroidAgentLogger.warn("Stop seal timed out without a terminal result for run=$runId")
                 applyRunResult(
                     runId,
@@ -4746,12 +4742,8 @@ internal class AgentAppState(
         if (runEventFlushJobs[runId]?.isActive == true) return
         val scheduledAtNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else null
         val diagnosticAttribution = StreamPerformanceDiagnostics.captureAttribution()
-        runEventFlushJobs[runId] = scope.launch(Dispatchers.Main.immediate) {
+        runEventFlushJobs[runId] = scope.launch {
             delay(STREAM_UI_UPDATE_INTERVAL_MS)
-            // Keep the coarse publication cadence/reveal separation. Only align a due delta
-            // projection with the next VSync; synchronous block/non-delta/result flushes cancel
-            // this wait and apply immediately. The timeout retains progress without a UI frame.
-            withTimeoutOrNull(STREAM_UI_FRAME_WAIT_MS) { awaitRunDeltaFrame() }
             if (scheduledAtNs != null && StreamPerformanceDiagnostics.enabled) {
                 StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
             }
@@ -6389,7 +6381,6 @@ internal class AgentAppState(
         // 数据状态以较粗粒度发布，文字显现由独立的帧时钟连续推进。
         // 这与 Kimi 将流式数据和视觉动画分层的做法一致。
         const val STREAM_UI_UPDATE_INTERVAL_MS = 150L
-        const val STREAM_UI_FRAME_WAIT_MS = 32L
 
         fun emptyChatState(thinkingEnabled: Boolean): AgentChatHomeUiState =
             AgentChatHomeUiState(
@@ -7192,32 +7183,6 @@ internal data class ConversationSummaryKey(
     val folderId: String?,
     val environment: ConversationSummaryEnvironment,
 )
-
-private suspend fun awaitRunDeltaFrame() = awaitRunDeltaFrame { ready ->
-    val choreographer = android.view.Choreographer.getInstance()
-    val callback = android.view.Choreographer.FrameCallback { ready() }
-    choreographer.postFrameCallback(callback)
-    val cancel: () -> Unit = {
-        // Jobs and the timeout are Main-owned, but disposal can cancel their scope off Main.
-        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            choreographer.removeFrameCallback(callback)
-        } else {
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                choreographer.removeFrameCallback(callback)
-            }
-        }
-    }
-    cancel
-}
-
-/** Injectable frame registration; cancellation removes a frame before a boundary/result flush. */
-internal suspend fun awaitRunDeltaFrame(schedule: (() -> Unit) -> (() -> Unit)) =
-    kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
-        val cancel = schedule {
-            if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
-        }
-        continuation.invokeOnCancellation { cancel() }
-    }
 
 /** Main-owned, one entry per live conversation; deleted/archive-replaced IDs are pruned. */
 internal class ConversationSummaryCache {

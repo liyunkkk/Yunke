@@ -81,11 +81,8 @@ class StopResponsivenessContract(unittest.TestCase):
                         body.index("stopSealWatchdogJobs.remove(runId)?.cancel()"))
 
     def test_stale_ticket_does_not_remove_new_watchdog(self):
-        # Expiry runs behind the runtime decode -> Main FIFO so a received-but-undecoded real
-        # result is applied first; the ticket is still claimed before any watchdog bookkeeping.
-        body = method(self.app, "armStopSealWatchdog").split("dispatchRuntimeTerminalBarrier {", 1)[1]
+        body = method(self.app, "armStopSealWatchdog").split("withContext(Dispatchers.Main.immediate)", 1)[1]
         self.assertLess(body.index("claimUnlock(ticket)"), body.index("stopSealWatchdogJobs.remove(runId)"))
-        self.assertNotIn("withContext(Dispatchers.Main.immediate)", method(self.app, "armStopSealWatchdog"))
 
     def test_late_stop_failure_does_not_reactivate_settled_run(self):
         body = method(self.app, "stopRun").split("if (!accepted) withContext", 1)[1]
