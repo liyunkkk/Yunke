@@ -7,8 +7,11 @@ ROOT = Path(__file__).resolve().parents[3] / 'src/main/kotlin/io/github/mangi/et
 class TimelineProjectionCacheContract(unittest.TestCase):
     def test_cache_is_used_at_the_existing_measured_projection_call(self):
         text = (ROOT / 'ui/components/AgentChatBody.kt').read_text()
-        self.assertEqual(1, text.count('remember { AgentTimelineProjectionCache() }'))
+        self.assertEqual(2, text.count('remember { AgentTimelineProjectionCache() }'))
+        self.assertEqual(1, text.count('val timelineProjection = remember { AgentTimelineProjectionCache() }'))
+        self.assertEqual(1, text.count('val standaloneTimelineProjection = remember { AgentTimelineProjectionCache() }'))
         self.assertEqual(1, text.count('timelineProjection.project(visibleMessages)'))
+        self.assertEqual(1, text.count('standaloneTimelineProjection.project(visibleMessages)'))
         self.assertIn('val timelineEntries = remember(visibleMessages)', text)
         self.assertIn('measure("timeline.project", visibleMessages.size.toLong()) { timelineProjection.project(visibleMessages) }', text)
 

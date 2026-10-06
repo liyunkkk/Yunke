@@ -41,9 +41,10 @@ class AgentSpeechPrefaceCacheTest {
             messages = messages.dropLast(1) + previous.copy(content = previous.content + "-$index")
             assertSame(old, fixture.project(messages, setOf(owner.id)))
         }
+        // A finishing update (isStreaming true -> false) is not an eligible delta slot.
         messages = messages.dropLast(1) + (messages.last() as AgentMessageUi).copy(isStreaming = false)
-        assertSame(old, fixture.project(messages, setOf(owner.id)))
-        assertEquals(1, fixture.builds)
+        assertNotSame(old, fixture.project(messages, setOf(owner.id)))
+        assertEquals(2, fixture.builds)
         assertEquals("earlier", old[owner.id])
     }
 

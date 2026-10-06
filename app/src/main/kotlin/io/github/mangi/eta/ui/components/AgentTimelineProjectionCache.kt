@@ -114,7 +114,8 @@ internal class AgentSpeechPrefaceCache(
                 val current = messages[index]
                 if (old === current) continue
                 if (old !is AgentMessageUi || current !is AgentMessageUi || old.id != current.id ||
-                    !old.isStreaming || !current.content.startsWith(old.content) || dependent[index]
+                    !old.isStreaming || !current.isStreaming ||
+                    !current.content.startsWith(old.content) || dependent[index]
                 ) {
                     compatible = false
                     break
