@@ -49,9 +49,10 @@ internal fun AgentTurnFooter(
     messageActionsEnabled: Boolean,
     branchEnabled: Boolean,
     speechPreface: String = "",
+    isRunActive: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    if (revealPending) return
+    if (revealPending || isRunActive) return
     val content = when (message) {
         is AgentMessageUi -> {
             if (message.isStreaming || message.content.isBlank()) return
@@ -105,6 +106,7 @@ internal fun AgentMessageActionRow(
     onRegenerate: () -> Unit,
     onBranch: () -> Unit,
     modifier: Modifier = Modifier,
+    showCopyAction: Boolean = true,
 ) {
     @Suppress("DEPRECATION")
     val clipboardManager = LocalClipboardManager.current
@@ -125,7 +127,7 @@ internal fun AgentMessageActionRow(
         modifier = modifier.fillMaxWidth().padding(top = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(
+        if (showCopyAction) IconButton(
             onClick = {
                 TouchHaptics.click(view)
                 @Suppress("DEPRECATION")

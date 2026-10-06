@@ -24,7 +24,7 @@ class ConversationSubAgentPreferencesTest {
     private fun profile() = SubAgentProfile("worker", "name", reasoning = ReasoningEffort.HIGH,
         providerId = "p", modelId = "selection", reasoningByModel = mutableMapOf("p\u0000selection" to ReasoningEffort.HIGH))
 
-    @Test fun previewUsesTheSameLegacySelectionWithoutPersistingSeedOrRevision() {
+    @Test fun previewIgnoresLegacySelectionWithoutPersistingSeedOrRevision() {
         val prefs = prefs()
         prefs.edit().putString(SubAgentPreferences.PROFILES_KEY,
             JSONObject().put("version", 1).put("agents", JSONArray().put(profile().toJson())).toString())
@@ -37,7 +37,8 @@ class ConversationSubAgentPreferencesTest {
         assertEquals(revision, repo.revision.value)
         assertFalse(prefs.contains(ConversationSubAgentPreferences.SEED_KEY))
         assertFalse(preview.enabled)
-        assertEquals(3, preview.parallelLimit(pool))
+        assertTrue(preview.profiles.isEmpty())
+        assertEquals(1, preview.parallelLimit(pool))
         assertEquals(repo.snapshot(c("old")), preview)
     }
 
@@ -59,23 +60,18 @@ class ConversationSubAgentPreferencesTest {
         assertEquals(before, prefs.all)
     }
 
-    @Test fun seedFreezesOldValuesAndExistingOwnerIsNeverOverwritten() {
-        val prefs = prefs()
-        prefs.edit().putString(SubAgentPreferences.PROFILES_KEY,
-            JSONObject().put("version", 1).put("agents", JSONArray().put(profile().toJson())).toString())
-            .putString(pool.legacyKey(), "3").putString("agent_collaboration_old", "false").commit()
-        val repo = ConversationSubAgentPreferences(prefs)
-        assertFalse(repo.snapshot(c("old")).enabled)
-        assertEquals(3, repo.snapshot(c("old")).parallelLimit(pool))
-        assertEquals(null, repo.snapshot(c("old")).parallelLimits[SubAgentParallelModel("p", "selection")])
+    @Test fun explicitSeedStillReadsButIsNotAutomaticallyImportedIntoPresets() {
+        val prefs = prefs(); val repo = ConversationSubAgentPreferences(prefs)
+        repo.update(c("source")) { it.copy(profiles = listOf(profile()), parallelLimits = mapOf(pool to 3), enabled = true) }
+        prefs.edit().putString(ConversationSubAgentPreferences.SEED_KEY, repo.export(c("source"))).commit()
         repo.createConversation(c("old"))
-        prefs.edit().putString(SubAgentPreferences.PROFILES_KEY, "bad JSON").putString(pool.legacyKey(), "9").commit()
-        assertEquals(3, repo.snapshot(c("other")).parallelLimit(pool))
-        assertFalse(repo.snapshot(c("old")).enabled)
-        val changed = repo.update(c("old")) { it.copy(profiles = emptyList()) }
-        assertTrue(changed is ConversationSubAgentPreferences.WriteResult.Saved)
-        repo.createConversation(c("old"), c("other"))
-        assertTrue(repo.snapshot(c("old")).profiles.isEmpty())
+        assertEquals(3, repo.snapshot(c("old")).parallelLimit(pool))
+        assertEquals("worker", repo.snapshot(c("old")).profiles.single().id)
+        assertTrue(repo.presets().isEmpty())
+        prefs.edit().putString(ConversationSubAgentPreferences.SEED_KEY, "bad JSON").commit()
+        assertEquals(3, repo.snapshot(c("old")).parallelLimit(pool))
+        assertThrows(Exception::class.java) { repo.snapshot(c("new")) }
+        assertTrue(repo.presets().isEmpty())
     }
     @Test fun draftsCopyDeeplyAndBindingDoesNotDeleteUntilConfirmed() {
         val prefs = prefs()
@@ -84,7 +80,7 @@ class ConversationSubAgentPreferencesTest {
         val memory = mutableMapOf("p\u0000selection" to ReasoningEffort.HIGH)
         val profiles = mutableListOf(profile().copy(reasoningByModel = memory))
         val limits = mutableMapOf(pool to 2)
-        repo.update(source) { it.copy(profiles = profiles, parallelLimits = limits, diagnosticsEnabled = true) }
+        repo.update(source) { it.copy(profiles = profiles, parallelLimits = limits, enabled = true) }
         val draft = repo.createDraft(source)
         val second = repo.createDraft(source)
         profiles.clear(); memory.clear(); limits.clear()
@@ -110,9 +106,9 @@ class ConversationSubAgentPreferencesTest {
         val owner = c("same")
         a.update(owner) { it.copy(enabled = false) }
         assertEquals(a.revision.value, b.revision.value)
-        b.update(owner) { it.copy(diagnosticsEnabled = true) }
+        b.update(owner) { it.copy(parallelLimits = mapOf(pool to 3)) }
         assertFalse(a.snapshot(owner).enabled)
-        assertTrue(a.snapshot(owner).diagnosticsEnabled)
+        assertEquals(3, a.snapshot(owner).parallelLimit(pool))
     }
     @Test fun rejectionAndRevisionAreOwnerScoped() = runBlocking {
         val repo = ConversationSubAgentPreferences(prefs()) { it != c("running") }
@@ -124,7 +120,7 @@ class ConversationSubAgentPreferencesTest {
         assertEquals(before, repo.snapshot(c("running")))
         repo.update(c("idle")) { it.copy(enabled = false) }
         assertFalse(repo.flow(c("idle")).first().enabled)
-        assertTrue(repo.snapshot(c("running")).enabled)
+        assertFalse(repo.snapshot(c("running")).enabled)
     }
     @Test fun invalidArchivesCannotEraseExplicitEmptyOrExistingConfig() {
         val prefs = prefs()
@@ -147,17 +143,50 @@ class ConversationSubAgentPreferencesTest {
         repo.refreshAfterRestore()
         assertTrue(repo.revision.value > revision)
     }
-    @Test fun corruptOldListIsNotAnEmptyListAndDraftsNeverShareNullKey() {
+    @Test fun retiredDiagnosticKeyIsIgnoredAcrossReadWriteImportAndExport() {
+        val prefs = prefs()
+        val repo = ConversationSubAgentPreferences(prefs)
+        val source = c("diagnostic-source")
+        repo.update(source) { it.copy(enabled = true, profiles = listOf(profile()), parallelLimits = mapOf(pool to 2)) }
+        val archive = repo.export(source)
+        assertFalse(JSONObject(archive).has("diagnostics_enabled"))
+        val expected = repo.snapshot(source)
+        listOf<Any?>(null, true, false, "not-a-switch", JSONObject.NULL).forEachIndexed { index, legacyValue ->
+            val legacy = JSONObject(archive)
+            if (legacyValue != null) legacy.put("diagnostics_enabled", legacyValue)
+            repo.validateArchive(legacy.toString())
+            val target = c("diagnostic-import-$index")
+            assertTrue(repo.importOwner(target, legacy.toString()))
+            assertEquals(expected, repo.snapshot(target))
+            assertFalse(JSONObject(repo.export(target)).has("diagnostics_enabled"))
+            repo.update(target) { it.copy(enabled = false) }
+            assertFalse(JSONObject(repo.export(target)).has("diagnostics_enabled"))
+        }
+        // Old owner/seed values stay readable without a diagnostic migration or reset.
+        val legacy = JSONObject(archive).put("diagnostics_enabled", true).toString()
+        val ownerKey = ConversationSubAgentPreferences.OWNER_PREFIX + "c_" +
+            java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(source.value.toByteArray(Charsets.UTF_8))
+        prefs.edit().putString(ownerKey, legacy).putString(ConversationSubAgentPreferences.SEED_KEY, legacy).commit()
+        val before = prefs.all.toMap()
+        assertEquals(expected, repo.snapshot(source))
+        assertEquals(expected, repo.snapshot(c("diagnostic-seed")))
+        assertEquals(before, prefs.all)
+        val draft = repo.createDraft(source)
+        assertEquals(expected, repo.snapshot(draft))
+        assertFalse(JSONObject(repo.export(draft)).has("diagnostics_enabled"))
+    }
+
+    @Test fun obsoleteListIsNotMigratedAndDraftsNeverShareNullKey() {
         val prefs = prefs()
         prefs.edit().putString(SubAgentPreferences.PROFILES_KEY, "garbage").commit()
         val repo = ConversationSubAgentPreferences(prefs)
-        assertThrows(Exception::class.java) { repo.snapshot(c("x")) }
-        prefs.edit().putString(SubAgentPreferences.PROFILES_KEY,
-            JSONObject().put("version", 1).put("agents", JSONArray()).toString()).commit()
+        val before = prefs.all.toMap()
         assertTrue(repo.snapshot(c("x")).profiles.isEmpty())
+        assertFalse(repo.snapshot(c("x")).enabled)
+        assertEquals(before, prefs.all) // Reads do not reset or overwrite even obsolete data.
         val a = repo.createDraft(); val b = repo.createDraft()
         assertNotEquals(a, b)
-        repo.update(a) { it.copy(enabled = false) }
-        assertTrue(repo.snapshot(b).enabled)
+        repo.update(a) { it.copy(enabled = true) }
+        assertFalse(repo.snapshot(b).enabled)
     }
 }

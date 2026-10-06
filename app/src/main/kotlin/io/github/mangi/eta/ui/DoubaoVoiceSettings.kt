@@ -36,6 +36,7 @@ import io.github.mangi.eta.agent.voice.doubao.VoiceCatalogSecretStore
 import io.github.mangi.eta.agent.voice.doubao.VoiceProjectCatalog
 import io.github.mangi.eta.agent.voice.doubao.VoicePreviewDownloader
 import io.github.mangi.eta.ui.components.EtaMaterialDropdownMenu
+import io.github.mangi.eta.ui.components.EtaFormTextField
 import io.github.mangi.eta.ui.components.EtaMaterialDropdownMenuItem
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.launch
@@ -560,7 +561,7 @@ private fun VoiceTextField(
     singleLine: Boolean = true,
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
-    OutlinedTextField(value = value, onValueChange = onValueChange, label = { Text(label) },
+    EtaFormTextField(value = value, onValueChange = onValueChange, hint = label,
         modifier = modifier, enabled = enabled, singleLine = singleLine, visualTransformation = visualTransformation)
 }
 

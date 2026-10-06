@@ -26,8 +26,18 @@ internal fun conversationUsageTotals(raw: String?, id: String?): ConversationUsa
 /** One-time migration. Old message totals overlap old ledger events; NEVER add the two totals. */
 internal fun seedConversationUsage(raw: String?, legacy: Map<String, ConversationUsageTotals>): String {
     val root = JSONObject(raw?.takeIf { it.isNotBlank() } ?: "{}")
+    seedConversationUsageInPlace(root, raw, legacy)
+    return root.toString()
+}
+
+/** Keep the original raw snapshot for migration, without a JSON round-trip after initialization. */
+internal fun seedConversationUsageInPlace(
+    root: JSONObject,
+    raw: String?,
+    legacy: Map<String, ConversationUsageTotals>,
+) {
     val totals = root.optJSONObject(CONVERSATION_TOTALS) ?: JSONObject().also { root.put(CONVERSATION_TOTALS, it) }
-    if (legacy.isEmpty() && root.optBoolean("conversationTotalsInitialized")) return root.toString()
+    if (legacy.isEmpty() && root.optBoolean("conversationTotalsInitialized")) return
     val known = mutableMapOf<String, ConversationUsageTotals>()
     decodeModelUsageSnapshot(raw).providers.forEach { provider -> provider.models.forEach { model ->
         model.events.collapsedByRound().forEach { event ->
@@ -48,7 +58,6 @@ internal fun seedConversationUsage(raw: String?, legacy: Map<String, Conversatio
         }
     }
     root.put("conversationTotalsInitialized", true)
-    return root.toString()
 }
 
 internal fun updateConversationUsage(root: JSONObject, incoming: ModelUsageEvent, previous: ModelUsageEvent?) {

@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
+import io.github.mangi.eta.config.InteractiveModePreference
 import org.json.JSONArray
 
 /**
@@ -19,6 +20,7 @@ internal object AgentRequestOverhead {
         additionalTools: JSONArray = JSONArray(),
         // Display-only projection; the returned legacy budget is intentionally unchanged.
         onProtocolPreview: ((Int) -> Unit)? = null,
+        interactiveModeEnabled: Boolean = InteractiveModePreference.read(),
     ): Int {
         val systemMessages = AgentPromptBuilder.buildSystemMessages(
             config = config,
@@ -27,6 +29,7 @@ internal object AgentRequestOverhead {
             rootAvailable = capabilities.rootAvailable,
             delegationAvailable = AgentPromptBuilder.delegationToolsAvailable(additionalTools),
             shellTools = capabilities.shellTools,
+            interactiveModeEnabled = interactiveModeEnabled,
         )
         var tokens = 0
         for (index in 0 until systemMessages.length()) {

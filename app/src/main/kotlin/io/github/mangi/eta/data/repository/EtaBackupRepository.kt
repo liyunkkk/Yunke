@@ -105,6 +105,7 @@ internal data class EtaConversationExport(
     val attachmentCount: Int = 0,
     val attachments: List<ConversationArchiveAttachment> = emptyList(),
     val subAgentConfigJson: String? = null,
+    val subAgentConfigGeneration: String? = null,
 ) {
     companion object {
         const val FORMAT = "eta-conversation"
@@ -271,9 +272,10 @@ internal object EtaBackupRepository {
                             decodeConversation(it.readText())
                         }
                         if (conversation != null) {
-                            // Validate the entire owner archive before any Room history or preferences write.
+                            // Gate generation and validate current archives before any owner, files or Room write.
                             val config = BackupSubAgentConfig.archiveForImport(conversation.schemaVersion,
-                                conversation.subAgentConfigJson, ConversationSubAgentPreferences())
+                                conversation.subAgentConfigJson, ConversationSubAgentPreferences(),
+                                generation = conversation.subAgentConfigGeneration)
                             val plan = ConversationArchiveImport.prepare(appContext, conversation, files)
                             val newId = plan.document.conversation.id
                             check(EtaDatabase.get(appContext).conversationDao().conversationEntity(newId) == null) { "新会话 ID 冲突，未开始导入" }
@@ -586,6 +588,7 @@ internal object EtaBackupRepository {
             messages = messages,
             contextCheckpoint = checkpoint,
             subAgentConfigJson = BackupSubAgentConfig.archiveForExport(conversationId, ConversationSubAgentPreferences()),
+            subAgentConfigGeneration = "1",
             attachmentCount = 0,
         )
     }
@@ -593,6 +596,17 @@ internal object EtaBackupRepository {
     private suspend fun restoreMetadata(
         context: Context, document: EtaBackupDocument, reconcile: Boolean = true, exactPreferences: Boolean = false,
     ) {
+        val subAgentStore = ConversationSubAgentPreferences()
+        // Prepare/validate before touching Room, settings or local preferences. The undo path must
+        // remain exact: it is not a second external restore and must never run reset or migrations.
+        val preferencesToRestore = when {
+            exactPreferences -> document.agentPreferences
+            document.schemaVersion >= 2 && document.agentPreferences.isNotEmpty() ->
+                BackupSubAgentConfig.preferencesForRestore(
+                    document.agentPreferences, Prefs.exportAgentPreferences(), subAgentStore,
+                )
+            else -> null
+        }
         val database = EtaDatabase.get(context)
         database.withTransaction {
             database.providerDao().replaceAll(
@@ -622,12 +636,20 @@ internal object EtaBackupRepository {
             McpSecretStore(context).replaceAll(document.mcpTokens)
             document.settings?.let { SettingsDataStore.restoreBackup(it) }
                 ?: SettingsDataStore.setSelection(document.selectedProviderId, document.selectedModelId)
-            // Old archives without this field retain their current prefs; our own undo snapshot is exact.
-            if (exactPreferences || document.agentPreferences.isNotEmpty()) {
-                Prefs.restoreAgentPreferences(document.agentPreferences)
-            }
         } else {
             SettingsDataStore.setSelection(document.selectedProviderId, document.selectedModelId)
+        }
+        // Old archives without this field retain current prefs. Our own undo snapshot is exact,
+        // including the absence of a marker; no post-write migrations may alter rollback originals.
+        preferencesToRestore?.let { values ->
+            if (exactPreferences) {
+                BackupSubAgentConfig.restoreExactPreferences(
+                    values, requireNotNull(Prefs.localAgentPreferences()) { "Agent preferences 未初始化" },
+                )
+            } else {
+                Prefs.restoreAgentPreferences(values)
+            }
+            subAgentStore.refreshAfterRestore()
         }
         LinuxEnvironmentSettingsRepository.initialize(context)
         if (reconcile) {
@@ -725,10 +747,7 @@ internal object EtaBackupRepository {
             }
         }
         document.assistantMemories.keys.forEach { io.github.mangi.eta.data.model.AssistantStorage.id(it) }
-        if (document.agentPreferences.keys.any { it == "agent_conversation_child_seed_v1" ||
-                it.startsWith("agent_conversation_child_owner_v1_") }) {
-            BackupSubAgentConfig.validatePreferences(document.agentPreferences, ConversationSubAgentPreferences())
-        }
+        BackupSubAgentConfig.validateExternalPreferences(document.agentPreferences, ConversationSubAgentPreferences())
         val mcpIds = document.mcpServers.map { it.id }
         if (mcpIds.size != mcpIds.toSet().size || mcpIds.any(String::isBlank)) {
             throw EtaBackupException("备份中的 MCP 服务器存在重复或无效 ID")

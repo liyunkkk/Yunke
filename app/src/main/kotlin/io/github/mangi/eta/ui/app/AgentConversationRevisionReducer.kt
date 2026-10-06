@@ -71,7 +71,8 @@ internal object AgentConversationRevisionReducer {
         )
     }
 
-    fun boundary(state: AgentChatUiState, targetMessageId: String): Boundary? {
+    fun boundary(state: AgentChatUiState, targetMessageId: String,
+                 allowUnconsumedSupplement: Boolean = true): Boundary? {
         val targetIndex = state.messages.indices.singleOrNull { state.messages[it].id == targetMessageId } ?: return null
         val userMessageIndex = (targetIndex downTo 0).firstOrNull { index ->
             state.messages[index] is UserMessageUi
@@ -79,7 +80,7 @@ internal object AgentConversationRevisionReducer {
         val userMessage = state.messages[userMessageIndex] as UserMessageUi
         val historyIndex = historyUserIndex(state, userMessageIndex)
         val laterUsers = state.messages.drop(userMessageIndex + 1).any { it is UserMessageUi }
-        if (historyIndex == null && userMessage.isSteerSupplement() &&
+        if (historyIndex == null && allowUnconsumedSupplement && userMessage.isSteerSupplement() &&
             historyMessageLocation(state, userMessageIndex) == AgentConversationRevisionArchive.Location.Missing) {
             // 停止时尚未写进历史的最后一条追加：它之后没有任何内容可被抹掉，
             // 以完整历史为前缀替换它是安全的；其它缺失的追加仍拒绝，避免误认成原问题。

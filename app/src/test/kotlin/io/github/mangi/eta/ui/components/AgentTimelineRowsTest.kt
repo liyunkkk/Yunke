@@ -217,19 +217,20 @@ class AgentTimelineRowsTest {
         assertEquals(32, (entries[0] as AgentTimelineEntry.WorkProcess).messages.size)
         assertEquals(1, (entries[1] as AgentTimelineEntry.WorkProcess).messages.size)
 
-        // Streaming only auto-expands the trailing batch; the earlier batch stays collapsed by default.
+        // While the turn is streaming, only the trailing completed batch auto-expands.
         val streaming = entries.toLazyTimelineRows(emptyMap(), true)
-        assertEquals(3, streaming.size)
-        val leadingHeader = streaming[0] as AgentTimelineRow.WorkHeader
-        assertEquals(leadingKey, leadingHeader.key)
-        assertFalse(leadingHeader.expanded)
-        val trailingHeader = streaming[1] as AgentTimelineRow.WorkHeader
-        assertEquals(trailingKey, trailingHeader.key)
-        assertTrue(trailingHeader.expanded)
-        val streamingStep = streaming.filterIsInstance<AgentTimelineRow.WorkStep>().single()
-        assertEquals("work-step:tool-32", streamingStep.key)
-        assertEquals(trailingKey, streamingStep.groupKey)
-        assertTrue(streamingStep.isFirst && streamingStep.isLast)
+        assertEquals(
+            listOf(leadingKey, trailingKey, "work-step:tool-32"),
+            streaming.map { it.key },
+        )
+        assertEquals(
+            listOf(false, true),
+            streaming.filterIsInstance<AgentTimelineRow.WorkHeader>().map { it.expanded },
+        )
+        val trailingStep = streaming.filterIsInstance<AgentTimelineRow.WorkStep>().single()
+        assertEquals(trailingKey, trailingStep.groupKey)
+        assertTrue(trailingStep.isFirst)
+        assertTrue(trailingStep.isLast)
 
         // A user override collapses the streaming trailing batch; the leading batch key stays put.
         val collapsedTrailing = entries.toLazyTimelineRows(mapOf(trailingKey to false), true)
@@ -256,5 +257,47 @@ class AgentTimelineRowsTest {
         val idle = entries.toLazyTimelineRows(emptyMap(), false)
         assertTrue(idle.all { it is AgentTimelineRow.WorkHeader })
         assertEquals(listOf(leadingKey, trailingKey), idle.map { it.key })
+        assertEquals(
+            listOf(false, false),
+            idle.filterIsInstance<AgentTimelineRow.WorkHeader>().map { it.expanded },
+        )
+    }
+
+    @Test
+    fun nonTrailingWorkKeepsRunningDefaultRegardlessOfTurnStreaming() {
+        for (running in listOf(false, true)) {
+            for (isStreaming in listOf(false, true)) {
+                val entries = listOf<AgentChatMessageUi>(
+                    tool(0, running = running),
+                    AgentMessageUi("answer", "answer", isStreaming = isStreaming),
+                ).toTimelineEntries()
+                assertEquals(listOf("work-tool-0", "answer"), entries.map { it.key })
+
+                val rows = entries.toLazyTimelineRows(emptyMap(), isStreaming)
+                val header = rows.filterIsInstance<AgentTimelineRow.WorkHeader>().single()
+                assertEquals(running, header.expanded)
+                assertEquals(
+                    if (running) {
+                        listOf("work-tool-0", "work-step:tool-0", "answer")
+                    } else {
+                        listOf("work-tool-0", "answer")
+                    },
+                    rows.map { it.key },
+                )
+
+                val manuallyCollapsed = entries.toLazyTimelineRows(
+                    mapOf("work-tool-0" to false),
+                    isStreaming,
+                )
+                assertEquals(
+                    listOf("work-tool-0", "answer"),
+                    manuallyCollapsed.map { it.key },
+                )
+                assertFalse(
+                    manuallyCollapsed.filterIsInstance<AgentTimelineRow.WorkHeader>()
+                        .single().expanded,
+                )
+            }
+        }
     }
 }

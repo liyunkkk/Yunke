@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.voice.mimo.MimoPersonalVoices
 import io.github.mangi.eta.agent.voice.tts.ReadAloudVoiceHistory
 import io.github.mangi.eta.agent.voice.tts.SpeechPlayback
+import io.github.mangi.eta.ui.components.EtaFormTextField
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.data.repository.ProviderRepository
@@ -93,7 +94,7 @@ private fun MimoVoicesScreen(onBack: () -> Unit) {
                     }
                 }
             }
-            OutlinedTextField(name, { name = it.take(80) }, label = { Text("声音名称") }, singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth())
+            EtaFormTextField(name, { name = it.take(80) }, hint = "声音名称", singleLine = true, enabled = !busy, modifier = Modifier.fillMaxWidth())
             TextButton(enabled = !busy, onClick = { TouchHaptics.click(view); picker.launch(arrayOf("audio/mpeg", "audio/wav", "audio/x-wav")) }) {
                 Text(if (uri == null) "选择 MP3 / WAV 录音" else "录音已选择 · 重新选择")
             }
@@ -115,7 +116,7 @@ private fun MimoVoicesScreen(onBack: () -> Unit) {
                         } finally { busy = false }
                     }
                 }) { Text(if (busy) "正在保存…" else "保存参考声音") }
-            OutlinedTextField(sample, { sample = it.take(300) }, label = { Text("试听文字") }, modifier = Modifier.fillMaxWidth())
+            EtaFormTextField(sample, { sample = it.take(300) }, hint = "试听文字", modifier = Modifier.fillMaxWidth())
             if (notice.isNotBlank()) Text(notice, style = MaterialTheme.typography.bodyMedium)
             playback.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             voices.forEach { voice ->

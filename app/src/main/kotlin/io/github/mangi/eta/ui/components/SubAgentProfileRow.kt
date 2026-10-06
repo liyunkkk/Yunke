@@ -6,7 +6,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,7 +31,8 @@ import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 /** Pickers capture both editor identity and profile binding; a changed owner/run dismisses them. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<ProviderSetting>, enabled: Boolean = true, settings: Boolean = false) {
+internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<ProviderSetting>, enabled: Boolean = true,
+    settings: Boolean = false, draftAllowed: Boolean = enabled, draftRetry: (() -> Unit)? = null) {
     val editor = LocalConversationSubAgentEditor.current
     val usable = enabled && editor?.enabled == true
     val view = LocalView.current
@@ -40,7 +40,8 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
     var modelPicker by remember(editor, profile.id) { mutableStateOf(false) }
     var thinkingPicker by remember(editor, profile.id) { mutableStateOf(false) }
     var rolePicker by remember(editor, profile.id) { mutableStateOf(false) }
-    var tierPicker by remember(editor, profile.id) { mutableStateOf(false) }
+    var tierPicker by remember(editor, profile.id, profile.role) { mutableStateOf(false) }
+    var profileDraft by remember(editor, profile.id) { mutableStateOf<SubAgentProfileDraftSession?>(null) }
     var resolutionPicker by remember(editor, profile.id, profile.providerId, profile.modelId, profile.role) { mutableStateOf(false) }
     LaunchedEffect(usable, editor) {
         if (!usable) { modelPicker = false; thinkingPicker = false; rolePicker = false; tierPicker = false; resolutionPicker = false }
@@ -63,7 +64,7 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
         profile.isMedia && effective !in efforts -> "原档位不可用，请重选"
         else -> effective?.displayName ?: "未启用"
     }
-    LaunchedEffect(profile.providerId, profile.modelId, config) { thinkingPicker = false }
+    LaunchedEffect(profile.providerId, profile.modelId) { thinkingPicker = false }
     Column(verticalArrangement = Arrangement.spacedBy(if (settings) 0.dp else 12.dp)) {
         if (settings) {
             SubAgentSettingRow("模型", config?.let { it.modelDisplayName.ifBlank { it.model } }
@@ -87,18 +88,20 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
                     }
                 }
             }
-            if (profile.supportsTaskTier) Box(Modifier.fillMaxWidth()) {
-                SubAgentSettingRow("任务分工", profile.tier?.label ?: "未设置分工", Icons.Rounded.AccountTree,
-                    "设置${profile.name}任务分工", enabled = usable, dropdown = true,
-                    onClick = { if (currentUsable) { TouchHaptics.click(view); tierPicker = !tierPicker } })
-                Box(Modifier.align(Alignment.CenterEnd).size(40.dp)) {
-                    if (usable) SubAgentDropdownMenu(tierPicker, { tierPicker = false }, Modifier.selectableGroup()) {
-                        SubAgentTaskTier.entries.forEach { tier ->
-                            SubAgentSelectionItem(tier.label, profile.tier == tier) {
-                                if (currentUsable) editor?.updateProfile(profile.id) { latest ->
-                                    if (latest.supportsTaskTier) latest.copy(tier = tier) else latest
+            if (profile.supportsTaskTier) {
+                Box(Modifier.fillMaxWidth()) {
+                    SubAgentSettingRow("任务分工", profile.tier?.label ?: "未设置分工", Icons.Rounded.AccountTree,
+                        "设置${profile.name}任务分工", enabled = usable, dropdown = true,
+                        onClick = { if (currentUsable) { TouchHaptics.click(view); tierPicker = !tierPicker } })
+                    Box(Modifier.align(Alignment.CenterEnd).size(40.dp)) {
+                        if (usable) SubAgentDropdownMenu(tierPicker, { tierPicker = false }, Modifier.selectableGroup()) {
+                            (listOf<SubAgentTaskTier?>(null) + SubAgentTaskTier.entries).forEach { tier ->
+                                SubAgentSelectionItem(tier?.label ?: "未设置分工", profile.tier == tier) {
+                                    if (currentUsable) editor?.updateProfile(profile.id) { latest ->
+                                        if (latest.supportsTaskTier) latest.copy(tier = tier) else latest
+                                    }
+                                    tierPicker = false
                                 }
-                                tierPicker = false
                             }
                         }
                     }
@@ -133,14 +136,26 @@ internal fun SubAgentProfileRow(profile: SubAgentProfile, providers: List<Provid
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 SubAgentGptSpeedButton(profile, providers, usable)
-                if (profile.supportsTaskTier) SubAgentTaskTierButton(profile.name, profile.tier, usable,
-                    { tier -> if (currentUsable) editor?.updateProfile(profile.id) { it.copy(tier = tier) } }, compact = true)
-                else IconButton(enabled = usable, onClick = { if (currentUsable) { TouchHaptics.click(view); modelPicker = true } }) {
-                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "选择${profile.name}模型",
-                        Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurface)
+                // Reserve a real 48dp layout/semantics target, not only IconButton's hit slop.
+                IconButton(modifier = Modifier.size(48.dp), enabled = usable, onClick = {
+                    if (currentUsable && editor != null) {
+                        SubAgentProfileDraftSession.open(editor, profile)?.let {
+                            TouchHaptics.click(view)
+                            profileDraft = it
+                        }
+                    }
+                }) {
+                    Icon(Icons.Rounded.MoreVert, "配置${profile.name}",
+                        Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurface)
                 }
             }
         }
+    }
+    profileDraft?.let { session ->
+        SubAgentProfileConfigDialog(session, editor, providers, enabled = draftAllowed, onDismiss = {
+            session.dismiss()
+            if (profileDraft === session) profileDraft = null
+        }, onRetry = { if (draftRetry != null) draftRetry() else session.editor.retry() })
     }
     if (usable && resolutionPicker && config != null) {
         val verifiedGrok = runCatching {

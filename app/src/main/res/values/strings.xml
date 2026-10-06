@@ -1049,6 +1049,7 @@
   </plurals>
   <string name="provider_models_endpoint_summary">Read the /models list from %1$s</string>
   <string name="provider_models_fetched_filtered">Fetched %1$d models; filtered out %2$d non-chat models</string>
+  <string name="provider_models_sync_summary">Synced with %1$d remote models; removed %2$d unavailable remote models</string>
   <string name="provider_model_list_count">Models (%1$d)</string>
   <string name="provider_model_list_matches">Models (%1$d of %2$d match)</string>
   <string name="provider_model_saved">Saved: %1$s</string>

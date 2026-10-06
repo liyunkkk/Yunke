@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -25,6 +26,8 @@ import io.github.mangi.eta.agent.question.AgentQuestionRequest
 import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.ui.app.AgentQuestionProjection
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.lightColorScheme
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -44,41 +47,41 @@ class AgentQuestionCardCompactTest {
     private val drafts = mutableListOf<AgentQuestionAnswer>()
     private var submissions = 0
 
-    @Test fun recommendationIsNotSelectionAndTheWholeCompactRowIsAccessible() {
+    @Test fun recommendationIsNotSelectionAndTheWholeRowIsAccessible() {
         show()
-        option("First choice").assertIsNotSelected().assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(300.dp)
+        option("First choice").assertIsNotSelected().assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(260.dp)
         option("Second choice").assertIsNotSelected()
         compose.onNodeWithText(text(R.string.question_recommended)).assertExists()
         compose.onNodeWithText(text(R.string.question_submit)).assertIsNotEnabled()
-        compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
-        // Hit the far edge, not the radio or its label.
+        compose.onAllNodes(hasSetTextAction()).assertCountEquals(1) // note is no longer separately folded
         option("Second choice").performTouchInput { click(Offset(width - 2f, height / 2f)) }
         option("Second choice").assertIsSelected()
         option("First choice").assertIsNotSelected()
         compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled()
-        compose.runOnIdle {
-            assertEquals("b", drafts.single().optionId)
-            assertEquals(0, submissions)
-        }
+        compose.runOnIdle { assertEquals("b", drafts.single().optionId); assertEquals(0, submissions) }
     }
 
-    @Test fun optionalNoteStartsFoldedAndFoldingDoesNotDiscardTheDraft() {
+    @Test fun wholeCardFoldKeepsNoteAndSelectionWithoutIndependentDisclosures() {
         show()
+        field(R.string.question_note).performTextInput("Keep this condition")
+        option("Second choice").performClick()
+        header().performClick()
         compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
-        disclosure(text(R.string.question_note)).performClick()
-        compose.onNode(hasSetTextAction()).performTextInput("Keep this condition")
-        disclosure(text(R.string.question_note_added)).performClick()
-        compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+        compose.onNodeWithText("Choose the next step.").assertDoesNotExist()
+        assertCompactSummary()
         compose.runOnIdle { assertEquals("Keep this condition", message.value.note); assertEquals(0, submissions) }
-        disclosure(text(R.string.question_note_added)).performClick()
-        compose.onNode(hasSetTextAction()).assertTextContains("Keep this condition")
+        header().performClick()
+        field(R.string.question_note).assertTextContains("Keep this condition")
+        option("Second choice").assertIsSelected()
+        compose.onNodeWithText(text(R.string.question_show_full_text)).assertDoesNotExist()
+        compose.onNodeWithText(text(R.string.question_note_added)).assertDoesNotExist()
     }
 
     @Test fun otherDelegationAndNoteKeepTheirExistingAnswerSemantics() {
         show(fixture().copy(note = "Additional context"))
         option(text(R.string.question_other)).performClick()
         compose.onNodeWithText(text(R.string.question_submit)).assertIsNotEnabled()
-        compose.onNode(hasSetTextAction()).performTextInput("A custom choice")
+        field(R.string.question_other_hint).performTextInput("A custom choice")
         compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled()
         compose.runOnIdle {
             val answer = AgentQuestionProjection.draftAnswer(message.value)
@@ -86,13 +89,13 @@ class AgentQuestionCardCompactTest {
             assertTrue(AgentQuestionCodec.validateAnswer(message.value.request, answer).accepted)
         }
         option(text(R.string.question_delegate)).performClick()
-        compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
+        compose.onAllNodes(hasSetTextAction()).assertCountEquals(1)
         compose.onNodeWithText(text(R.string.question_delegate_hint), useUnmergedTree = true).assertExists()
         compose.runOnIdle {
             val answer = AgentQuestionProjection.draftAnswer(message.value)
             assertEquals(AgentQuestionAnswer("delegate", note = "Additional context"), answer)
             assertTrue(AgentQuestionCodec.validateAnswer(message.value.request, answer).accepted)
-            assertEquals("A custom choice", message.value.otherText) // switching kind preserves the cached draft
+            assertEquals("A custom choice", message.value.otherText)
             assertEquals(0, submissions)
         }
         option("First choice").performClick()
@@ -101,7 +104,7 @@ class AgentQuestionCardCompactTest {
                 AgentQuestionProjection.draftAnswer(message.value))
         }
         option(text(R.string.question_other)).performClick()
-        compose.onNode(hasSetTextAction()).assertTextContains("A custom choice")
+        field(R.string.question_other_hint).assertTextContains("A custom choice")
     }
 
     @Test fun disallowedOptionalAnswersDoNotCreateControls() {
@@ -110,28 +113,27 @@ class AgentQuestionCardCompactTest {
         compose.onAllNodes(role(Role.RadioButton)).assertCountEquals(2)
         compose.onNodeWithText(text(R.string.question_other)).assertDoesNotExist()
         compose.onNodeWithText(text(R.string.question_delegate)).assertDoesNotExist()
-        compose.onNodeWithText(text(R.string.question_note)).assertDoesNotExist()
         compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
     }
 
-    @Test fun answeredAutomaticallyBecomesOneSummaryAndExpandsIntoReadOnlyHistory() {
+    @Test fun authoritativeAnswerCollapsesThenShowsOnlyOneSubmittedChoiceAndNote() {
         show(fixture().copy(selectedOptionId = "a", note = "Uncommitted note"))
-        disclosure(text(R.string.question_note_added)).performClick()
         val authoritative = AgentQuestionAnswer("option", "b", note = "Submitted condition")
         compose.runOnIdle { message.value = message.value.copy(status = AgentQuestionStatus.Answered, answer = authoritative) }
-        val summary = text(R.string.question_selected, "Second choice")
-        disclosure(summary).assertExists().assertHeightIsAtLeast(48.dp)
+        header().assertExists().assertHeightIsAtLeast(48.dp)
         assertCompactSummary()
         compose.onNodeWithText("Decision title").assertDoesNotExist()
         assertNoForm()
-        disclosure(summary).performClick()
+        header().performClick()
         compose.onNodeWithText("Decision title").assertExists()
         compose.onNodeWithText("Choose the next step.").assertExists()
         compose.onNodeWithText("Second description").assertExists()
+        compose.onNodeWithText("First description").assertDoesNotExist()
+        compose.onAllNodesWithText(text(R.string.question_selected, "Second choice"), useUnmergedTree = true).assertCountEquals(1)
         compose.onNodeWithText("Submitted condition").assertExists()
         compose.onNodeWithText("Uncommitted note").assertDoesNotExist()
         assertNoForm()
-        disclosure(summary).performClick()
+        header().performClick()
         compose.onNodeWithText("Decision title").assertDoesNotExist()
         compose.runOnIdle { assertEquals(0, submissions); assertTrue(drafts.isEmpty()) }
     }
@@ -139,7 +141,7 @@ class AgentQuestionCardCompactTest {
     @Test fun missingHistoricalAnswerNeverFallsBackToRestoredDraftFields() {
         show(fixture().copy(status = AgentQuestionStatus.Answered, answer = null,
             selectedOptionId = "a", answerKind = "other", otherText = "Unsent custom choice", note = "Unsent note"))
-        disclosure(text(R.string.question_answered)).assertExists().performClick()
+        header().performClick()
         compose.onNodeWithText("Decision title").assertExists()
         compose.onNodeWithText("Unsent custom choice", substring = true).assertDoesNotExist()
         compose.onNodeWithText("Unsent note").assertDoesNotExist()
@@ -148,17 +150,14 @@ class AgentQuestionCardCompactTest {
         compose.runOnIdle { assertTrue(drafts.isEmpty()); assertEquals(0, submissions) }
     }
 
-    @Test fun cancelledAndInterruptedAlsoCollapseAndNeverPresentADraftAsAnAnswer() {
+    @Test fun cancelledAndInterruptedCollapseAndNeverPresentADraftAsAnAnswer() {
         show(fixture().copy(selectedOptionId = "a", note = "Unsent condition"))
-        disclosure(text(R.string.question_note_added)).performClick()
-        for ((status, label) in listOf(AgentQuestionStatus.Cancelled to R.string.question_cancelled,
-            AgentQuestionStatus.Interrupted to R.string.question_interrupted)) {
+        for (status in listOf(AgentQuestionStatus.Cancelled, AgentQuestionStatus.Interrupted)) {
             compose.runOnIdle { message.value = message.value.copy(status = status) }
-            disclosure(text(label)).assertExists()
             assertCompactSummary()
             compose.onNodeWithText("Decision title").assertDoesNotExist()
             assertNoForm()
-            disclosure(text(label)).performClick()
+            header().performClick()
             compose.onNodeWithText("Decision title").assertExists()
             compose.onNodeWithText("Unsent condition").assertDoesNotExist()
             compose.onNodeWithText(text(R.string.question_selected, "First choice")).assertDoesNotExist()
@@ -167,103 +166,122 @@ class AgentQuestionCardCompactTest {
         compose.runOnIdle { assertEquals(0, submissions) }
     }
 
-    @Test fun historicalOtherAndDelegationAnswersAreReadableWithoutInputFields() {
+    @Test fun historicalOtherAndDelegationAreReadableWithoutInputFields() {
         show(fixture().copy(status = AgentQuestionStatus.Answered,
             answer = AgentQuestionAnswer("other", otherText = "Custom answer", note = "Custom note")))
+        header().performClick()
         val otherSummary = text(R.string.question_selected, text(R.string.question_other) + " Custom answer")
-        disclosure(otherSummary).performClick()
+        compose.onAllNodesWithText(otherSummary, useUnmergedTree = true).assertCountEquals(1)
         compose.onNodeWithText("Custom note").assertExists()
         assertNoForm()
-        disclosure(otherSummary).performClick()
         compose.runOnIdle { message.value = message.value.copy(answer = AgentQuestionAnswer("delegate")) }
-        val delegateSummary = text(R.string.question_selected, text(R.string.question_delegate))
-        disclosure(delegateSummary).performClick()
+        compose.onAllNodesWithText(text(R.string.question_selected, text(R.string.question_delegate)), useUnmergedTree = true)
+            .assertCountEquals(1)
         compose.onNodeWithText(text(R.string.question_delegate_hint)).assertExists()
         assertNoForm()
     }
 
-    @Test fun longTextCanBeFullyRevealedAndTheSelectedDescriptionAndDelegationScopeAreNeverClipped() {
+    @Test fun longQuestionDescriptionsAndDelegationScopeNeverRequireSeparateExpansion() {
         val initial = fixture()
         val body = (1..9).joinToString("\n") { "Question condition $it" }
         val description = (1..5).joinToString("\n") { "Option condition $it" }
         show(initial.copy(request = initial.request.copy(question = body,
             options = listOf(initial.request.options[0].copy(description = description), initial.request.options[1]))))
-        assertTrue(layout(body).hasVisualOverflow)
-        assertEquals(3, layout(body).lineCount)
-        assertTrue(layout(description).hasVisualOverflow)
-        assertEquals(2, layout(description).lineCount)
-        assertFalse(layout(text(R.string.question_delegate_hint)).hasVisualOverflow)
-        disclosure(text(R.string.question_show_full_text)).performClick()
-        assertFalse(layout(body).hasVisualOverflow)
+        assertNoVisualOverflow(body)
         assertEquals(9, layout(body).lineCount)
-        assertFalse(layout(description).hasVisualOverflow)
+        assertNoVisualOverflow(description)
         assertEquals(5, layout(description).lineCount)
-        disclosure(text(R.string.question_show_less)).performClick()
-        assertTrue(layout(body).hasVisualOverflow)
-        option("First choice").performClick()
-        assertFalse(layout(description).hasVisualOverflow)
+        assertNoVisualOverflow(text(R.string.question_delegate_hint))
+        compose.onNodeWithText(text(R.string.question_show_full_text)).assertDoesNotExist()
+        header().performClick()
+        compose.onNodeWithText(body).assertDoesNotExist()
+        header().performClick()
+        assertNoVisualOverflow(body)
+        assertNoVisualOverflow(description)
         compose.runOnIdle { assertEquals(0, submissions) }
     }
 
-    @Test fun localDisclosureIsIsolatedByEveryQuestionIdentityFieldNotMessageId() {
+    @Test fun disclosureIsIsolatedByEveryQuestionOwnerFieldNotUiMessageId() {
         val initial = fixture()
-        val request = initial.request.copy(question = (1..7).joinToString("\n") { "Condition $it" })
-        show(initial.copy(request = request, selectedOptionId = "a"), updateSubmitting = false)
-        // Deliberately reuse both the composition slot and UI message id, changing one owner field at a time.
+        val request = initial.request
+        show(initial.copy(selectedOptionId = "a"), updateSubmitting = false)
         for (next in listOf(request.copy(conversationId = "other-conversation"), request.copy(runId = "other-run"),
             request.copy(toolCallId = "other-call"), request.copy(questionId = "other-question"))) {
-            // Always start from the same owner so each transition changes exactly one identity field.
             compose.runOnIdle { message.value = initial.copy(request = request, selectedOptionId = "a") }
-            disclosure(text(R.string.question_show_full_text)).performClick()
-            disclosure(text(R.string.question_note)).performClick()
-            compose.onNodeWithText(text(R.string.question_submit)).performClick()
+            header().performClick()
+            compose.onNodeWithText(request.question).assertDoesNotExist()
             compose.runOnIdle { message.value = initial.copy(request = next, selectedOptionId = "a") }
-            compose.onAllNodes(hasSetTextAction()).assertCountEquals(0)
-            assertTrue(layout(request.question).hasVisualOverflow)
-            compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled()
-            disclosure(text(R.string.question_show_full_text)).assertExists()
+            compose.onNodeWithText(request.question).assertExists() // waiting owner starts expanded
+            compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled().performClick()
         }
         compose.runOnIdle { assertEquals(4, submissions) }
     }
 
-    @Test fun expandedTerminalDetailsDoNotLeakIntoAnotherOwnerOrAnotherTerminalStatus() {
+    @Test fun expandedHistoryDoesNotLeakIntoAnotherOwnerOrAnotherTerminalStatus() {
         show(fixture().copy(status = AgentQuestionStatus.Cancelled))
-        disclosure(text(R.string.question_cancelled)).performClick()
+        header().performClick()
         compose.onNodeWithText("Decision title").assertExists()
-        compose.runOnIdle {
-            message.value = message.value.copy(request = message.value.request.copy(toolCallId = "another-call"))
-        }
+        compose.runOnIdle { message.value = message.value.copy(request = message.value.request.copy(toolCallId = "another-call")) }
         compose.onNodeWithText("Decision title").assertDoesNotExist()
-        disclosure(text(R.string.question_cancelled)).performClick()
-        compose.runOnIdle {
-            message.value = message.value.copy(status = AgentQuestionStatus.Answered, answer = AgentQuestionAnswer("option", "b"))
-        }
-        disclosure(text(R.string.question_selected, "Second choice")).assertExists()
+        header().performClick()
+        compose.runOnIdle { message.value = message.value.copy(status = AgentQuestionStatus.Answered, answer = AgentQuestionAnswer("option", "b")) }
         compose.onNodeWithText("Decision title").assertDoesNotExist()
         assertNoForm()
     }
 
-    @Test fun submittingDisablesTheFormAndExplicitRetryIsPossibleAfterRejection() {
+    @Test fun headerQueriesBottomAnchorOnlyOnClicksAndFastReverseKeepsForm() {
+        var anchorQueries = 0
+        show(anchorQuery = { anchorQueries++; true })
+        compose.runOnIdle { assertEquals(0, anchorQueries) }
+        compose.mainClock.autoAdvance = false
+        header().performClick()
+        compose.mainClock.advanceTimeBy(32)
+        header().performClick()
+        compose.mainClock.advanceTimeBy(300)
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithText("Choose the next step.").assertExists()
+        compose.runOnIdle { assertEquals(2, anchorQueries); assertEquals(0, submissions) }
+    }
+
+    @Test fun submittingDisablesFormAndExplicitRetryRemainsPossibleAfterRejection() {
         show(fixture().copy(selectedOptionId = "a"))
         compose.onNodeWithText(text(R.string.question_submit)).performClick()
         compose.runOnIdle { assertEquals(1, submissions) }
         compose.onNodeWithText(text(R.string.question_submitting)).assertIsNotEnabled()
-        // Accepted submission is not an authoritative Answered event: keep the question visible.
-        compose.onNodeWithText("Decision title").assertExists()
         compose.onNodeWithText("Choose the next step.").assertExists()
         compose.onAllNodes(role(Role.RadioButton)).assertCountEquals(4)
         option("Second choice").assertIsNotEnabled()
+        field(R.string.question_note).assertIsNotEnabled()
         compose.runOnIdle { message.value = message.value.copy(submitting = false, error = "Try again") }
         compose.onNodeWithText("Try again").assertExists()
+        field(R.string.question_note).assertIsEnabled()
         compose.onNodeWithText(text(R.string.question_submit)).assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(2, submissions) }
     }
 
-    @Test fun coalescedFastFailureWithUnchangedErrorDoesNotLatchTheForm() {
+    @Test fun submittingDisablesOtherAnswerAndNoteUntilRetry() {
+        show(fixture().copy(answerKind = "other", otherText = "Custom answer", note = "Keep note"))
+        compose.onNodeWithText(text(R.string.question_submit)).performClick()
+        field(R.string.question_other_hint).assertIsNotEnabled().assertTextContains("Custom answer")
+        field(R.string.question_note).assertIsNotEnabled().assertTextContains("Keep note")
+        compose.runOnIdle {
+            assertEquals(1, submissions)
+            assertTrue(drafts.isEmpty())
+            message.value = message.value.copy(submitting = false, error = "Try again")
+        }
+        field(R.string.question_other_hint).assertIsEnabled().performTextReplacement("Revised answer")
+        field(R.string.question_note).assertIsEnabled().performTextReplacement("Revised note")
+        compose.runOnIdle {
+            assertEquals("Revised answer", message.value.otherText)
+            assertEquals("Revised note", message.value.note)
+            assertEquals("other", message.value.answerKind)
+        }
+    }
+
+    @Test fun coalescedFastFailureWithUnchangedErrorDoesNotLatchForm() {
         show(fixture().copy(selectedOptionId = "a", error = "Same failure"), updateSubmitting = false)
         val click = compose.onNodeWithText(text(R.string.question_submit)).fetchSemanticsNode()
             .config[SemanticsActions.OnClick].action!!
-        // Both store transitions finish before Compose can observe the intermediate state.
         compose.runOnIdle {
             click()
             val before = message.value
@@ -275,19 +293,23 @@ class AgentQuestionCardCompactTest {
         compose.runOnIdle { assertEquals(2, submissions) }
     }
 
-    private fun show(initial: AgentQuestionMessageUi = fixture(), updateSubmitting: Boolean = true) {
+    private fun show(initial: AgentQuestionMessageUi = fixture(), updateSubmitting: Boolean = true, anchorQuery: () -> Boolean = { false }) {
         message.value = initial
         compose.setContent {
-            MaterialTheme {
-                Column(Modifier.width(340.dp).verticalScroll(rememberScrollState())) {
-                    AgentQuestionCard(message.value, Modifier.testTag(CARD), onDraftChanged = { answer ->
-                        drafts += answer
-                        message.value = message.value.copy(answerKind = answer.kind, selectedOptionId = answer.optionId,
-                            otherText = answer.otherText, note = answer.note)
-                    }, onSubmit = {
-                        submissions++
-                        if (updateSubmitting) message.value = message.value.copy(submitting = true)
-                    })
+            MiuixTheme(colors = lightColorScheme()) {
+                MaterialTheme {
+                    Column(Modifier.width(340.dp).verticalScroll(rememberScrollState())) {
+                        CompositionLocalProvider(LocalExpansionHoldsBottom provides anchorQuery) {
+                        AgentQuestionCard(message.value, Modifier.testTag(CARD), onDraftChanged = { answer ->
+                            drafts += answer
+                            message.value = message.value.copy(answerKind = answer.kind, selectedOptionId = answer.optionId,
+                                otherText = answer.otherText, note = answer.note)
+                        }, onSubmit = {
+                            submissions++
+                            if (updateSubmitting) message.value = message.value.copy(submitting = true)
+                        })
+                        }
+                    }
                 }
             }
         }
@@ -307,8 +329,21 @@ class AgentQuestionCardCompactTest {
 
     private fun role(value: Role) = SemanticsMatcher.expectValue(SemanticsProperties.Role, value)
     private fun option(label: String) = compose.onNode(hasText(label) and role(Role.RadioButton))
-    private fun disclosure(label: String) = compose.onNode(hasText(label) and role(Role.Button))
+    private fun header() = compose.onNode(role(Role.Button) and hasText("Decision title", substring = true))
+    private fun field(id: Int) = compose.onNodeWithContentDescription(text(id))
     private fun text(id: Int, vararg args: Any): String = RuntimeEnvironment.getApplication().getString(id, *args)
+
+    private fun assertNoVisualOverflow(value: String) {
+        val result = layout(value)
+        val diagnostic = "text=$value; size=${result.size}; paragraph=${result.multiParagraph.width}x${result.multiParagraph.height}; " +
+            "constraints=${result.layoutInput.constraints}; lines=${result.lineCount}; " +
+            "maxLines=${result.layoutInput.maxLines}; softWrap=${result.layoutInput.softWrap}; overflow=${result.layoutInput.overflow}; " +
+            "widthOverflow=${result.didOverflowWidth}; heightOverflow=${result.didOverflowHeight}; " +
+            "lastEnd=${result.getLineEnd(result.lineCount - 1)}; lastBottom=${result.getLineBottom(result.lineCount - 1)}"
+        assertFalse(diagnostic, result.hasVisualOverflow)
+        assertEquals(diagnostic, value.length, result.getLineEnd(result.lineCount - 1))
+        repeat(result.lineCount) { assertFalse(diagnostic, result.isLineEllipsized(it)) }
+    }
 
     private fun layout(text: String): TextLayoutResult {
         val results = mutableListOf<TextLayoutResult>()

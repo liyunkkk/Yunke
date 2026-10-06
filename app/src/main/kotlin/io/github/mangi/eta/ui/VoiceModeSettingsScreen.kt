@@ -7,7 +7,7 @@ import io.github.mangi.eta.agent.voice.DoubaoRealtimeVoices
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.OutlinedTextField
+import io.github.mangi.eta.ui.components.EtaFormTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -20,13 +20,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig
-import top.yukonga.miuix.kmp.preference.SwitchPreference
+import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.data.model.SpeechSynthesisModels
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.repository.ProviderRepository
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.preference.ArrowPreference
+import io.github.mangi.eta.ui.components.ArrowPreference
 
 @Composable
 internal fun VoiceModeSettingsScreen(onBack: () -> Unit) {
@@ -94,6 +94,7 @@ internal fun VoiceModeSettingsScreen(onBack: () -> Unit) {
                         2 -> R.string.realtime_catalog_failed
                         else -> R.string.realtime_catalog_builtin
                     }),
+                    enabled = !refreshing,
                     onClick = {
                         if (!refreshing) scope.launch {
                             refreshing = true
@@ -104,13 +105,13 @@ internal fun VoiceModeSettingsScreen(onBack: () -> Unit) {
                         }
                     },
                 )
-                OutlinedTextField(
+                EtaFormTextField(
                     value = instructions,
                     onValueChange = {
                         instructions = it
                         Prefs.putString(Prefs.Keys.AGENT_VOICE_DOUBAO_INSTRUCTIONS, it)
                     },
-                    label = { Text(stringResource(R.string.voice_mode_doubao_instructions)) },
+                    hint = stringResource(R.string.voice_mode_doubao_instructions),
                     minLines = 2,
                     maxLines = 5,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),

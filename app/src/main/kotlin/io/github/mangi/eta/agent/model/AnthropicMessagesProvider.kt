@@ -70,13 +70,19 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         tools: JSONArray
     ): JSONObject {
         val systemParts = mutableListOf<String>()
+        var stableSystemBlockIndex: Int? = null
         val anthropicMessages = JSONArray()
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
             when (message.optString("role")) {
                 "system" -> providerMessageText(message.opt("content"))
                     .takeIf { it.isNotBlank() }
-                    ?.let(systemParts::add)
+                    ?.let { text ->
+                        systemParts.add(text)
+                        if (message.optBoolean(AnthropicPromptCaching.SYSTEM_BOUNDARY_KEY)) {
+                            stableSystemBlockIndex = systemParts.lastIndex
+                        }
+                    }
                 "user" -> anthropicMessages.put(
                     JSONObject()
                         .put("role", "user")
@@ -110,8 +116,13 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             // Anthropic 要求同一批 tool_result 合并在紧随 assistant 的一条 user 里。
             .put("messages", AnthropicMessageSequence.normalize(anthropicMessages))
             .also { request ->
-                val system = systemParts.joinToString("\n\n").trim()
-                if (system.isNotBlank()) request.put("system", system)
+                if (systemParts.isNotEmpty()) {
+                    request.put("system", JSONArray().also { blocks ->
+                        systemParts.forEach { text ->
+                            blocks.put(JSONObject().put("type", "text").put("text", text))
+                        }
+                    })
+                }
                 convertTools(tools)?.let { request.put("tools", it) }
                 RequestBodyMerge.mergeCustomBody(request, config.customBody)
                 request.remove("eta_media_reasoning")
@@ -120,6 +131,11 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                 config.summaryOutputLimit?.let { request.put("max_tokens", it) }
                 // customBody 可以覆盖 messages；覆盖后的正文同样不得绕过配对校验。
                 AnthropicMessageSequence.validateFinalRequest(request)
+                // Apply to the merged protocol body; explicit caller cache settings win.
+                AnthropicPromptCaching.applyDefaults(
+                    request,
+                    stableSystemBlockIndex.takeUnless { config.customBody.any { it.key == "system" } },
+                )
             }
     }
 

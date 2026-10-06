@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.model
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentShellToolAvailability
+import io.github.mangi.eta.data.model.ProviderTypes
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -18,8 +19,12 @@ internal object AgentPromptBuilder {
         rootAvailable: Boolean = false,
         delegationAvailable: Boolean = false,
         shellTools: AgentShellToolAvailability.Snapshot? = null,
+        interactiveModeEnabled: Boolean = false,
     ): JSONArray {
-        val messages = buildSystemMessages(config, skillContext, memoryContext, rootAvailable, delegationAvailable, shellTools)
+        val messages = buildSystemMessages(
+            config, skillContext, memoryContext, rootAvailable, delegationAvailable, shellTools,
+            interactiveModeEnabled = interactiveModeEnabled,
+        )
         history.forEach { item ->
             runCatching { AgentConversationCodec.toJsonObject(item) }.getOrNull()?.let(messages::put)
         }
@@ -34,6 +39,7 @@ internal object AgentPromptBuilder {
         rootAvailable: Boolean,
         delegationAvailable: Boolean = false,
         shellTools: AgentShellToolAvailability.Snapshot? = null,
+        interactiveModeEnabled: Boolean = false,
     ): JSONArray {
         // Only point at the detection section when this round actually carries one.
         val environmentRule = if (shellTools != null) {
@@ -109,7 +115,8 @@ internal object AgentPromptBuilder {
                     "屏幕观察与 GUI 操作前会确认 YUNKe 无障碍服务；只有系统保护后端可用时才会请求有限重绑。" +
                     "若工具返回 ACCESSIBILITY_UNAVAILABLE、ACCESSIBILITY_PROTECTION_UNAVAILABLE 或 ACCESSIBILITY_REPAIR_TIMEOUT，说明动作未执行，" +
                     "不要改用坐标或 Shell 重放 GUI 动作。" +
-                    "涉及复杂代码编写、重构或多文件代码批量修改任务时，可以调用 delegate_to_kimi_code 委派给内置的 Kimi Code 编程子代理；需要多路并行调查、审查、总结或生成媒体时仍用 delegate_task，同一份任务不要同时派给两边。"
+                    "涉及复杂代码编写、重构或多文件代码批量修改任务时，可以调用 delegate_to_kimi_code 委派给内置的 Kimi Code 编程子代理；需要多路并行调查、审查、总结或生成媒体时仍用 delegate_task，同一份任务不要同时派给两边。" +
+                    interactiveModePromptClause(interactiveModeEnabled)
             )
         )
         if (config.terminalTools) {
@@ -169,10 +176,28 @@ internal object AgentPromptBuilder {
                 )
             )
         }
+        // Anthropic can retain the instruction prefix when memory/Skills change.
+        // This local hint is consumed by its adapter, never copied to the HTTP body.
+        if (config.providerType == ProviderTypes.ANTHROPIC) {
+            messages.optJSONObject(messages.length() - 1)
+                ?.put(AnthropicPromptCaching.SYSTEM_BOUNDARY_KEY, true)
+        }
         buildMemorySystemMessage(memoryContext)?.let(messages::put)
         buildSkillSystemMessage(skillContext)?.let(messages::put)
         return messages
     }
+
+    private fun interactiveModePromptClause(enabled: Boolean): String =
+        (if (enabled) {
+            "\n交互模式已开启：遇到会影响执行结果、且无法从上下文可靠推断的关键歧义时，" +
+                "先用 ask_user 提一个关键问题，提供 2-8 个互不重叠且可执行的选项，再根据用户回答继续。" +
+                "目标和参数明确时直接执行，不为交互而多问。"
+        } else {
+            "\n交互模式已关闭：目标和参数明确时直接执行，不主动增加可选的交互问题；" +
+                "仍须用 ask_user 澄清无法可靠推断、会影响执行结果的必要关键信息，不猜测关键参数。"
+        }) +
+            "本开关只调整任务澄清策略，不改变任何工具权限或用户的前台、后台、每次询问（ASK）执行偏好；" +
+            "不要用 ask_user 询问执行位置，执行位置仍由既有设置与运行时处理。"
 
     private fun buildMemorySystemMessage(context: AgentMemoryContext): JSONObject? {
         if (!context.enabled) {

@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.question.AgentQuestionAnswer
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionReceipt
 import io.github.mangi.eta.agent.question.AgentQuestionStatus
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -52,7 +53,7 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             onRequestIngested = {
                 preparedImagesRef.getAndSet(null)?.close()
                 preparedHistoryRef.getAndSet(null)?.close()
-            }))
+            }).also { it.diagnosticRunId = request.runId })
         val lease = AgentRuntimeConnection.acquire(context, logger)
             ?: return AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务绑定失败")
         val serviceMessenger = lease.messenger
@@ -235,6 +236,66 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
         }
     }
 
+    /** Strict read-only IPC. Main accepts the descriptor; only the caller's IO thread decodes it. */
+    fun queryHistory(conversationId: String, runId: String, snapshotId: String): AgentRuntimeSession.HistorySnapshot? {
+        if (Looper.myLooper() == Looper.getMainLooper() || snapshotId.isBlank()) return null
+        return withRuntimeMessenger<AgentRuntimeSession.HistorySnapshot?>(null) { service ->
+            val queryId = java.util.UUID.randomUUID().toString()
+            fun release() {
+                runCatching { service.send(Message.obtain(null, AgentRuntimeWire.MSG_RELEASE_HISTORY).apply {
+                    data = Bundle().apply { putString("history_query_id", queryId) }
+                }) }
+            }
+            val lock = Any()
+            var accepting = true
+            var received: Bundle? = null
+            val latch = CountDownLatch(1)
+            val reply = Messenger(Handler(Looper.getMainLooper()) { response ->
+                if (response.what == AgentRuntimeWire.MSG_QUERY_HISTORY_RESPONSE) {
+                    val data = response.data
+                    synchronized(lock) {
+                        val matching = AgentRuntimeWire.runIdFromBundle(data) == runId &&
+                            data.getString("history_snapshot_id") == snapshotId &&
+                            data.getString("conversation_id") == conversationId &&
+                            data.getString("history_query_id") == queryId
+                        if (accepting && matching && received == null) { received = data; latch.countDown() }
+                        else {
+                            data.getParcelable(AgentRuntimeWire.KEY_HISTORY_FD, android.os.ParcelFileDescriptor::class.java)?.close()
+                            if (matching) release()
+                        }
+                    }
+                }
+                true
+            })
+            try {
+                service.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_HISTORY).apply {
+                    data = AgentRuntimeWire.ackBundle(runId).apply {
+                        putString("conversation_id", conversationId)
+                        putString("history_snapshot_id", snapshotId)
+                        putString("history_query_id", queryId)
+                    }
+                    replyTo = reply
+                })
+                latch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                val data = synchronized(lock) { accepting = false; received.also { received = null } }
+                data?.let {
+                    try {
+                        if (!it.getBoolean("history_available")) null else AgentRuntimeSession.HistorySnapshot(
+                            snapshotId, it.getInt("snapshot_round"), AgentRuntimeHistoryTransfer.readSnapshotFromBundle(it),
+                        )
+                    } finally { it.getParcelable(AgentRuntimeWire.KEY_HISTORY_FD, android.os.ParcelFileDescriptor::class.java)?.close() }
+                }
+            } finally {
+                synchronized(lock) {
+                    accepting = false
+                    received?.getParcelable(AgentRuntimeWire.KEY_HISTORY_FD, android.os.ParcelFileDescriptor::class.java)?.close()
+                    received = null
+                }
+                release()
+            }
+        }
+    }
+
     fun ackResult(runId: String): Boolean {
         if (runId.isBlank()) return false
         return withRuntimeMessenger(false) { serviceMessenger ->
@@ -285,7 +346,7 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
                 if (!attached) terminalLatch.countDown()
             }, onResult = { result ->
                 resultRef.set(result); attachLatch.countDown(); terminalLatch.countDown()
-            }))
+            }).also { it.diagnosticRunId = runId })
         val lease = AgentRuntimeConnection.acquire(context, logger) ?: return AttachOutcome.Unavailable
         val deathRecipient = IBinder.DeathRecipient { attachLatch.countDown(); terminalLatch.countDown() }
         try {
@@ -322,12 +383,25 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
     private class ClientHandler(private val onEvent: (AgentEvent) -> Unit,
         private val onResult: (AgentRuntimeWire.RunResult) -> Unit,
         private val onRequestIngested: () -> Unit) : Handler(Looper.getMainLooper()) {
+        var diagnosticRunId: String? = null
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
                     val data = msg.data ?: return
-                    recordDeliveryTiming(data, live = true)
-                    AgentRuntimeWire.eventFromBundle(data)?.let(onEvent)
+                    withRuntimeDiagnosticEvent(diagnosticRunId, replay = false) {
+                        measureRuntimeStreamStage("ipc.client.receive") {
+                            recordDeliveryTiming(data, live = true)
+                            val event = measureRuntimeStreamStage("ipc.client.decode.live") {
+                                AgentRuntimeWire.eventFromBundle(data)
+                            }
+                            bindRuntimeDiagnosticEvent(event)
+                            event?.let {
+                                withRuntimeDecodedEvent(it) {
+                                    measureRuntimeStreamStage("ipc.client.callback.live") { onEvent(it) }
+                                }
+                            }
+                        }
+                    }
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return
@@ -355,13 +429,46 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
     }
     private class AttachHandler(onReplay: ((List<AgentEvent>) -> Unit)?, onEvent: (AgentEvent) -> Unit,
         onAttachResponse: (Boolean) -> Unit, onResult: (AgentRuntimeWire.RunResult) -> Unit) : Handler(Looper.getMainLooper()) {
-        private val delivery = AgentRuntimeAttachDelivery(onReplay, onEvent, onAttachResponse, onResult)
+        var diagnosticRunId: String? = null
+        // Replay callbacks run at attach ACK/result, not while MSG_EVENT buffers replay history.
+        // Keep delivery's null-onReplay fallback: invoke the original onEvent once per replay item.
+        private val delivery = AgentRuntimeAttachDelivery(
+            onReplay = { events ->
+                if (onReplay != null) {
+                    val attribution = io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
+                        .attribution(diagnosticRunId, kind = "replayBatch", replay = true)
+                    io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics.withAttribution(attribution) {
+                        measureRuntimeStreamStage("ipc.attach.callback.replayBatch") { onReplay(events) }
+                    }
+                } else {
+                    events.forEach { event ->
+                        withRuntimeDecodedEvent(event) {
+                            measureRuntimeStreamStage("ipc.attach.callback.replay") { onEvent(event) }
+                        }
+                    }
+                }
+            },
+            onEvent = { event -> withRuntimeDecodedEvent(event) {
+                measureRuntimeStreamStage("ipc.attach.callback.live") { onEvent(event) }
+            } },
+            onAttachResponse = onAttachResponse,
+            onResult = onResult,
+        )
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
                     val data = msg.data ?: return
-                    recordDeliveryTiming(data, live = delivery.isLive)
-                    AgentRuntimeWire.eventFromBundle(data)?.let(delivery::event)
+                    val live = delivery.isLive
+                    withRuntimeDiagnosticEvent(diagnosticRunId, replay = !live) {
+                        measureRuntimeStreamStage("ipc.attach.receive") {
+                            recordDeliveryTiming(data, live = live)
+                            val event = measureRuntimeStreamStage(
+                                if (live) "ipc.attach.decode.live" else "ipc.attach.decode.replay",
+                            ) { AgentRuntimeWire.eventFromBundle(data) }
+                            bindRuntimeDiagnosticEvent(event)
+                            event?.let(delivery::event)
+                        }
+                    }
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return

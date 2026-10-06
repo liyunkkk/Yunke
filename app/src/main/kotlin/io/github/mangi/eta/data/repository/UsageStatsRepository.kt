@@ -4,12 +4,12 @@ import android.content.Context
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.UsageContentRow
+import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -53,18 +53,21 @@ internal object UsageStatsRepository {
             .atStartOfDay(ZoneId.systemDefault())
             .toInstant()
             .toEpochMilli()
-        val perDay = dao.conversationCountPerDay(startAt)
+        val perDay = diagnosticUsageRead("usage.load.dao.perDay") { dao.conversationCountPerDay(startAt) }
             .mapNotNull { entry ->
                 runCatching { LocalDate.parse(entry.day) to entry.count }.getOrNull()
             }
             .toMap()
         val retired = SettingsDataStore.retiredUsage()
-        val liveConversations = dao.conversationCount()
-        val liveMessages = dao.totalMessageCount()
-        val modelUsage = decodeModelUsageSnapshot(SettingsDataStore.modelUsageJson())
+        val liveConversations = diagnosticUsageRead("usage.load.dao.conversations") { dao.conversationCount() }
+        val liveMessages = diagnosticUsageRead("usage.load.dao.messages") { dao.totalMessageCount() }
+        val rawModelUsage = SettingsDataStore.modelUsageJson()
+        val modelUsage = StreamPerformanceDiagnostics.measure("usage.load.decode", rawModelUsage.length.toLong()) {
+            decodeModelUsageSnapshot(rawModelUsage)
+        }
         // Same bills as the model tab. Message rows are a second book: compaction
         // markers and prompts the ledger rejected must not be added again.
-        val liveIds = dao.conversations().map { it.id }.toSet()
+        val liveIds = diagnosticUsageRead("usage.load.dao.liveIds") { dao.conversations() }.map { it.id }.toSet()
         val (currentTokens, lifetimeTokens) = alignedUsageTotals(modelUsage, liveIds)
         return UsageStatsSnapshot(
             currentConversations = liveConversations,
@@ -96,13 +99,42 @@ internal object UsageStatsRepository {
         }
     }
 
-    fun conversationUsageFlow(id: String?) = SettingsDataStore.modelUsageFlow().map { raw ->
-        conversationUsageTotals(raw, id)
-    }
+    fun conversationUsageFlow(id: String?) =
+        conversationUsageTotalsFlow(SettingsDataStore.modelUsageFlow(), id)
 
     suspend fun recordModelUsage(delta: ModelUsageDelta) {
+        val diagnose = StreamPerformanceDiagnostics.enabled
+        val attribution = if (diagnose) StreamPerformanceDiagnostics.captureAttribution() else null
+        val requested = if (diagnose) System.nanoTime() else 0L
         modelUsageLock.withLock {
-            SettingsDataStore.updateModelUsage { current -> applyModelUsageDelta(current, delta) }
+            if (diagnose) {
+                val elapsed = System.nanoTime() - requested
+                StreamPerformanceDiagnostics.withAttribution(attribution) {
+                    StreamPerformanceDiagnostics.record("usage.lockWait", elapsed)
+                }
+            }
+            SettingsDataStore.updateModelUsage { current ->
+                StreamPerformanceDiagnostics.withAttribution(attribution) {
+                    StreamPerformanceDiagnostics.measure("usage.ledger.update", current.length.toLong()) {
+                        applyModelUsageDelta(current, delta)
+                    }
+                }
+            }
+        }
+    }
+
+    // Suspend DAO calls remain suspend lambdas; attribution is restored only for the final record.
+    private suspend inline fun <T> diagnosticUsageRead(stage: String, crossinline block: suspend () -> T): T {
+        if (!StreamPerformanceDiagnostics.enabled) return block()
+        val attribution = StreamPerformanceDiagnostics.captureAttribution()
+        val started = System.nanoTime()
+        try {
+            return block()
+        } finally {
+            val elapsed = System.nanoTime() - started
+            StreamPerformanceDiagnostics.withAttribution(attribution) {
+                StreamPerformanceDiagnostics.record(stage, elapsed)
+            }
         }
     }
 }

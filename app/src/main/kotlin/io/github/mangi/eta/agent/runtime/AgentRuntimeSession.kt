@@ -63,6 +63,32 @@ internal class AgentRuntimeSession(
     private var admittedQuestions = 0
     private val questionsFinished = lock.newCondition()
     private var terminalAfterQuestions: (() -> Unit)? = null
+    private val historySnapshots = linkedMapOf<String, HistorySnapshot>()
+
+    data class HistorySnapshot(
+        val id: String,
+        val round: Int,
+        val history: List<io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage>,
+    )
+
+    /** Called only by the model worker at closed request boundaries, before RoundStarted. */
+    fun publishHistorySnapshot(round: Int,
+        history: List<io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage>): String {
+        val frozen = java.util.Collections.unmodifiableList(ArrayList(history))
+        return withSessionLock {
+            if (state != State.RUNNING || stopSignalled) return@withSessionLock ""
+            val id = UUID.randomUUID().toString()
+            historySnapshots[id] = HistorySnapshot(id, round, frozen)
+            // Retain one previous boundary for an in-flight click, without retaining all requests.
+            while (historySnapshots.size > 2) historySnapshots.remove(historySnapshots.keys.first())
+            id
+        }
+    }
+
+    fun historySnapshot(id: String): HistorySnapshot? = withSessionLock {
+        if (state != State.RUNNING || stopSignalled) null else historySnapshots[id]
+    }
+
     private val replayEvents = mutableListOf<AgentEvent>()
     private val subscribers = mutableListOf<Subscriber>()
     private val afterUnlock = mutableListOf<() -> Unit>()
@@ -551,6 +577,7 @@ internal class AgentRuntimeSession(
     /** Seal and snapshot under lock; cleanup and isolated result callbacks run after unlock. */
     private fun sealTerminal(result: AgentRuntimeWire.RunResult) {
         state = State.TERMINAL
+        historySnapshots.clear()
         terminalResult = result
         val recipients = subscribers.toList()
         subscribers.clear()

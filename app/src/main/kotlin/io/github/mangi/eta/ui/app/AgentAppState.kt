@@ -76,10 +76,12 @@ import io.github.mangi.eta.config.AutoCompressPreference
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.core.safeLogType
+import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderTypes
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.supportsGptSpeedBinding
+import io.github.mangi.eta.data.model.withModels
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.EtaBackupExportOptions
 import io.github.mangi.eta.data.repository.EtaBackupRepository
@@ -89,6 +91,7 @@ import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.data.repository.ModelRepository
+import io.github.mangi.eta.data.repository.MainAgentSpeedDefaultsRepository
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.data.repository.UsageStatsRepository
@@ -174,6 +177,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.NonCancellable
 import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -187,6 +191,13 @@ internal class AgentAppState(
     private val conversationDrafts = ConversationDrafts(
         appContext.getSharedPreferences("conversation_input_drafts", Context.MODE_PRIVATE), scope,
     )
+
+    // Separate main-agent namespace; the existing full preferences backup includes this scalar.
+    private val mainAgentSpeedDefaults by lazy {
+        MainAgentSpeedDefaultsRepository(requireNotNull(Prefs.localAgentPreferences()) {
+            "Agent preferences 未初始化"
+        })
+    }
 
     fun currentDraftField() = conversationDrafts.field(selectedConversationId)
 
@@ -760,6 +771,7 @@ internal class AgentAppState(
         owner = when (val owner = subAgentConfigOwner) {
             is SubAgentConfigKey.Conversation -> "conversation:${owner.value}"
             is SubAgentConfigKey.Draft -> "draft:${owner.value}"
+            is SubAgentConfigKey.Preset -> error("预设不能作为会话运行配置")
         },
         providerId = homeState.providerId,
         modelId = homeState.modelId,
@@ -874,8 +886,8 @@ internal class AgentAppState(
             val state = conversationIdForRun(runId)?.let(::conversationState)
             if (state != null && route != contextRouteSignature(state)) invalidatedUsageRuns.add(runId)
         }
-        // Reset every loaded binding, including background conversations without a usage receipt.
-        // Once a binding becomes ineligible, changing settings back must not resurrect its old tier.
+        // Project every loaded binding, including background conversations without a usage receipt.
+        // Ineligible bindings display NORMAL without erasing their independent GPT memory.
         conversationsById.toList().forEach { (id, state) ->
             val next = state.withCurrentGptSpeedBinding()
             if (state.conversationContentLoaded && (next != state ||
@@ -887,8 +899,16 @@ internal class AgentAppState(
     }
 
     private fun AgentChatHomeUiState.withCurrentGptSpeedBinding(): AgentChatHomeUiState = copy(
-        gptSpeedMode = GptSpeedModePolicy.forSelection(gptSpeedMode, providerId, modelId, selectionProviders),
+        gptSpeedMode = rememberedGptSpeedMode(providerId, modelId),
     )
+
+    private fun rememberedGptSpeedMode(providerId: String, modelId: String): GptSpeedMode {
+        val provider = selectionProviders.singleOrNull { it.id == providerId }?.takeIf { it.isEnabled }
+        val model = provider?.models?.singleOrNull { it.id == modelId }?.takeIf { it.isEnabled }
+        // Do not read/write memory for non-GPT or missing selections, including startup placeholders.
+        if (!supportsGptSpeedBinding(provider, model)) return GptSpeedMode.NORMAL
+        return mainAgentSpeedDefaults.modeFor(providerId, modelId)
+    }
 
     private fun observeRuntimeSelection() {
         scope.launch {
@@ -914,10 +934,15 @@ internal class AgentAppState(
             updateCurrentConversation(homeState.copy(providerId = defaultProviderId.orEmpty(), modelId = defaultModelId.orEmpty()))
             if (selectedConversationId != null) persistConversations()
         }
-        val provider = selectionProviders.firstOrNull { it.id == homeState.providerId && it.isEnabled }
-        val model = provider?.models?.firstOrNull { it.id == homeState.modelId && it.isEnabled }
+        val provider = selectionProviders.singleOrNull { it.id == homeState.providerId }?.takeIf { it.isEnabled }
+        val model = provider?.models?.singleOrNull { it.id == homeState.modelId }?.takeIf { it.isEnabled }
         val projected = AgentModelPickerProjector.project(selectionProviders, homeState.providerId, homeState.modelId)
-        modelPickerState = projected.copy(selectedModel = projected.selectedModel?.takeIf {
+        // The shared picker deduplicates API aliases for listing. An already bound selection must
+        // still project ITS exact model ID, not lose its speed action to another entry's alias.
+        val boundOption = if (provider != null && model != null) {
+            AgentModelPickerProjector.project(listOf(provider.withModels(listOf(model))), provider.id, model.id).selectedModel
+        } else null
+        modelPickerState = projected.copy(selectedModel = boundOption?.takeIf {
             provider != null && model != null && it.providerId == provider.id && it.id == model.id
         }, isChanging = false)
         currentReasoningCapabilities = if (provider != null && model != null)
@@ -933,12 +958,9 @@ internal class AgentAppState(
                 cloudRequestOverheadTokens = null, cloudRouteSignature = null, cloudReceiptRequestId = null,
                 contextReceiptEvidence = null, receiptPredictionTokens = null, contextAwaitingReceipt = true,
                 contextHasStarted = true) else next
-        // Re-evaluate the actual binding, not a display name or a remembered provider logo.
-        // A missing/deleted/non-GPT model clears the transient choice; returning to GPT stays normal.
-        val speedNext = scopedNext.copy(gptSpeedMode = GptSpeedModePolicy.forBinding(
-            scopedNext.gptSpeedMode, model?.modelId.orEmpty(),
-            supportsGptSpeedBinding(provider, model),
-        ))
+        // Restore by provider ID + model selection ID, never copy the previous model's tier.
+        // Unavailable/non-GPT projections are NORMAL and never overwrite remembered GPT choices.
+        val speedNext = scopedNext.withCurrentGptSpeedBinding()
         if (speedNext != homeState) {
             val conversationId = selectedConversationId
             if (conversationId == null) homeState = speedNext else updateConversation(conversationId, speedNext, updateTimestamp = false)
@@ -1085,6 +1107,16 @@ internal class AgentAppState(
     fun dismissMemoryNotice() {
         memoryState = memoryState.copy(notice = null)
     }
+
+    private data class BranchRequestBoundary(
+        val runId: String,
+        val round: Int,
+        val snapshotId: String,
+        val textBaseline: Map<String, String>,
+    )
+    private val branchRequestBoundaries = mutableMapOf<String, BranchRequestBoundary>()
+    private var branchHistorySnapshotLoader: (String, String, String) -> io.github.mangi.eta.agent.runtime.AgentRuntimeSession.HistorySnapshot? =
+        { owner, run, snapshot -> AgentRuntimeClient(appContext, AndroidAgentLogger).queryHistory(owner, run, snapshot) }
 
     private var conversationRevisionBusy = false
 
@@ -1449,7 +1481,7 @@ internal class AgentAppState(
                 withContext(Dispatchers.Main) {
                     // Do not overwrite a concurrent edit/delete while Room was being read.
                     if (conversationsById[id] === cached) {
-                        conversationsById = conversationsById + (id to loaded)
+                        conversationsById = conversationsById + (id to loaded.withCurrentGptSpeedBinding())
                     }
                 }
             }
@@ -1537,7 +1569,7 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         conversationUpdatedAt = conversationUpdatedAt +
@@ -1708,14 +1740,26 @@ internal class AgentAppState(
         if (modelPickerState.isChanging) return
         val selected = modelPickerState.selectedModel ?: return
         if (selected.id != homeState.modelId || selected.providerId != homeState.providerId) return
-        val provider = selectionProviders.firstOrNull { it.id == selected.providerId && it.isEnabled } ?: return
-        val model = provider.models.firstOrNull { it.id == selected.id && it.isEnabled } ?: return
+        val provider = selectionProviders.singleOrNull { it.id == selected.providerId }?.takeIf { it.isEnabled } ?: return
+        val model = provider.models.singleOrNull { it.id == selected.id }?.takeIf { it.isEnabled } ?: return
         val eligible = supportsGptSpeedBinding(provider, model)
-        val next = GptSpeedModePolicy.cycle(homeState.gptSpeedMode, model.modelId, eligible)
-        if (next == homeState.gptSpeedMode) return
+        if (!eligible) return
+        val next = GptSpeedModePolicy.cycle(rememberedGptSpeedMode(provider.id, model.id), model.modelId, eligible)
+        val saved = runCatching { mainAgentSpeedDefaults.remember(provider, model, next) }.getOrElse {
+            Toast.makeText(appContext, "主代理模型速度保存失败，原设置未更改。", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!saved) return
         val replacedRun = activeRunIdForSelectedConversation().takeIf { homeState.isPaused }
         updateCurrentConversation(homeState.copy(gptSpeedMode = next))
-        // Session UI state only; never rewrite a provider's custom body or reasoning preference.
+        // Refresh other loaded conversations bound to this exact selection. Runtime configs remain frozen.
+        conversationsById.toList().forEach { (id, state) ->
+            if (id != selectedConversationId && state.conversationContentLoaded &&
+                state.providerId == provider.id && state.modelId == model.id) {
+                updateConversation(id, state.copy(gptSpeedMode = next), updateTimestamp = false)
+            }
+        }
+        // Never rewrite provider custom bodies, reasoning preferences, child defaults or presets.
         replacedRun?.let { stopRun(it, reason = AgentChildControlPolicy.Reason.SETTINGS_CHANGED) }
     }
 
@@ -1723,7 +1767,8 @@ internal class AgentAppState(
         if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.isStreaming && !homeState.isPaused) return
         val provider = selectionProviders.filter { it.isEnabled && (providerId.isBlank() || it.id == providerId) && it.models.any { m -> m.id == modelId && m.isEnabled } }.singleOrNull() ?: return
-        val model = provider.models.first { it.id == modelId && it.isEnabled }
+        if (selectionProviders.count { it.id == provider.id } != 1) return
+        val model = provider.models.singleOrNull { it.id == modelId }?.takeIf { it.isEnabled } ?: return
         if (homeState.providerId == provider.id && homeState.modelId == model.id) return
         val replacedRun = activeRunIdForSelectedConversation().takeIf { homeState.isPaused }
         modelBindingGeneration++
@@ -1731,8 +1776,7 @@ internal class AgentAppState(
         val requestedEffort = rememberedModelReasoningEffort(provider.id, model.id, model.preferredReasoningEffort)
         val nextEffort = ConversationReasoningPolicy.resolve(requestedEffort, config.reasoningCapabilities)
         updateCurrentConversation(homeState.copy(providerId = provider.id, modelId = model.id,
-            gptSpeedMode = GptSpeedModePolicy.forBinding(homeState.gptSpeedMode, model.modelId,
-                supportsGptSpeedBinding(provider, model)),
+            gptSpeedMode = rememberedGptSpeedMode(provider.id, model.id),
             reasoningEffort = nextEffort, thinkingEnabled = nextEffort.enablesReasoning,
             livePromptTokens = null, livePromptIsProjected = false))
         billedOverheadTokens = null
@@ -2358,14 +2402,21 @@ internal class AgentAppState(
     /** One unpublished transaction: IO may only produce a candidate, never mutate the source. */
     private fun launchConversationRevision(
         messageId: String,
+        allowActiveSource: Boolean = false,
         publish: suspend (String, AgentChatHomeUiState, AgentChatHomeUiState, () -> Boolean) -> Unit,
     ) {
-        if (homeState.isStreaming || homeState.isPaused || homeState.messageEdit != null) return
+        if ((!allowActiveSource && (homeState.isStreaming || homeState.isPaused)) || homeState.messageEdit != null) return
         if (rejectConversationArchiveMutation() || rejectSendIfCompressing()) return
         if (modelPickerState.isChanging || runtimeRecoveryInProgress.get()) return
         val conversationId = selectedConversationId ?: return
-        if (runConversationIds.any { (run, owner) -> owner == conversationId && run in runJobs }) return
+        if (!allowActiveSource && runConversationIds.any { (run, owner) -> owner == conversationId && run in runJobs }) return
         val snapshot = homeState
+        val runningBranch = allowActiveSource && (snapshot.isStreaming || snapshot.isPaused ||
+            runConversationIds.any { (run, owner) -> owner == conversationId && run in runJobs })
+        // Capture the request token and already-consumed TEXT with the click, before any suspension.
+        val branchBoundary = if (runningBranch) runConversationIds.entries
+            .singleOrNull { it.value == conversationId && it.key in runJobs }
+            ?.key?.let { branchRequestBoundaries[it] } else null
         val selection = conversationSelectionVersion
         val modelGeneration = modelBindingGeneration
         val assistant = AssistantRepository.active().id
@@ -2373,20 +2424,30 @@ internal class AgentAppState(
         val stillCurrent = {
             selectedConversationId == conversationId && conversationSelectionVersion == selection &&
                 modelBindingGeneration == modelGeneration && AssistantRepository.active().id == assistant &&
-                homeState == snapshot && conversationState(conversationId) == snapshot &&
-                currentDraftField().text.toString() == draft && !homeState.isStreaming && !homeState.isPaused &&
+                (runningBranch || (homeState == snapshot && conversationState(conversationId) == snapshot)) &&
+                conversationState(conversationId) != null && currentDraftField().text.toString() == draft &&
+                (allowActiveSource || (!homeState.isStreaming && !homeState.isPaused)) &&
                 !modelPickerState.isChanging && !runtimeRecoveryInProgress.get() && !isCompressionBlockingSend() &&
                 !conversationArchiveBusy && !io.github.mangi.eta.agent.runtime.AgentExecutionService.backupMaintenance &&
                 stoppingRuns.keys.none { runConversationIds[it] == conversationId } &&
-                runConversationIds.none { (run, owner) -> owner == conversationId && run in runJobs }
+                (allowActiveSource || runConversationIds.none { (run, owner) -> owner == conversationId && run in runJobs })
         }
         conversationRevisionBusy = true
         // UNDISPATCHED installs finally even if the owner scope is cancelled before IO starts.
         scope.launch(Dispatchers.Main.immediate, start = CoroutineStart.UNDISPATCHED) {
             try {
+                yield()
                 val prepared = runInterruptible(Dispatchers.IO) {
                     val archive = io.github.mangi.eta.agent.model.AgentCompactionArchive(appContext.filesDir, conversationId)
-                    AgentConversationRevisionReducer.prepareForRevision(snapshot, messageId, archive::restoreHistory)
+                    val ordinary = AgentConversationRevisionReducer.prepareForRevision(snapshot, messageId, archive::restoreHistory)
+                    if (ordinary != null || branchBoundary == null) ordinary else {
+                        val runtime = branchHistorySnapshotLoader(conversationId, branchBoundary.runId, branchBoundary.snapshotId)
+                        if (runtime == null || runtime.id != branchBoundary.snapshotId || runtime.round != branchBoundary.round) null else {
+                            val candidate = AgentRunningBranchSnapshot.prepare(snapshot, messageId,
+                                branchBoundary.runId, branchBoundary.round, runtime.history, branchBoundary.textBaseline)
+                            candidate?.let { AgentConversationRevisionReducer.prepareForRevision(it, messageId, archive::restoreHistory) }
+                        }
+                    }
                 }
                 coroutineContext.ensureActive()
                 if (!stillCurrent()) return@launch
@@ -2545,8 +2606,23 @@ internal class AgentAppState(
     }
 
     private class BranchArchiveCopyException(cause: Exception) : Exception(cause)
+
+    /** Old completed replies may branch while a different run generates, but not that run's partial text. */
+    private fun isUnfinishedAssistantBranchTarget(messageId: String): Boolean {
+        val target = homeState.messages.singleOrNull { it.id == messageId } as? AgentMessageUi ?: return false
+        if (target.isStreaming) return true
+        val owner = selectedConversationId ?: return false
+        val activeRuns = runConversationIds.filter { (run, conversation) -> conversation == owner && run in runJobs }.keys
+        if (!homeState.isStreaming && !homeState.isPaused && activeRuns.isEmpty()) return false
+        // A run can finish several text/provider rounds before the reply itself finishes.
+        // Branch-copied message IDs retain the execution ID after their conversation prefix.
+        val id = target.id.substringAfterLast(':')
+        return activeRuns.any { run -> id == "assistant-$run" || id.startsWith("assistant-$run-") }
+    }
+
     fun branchConversation(messageId: String) {
-        launchConversationRevision(messageId) { sourceId, snapshot, prepared, stillCurrent ->
+        if (isUnfinishedAssistantBranchTarget(messageId)) return
+        launchConversationRevision(messageId, allowActiveSource = true) { sourceId, snapshot, prepared, stillCurrent ->
             val prefix = AgentConversationRevisionReducer.branchPrefix(prepared, messageId) ?: run {
                 showRevisionHistoryUnavailableNotice()
                 return@launchConversationRevision
@@ -2594,7 +2670,9 @@ internal class AgentAppState(
         onPublished: () -> Unit,
     ) {
         val rewrite = { value: String -> chatImageCache.rewriteCachedPath(value, sourceId, newId) }
-        val branchMessages = freezeStreamingMessages(prefix.messages).map { message ->
+        val branchMessages = runMessageProjector.interruptRunningTools(
+            "分支保留点击时的工具状态，后续执行仍属于原会话。", freezeStreamingMessages(prefix.messages),
+        ).map { message ->
             val frozen = message.withId("$newId:${message.id}").rewritePaths(rewrite)
             if (frozen is AgentQuestionMessageUi) AgentQuestionProjection.freezeForBranch(frozen, newId)
             else frozen
@@ -2612,6 +2690,9 @@ internal class AgentAppState(
             pendingFileReferences = emptyList(),
                 pendingConversationMentions = emptyList(),
             appliedRuntimeRunIds = emptyList(),
+            activeRunContextWindow = null,
+            childContexts = emptyList(), childStatusRoster = emptyList(),
+            childContextRunId = "", selectedContextTaskId = null,
             messageEdit = null,
             livePromptTokens = null,
                 livePromptIsProjected = false,
@@ -3023,8 +3104,8 @@ internal class AgentAppState(
         logicalTurnId: String = runId,
         consumeDraft: Boolean = false,
     ) {
-        val runProvider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled }
-        val runModel = runProvider?.models?.firstOrNull { it.id == state.modelId && it.isEnabled }
+        val runProvider = selectionProviders.singleOrNull { it.id == state.providerId }?.takeIf { it.isEnabled }
+        val runModel = runProvider?.models?.singleOrNull { it.id == state.modelId }?.takeIf { it.isEnabled }
         if (runProvider == null || runModel == null) {
             Toast.makeText(appContext, "绑定模型已不可用，未发送。请重新选择。", Toast.LENGTH_LONG).show()
             return
@@ -3035,11 +3116,11 @@ internal class AgentAppState(
         }
         if (consumeDraft) conversationDrafts.replace(conversationId, "")
         val runAssistant = requestOverheadAssistant(state)
-        // Freeze the mode with THIS submitted state's binding before launching any coroutine.
+        // Resolve and freeze the remembered mode for THIS submitted binding before any coroutine.
         // Later UI toggles must not mutate an in-flight request or affect a different model.
         val runConfig = GptSpeedModePolicy.snapshot(
             RuntimeConfigRepository.buildRuntimeConfig(runProvider, runModel, runAssistant),
-            state.gptSpeedMode,
+            rememberedGptSpeedMode(state.providerId, state.modelId),
             supportsGptSpeedBinding(runProvider, runModel),
         )
         val runModelOption = AgentModelPickerProjector.project(listOf(runProvider), runProvider.id, runModel.id).selectedModel
@@ -3548,7 +3629,7 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
@@ -3568,7 +3649,7 @@ internal class AgentAppState(
         setConversationStreaming(runId, false)
         val conversationId = conversationIdForRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
@@ -4101,7 +4182,7 @@ internal class AgentAppState(
         if (imageGen) {
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
-            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
+            branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
@@ -4174,7 +4255,7 @@ internal class AgentAppState(
             }
             runMessageProjector.clearRun(runId)
             runGeneratedAtMillis.remove(runId)
-            runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
+            branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
             contextEstimateDiagnostics.clear(runId)
             runCompressedDuringRun.remove(runId)
@@ -4623,6 +4704,18 @@ internal class AgentAppState(
     }
 
     private fun enqueueRunEvent(runId: String, event: AgentEvent) {
+        if (!StreamPerformanceDiagnostics.enabled) {
+            enqueueRunEventNow(runId, event)
+            return
+        }
+        val conversationId = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) runConversationIds[runId] else null
+        StreamUiEventDiagnostics.withEvent(runId, conversationId,
+            conversationId?.let { it == selectedConversationId }, event) {
+            StreamPerformanceDiagnostics.measure("ui.enqueue") { enqueueRunEventNow(runId, event) }
+        }
+    }
+
+    private fun enqueueRunEventNow(runId: String, event: AgentEvent) {
         // Runtime delivers events on the run's IO job. Publishing from that thread races
         // with selecting another conversation on the main thread: the title can already be
         // the new conversation while homeState is still overwritten with this run's text.
@@ -4656,13 +4749,15 @@ internal class AgentAppState(
         if (event is AgentEvent.AssistantBlockDelta) {
             if (event.kind == AgentEvent.AssistantBlockKind.TOOL_CALL || event.delta.isEmpty()) return
             runEventCoalescer.append(runId, event)?.let { ready ->
-                applyRunEvent(runId, ready)
+                StreamUiEventDiagnostics.measure("ui.flush.blockSwitch") {
+                    applyRunEvent(runId, ready)
+                }
             }
             scheduleRunDeltaFlush(runId)
             return
         }
 
-        flushPendingRunDelta(runId)
+        flushPendingRunDelta(runId, diagnosticStage = "ui.flush.nonDelta")
         applyRunEvent(runId, event)
     }
 
@@ -4724,19 +4819,30 @@ internal class AgentAppState(
 
     private fun scheduleRunDeltaFlush(runId: String) {
         if (runEventFlushJobs[runId]?.isActive == true) return
-        val scheduledAtNs = System.nanoTime()
+        val scheduledAtNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else null
+        val diagnosticAttribution = StreamPerformanceDiagnostics.captureAttribution()
         runEventFlushJobs[runId] = scope.launch {
             delay(STREAM_UI_UPDATE_INTERVAL_MS)
-            StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
+            if (scheduledAtNs != null && StreamPerformanceDiagnostics.enabled) {
+                StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
+            }
             runEventFlushJobs.remove(runId)
-            StreamPerformanceDiagnostics.measure("ui.flush") { flushPendingRunDelta(runId) }
+            StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
+                StreamPerformanceDiagnostics.measure("ui.flush") {
+                    flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer")
+                }
+            }
         }
     }
 
-    private fun flushPendingRunDelta(runId: String) {
+    private fun flushPendingRunDelta(runId: String, diagnosticStage: String? = null) {
         runEventFlushJobs.remove(runId)?.cancel()
         runEventCoalescer.flush(runId)?.let { event ->
-            applyRunEvent(runId, event)
+            // Only count a reason when a pending delta is actually applied. Other
+            // callers (replay/result/stop) retain their existing default flush path.
+            StreamUiEventDiagnostics.measure(diagnosticStage) {
+                applyRunEvent(runId, event)
+            }
         }
     }
 
@@ -4898,11 +5004,17 @@ internal class AgentAppState(
         replaying: Boolean = false,
     ) {
         // 只加计时：流式增量（value=1）和其它事件分开看单次耗时。
-        StreamPerformanceDiagnostics.measure(
-            "ui.runEvent",
-            if (event is AgentEvent.AssistantBlockDelta) 1L else 0L,
-        ) {
-            applyRunEventNow(runId, event, persistSupplement, replaying)
+        val conversationId = if (StreamPerformanceDiagnostics.enabled) runConversationIds[runId] else null
+        StreamUiEventDiagnostics.withEvent(runId, conversationId,
+            conversationId?.let { it == selectedConversationId }, event, replaying) {
+            StreamPerformanceDiagnostics.measure(
+                "ui.runEvent",
+                if (event is AgentEvent.AssistantBlockDelta) 1L else 0L,
+            ) {
+                StreamUiEventDiagnostics.measureEvent(event) {
+                    applyRunEventNow(runId, event, persistSupplement, replaying)
+                }
+            }
         }
     }
 
@@ -5313,9 +5425,17 @@ internal class AgentAppState(
                     requestOwnerContext(id)
                 }
             }
+            is AgentEvent.RoundStarted -> {
+                val source = conversationIdForRun(runId)?.let(::conversationState)
+                if (source != null && event.historySnapshotId.isNotBlank()) {
+                    branchRequestBoundaries[runId] = BranchRequestBoundary(runId, event.round, event.historySnapshotId,
+                        source.messages.filterIsInstance<AgentMessageUi>()
+                            .filter { AgentRunningBranchSnapshot.isTextForRound(it.id, runId, event.round) }
+                            .associate { it.id to it.content })
+                }
+            }
             is AgentEvent.ProviderResponseStarted,
             is AgentEvent.ToolImagesAttached,
-            is AgentEvent.RoundStarted,
             -> Unit
         }
     }
@@ -5559,7 +5679,7 @@ internal class AgentAppState(
         conversationId?.let(pendingInRunCompactConversationIds::remove)
         runMessageProjector.clearRun(runId)
         runGeneratedAtMillis.remove(runId)
-        runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
+        branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId); invalidatedUsageRuns.remove(runId)
         runOverheadTokens.remove(runId); runContextWindows.remove(runId)
         contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
@@ -5810,21 +5930,27 @@ internal class AgentAppState(
         val conversationId = conversationIdForRun(runId) ?: return
         val state = conversationState(conversationId) ?: return
         StreamPerformanceDiagnostics.measure("ui.messages.apply", state.messages.size.toLong()) {
-            val projected = transform(state.messages)
+            val projected = StreamUiEventDiagnostics.measure("ui.messages.transform", state.messages.size.toLong()) {
+                transform(state.messages)
+            }
             // Text/thinking deltas only replace or append the active run block. They
             // cannot create a terminal notice; defer the cross-history terminal
             // ordering pass to the next boundary/terminal event.
             val nextMessages = if (normalizeTerminalOrder) {
-                runReplayBatch.normalize(runId, projected)
+                StreamUiEventDiagnostics.measure("ui.messages.normalize", projected.size.toLong()) {
+                    runReplayBatch.normalize(runId, projected)
+                }
             } else {
                 projected
             }
-            updateConversation(
-                conversationId = conversationId,
-                state = state.copy(messages = nextMessages),
-                updateTimestamp = updateTimestamp,
-                recomputeWaitingQuestion = recomputeWaitingQuestion,
-            )
+            StreamUiEventDiagnostics.measure("ui.messages.publish", nextMessages.size.toLong()) {
+                updateConversationProjected(
+                    conversationId = conversationId,
+                    state = state.copy(messages = nextMessages),
+                    updateTimestamp = updateTimestamp,
+                    recomputeWaitingQuestion = recomputeWaitingQuestion,
+                )
+            }
         }
     }
 
@@ -5863,7 +5989,7 @@ internal class AgentAppState(
             providerId = currentBoundProviderId(),
             modelId = currentBoundModelId(),
             assistantId = currentBoundAssistantId(),
-        )
+        ).withCurrentGptSpeedBinding()
         conversationPaneState = conversationPaneState.copy(selectedConversationId = null)
     }
 
@@ -5871,47 +5997,62 @@ internal class AgentAppState(
         conversationId: String,
         state: AgentChatHomeUiState,
         updateTimestamp: Boolean = true,
-        recomputeWaitingQuestion: Boolean = true,
+    ) = updateConversationProjected(conversationId, state, updateTimestamp, recomputeWaitingQuestion = true)
+
+    private fun updateConversationProjected(
+        conversationId: String,
+        state: AgentChatHomeUiState,
+        updateTimestamp: Boolean,
+        recomputeWaitingQuestion: Boolean,
     ) {
         check(state.conversationContentLoaded) { "Conversation content must be loaded before editing" }
         val previous = conversationState(conversationId)
-        val modelChanged = previous != null &&
-            (previous.providerId != state.providerId || previous.modelId != state.modelId ||
-                (state.cloudRouteSignature != null && state.cloudRouteSignature != contextRouteSignature(state)))
-        if (modelChanged) runConversationIds.filterValues { it == conversationId }.keys.forEach { invalidatedUsageRuns.add(it) }
-        val projected = when {
-            modelChanged -> state.copy(livePromptTokens = null, livePromptIsProjected = false,
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
-                // Selecting a model is not a completed first turn or a compression boundary.
-                contextAwaitingReceipt = state.contextAwaitingReceipt || state.contextHasStarted,
-                contextReceiptEvidence = null,
-                receiptPredictionTokens = null, cloudReceiptRequestId = null, cloudRouteSignature = null)
-            state.contextAwaitingReceipt || state.cloudHistoryTokens == null || state.cloudRequestOverheadTokens == null ->
-                state.copy(contextBudgetReceiptTokens = null)
-            (state.livePromptTokens == null || state.livePromptIsProjected) && state.contextBudgetReceiptTokens == null -> state.copy(
-                cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
-            else -> state
+        val projected = StreamUiEventDiagnostics.measure("ui.conversation.route") {
+            val modelChanged = previous != null &&
+                (previous.providerId != state.providerId || previous.modelId != state.modelId ||
+                    (state.cloudRouteSignature != null && state.cloudRouteSignature != contextRouteSignature(state)))
+            if (modelChanged) runConversationIds.filterValues { it == conversationId }.keys.forEach { invalidatedUsageRuns.add(it) }
+            when {
+                modelChanged -> state.copy(livePromptTokens = null, livePromptIsProjected = false,
+                    cloudHistoryTokens = null, cloudRequestOverheadTokens = null, contextBudgetReceiptTokens = null,
+                    // Selecting a model is not a completed first turn or a compression boundary.
+                    contextAwaitingReceipt = state.contextAwaitingReceipt || state.contextHasStarted,
+                    contextReceiptEvidence = null,
+                    receiptPredictionTokens = null, cloudReceiptRequestId = null, cloudRouteSignature = null)
+                state.contextAwaitingReceipt || state.cloudHistoryTokens == null || state.cloudRequestOverheadTokens == null ->
+                    state.copy(contextBudgetReceiptTokens = null)
+                (state.livePromptTokens == null || state.livePromptIsProjected) && state.contextBudgetReceiptTokens == null -> state.copy(
+                    cloudHistoryTokens = null, cloudRequestOverheadTokens = null)
+                else -> state
+            }
         }
         val ownerContext = ownerContexts[conversationId]
-        val view = ownerContext?.projection()
+        val view = StreamUiEventDiagnostics.measure("ui.conversation.owner") { ownerContext?.projection() }
         val questionProjected = if (recomputeWaitingQuestion) {
-            projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+            StreamUiEventDiagnostics.measure("ui.conversation.waiting", projected.messages.size.toLong()) {
+                projected.copy(isWaitingForAnswer = AgentQuestionProjection.hasWaiting(projected.messages))
+            }
         } else {
             projected
         }
-        val current = if (view == null || ownerContext == null) questionProjected else questionProjected.copy(
-            childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
-            childStatusRoster = ownerContext.roster(),
-        )
-        conversationsById = conversationsById + (conversationId to current)
-        if (conversationId !in conversationCreatedAt) {
-            conversationCreatedAt = conversationCreatedAt + (conversationId to System.currentTimeMillis())
+        // Owner projection is timed in two slices, not moved across the question scan.
+        val current = StreamUiEventDiagnostics.measure("ui.conversation.owner") {
+            if (view == null || ownerContext == null) questionProjected else questionProjected.copy(
+                childContexts = view.children, selectedContextTaskId = view.selectedTaskId,
+                childStatusRoster = ownerContext.roster(),
+            )
         }
-        if (updateTimestamp) {
-            conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
-        }
-        if (conversationId == selectedConversationId) {
-            homeState = current
+        StreamUiEventDiagnostics.measure("ui.conversation.publish") {
+            conversationsById = conversationsById + (conversationId to current)
+            if (conversationId !in conversationCreatedAt) {
+                conversationCreatedAt = conversationCreatedAt + (conversationId to System.currentTimeMillis())
+            }
+            if (updateTimestamp) {
+                conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
+            }
+            if (conversationId == selectedConversationId) {
+                homeState = current
+            }
         }
         if (previous?.isStreaming != state.isStreaming) {
             refreshConversationSummaries()
@@ -5981,7 +6122,8 @@ internal class AgentAppState(
         if (id == null) return null
         val cached = conversationsById[id] ?: return null
         if (cached.conversationContentLoaded) return cached
-        val loaded = AgentConversationStore.loadConversation(appContext, id)?.let(::orderedTerminalState) ?: return null
+        val loaded = AgentConversationStore.loadConversation(appContext, id)?.let(::orderedTerminalState)
+            ?.withCurrentGptSpeedBinding() ?: return null
         val current = conversationsById[id] ?: return null
         if (current !== cached) return conversationState(id)
         conversationsById = conversationsById + (id to loaded)
@@ -6004,6 +6146,12 @@ internal class AgentAppState(
 
     private fun refreshConversationSummaries() {
         if (runReplayBatch.isActive) return
+        StreamUiEventDiagnostics.measure("ui.summaries.refresh", conversationsById.size.toLong()) {
+            refreshConversationSummariesNow()
+        }
+    }
+
+    private fun refreshConversationSummariesNow() {
         val summaries = conversationsById.entries
             .sortedWith(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
@@ -6258,7 +6406,7 @@ internal class AgentAppState(
                 reasoningEffort = homeState.reasoningEffort,
                 thinkingEnabled = homeState.reasoningEffort.enablesReasoning,
                 availableReasoningEfforts = currentReasoningCapabilities?.selectableEfforts.orEmpty(),
-            )
+            ).withCurrentGptSpeedBinding()
 
     private fun restoreConversationRuntimeModel() {
         modelBindingGeneration++

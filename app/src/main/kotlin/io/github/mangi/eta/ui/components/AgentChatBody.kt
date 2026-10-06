@@ -227,7 +227,6 @@ internal fun AgentChatBody(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    StreamPerformanceMonitor(isStreaming)
     io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
         enabled = !isPaused,
         conversationId = collaborationConversationId,
@@ -280,8 +279,9 @@ internal fun AgentChatBody(
     // Project once for both the initial tail anchor and the rendered rows below. In
     // particular, do not derive a second full timeline just to ask for its size: this
     // list can contain thousands of streaming/tool messages.
+    val timelineProjection = remember { AgentTimelineProjectionCache() }
     val timelineEntries = remember(visibleMessages) {
-        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
+        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { timelineProjection.project(visibleMessages) }
     }
     val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
         initialTimelineItemIndex(
@@ -727,10 +727,13 @@ internal fun AgentConversationMessages(
     }
     // Project onto the EXACT rows consumed by LazyColumn. Expansion and late
     // records move only the footer anchor, never the message or callback owner.
-    val turnFooters = remember(timelineRows, isStreaming, isCompressingContext) {
+    // Generation only relaxes branching on PREVIOUS completed turns. The current
+    // turn has no action bar until it closes, even between text/tool blocks.
+    val turnFooters = remember(timelineRows, isStreaming, isPaused, isCompressingContext) {
         timelineRows.turnFooters(
             isStreaming = isStreaming,
             isCompressingContext = isCompressingContext,
+            isPaused = isPaused,
         )
     }
     val finalResultMessageIds = remember(turnFooters) {
@@ -1608,13 +1611,14 @@ internal fun AgentConversationMessages(
                     val revealPending = footerRevealMessages[entry.key].orEmpty().any { answer ->
                         val retained = streamingMarkdownStates[answer.id]
                         answer.isStreaming ||
-                            (retained != null && retained.revealedContent != answer.content) ||
+                            (retained != null && retained.revealedContent != answer.content && (isStreaming || isPaused)) ||
                             (retained == null && (isStreaming || isPaused) && answer.id !in settledMessageIds)
                     }
                     AgentTurnFooter(
                         message = owner,
                         actions = messageActions,
                         revealPending = revealPending,
+                        isRunActive = (isStreaming || isPaused) && owner.id !in finalResultMessageIds,
                         speechPreface = speechPrefaces[owner.id].orEmpty(),
                         messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
                         branchEnabled = branchEnabled,

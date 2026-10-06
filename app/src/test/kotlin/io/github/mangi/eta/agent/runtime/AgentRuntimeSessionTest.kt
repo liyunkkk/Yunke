@@ -11,6 +11,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRuntimeSessionTest {
+    @Test fun historyQueriesAreFrozenBoundedAndDoNotStopOrSubscribe() {
+        val session = AgentRuntimeSession("run")
+        val history = mutableListOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "task", turnId = "run"))
+        val first = session.publishHistorySnapshot(1, history)
+        history.clear()
+        assertEquals("task", session.historySnapshot(first)!!.history.single().content)
+        assertFalse(session.controller.isCancelled)
+        assertFalse(session.controller.isPaused)
+        val second = session.publishHistorySnapshot(2, listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "second")))
+        assertTrue(session.historySnapshot(first) != null)
+        session.publishHistorySnapshot(3, listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "third")))
+        assertTrue(session.historySnapshot(first) == null)
+        assertEquals(2, session.historySnapshot(second)!!.round)
+        assertTrue(session.historySnapshot("unknown") == null)
+        session.signalStop()
+        assertTrue(session.historySnapshot(second) == null)
+        assertEquals("", session.publishHistorySnapshot(4, emptyList()))
+    }
+
     @Test fun userStopWaitsForTranscriptCommitAndPublishesOnce() {
         val results = mutableListOf<AgentRuntimeWire.RunResult>()
         val session = AgentRuntimeSession("run", resultSink = results::add)

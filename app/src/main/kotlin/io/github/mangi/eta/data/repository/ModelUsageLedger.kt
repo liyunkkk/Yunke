@@ -1,5 +1,6 @@
 package io.github.mangi.eta.data.repository
 
+import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -189,8 +190,14 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     if (delta.inputTokens <= 0L && delta.outputTokens <= 0L && delta.conversationId.isNullOrBlank()) {
         return raw.orEmpty()
     }
-    val root = runCatching { JSONObject(seedConversationUsage(raw, emptyMap())) }
-        .getOrDefault(JSONObject())
+    val root = runCatching {
+        val parsed = JSONObject(raw?.takeIf { it.isNotBlank() } ?: "{}")
+        val initialized = parsed.optBoolean("conversationTotalsInitialized")
+        seedConversationUsageInPlace(parsed, raw, emptyMap())
+        // Migration retains the original round-trip. Initialized ledgers can reuse the root
+        // only when scalar reads and the updated model's string coercions are round-trip safe.
+        parsed.rootForModelUsageDelta(delta.providerId, delta.modelId, initialized)
+    }.getOrDefault(JSONObject())
     val providers = root.optJSONObject("providers") ?: JSONObject().also {
         root.put("providers", it)
     }
@@ -259,8 +266,10 @@ internal fun applyModelUsageDelta(raw: String?, delta: ModelUsageDelta): String 
     } else {
         events
     }
-    model.put("events", encodeEvents(trimmed))
-    return root.toString()
+    model.put("events", StreamPerformanceDiagnostics.measure("usage.ledger.encodeEvents", trimmed.size.toLong()) {
+        encodeEvents(trimmed)
+    })
+    return StreamPerformanceDiagnostics.measure("usage.ledger.serialize") { root.toString() }
 }
 
 private fun decodeEvents(array: JSONArray?): List<ModelUsageEvent> {
@@ -339,4 +348,73 @@ internal fun List<ModelUsageEvent>.collapsedByRound(): List<ModelUsageEvent> {
         }
     }
     return kept
+}
+
+/**
+ * Select the actual update root, retaining the old round-trip for migration or unsafe reads.
+ * Container values can have canonical scalars yet stringify differently after re-parsing:
+ * org.json's object key iteration order need not survive rebuilding its backing map.
+ */
+internal fun JSONObject.rootForModelUsageDelta(
+    providerId: String,
+    modelId: String,
+    wasInitialized: Boolean,
+): JSONObject =
+    if (wasInitialized && hasOnlyCanonicalJsonValues() &&
+        hasOnlyScalarModelUsageStrings(providerId, modelId)
+    ) this else JSONObject(toString())
+
+private fun JSONObject.hasOnlyScalarModelUsageStrings(providerId: String, modelId: String): Boolean {
+    val model = optJSONObject("providers")?.optJSONObject(providerId)
+        ?.optJSONObject("models")?.optJSONObject(modelId) ?: return true
+    // Only this model is decoded and re-encoded during an initialized delta. Other models'
+    // containers remain JSON values, so their key order is not materialized into a string.
+    val events = model.optJSONArray("events")
+    if (events != null) {
+        for (index in 0 until events.length()) {
+            val event = events.optJSONObject(index) ?: continue
+            if (!event.opt("q").isScalarStringCoercionValue() ||
+                !event.opt("c").isScalarStringCoercionValue()
+            ) return false
+        }
+    }
+    return model.optJSONArray("conversations").hasOnlyScalarStringElements() &&
+        model.optJSONArray("days").hasOnlyScalarStringElements()
+}
+
+private fun JSONArray?.hasOnlyScalarStringElements(): Boolean {
+    if (this == null) return true
+    for (index in 0 until length()) {
+        if (!opt(index).isScalarStringCoercionValue()) return false
+    }
+    return true
+}
+
+private fun Any?.isScalarStringCoercionValue(): Boolean = when (this) {
+    // Missing event fields are safe; raw Java null array entries are rejected by the tree check.
+    null, JSONObject.NULL, is String, is Boolean, is Int, is Long -> true
+    else -> false
+}
+
+/**
+ * Checks scalar types recursively, not container identity, object key order or string coercions.
+ * Strings, booleans, JSONObject.NULL, Integer and Long keep their scalar read semantics through
+ * org.json's round-trip. Any other Number (Double, BigDecimal, BigInteger...) may be rewritten,
+ * and a raw Java null (Android's lenient array elision, e.g. `[,"a"]`) becomes JSONObject.NULL,
+ * which optString reads differently. Containers recurse here; coercion shapes need a separate check.
+ */
+internal fun JSONObject.hasOnlyCanonicalJsonValues(): Boolean {
+    val keys = keys()
+    while (keys.hasNext()) {
+        if (!opt(keys.next()).isCanonicalJsonValue()) return false
+    }
+    return true
+}
+
+private fun Any?.isCanonicalJsonValue(): Boolean = when (this) {
+    null -> false
+    JSONObject.NULL, is String, is Boolean, is Int, is Long -> true
+    is JSONObject -> this.hasOnlyCanonicalJsonValues()
+    is JSONArray -> (0 until this.length()).all { index -> this.opt(index).isCanonicalJsonValue() }
+    else -> false
 }

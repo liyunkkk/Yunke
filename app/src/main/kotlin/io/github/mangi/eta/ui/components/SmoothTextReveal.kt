@@ -144,10 +144,12 @@ internal class SmoothTextRevealCoordinator {
         text: String,
         layoutResult: TextLayoutResult,
     ) {
-        val record = records.getOrPut(key) { RevealRecord(key) }
-        if (node != null) record.node = node
-        updateRecord(record, text, layoutResult)
-        wakeups.trySend(Unit)
+        StreamPerformanceDiagnostics.measure("reveal.layout.update", text.length.toLong()) {
+            val record = records.getOrPut(key) { RevealRecord(key) }
+            if (node != null) record.node = node
+            updateRecord(record, text, layoutResult)
+            wakeups.trySend(Unit)
+        }
     }
 
     fun drawSnapshot(key: RevealBlockKey): RevealDrawSnapshot? {
@@ -203,29 +205,34 @@ internal class SmoothTextRevealCoordinator {
         text: String,
         layoutResult: TextLayoutResult,
     ) {
-        if (record.text == text && record.layoutResult === layoutResult) return
-        // Detach releases the layout, but must not make a restored block "new" again.
-        val firstLayoutOfRestoredBlock = !record.hasReceivedLayout && record.key.sourceOffset < restoredSourceLength
-        if (text != record.text) {
-            // 流式文本只追加不修改，但行内语法闭合（**粗体**、`code`、链接折叠等）会让
-            // 渲染文本丢掉标记字符而变短或错位。此时进度只能保持单调前进：一旦回退，
-            // 已显现的文字会消失并重新打字，表现为输出反复闪烁。
-            record.boundaries = updateGraphemeBoundaries(
-                previousText = record.text,
-                previousBoundaries = record.boundaries,
-                text = text,
-            )
-            record.text = text
-            record.targetCount = record.boundaries.lastIndex.toFloat()
-            record.progress = record.progress.coerceAtMost(record.targetCount)
+        if (record.text == text && record.layoutResult === layoutResult) {
+            if (StreamPerformanceDiagnostics.enabled) StreamPerformanceDiagnostics.record("reveal.record.cacheHit")
+            return
         }
-        if (record.layoutResult !== layoutResult) {
-            record.layoutResult = layoutResult
+        StreamPerformanceDiagnostics.measureDetail("reveal.record.update", text.length.toLong()) {
+            // Detach releases the layout, but must not make a restored block "new" again.
+            val firstLayoutOfRestoredBlock = !record.hasReceivedLayout && record.key.sourceOffset < restoredSourceLength
+            if (text != record.text) {
+                // 流式文本只追加不修改，但行内语法闭合（**粗体**、`code`、链接折叠等）会让
+                // 渲染文本丢掉标记字符而变短或错位。此时进度只能保持单调前进：一旦回退，
+                // 已显现的文字会消失并重新打字，表现为输出反复闪烁。
+                record.boundaries = updateGraphemeBoundaries(
+                    previousText = record.text,
+                    previousBoundaries = record.boundaries,
+                    text = text,
+                )
+                record.text = text
+                record.targetCount = record.boundaries.lastIndex.toFloat()
+                record.progress = record.progress.coerceAtMost(record.targetCount)
+            }
+            if (record.layoutResult !== layoutResult) {
+                record.layoutResult = layoutResult
+            }
+            record.hasReceivedLayout = true
+            if (animationsPaused || record.node == null || firstLayoutOfRestoredBlock) completeRecord(record)
+            updateDrainedState()
+            record.node?.onRevealDataChanged()
         }
-        record.hasReceivedLayout = true
-        if (animationsPaused || record.node == null || firstLayoutOfRestoredBlock) completeRecord(record)
-        updateDrainedState()
-        record.node?.onRevealDataChanged()
     }
 
     private fun completeRecord(record: RevealRecord) {
@@ -352,17 +359,19 @@ internal class SmoothTextRevealNode(
         measurable: Measurable,
         constraints: Constraints,
     ): MeasureResult {
-        val placeable = measurable.measure(constraints)
-        // Reattached/replaced Markdown nodes may not have delivered onTextLayout yet.
-        // Missing reveal metadata must not collapse an already measured paragraph to zero.
-        val visibleHeight = if (state.drawSnapshot() == null) placeable.height
-            else state.visibleHeightPx().coerceAtMost(placeable.height)
-        cachedVisibleHeight = visibleHeight
-        val measuredHeight = visibleHeight.coerceIn(constraints.minHeight, constraints.maxHeight)
-        return layout(placeable.width, measuredHeight) {
-            // 逐帧裁剪不可引入独立子图层，否则未显现的文字会整段合成出来。
-            // 直接放置子内容，让 clip 和逐字淡入留在同一次绘制里。
-            placeable.place(0, 0)
+        return StreamPerformanceDiagnostics.measureDetail("reveal.measure") {
+            val placeable = measurable.measure(constraints)
+            // Reattached/replaced Markdown nodes may not have delivered onTextLayout yet.
+            // Missing reveal metadata must not collapse an already measured paragraph to zero.
+            val visibleHeight = if (state.drawSnapshot() == null) placeable.height
+                else state.visibleHeightPx().coerceAtMost(placeable.height)
+            cachedVisibleHeight = visibleHeight
+            val measuredHeight = visibleHeight.coerceIn(constraints.minHeight, constraints.maxHeight)
+            layout(placeable.width, measuredHeight) {
+                // 逐帧裁剪不可引入独立子图层，否则未显现的文字会整段合成出来。
+                // 直接放置子内容，让 clip 和逐字淡入留在同一次绘制里。
+                placeable.place(0, 0)
+            }
         }
     }
 
@@ -379,20 +388,20 @@ internal class SmoothTextRevealNode(
     private fun ContentDrawScope.drawInsideMeasuredHeight() {
         val snapshot = state.drawSnapshot()
         if (snapshot == null) {
-            drawContent()
+            drawDiagnosticContent()
             return
         }
         val contentScope = this
         val targetCount = snapshot.boundaries.lastIndex
         if (targetCount <= 0 || snapshot.progress >= targetCount) {
-            drawContent()
+            drawDiagnosticContent()
             return
         }
 
         val fullCount = floor(snapshot.progress).toInt().coerceIn(0, targetCount)
         ensurePaths(snapshot, fullCount)
         cachedFullPath?.let { path ->
-            clipPath(path) { contentScope.drawContent() }
+            clipPath(path) { contentScope.drawDiagnosticContent() }
         }
 
         val partialAlpha = (snapshot.progress - fullCount).coerceIn(0f, 1f)
@@ -400,14 +409,16 @@ internal class SmoothTextRevealNode(
             cachedNextPath?.let { path ->
                 clipPath(path) {
                     alphaPaint.alpha = partialAlpha
-                    drawContext.canvas.saveLayer(
-                        // Only the fading grapheme needs an offscreen alpha layer.
-                        // A paragraph-sized layer grows with the answer on every frame.
-                        path.getBounds(),
-                        alphaPaint,
-                    )
+                    StreamPerformanceDiagnostics.measure("reveal.saveLayer") {
+                        drawContext.canvas.saveLayer(
+                            // Only the fading grapheme needs an offscreen alpha layer.
+                            // A paragraph-sized layer grows with the answer on every frame.
+                            path.getBounds(),
+                            alphaPaint,
+                        )
+                    }
                     try {
-                        contentScope.drawContent()
+                        contentScope.drawDiagnosticContent()
                     } finally {
                         drawContext.canvas.restore()
                     }
@@ -416,56 +427,69 @@ internal class SmoothTextRevealNode(
         }
     }
 
+    private fun ContentDrawScope.drawDiagnosticContent() {
+        StreamPerformanceDiagnostics.measure("reveal.drawContent") { drawContent() }
+    }
+
     private fun ensurePaths(snapshot: RevealDrawSnapshot, fullCount: Int) {
         val sameLayout = cachedLayoutResult === snapshot.layoutResult
-        if (sameLayout && cachedFullCount == fullCount) return
-
-        if (canAppendRevealPath(sameLayout, cachedFullCount, fullCount)) {
-            // Fast output commonly reveals several graphemes per frame. Append only
-            // that range, not a fresh path for the entire already-visible prefix.
-            val textLength = snapshot.layoutResult.layoutInput.text.length
-            val start = snapshot.boundaries[cachedFullCount].coerceIn(0, textLength)
-            val end = snapshot.boundaries[fullCount].coerceIn(start, textLength)
-            val addedPath = if (fullCount == cachedFullCount + 1) {
-                cachedNextPath
-            } else if (end > start) {
-                snapshot.layoutResult.getPathForRange(start, end)
-            } else null
-            if (addedPath != null) {
-                val accumulatedPath = cachedFullPath ?: Path()
-                accumulatedPath.addPath(addedPath)
-                cachedFullPath = accumulatedPath
-            }
-            cachedFullCount = fullCount
-            cachedNextPath = nextGraphemePath(snapshot, fullCount)
+        if (sameLayout && cachedFullCount == fullCount) {
+            if (StreamPerformanceDiagnostics.enabled) StreamPerformanceDiagnostics.record("reveal.paths.cacheHit")
             return
         }
 
-        cachedLayoutResult = snapshot.layoutResult
-        cachedFullCount = fullCount
-        val textLength = snapshot.layoutResult.layoutInput.text.length
-        val fullEnd = snapshot.boundaries[fullCount].coerceIn(0, textLength)
-        cachedFullPath = if (fullEnd > 0) {
-            snapshot.layoutResult.getPathForRange(0, fullEnd)
-        } else {
-            null
+        if (canAppendRevealPath(sameLayout, cachedFullCount, fullCount)) {
+            StreamPerformanceDiagnostics.measure("reveal.paths.append", (fullCount - cachedFullCount).toLong()) {
+                // Fast output commonly reveals several graphemes per frame. Append only
+                // that range, not a fresh path for the entire already-visible prefix.
+                val textLength = snapshot.layoutResult.layoutInput.text.length
+                val start = snapshot.boundaries[cachedFullCount].coerceIn(0, textLength)
+                val end = snapshot.boundaries[fullCount].coerceIn(start, textLength)
+                val addedPath = if (fullCount == cachedFullCount + 1) {
+                    cachedNextPath
+                } else if (end > start) {
+                    snapshot.layoutResult.getPathForRange(start, end)
+                } else null
+                if (addedPath != null) {
+                    val accumulatedPath = cachedFullPath ?: Path()
+                    accumulatedPath.addPath(addedPath)
+                    cachedFullPath = accumulatedPath
+                }
+                cachedFullCount = fullCount
+                cachedNextPath = nextGraphemePath(snapshot, fullCount)
+            }
+            return
         }
-        cachedNextPath = nextGraphemePath(snapshot, fullCount)
+
+        StreamPerformanceDiagnostics.measure("reveal.paths.rebuild", fullCount.toLong()) {
+            cachedLayoutResult = snapshot.layoutResult
+            cachedFullCount = fullCount
+            val textLength = snapshot.layoutResult.layoutInput.text.length
+            val fullEnd = snapshot.boundaries[fullCount].coerceIn(0, textLength)
+            cachedFullPath = if (fullEnd > 0) {
+                snapshot.layoutResult.getPathForRange(0, fullEnd)
+            } else {
+                null
+            }
+            cachedNextPath = nextGraphemePath(snapshot, fullCount)
+        }
     }
 
     private fun nextGraphemePath(
         snapshot: RevealDrawSnapshot,
         fullCount: Int,
     ): Path? {
-        val textLength = snapshot.layoutResult.layoutInput.text.length
-        val start = snapshot.boundaries.getOrNull(fullCount)?.coerceIn(0, textLength)
-            ?: return null
-        val end = snapshot.boundaries.getOrNull(fullCount + 1)?.coerceIn(start, textLength)
-            ?: return null
-        return if (end > start) {
-            snapshot.layoutResult.getPathForRange(start, end)
-        } else {
-            null
+        return StreamPerformanceDiagnostics.measureDetail("reveal.paths.nextGrapheme") {
+            val textLength = snapshot.layoutResult.layoutInput.text.length
+            val start = snapshot.boundaries.getOrNull(fullCount)?.coerceIn(0, textLength)
+                ?: return@measureDetail null
+            val end = snapshot.boundaries.getOrNull(fullCount + 1)?.coerceIn(start, textLength)
+                ?: return@measureDetail null
+            if (end > start) {
+                snapshot.layoutResult.getPathForRange(start, end)
+            } else {
+                null
+            }
         }
     }
 
@@ -553,19 +577,26 @@ internal fun updateGraphemeBoundaries(
         previousBoundaries.first() != 0 ||
         previousBoundaries.last() != previousText.length
     ) {
-        return graphemeBoundaries(text)
-    }
-    if (text == previousText) return previousBoundaries
-
-    val restartBoundaryIndex = (previousBoundaries.lastIndex - 1).coerceAtLeast(0)
-    val restartOffset = previousBoundaries[restartBoundaryIndex]
-    val suffixBoundaries = graphemeBoundaries(text.substring(restartOffset))
-    return IntArray(restartBoundaryIndex + suffixBoundaries.size).also { merged ->
-        for (index in 0 until restartBoundaryIndex) {
-            merged[index] = previousBoundaries[index]
+        return StreamPerformanceDiagnostics.measure("reveal.graphemes.rebuild", text.length.toLong()) {
+            graphemeBoundaries(text)
         }
-        suffixBoundaries.forEachIndexed { index, boundary ->
-            merged[restartBoundaryIndex + index] = restartOffset + boundary
+    }
+    if (text == previousText) {
+        if (StreamPerformanceDiagnostics.enabled) StreamPerformanceDiagnostics.record("reveal.graphemes.cacheHit")
+        return previousBoundaries
+    }
+
+    return StreamPerformanceDiagnostics.measure("reveal.graphemes.append", (text.length - previousText.length).toLong()) {
+        val restartBoundaryIndex = (previousBoundaries.lastIndex - 1).coerceAtLeast(0)
+        val restartOffset = previousBoundaries[restartBoundaryIndex]
+        val suffixBoundaries = graphemeBoundaries(text.substring(restartOffset))
+        IntArray(restartBoundaryIndex + suffixBoundaries.size).also { merged ->
+            for (index in 0 until restartBoundaryIndex) {
+                merged[index] = previousBoundaries[index]
+            }
+            suffixBoundaries.forEachIndexed { index, boundary ->
+                merged[restartBoundaryIndex + index] = restartOffset + boundary
+            }
         }
     }
 }

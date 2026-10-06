@@ -68,7 +68,7 @@ class StopResponsivenessContract(unittest.TestCase):
         # Restoration shares an entry; stop ownership is checked before IO and publication.
         for name in ("beginMessageEdit", "deleteMessageTurn", "branchConversation"):
             with self.subTest(name=name):
-                self.assertIn("launchConversationRevision(messageId)", method(self.app, name))
+                self.assertIn("launchConversationRevision(messageId", method(self.app, name))
         transaction = method(self.app, "launchConversationRevision")
         self.assertLess(transaction.index("rejectConversationArchiveMutation()"),
                         transaction.index("scope.launch("))

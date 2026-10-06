@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.PixelFormat
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -113,6 +114,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     @Volatile
     private var lastCompletedRunContext: CompletedRunContext? = null
     private val hideToken = Any()
+    private val pendingHistorySnapshots = ConcurrentHashMap<String, AgentRuntimeHistoryTransfer.PreparedHistory>()
     private val pendingResultTranscripts =
         ConcurrentHashMap<String, AgentRuntimeTranscriptTransfer.PreparedTranscript>()
 
@@ -184,6 +186,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         windowManager = null
         pendingResultTranscripts.values.forEach { prepared -> runCatching { prepared.close() } }
         pendingResultTranscripts.clear()
+        pendingHistorySnapshots.values.forEach { it.close() }
+        pendingHistorySnapshots.clear()
         pendingCompactionTransfers.values.forEach { transfers -> synchronized(transfers) { transfers.forEach { it.close() } } }
         pendingCompactionTransfers.clear()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
@@ -256,6 +260,64 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         runId = AgentRuntimeWire.runIdFromBundle(msg.data ?: return),
                         replyTo = msg.replyTo,
                     )
+                }
+
+                AgentRuntimeWire.MSG_QUERY_HISTORY -> {
+                    val data = msg.data ?: return
+                    val reply = msg.replyTo ?: return
+                    val runId = AgentRuntimeWire.runIdFromBundle(data)
+                    val snapshotId = data.getString("history_snapshot_id").orEmpty()
+                    val conversationId = data.getString("conversation_id").orEmpty()
+                    val queryId = data.getString("history_query_id").orEmpty()
+                    val capturedSession = sessions.get(runId)
+                    thread(name = "eta-history-query") {
+                        val response = AgentRuntimeWire.ackBundle(runId).apply {
+                            putString("history_snapshot_id", snapshotId)
+                            putString("history_query_id", queryId)
+                            putString("conversation_id", conversationId)
+                            putBoolean("history_available", false)
+                        }
+                        var prepared: AgentRuntimeHistoryTransfer.PreparedHistory? = null
+                        try {
+                            require(runId.isNotBlank() && runId.length <= 1024 &&
+                                snapshotId.length <= 128 && conversationId.isNotBlank() && conversationId.length <= 1024 &&
+                                queryId.matches(Regex("[0-9a-f-]{36}")))
+                            // A UUID does not confer ownership: check the captured run's UI handoff.
+                            val owner = synchronized(supplementsLock) { supplementsByRunId[runId]?.conversationId }
+                            val snapshot = capturedSession?.takeIf { sessions.contains(it) && owner == conversationId }
+                                ?.historySnapshot(snapshotId)
+                            if (snapshot != null) {
+                                prepared = AgentRuntimeHistoryTransfer.prepareSnapshot(this@AgentRuntimeService, snapshot.history)
+                                response.putInt("snapshot_round", snapshot.round)
+                                response.putParcelable(AgentRuntimeWire.KEY_HISTORY_FD, requireNotNull(prepared).descriptor)
+                                response.putBoolean("history_available", true)
+                            }
+                            if (prepared != null) {
+                                val transfer = requireNotNull(prepared)
+                                check(pendingHistorySnapshots.putIfAbsent(queryId, transfer) == null)
+                                // Keep the same-process descriptor alive until the receiver consumes it.
+                                // A lost/late client is cleaned without affecting the running session.
+                                mainHandler.postDelayed({
+                                    if (pendingHistorySnapshots.remove(queryId, transfer)) transfer.close()
+                                }, 60_000L)
+                            }
+                            reply.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_HISTORY_RESPONSE).apply { this.data = response })
+                            prepared = null // Pending transfer now owns it; release/timeout closes it.
+                        } catch (failure: Exception) {
+                            response.remove(AgentRuntimeWire.KEY_HISTORY_FD)
+                            response.putBoolean("history_available", false)
+                            runCatching { reply.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_HISTORY_RESPONSE).apply { this.data = response }) }
+                        } finally {
+                            prepared?.let { transfer ->
+                                pendingHistorySnapshots.remove(queryId, transfer)
+                                transfer.close()
+                            }
+                        }
+                    }
+                }
+
+                AgentRuntimeWire.MSG_RELEASE_HISTORY -> {
+                    msg.data?.getString("history_query_id")?.let { pendingHistorySnapshots.remove(it)?.close() }
                 }
 
                 AgentRuntimeWire.MSG_QUERY_QUESTION -> {
@@ -471,7 +533,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             }
         }
         synchronized(supplementsLock) {
-            val extras = RunSupplements()
+            val extras = RunSupplements(conversationId = request.handoff
+                ?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+                ?.payload?.let { AgentUiHandoffPayload.from(it).conversationId }.orEmpty())
             if (request.handoff?.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
                 val payload = AgentUiHandoffPayload.from(request.handoff.payload)
                 extras.items += payload.supplements
@@ -1387,6 +1451,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     )
 
     private data class RunSupplements(
+        val conversationId: String = "",
         val items: MutableList<AgentUiHandoffPayload.Supplement> = mutableListOf(),
         var nextIndex: Int = 1,
     )

@@ -383,6 +383,15 @@ internal object AgentConversationCodec {
         return copy
     }
 
+    /** Exact snapshot transport: never truncate history or turn malformed JSON into []. */
+    fun encodeHistorySnapshot(messages: List<AgentModelClient.ConversationMessage>): String =
+        json.encodeToString(messages)
+
+    fun decodeHistorySnapshot(raw: String): List<AgentModelClient.ConversationMessage> =
+        json.decodeFromString<List<AgentModelClient.ConversationMessage>>(raw).also { messages ->
+            require(messages.isNotEmpty() && messages.all { it.role in setOf("user", "assistant", "tool", "system") })
+        }
+
     fun durableMessage(message: JSONObject): AgentModelClient.ConversationMessage =
         sanitizeMessage(fromJsonObject(message))
 

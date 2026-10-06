@@ -59,8 +59,8 @@ internal data class AgentChatUiState(
     /** False means metadata/preview only; persistence must not replace its stored content. */
     val conversationContentLoaded: Boolean = true,
     /**
-     * GPT 速度档位。会话临时真值（含模型切换重置，不持久化）由 AppState 路持有，
-     * UI 只读取渲染并派发切换事件，不本地假切状态。
+     * GPT 速度有效档位：AppState 从独立主代理模型记忆（供应商 ID + 模型选择 ID）投影。
+     * 非 GPT/不可用绑定仅显示正常，不清除模型记忆；UI 只渲染并派发切换事件。
      */
     val gptSpeedMode: GptSpeedMode = GptSpeedMode.NORMAL,
 )

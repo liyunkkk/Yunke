@@ -145,19 +145,67 @@ class AgentTurnFooterRenderingTest {
         footer(stopped.id).assertIsDisplayed()
     }
 
-    @Test fun openStreamingTurnHasNoFooterUntilTheRunEnds() {
+    @Test fun streamingTurnHasNoFooterButPreviousCompletedAnswerCanBranch() {
         val streaming = mutableStateOf(true)
         val messages = mutableStateOf<List<AgentChatMessageUi>>(listOf(
+            UserMessageUi("old-user", "Previous question"),
+            AgentMessageUi("old-answer", "Completed answer", renderMarkdown = false),
             UserMessageUi("user", "Question"),
+            // This text block has ended, but the same turn is still executing a tool.
             AgentMessageUi("answer", "Intermediate answer", renderMarkdown = false),
             tool("step", "Work after the answer"),
         ))
         showConversation(messages, streaming = streaming)
         footer("answer").assertDoesNotExist()
-        compose.runOnIdle { streaming.value = false }
-        footer("answer").assertIsDisplayed()
+        footerAction("old-answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
+        assertEquals(listOf("branch:old-answer"), callbacks)
+        // Streaming expands trailing work by default; explicit overrides take precedence.
+        compose.onNodeWithText("Work after the answer").assertIsDisplayed()
+        compose.onNodeWithContentDescription(text(R.string.work_collapse)).performClick()
+        compose.onNodeWithContentDescription(text(R.string.work_expand)).assertIsDisplayed()
+        footer("answer").assertDoesNotExist()
         compose.onNodeWithContentDescription(text(R.string.work_expand)).performClick()
+        compose.onNodeWithText("Work after the answer").assertIsDisplayed()
+        footer("answer").assertDoesNotExist()
+        footer("old-answer").assertIsDisplayed()
+        compose.runOnIdle { streaming.value = false }
+        compose.onNodeWithText("Work after the answer").assertIsDisplayed()
+        footer("answer").assertIsDisplayed()
         assertBelow(footer("answer"), compose.onNodeWithText("Work after the answer"))
+    }
+
+    @Test fun partialStreamingAnswerHasNoFooterUntilTextAndRunBothFinish() {
+        val streaming = mutableStateOf(true)
+        val partial = AgentMessageUi("answer", "Partial reply", isStreaming = true, renderMarkdown = false)
+        val messages = mutableStateOf<List<AgentChatMessageUi>>(listOf(
+            UserMessageUi("old-user", "Previous question"),
+            AgentMessageUi("old-answer", "Completed answer", renderMarkdown = false),
+            UserMessageUi("user", "Question"), partial,
+        ))
+        showConversation(messages, streaming = streaming)
+        footer("answer").assertDoesNotExist()
+        footerAction("old-answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
+        assertEquals(listOf("branch:old-answer"), callbacks)
+        compose.runOnIdle { streaming.value = false }
+        footer("answer").assertDoesNotExist()
+        compose.runOnIdle { messages.value = messages.value.dropLast(1) + partial.copy(isStreaming = false) }
+        footer("answer").assertIsDisplayed()
+    }
+
+    @Test fun pausedTurnHasNoFooterButPreviousCompletedAnswerCanBranch() {
+        val messages = mutableStateOf<List<AgentChatMessageUi>>(listOf(
+            UserMessageUi("old-user", "Previous question"),
+            AgentMessageUi("old-answer", "Completed answer", renderMarkdown = false),
+            UserMessageUi("user", "Question"),
+            AgentMessageUi("answer", "Intermediate answer", renderMarkdown = false),
+            tool("step", "Work after the answer"),
+        ))
+        showConversation(messages, paused = true)
+        footer("answer").assertDoesNotExist()
+        footerAction("old-answer", R.string.ui_branch_conversation).assertIsEnabled().performClick()
+        assertEquals(listOf("branch:old-answer"), callbacks)
+        compose.onNodeWithContentDescription(text(R.string.work_expand)).performClick()
+        footer("answer").assertDoesNotExist()
     }
 
     private fun showConversation(
@@ -194,7 +242,7 @@ class AgentTurnFooterRenderingTest {
     private fun footer(id: String) = compose.onNodeWithTag("turn-footer:$id", useUnmergedTree = true)
 
     private fun footerAction(id: String, resource: Int) = compose.onNode(
-        hasContentDescription(text(resource)) and hasClickAction() and
+        hasContentDescription(text(resource)) and
             hasAnyAncestor(hasTestTag("turn-footer:$id")),
     )
 

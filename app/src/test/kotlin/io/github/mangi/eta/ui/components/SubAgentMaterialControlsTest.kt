@@ -8,6 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.*
@@ -50,21 +51,73 @@ class SubAgentMaterialControlsTest {
         compose.runOnIdle { assertTrue(clicked) }
     }
 
-    @Test fun onlyImplementationShowsTierControlsInSettings() {
+    @Test fun externalSettingsShowsDisabledTierOnlyForImplementation() {
         val role = mutableStateOf("implementation")
         compose.setContent {
             MaterialTheme {
                 SubAgentProfileRow(SubAgentProfile("test", "测试代理", role = role.value), emptyList(), settings = true)
             }
         }
-        compose.onNodeWithContentDescription("设置测试代理任务分工").assertExists()
-        for (next in listOf("review", "image_generation", "video_generation")) {
+        for (next in listOf("implementation", "review", "image_generation", "video_generation", "implementation")) {
             compose.runOnIdle { role.value = next }
-            compose.onNodeWithText("任务分工").assertDoesNotExist()
-            compose.onNodeWithText("未设置分工").assertDoesNotExist()
+            if (next == "implementation") {
+                compose.onNodeWithContentDescription("设置测试代理任务分工").assertExists().assertIsNotEnabled()
+                compose.onNodeWithText("任务分工").assertExists()
+                compose.onNodeWithText("未设置分工").assertExists()
+            } else {
+                compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
+                compose.onNodeWithText("任务分工").assertDoesNotExist()
+                compose.onNodeWithText("未设置分工").assertDoesNotExist()
+            }
             compose.onNodeWithContentDescription("选择测试代理职责").assertExists()
             compose.onNodeWithContentDescription("设置测试代理并行上限").assertExists().assertIsNotEnabled()
         }
+    }
+
+    @Test fun settingsTierMenuClosesOnRoleChangeAndDisableAndRejectsRetainedSelection() {
+        val profile = SubAgentProfile("test", "测试代理", tier = SubAgentTaskTier.COMPLEX)
+        val fixture = SubAgentUiFixture(profiles = listOf(profile))
+        val enabled = mutableStateOf(true)
+        compose.setSubAgentContent(fixture) {
+            val current = (fixture.editor.observe() as? SubAgentEditorState.Loaded)?.config?.profiles?.single() ?: profile
+            SubAgentProfileRow(current, emptyList(), enabled = enabled.value, settings = true)
+        }
+        compose.onNodeWithContentDescription("设置测试代理任务分工").performClick()
+        val retainedSelection = compose.onNode(isSelectable() and hasText("简单任务")).captureSelectableOnClick()
+        compose.runOnIdle { fixture.editor.updateProfile(profile.id) { it.withRole("review") } }
+        compose.onNodeWithText("简单任务").assertDoesNotExist()
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assertDoesNotExist()
+        compose.runOnIdle {
+            val before = fixture.snapshot()
+            retainedSelection()
+            assertEquals(before, fixture.snapshot())
+            fixture.editor.updateProfile(profile.id) { it.withRole("implementation") }
+        }
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assert(hasText("未设置分工")).performClick()
+        val disabledSelection = compose.onNode(isSelectable() and hasText("常规任务")).captureSelectableOnClick()
+        compose.runOnIdle { enabled.value = false }
+        compose.onNodeWithText("常规任务").assertDoesNotExist()
+        compose.onNodeWithContentDescription("设置测试代理任务分工").assertIsNotEnabled()
+        compose.runOnIdle {
+            val before = fixture.snapshot()
+            val revision = fixture.repository.revision(fixture.owner).value
+            disabledSelection()
+            assertEquals(before, fixture.snapshot())
+            assertEquals(revision, fixture.repository.revision(fixture.owner).value)
+        }
+    }
+
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+    @Suppress("UNCHECKED_CAST")
+    private fun SemanticsNodeInteraction.captureSelectableOnClick(): () -> Unit {
+        // A semantics click wraps an attached Modifier node (including click sound).
+        // Retain the actual selectable callback to test stale application choices.
+        val element = fetchSemanticsNode().layoutInfo.getModifierInfo()
+            .map { it.modifier }
+            .single { it.javaClass.name == "androidx.compose.foundation.selection.SelectableElement" }
+        return element.javaClass.getDeclaredField("onClick")
+            .apply { isAccessible = true }
+            .get(element) as () -> Unit
     }
 
     @Test fun nonImplementationConversationLabelHasNoTierMenu() {
@@ -96,19 +149,35 @@ class SubAgentMaterialControlsTest {
     }
     @Test fun modelPickerHighlightsSelectionAndProviderRowsHaveNoPressRipple() {
         val selectedColor = Color(0xFFB5D8F3)
+        var selectedModelId: String? = null
+        var cleared = false
         val model = io.github.mangi.eta.ui.model.AgentModelOptionUi("m", "p", "测试提供商", "openai", "m", "测试模型", 10000)
+        val nextModel = io.github.mangi.eta.ui.model.AgentModelOptionUi("m-next", "p-next", "下一提供商", "openai", "m-next", "下一模型", 10000)
         val picker = io.github.mangi.eta.ui.model.AgentModelPickerUiState(
-            providerGroups = listOf(io.github.mangi.eta.ui.model.AgentModelProviderGroupUi("p", "测试提供商", "openai", listOf(model))),
+            providerGroups = listOf(
+                io.github.mangi.eta.ui.model.AgentModelProviderGroupUi("p", "测试提供商", "openai", listOf(model)),
+                io.github.mangi.eta.ui.model.AgentModelProviderGroupUi("p-next", "下一提供商", "openai", listOf(nextModel)),
+            ),
             selectedModel = model)
         compose.setContent {
             MaterialTheme(colorScheme = lightColorScheme(surfaceVariant = selectedColor)) {
-                io.github.mangi.eta.ui.TtsModelPickerDialog(picker, true, {}, { _, _ -> }, "选择模型",
-                    onClearSelection = {}, highlightSelection = true)
+                io.github.mangi.eta.ui.TtsModelPickerDialog(picker, true, {}, { _, id -> selectedModelId = id }, "选择模型",
+                    onClearSelection = { cleared = true }, highlightSelection = true)
             }
         }
         val selected = compose.onNode(isSelectable() and hasText("测试模型")).assertIsSelected()
         val pixels = selected.captureToImage().toPixelMap()
         assertEquals(selectedColor, pixels[pixels.width - 12, pixels.height / 2])
+        selected.assertHeightIsEqualTo(48.dp)
+        assertTrue("top selection margin missing", pixels[pixels.width / 2, 0] != selectedColor)
+        assertTrue("bottom selection margin missing", pixels[pixels.width / 2, pixels.height - 1] != selectedColor)
+        selected.performTouchInput { click(Offset(center.x, 1f)) }
+        compose.runOnIdle { assertEquals("m", selectedModelId); selectedModelId = null }
+        selected.performTouchInput { click(Offset(center.x, height - 1f)) }
+        compose.runOnIdle { assertEquals("m", selectedModelId) }
+        val none = compose.onNode(isSelectable() and hasText("无"))
+        none.assertHeightIsEqualTo(48.dp).performTouchInput { click(Offset(center.x, height - 1f)) }
+        compose.runOnIdle { assertTrue(cleared) }
         compose.onAllNodes(isSelectable()).assertCountEquals(2) // rows only; no separate radio widgets
         val header = compose.onNodeWithText("测试提供商")
         val before = header.captureToImage().toPixelMap()
@@ -137,15 +206,16 @@ class SubAgentMaterialControlsTest {
         assertTrue(value.left > label.right)
         val model = compose.onNodeWithContentDescription("测试代理模型").fetchSemanticsNode().boundsInRoot
         val role = compose.onNodeWithContentDescription("选择测试代理职责").fetchSemanticsNode().boundsInRoot
-        val tier = compose.onNodeWithContentDescription("设置测试代理任务分工").fetchSemanticsNode().boundsInRoot
+        val tier = compose.onNodeWithContentDescription("设置测试代理任务分工").assertIsEnabled().fetchSemanticsNode().boundsInRoot
         assertTrue(role.top >= model.bottom)
         assertTrue(tier.top >= role.bottom)
         val thinking = compose.onNodeWithContentDescription("调整测试代理思考深度").fetchSemanticsNode().boundsInRoot
+        assertTrue(thinking.top >= tier.bottom)
         val parallel = compose.onNodeWithContentDescription("设置测试代理并行上限").assertIsNotEnabled().fetchSemanticsNode().boundsInRoot
         assertTrue(parallel.top >= thinking.bottom)
         compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
-        compose.onNodeWithContentDescription("设置测试代理任务分工").performClick()
-        compose.onNode(isSelectable() and hasText("复杂任务")).assertIsSelected()
+        compose.onNodeWithText("任务分工").assertExists()
+        compose.onNodeWithText("复杂任务").assertExists()
     }
 
     @Test fun iconsAndLabelsUseOnSurfaceLikeTheApprovedSettingsShot() {
@@ -200,7 +270,13 @@ class SubAgentMaterialControlsTest {
     @Test
     @Config(qualifiers = "w320dp-h480dp")
     fun settingsAddActionStaysVisibleWhileAgentListScrolls() {
-        compose.setSubAgentContent { MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}) } }
+        val fixture = SubAgentUiFixture()
+        val group = fixture.createPreset()
+        compose.setSubAgentContent(fixture) {
+            MaterialTheme { io.github.mangi.eta.ui.SubAgentSettingsScreen({}, { fixture.repository }) }
+        }
+        compose.onNodeWithText("添加子代理组").assertIsDisplayed()
+        compose.onNodeWithContentDescription("编辑子代理组${group.name}").performClick()
         compose.onNodeWithText("设置各提供商模型并行上限").assertDoesNotExist()
         val add = compose.onNodeWithText("添加子代理").assertIsDisplayed()
         val parent = add.fetchSemanticsNode().boundsInRoot

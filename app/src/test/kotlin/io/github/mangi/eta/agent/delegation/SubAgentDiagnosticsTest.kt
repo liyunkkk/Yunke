@@ -28,6 +28,31 @@ class SubAgentDiagnosticsTest {
         d.mark("failed",errorCode="https://secret.invalid/?key=123",role="private-role",status="private-status")
         assertTrue(lines.single().contains("UNCLASSIFIED"));assertFalse(lines.single().contains("secret.invalid"))
     }
+    @Test fun metadataLengthStaysBoundedAndNonPrimitiveMetricsCannotInjectText() {
+        val lines = mutableListOf<String>()
+        val failure = IllegalStateException("HTTP 503 private-provider-body").apply {
+            stackTrace = arrayOf(StackTraceElement("io.github.mangi.eta." + "X".repeat(10_000), "private-method", "private-file", 123))
+        }
+        SubAgentDiagnostics("private-run", lines::add).mark("x".repeat(10_000),
+            taskId = "private-task".repeat(1_000), agentId = "private-agent".repeat(1_000),
+            providerId = "private-provider".repeat(1_000), model = "private-model".repeat(1_000),
+            toolName = "private-tool".repeat(1_000), failure = failure,
+            metrics = mapOf("context_tokens" to java.math.BigInteger("9".repeat(10_000)),
+                "elapsed_ms" to Double.POSITIVE_INFINITY, "round" to 4L))
+        val line = lines.single()
+        val json = JSONObject(line.removePrefix("SubAgentDiag "))
+        assertEquals(80, json.getString("stage").length)
+        assertTrue(json.getString("origin").length <= 172)
+        assertFalse(json.has("context_tokens"))
+        assertFalse(json.has("elapsed_ms"))
+        assertEquals(4L, json.getLong("round"))
+        assertEquals(503, json.getInt("http_status"))
+        assertTrue("Diagnostic metadata must stay bounded", line.length < 2_048)
+        for (secret in listOf("private-run", "private-task", "private-agent", "private-provider", "private-model", "private-tool", "private-provider-body", "private-file", "private-method")) {
+            assertFalse(line.contains(secret))
+        }
+    }
+
     @Test fun coordinatorLifecycleIsCorrelatedWithoutBodyLogging() {
         val lines=java.util.Collections.synchronizedList(mutableListOf<String>())
         val diagnosticsDelivered = CountDownLatch(1)

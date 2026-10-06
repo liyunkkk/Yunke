@@ -83,6 +83,59 @@ class ConversationSubAgentPreferencesSafetyTest {
         assertEquals(before, b.export(c("a")))
     }
 
+    @Test fun failedPresetCreationFencesCatalogAndPayloadUntilOriginalsAreRecovered() {
+        val prefs = FalseAfterMemory(prefs())
+        val a = ConversationSubAgentPreferences(prefs)
+        val b = ConversationSubAgentPreferences(prefs)
+        val before = prefs.all.toMap()
+        val revision = a.revision.value
+        prefs.failures = 2
+        assertThrows(IllegalStateException::class.java) { a.addPreset("Explicit group") }
+        assertEquals(revision, b.revision.value)
+        assertThrows(IllegalStateException::class.java) { b.presetExists(SubAgentPresetCatalog.DEFAULT_ID) }
+        assertThrows(IllegalStateException::class.java) { b.addPreset("不能绕过") }
+        assertThrows(IllegalStateException::class.java) { b.presets() }
+        assertTrue(a.recoverDurability())
+        assertEquals(before, prefs.all)
+        assertEquals(revision, a.revision.value)
+        assertTrue(b.presets().isEmpty())
+        b.validateRestoredPreferences()
+    }
+
+    @Test fun failedPresetAddRenameDeleteEditAndApplyShareFenceAndKeepOriginalRevisions() {
+        val prefs = FalseAfterMemory(prefs())
+        val a = ConversationSubAgentPreferences(prefs)
+        val b = ConversationSubAgentPreferences(prefs)
+        val preset = a.addPreset("安全组")
+        val owner = c("target")
+        a.createConversation(owner)
+        val presetOwner = SubAgentConfigKey.Preset(preset.id)
+        val operations: List<() -> Unit> = listOf(
+            { a.addPreset("新组"); Unit },
+            { a.renamePreset(preset.id, "重命名"); Unit },
+            { a.removePreset(preset.id); Unit },
+            { a.update(presetOwner) { it.copy(enabled = false) }; Unit },
+            { a.applyPreset(owner, preset.id); Unit },
+        )
+        operations.forEach { operation ->
+            val before = prefs.all.toMap()
+            val revision = a.revision.value
+            val targetRevision = a.revision(owner).value
+            val presetRevision = a.revision(presetOwner).value
+            prefs.failures = 2
+            assertThrows(IllegalStateException::class.java) { operation() }
+            assertEquals(revision, b.revision.value)
+            assertEquals(targetRevision, b.revision(owner).value)
+            assertEquals(presetRevision, b.revision(presetOwner).value)
+            assertThrows(IllegalStateException::class.java) { b.presets() }
+            assertThrows(IllegalStateException::class.java) { b.applyPreset(owner, preset.id) }
+            assertTrue(b.recoverDurability())
+            assertEquals(before, prefs.all)
+            assertEquals(revision, a.revision.value)
+            a.validateRestoredPreferences()
+        }
+    }
+
     @Test fun failedBindAndConfirmNeverDeleteUniqueDraft() {
         val prefs = FalseAfterMemory(prefs())
         val repo = ConversationSubAgentPreferences(prefs)
@@ -105,7 +158,7 @@ class ConversationSubAgentPreferencesSafetyTest {
         val prefs = prefs()
         val repo = ConversationSubAgentPreferences(prefs)
         val untouched = prefs.all.toMap()
-        val base = JSONObject().put("version", 1).put("enabled", true).put("diagnostics_enabled", false)
+        val base = JSONObject().put("version", 1).put("enabled", true)
             .put("agents", org.json.JSONArray().put(SubAgentProfile("id", "name").toJson()))
             .put("parallel_limits", org.json.JSONArray()).put("legacy_parallel_limits", org.json.JSONArray())
         repo.validateArchive(base.toString())
@@ -147,6 +200,112 @@ class ConversationSubAgentPreferencesSafetyTest {
         assertTrue(b.delete(second))
         b.bindDraft(draft, second)
         assertTrue(a.confirmBoundDraft(draft, second))
+    }
+
+    @Test fun resetIsTypedWhitelistedAtomicAndRunsOnlyOnce() {
+        val storage = FalseAfterMemory(prefs())
+        val originalList = org.json.JSONObject().put("version", 1).put("agents", org.json.JSONArray()).toString()
+        val pool = SubAgentParallelModel("p", "api")
+        storage.edit().putBoolean("agent_child_0_enabled", true).putInt(pool.legacyKey(), 4)
+            .putBoolean("agent_collaboration_old", true).putString(SubAgentPreferences.PROFILES_KEY, originalList)
+            .putString(ConversationSubAgentPreferences.UI_DRAFT_KEY, "old-draft")
+            .putString("provider_api_key", "preserved").putString("chat_history", "preserved").commit()
+        val repo = ConversationSubAgentPreferences(storage)
+        assertFalse(repo.isConfigurationResetComplete())
+        val before = storage.all.toMap(); val revision = repo.revision.value
+        storage.failures = 2
+        assertThrows(IllegalStateException::class.java) { repo.resetLegacyConfigurationOnce() }
+        assertThrows(IllegalStateException::class.java) { repo.isConfigurationResetComplete() }
+        assertEquals(revision, repo.revision.value)
+        assertTrue(repo.recoverDurability()); assertEquals(before, storage.all)
+        assertTrue(repo.resetLegacyConfigurationOnce()); assertTrue(repo.isConfigurationResetComplete())
+        assertEquals("1", storage.getString(ConversationSubAgentPreferences.RESET_MARKER_KEY, null))
+        assertEquals("", storage.getString(ConversationSubAgentPreferences.UI_DRAFT_KEY, null))
+        assertEquals(originalList, storage.getString(SubAgentPreferences.PROFILES_KEY, null))
+        assertEquals("preserved", storage.getString("provider_api_key", null))
+        assertEquals("preserved", storage.getString("chat_history", null))
+        assertFalse(storage.contains("agent_child_0_enabled")); assertFalse(storage.contains(pool.legacyKey()))
+        assertFalse(storage.contains("agent_collaboration_old"))
+        assertFalse(repo.snapshot(c("new")).enabled); assertTrue(repo.snapshot(c("new")).profiles.isEmpty())
+        assertTrue(repo.presets().isEmpty()); SubAgentModelDefaults.validate(storage.getString(SubAgentModelDefaults.KEY, null)!!)
+        val owner = repo.createDraft(); repo.update(owner) { it.copy(profiles = listOf(SubAgentProfile("new", "New")), enabled = true) }
+        repo.addPreset("New preset")
+        val after = storage.all.toMap(); val afterRevision = repo.revision.value
+        assertTrue(ConversationSubAgentPreferences(storage).resetLegacyConfigurationOnce())
+        assertEquals(after, storage.all); assertEquals(afterRevision, repo.revision.value)
+    }
+
+    @Test fun confirmationCommitFailureRollsBackOwnerAndDefaultsTogether() {
+        val storage = FalseAfterMemory(prefs()); val repo = ConversationSubAgentPreferences(storage)
+        val owner = c("atomic"); val model = SubAgentParallelModel("p", "api")
+        val profile = SubAgentProfile("worker", "Worker", providerId = "p", modelId = "selection")
+        repo.updateConfirmedProfile(owner, profile.id, model) { it.copy(profiles = listOf(profile), parallelLimits = mapOf(model to 0)) }
+        val before = storage.all.toMap(); val revision = repo.revision(owner).value
+        storage.failures = 2
+        assertThrows(IllegalStateException::class.java) {
+            repo.updateConfirmedProfile(owner, profile.id, model) { it.copy(profiles = listOf(profile.copy(enabled = false)), parallelLimits = mapOf(model to 7)) }
+        }
+        assertEquals(revision, repo.revision(owner).value)
+        assertThrows(IllegalStateException::class.java) { repo.modelDefaults(profile) }
+        assertTrue(repo.recoverDurability()); assertEquals(before, storage.all)
+        assertEquals(0, repo.modelDefaults(profile)?.parallelLimit)
+        assertTrue(repo.snapshot(owner).profiles.single().enabled)
+    }
+
+    @Test fun missingDraftAndStaleOwnerFenceRejectBeforeChangeWithoutCollectingDefaults() {
+        val storage = prefs(); val repo = ConversationSubAgentPreferences(storage); val other = ConversationSubAgentPreferences(storage)
+        val owner = repo.createDraft(); val archive = repo.export(owner); val captured = repo.ownerState(owner)
+        val model = SubAgentParallelModel("p", "api")
+        val profile = SubAgentProfile("worker", "Worker", providerId = "p", modelId = "selection")
+        fun rejected(expected: ConversationSubAgentPreferences.OwnerState? = null) {
+            val before = storage.all.toMap(); val revision = repo.revision.value; val ownerRevision = repo.revision(owner).value
+            var changed = false
+            assertEquals(ConversationSubAgentPreferences.WriteResult.Rejected,
+                repo.updateConfirmedProfile(owner, profile.id, model, expectedOwnerState = expected) {
+                    changed = true
+                    it.copy(profiles = listOf(profile))
+                })
+            assertFalse(changed); assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+            assertEquals(ownerRevision, repo.revision(owner).value)
+            assertFalse(storage.contains(SubAgentModelDefaults.KEY)); assertNull(repo.modelDefaults(profile))
+        }
+        assertTrue(other.delete(owner))
+        rejected() // Missing Draft must reject even synchronous callers without a fence.
+        rejected(captured)
+        assertTrue(other.importOwner(owner, archive))
+        assertTrue(repo.ownerState(owner).exists); assertNotEquals(captured, repo.ownerState(owner))
+        rejected(captured) // Identical payload does not hide the delete/recreate epoch.
+    }
+
+    @Test fun absentConversationOwnerFenceIsReadOnlyAndStillAllowsFirstExplicitConfirmation() {
+        val storage = prefs(); val repo = ConversationSubAgentPreferences(storage); val owner = c("old-unsaved")
+        val before = storage.all.toMap(); val revision = repo.revision.value
+        val captured = repo.ownerState(owner)
+        assertFalse(captured.exists); assertTrue(repo.snapshot(owner).profiles.isEmpty())
+        assertEquals(before, storage.all); assertEquals(revision, repo.revision.value)
+        val model = SubAgentParallelModel("p", "api")
+        val profile = SubAgentProfile("worker", "Worker", providerId = "p", modelId = "selection")
+        assertTrue(repo.updateConfirmedProfile(owner, profile.id, model, expectedOwnerState = captured) {
+            it.copy(profiles = listOf(profile))
+        } is ConversationSubAgentPreferences.WriteResult.Saved)
+        assertTrue(repo.ownerState(owner).exists); assertEquals(profile, repo.snapshot(owner).profiles.single())
+        assertNotNull(repo.modelDefaults(profile))
+    }
+
+    @Test fun archivesStrictlyValidateDefaultsAndResetMarkerWithoutRequiringDefaults() {
+        val repo = ConversationSubAgentPreferences(prefs())
+        repo.validatePreferenceArchives(mapOf(ConversationSubAgentPreferences.RESET_MARKER_KEY to "1"))
+        repo.validatePreferenceArchives(mapOf(SubAgentModelDefaults.KEY to SubAgentModelDefaults.encode(emptyMap())))
+        assertThrows(IllegalArgumentException::class.java) {
+            repo.validatePreferenceArchives(mapOf(ConversationSubAgentPreferences.RESET_MARKER_KEY to "true"))
+        }
+        assertThrows(Exception::class.java) { repo.validatePreferenceArchives(mapOf(SubAgentModelDefaults.KEY to "{}")) }
+        val entry = SubAgentModelDefaults.confirmed(SubAgentProfile("w", "W", providerId = "p", modelId = "m"), null,
+            SubAgentParallelModel("p", "api"), 0)
+        val raw = org.json.JSONObject(SubAgentModelDefaults.encode(mapOf(entry.key to entry)))
+        val bad = raw.getJSONArray("models").getJSONObject(0)
+        bad.put("parallel_limit", "0")
+        assertThrows(Exception::class.java) { repo.validatePreferenceArchives(mapOf(SubAgentModelDefaults.KEY to raw.toString())) }
     }
 
     @Test fun restoreRejectsDanglingAndSharedLegacyBindings() {

@@ -276,7 +276,23 @@ internal fun ProviderModelsTab(
                                         return@launch
                                     }
                                     val chatModels = models.filter(RemoteModelFetcher::isCatalogModel)
-                                    val existingKeys = provider.models.map { it.modelId.trim().lowercase() }.toSet()
+                                    val syncResult = ModelRepository.syncRemoteModels(
+                                        provider.id,
+                                        chatModels,
+                                        includeNewModels = false,
+                                    )
+                                    if (syncResult.applied) {
+                                        RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                                    }
+                                    val syncMessage = if (syncResult.applied) {
+                                        context.getString(
+                                            R.string.provider_models_sync_summary,
+                                            syncResult.fetchedCount,
+                                            syncResult.removedCount,
+                                        )
+                                    } else null
+                                    val existingKeys = ModelRepository.modelsByProvider(provider.id)
+                                        .map { it.modelId.trim().lowercase() }.toSet()
                                     val fresh = chatModels
                                         .distinctBy { it.modelId.trim().lowercase() }
                                         .filter { it.modelId.trim().lowercase() !in existingKeys }
@@ -285,17 +301,20 @@ internal fun ProviderModelsTab(
                                         message = if (chatModels.isEmpty()) {
                                             context.getString(R.string.page_the_remote_end_did_not_return_a_usable_conversation__781487)
                                         } else {
-                                            context.getString(R.string.provider_remote_none_new)
+                                            syncMessage ?: context.getString(R.string.provider_remote_none_new)
                                         }
                                     } else {
                                         remoteCandidates = fresh
                                         message = if (filteredCount > 0) {
-                                            context.getString(
-                                                R.string.provider_models_fetched_filtered,
-                                                chatModels.size,
-                                                filteredCount,
-                                            )
-                                        } else null
+                                            listOfNotNull(
+                                                syncMessage,
+                                                context.getString(
+                                                    R.string.provider_models_fetched_filtered,
+                                                    chatModels.size,
+                                                    filteredCount,
+                                                ),
+                                            ).joinToString("\n")
+                                        } else syncMessage
                                     }
                                 } catch (cancelled: CancellationException) {
                                     throw cancelled

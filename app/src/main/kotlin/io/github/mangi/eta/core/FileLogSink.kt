@@ -4,6 +4,8 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -88,10 +90,10 @@ internal class FileLogSink(
             for (index in maxRotatedFiles - 1 downTo 1) {
                 val source = rotatedFile(index)
                 if (source.exists()) {
-                    source.renameTo(rotatedFile(index + 1))
+                    moveFile(source, rotatedFile(index + 1))
                 }
             }
-            current.renameTo(rotatedFile(1))
+            moveFile(current, rotatedFile(1))
         }
         openCurrentLocked()
     }
@@ -122,6 +124,16 @@ internal class FileLogSink(
             if (rotated.exists() && (includeEmpty || rotated.length() > 0L)) files.add(rotated)
         }
         return files
+    }
+
+    private fun moveFile(source: File, target: File) {
+        if (!source.exists()) return
+        if (source.renameTo(target)) return
+        runCatching { Files.move(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+            .getOrElse {
+                Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                Files.delete(source.toPath())
+            }
     }
 
     private fun rotatedFile(index: Int): File = File(directory, rotatedName(index))

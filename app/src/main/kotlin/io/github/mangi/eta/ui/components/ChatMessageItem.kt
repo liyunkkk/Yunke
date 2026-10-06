@@ -819,7 +819,11 @@ private fun AgentMessageBlock(
     isPaused: Boolean = false,
 ) {
     val keepStreamingMarkdown = message.isStreaming || retainedStreamingState != null
-    val displayContent = remember(message.content) { NumericCitationMarkup.strip(message.content) }
+    val displayContent = remember(message.content) {
+        StreamPerformanceDiagnostics.measure("markdown.citation.strip", message.content.length.toLong()) {
+            NumericCitationMarkup.strip(message.content)
+        }
+    }
     // Completion belongs to an exact source revision. Late text must not inherit
     // the previous revision's true flag while its parser/reveal effect catches up.
     var streamingRevealComplete by remember(message.id, message.content) {
@@ -1099,12 +1103,15 @@ private fun StreamingMarkdown(
             }
 
             val parsed = withContext(Dispatchers.Default) {
-                StreamPerformanceDiagnostics.record("markdown.queueWait", System.nanoTime() - target.queuedAtNs)
-                StreamPerformanceDiagnostics.measure("markdown.parse", target.content.length.toLong()) {
-                    parserSession.parse(
-                        source = target.content,
-                        isComplete = !target.isStreaming,
-                    )
+                // Restore only this synchronous parse slice, never across suspension.
+                StreamPerformanceDiagnostics.withAttribution(target.diagnosticAttribution) {
+                    StreamPerformanceDiagnostics.record("markdown.queueWait", System.nanoTime() - target.queuedAtNs)
+                    StreamPerformanceDiagnostics.measure("markdown.parse", target.content.length.toLong()) {
+                        parserSession.parse(
+                            source = target.content,
+                            isComplete = !target.isStreaming,
+                        )
+                    }
                 }
             }
 
@@ -1116,11 +1123,13 @@ private fun StreamingMarkdown(
             }
 
             val publishTarget = target
-            StreamPerformanceDiagnostics.measure("markdown.publishBlock", publishTarget.content.length.toLong()) {
-                nextStreamingSnapshot(state.snapshot, parsed)?.let { published ->
-                    StreamPerformanceDiagnostics.record("markdown.targetToPublish", System.nanoTime() - publishTarget.queuedAtNs)
-                    StreamPerformanceDiagnostics.record("markdown.publish", value = published.originalSource.length.toLong())
-                    state.snapshot = published
+            StreamPerformanceDiagnostics.withAttribution(publishTarget.diagnosticAttribution) {
+                StreamPerformanceDiagnostics.measure("markdown.publishBlock", publishTarget.content.length.toLong()) {
+                    nextStreamingSnapshot(state.snapshot, parsed)?.let { published ->
+                        StreamPerformanceDiagnostics.record("markdown.targetToPublish", System.nanoTime() - publishTarget.queuedAtNs)
+                        StreamPerformanceDiagnostics.record("markdown.publish", value = published.originalSource.length.toLong())
+                        state.snapshot = published
+                    }
                 }
             }
             if (target.isStreaming) {
@@ -1160,6 +1169,7 @@ private fun StreamingMarkdown(
     }
 
     snapshot?.let { parsed ->
+        val imageTransformer = rememberStreamingMarkdownImageTransformer(parsed.state.content)
         Markdown(
             state = parsed.state,
             colors = chatMarkdownColors(tone),
@@ -1167,6 +1177,7 @@ private fun StreamingMarkdown(
             padding = chatMarkdownPadding(),
             dimens = chatMarkdownDimens(),
             components = components,
+            imageTransformer = imageTransformer,
             animations = markdownAnimations(animateTextSize = { this }),
             modifier = modifier.onGloballyPositioned {
                 StreamPerformanceDiagnostics.record("markdown.layout", value = it.size.height.toLong())
@@ -1302,12 +1313,17 @@ private fun ChatMarkdownDocument(
             if (gap > 0.dp) Spacer(Modifier.height(gap))
             previousVisibleType = node.type
             key(node.startOffset, node.type.name) {
+                val freeze = revealCoordinator != null &&
+                    shouldFreezeStreamingMarkdownBlock(node.startOffset, lastVisibleStartOffset)
+                // Pin only what the existing frozen branch already renders. Keep the
+                // renderer at one call site so freeze changes do not remount its Box.
+                val renderNode = rememberFrozenMarkdownInput(node, freeze)
+                val renderContent = rememberFrozenMarkdownInput(content, freeze)
                 FrozenMarkdownElement(
-                    node = node,
+                    node = renderNode,
                     components = components,
-                    content = content,
-                    freeze = revealCoordinator != null &&
-                        shouldFreezeStreamingMarkdownBlock(node.startOffset, lastVisibleStartOffset),
+                    content = renderContent,
+                    freeze = freeze,
                 )
             }
         }
@@ -1324,9 +1340,19 @@ private fun FrozenMarkdownElement(
 ) {
     // Keep completed blocks in independent RenderNode display lists. Tail draw
     // invalidation must not re-record every paragraph in a tall message.
-    Box(Modifier.graphicsLayer().drawWithContent {
-        StreamPerformanceDiagnostics.measure("markdown.blockDraw") { drawContent() }
-    }) {
+    Box(Modifier.graphicsLayer()
+        .streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure")
+        .drawWithContent {
+            StreamPerformanceDiagnostics.measure("markdown.blockDraw") {
+                if (StreamPerformanceDiagnostics.enabled) {
+                    StreamPerformanceDiagnostics.measure(
+                        if (freeze) "markdown.stable.draw" else "markdown.tail.draw",
+                    ) { drawContent() }
+                } else {
+                    drawContent()
+                }
+            }
+        }) {
         if (freeze) {
             val frozenNode = remember { node }
             val frozenContent = remember { content }
@@ -1448,6 +1474,8 @@ internal data class StreamingMarkdownTarget(
     val content: String,
     val isStreaming: Boolean,
     val queuedAtNs: Long = System.nanoTime(),
+    // Captured at enqueue; null stays unknown when no reliable run mapping exists.
+    val diagnosticAttribution: StreamDiagnosticAttribution? = StreamPerformanceDiagnostics.captureAttribution(),
 )
 
 internal fun streamingMarkdownBatchSize(backlogChars: Int): Int = when {
@@ -1901,7 +1929,9 @@ private fun ChatRevealRawText(
     revealCoordinator: SmoothTextRevealCoordinator,
 ) {
     val text = remember(markdownRenderCacheKey(model.content, model.node)) {
-        AnnotatedString(model.node.getUnescapedTextInNode(model.content))
+        StreamPerformanceDiagnostics.measure("markdown.annotated.raw", (model.node.endOffset - model.node.startOffset).toLong()) {
+            AnnotatedString(model.node.getUnescapedTextInNode(model.content))
+        }
     }
     ChatRevealAnnotatedText(
         text = text,
@@ -1925,14 +1955,16 @@ private fun ChatRevealMarkdownText(
         contentChildType?.let(model.node::findChildOfType) ?: model.node
     }
     val text = remember(markdownRenderCacheKey(model.content, contentNode), style, annotatorSettings) {
-        buildAnnotatedString {
-            pushStyle(style.toSpanStyle())
-            buildMarkdownAnnotatedString(
-                content = model.content,
-                node = contentNode,
-                annotatorSettings = annotatorSettings,
-            )
-            pop()
+        StreamPerformanceDiagnostics.measure("markdown.annotated.build", (contentNode.endOffset - contentNode.startOffset).toLong()) {
+            buildAnnotatedString {
+                pushStyle(style.toSpanStyle())
+                buildMarkdownAnnotatedString(
+                    content = model.content,
+                    node = contentNode,
+                    annotatorSettings = annotatorSettings,
+                )
+                pop()
+            }
         }
     }
     if (revealCoordinator == null) {
@@ -2234,14 +2266,16 @@ private fun ChatMarkdownTableCell(
 
     val annotatorSettings = annotatorSettings()
     val text = remember(markdownRenderCacheKey(content, cell), style, annotatorSettings) {
-        buildAnnotatedString {
-            pushStyle(style.toSpanStyle())
-            buildMarkdownAnnotatedString(
-                content = content,
-                node = cell,
-                annotatorSettings = annotatorSettings,
-            )
-            pop()
+        StreamPerformanceDiagnostics.measure("markdown.annotated.cell", (cell.endOffset - cell.startOffset).toLong()) {
+            buildAnnotatedString {
+                pushStyle(style.toSpanStyle())
+                buildMarkdownAnnotatedString(
+                    content = content,
+                    node = cell,
+                    annotatorSettings = annotatorSettings,
+                )
+                pop()
+            }
         }
     }
     val revealState = rememberSmoothTextRevealState(

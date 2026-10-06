@@ -122,14 +122,13 @@ class AgentAppStateRevisionTransactionTest {
             { f.app.branchConversation("assistant-h-1") },
         )) {
             operation()
-            assertTrue(f.busy())
+            // Fast invalid-archive IO may already have completed before this call returns.
             f.settle()
             assertEquals(before, f.state())
             assertEquals(setOf(f.id), f.conversationIds())
         }
         File(f.archiveDir(f.id), "${f.bId}.json").delete()
         f.app.beginMessageEdit("user-h")
-        assertTrue(f.busy())
         f.settle()
         assertEquals(before, f.state())
     }
@@ -237,11 +236,108 @@ class AgentAppStateRevisionTransactionTest {
             val before = f.state()
             f.app.beginMessageEdit("user-h")
             f.app.deleteMessageTurn("assistant-h-1")
-            f.app.branchConversation("assistant-h-1")
             assertEquals(before, f.state())
             assertFalse(f.busy())
             assertEquals(setOf(f.id), f.conversationIds())
         }
+    }
+
+    @Test fun runningBranchUsesClickSnapshotAndLetsSourceContinue() = fixture { f ->
+        val clicking = f.state().copy(isStreaming = true, childContextRunId = "h", selectedContextTaskId = "child",
+            activeRunContextWindow = 100000)
+        call(f.app, "updateConversation", f.id, clicking, false)
+        @Suppress("UNCHECKED_CAST")
+        val owners = get(f.app, "runConversationIds") as MutableMap<String, String>
+        owners["live"] = f.id
+        val job = kotlinx.coroutines.Job()
+        @Suppress("UNCHECKED_CAST")
+        (get(f.app, "runJobs") as MutableMap<String, kotlinx.coroutines.Job>)["live"] = job
+        set(f.app, "branchHistorySnapshotLoader", { _: String, _: String, _: String ->
+            error("Previous completed reply must use its ordinary history")
+        })
+        try {
+            f.app.branchConversation("assistant-h-1")
+            assertTrue(f.busy())
+            val advanced = clicking.copy(messages = clicking.messages + AgentMessageUi("assistant-later-1", "after click"))
+            call(f.app, "updateConversation", f.id, advanced, false)
+            f.settle()
+            assertTrue(f.selected() != f.id)
+            assertEquals(advanced, f.state(f.id))
+            val branch = f.state(f.selected()!!)
+            assertFalse(branch.isStreaming)
+            assertFalse(branch.isPaused)
+            assertEquals(listOf(f.aSummary, f.hUser, f.hReply), branch.history)
+            assertFalse(branch.messages.any { it.id.endsWith("assistant-later-1") })
+            assertTrue(branch.childContexts.isEmpty())
+            assertTrue(branch.childStatusRoster.isEmpty())
+            assertEquals("", branch.childContextRunId)
+            assertNull(branch.selectedContextTaskId)
+            assertNull(branch.activeRunContextWindow)
+            assertTrue(job.isActive)
+            assertEquals(f.id, owners["live"])
+        } finally { job.cancel() }
+    }
+
+    @Test fun activeRunCannotBranchItsPartialOrEarlierRoundText() = fixture { f ->
+        val source = f.state().copy(messages = listOf(UserMessageUi("user-h", "question"),
+            AgentMessageUi("assistant-h-1-0", "earlier block", isStreaming = false),
+            AgentMessageUi("assistant-h-2-0", "partial", isStreaming = true),
+            AgentMessageUi("copied:assistant-h-1-1", "prefixed block", isStreaming = false)),
+            history = emptyList(), isStreaming = true)
+        @Suppress("UNCHECKED_CAST")
+        val owners = get(f.app, "runConversationIds") as MutableMap<String, String>
+        owners["h"] = f.id
+        val job = kotlinx.coroutines.Job()
+        @Suppress("UNCHECKED_CAST")
+        (get(f.app, "runJobs") as MutableMap<String, kotlinx.coroutines.Job>)["h"] = job
+        set(f.app, "branchHistorySnapshotLoader", { _: String, _: String, _: String ->
+            error("Unfinished reply must not query a runtime snapshot")
+        })
+        try {
+            for ((streaming, paused) in listOf(true to false, false to true, false to false)) {
+                val current = source.copy(isStreaming = streaming, isPaused = paused)
+                call(f.app, "updateConversation", f.id, current, false)
+                for (target in listOf("assistant-h-1-0", "assistant-h-2-0", "copied:assistant-h-1-1")) {
+                    f.app.branchConversation(target)
+                    assertFalse(f.busy())
+                    assertEquals(f.id, f.selected())
+                    assertEquals(current, f.state())
+                    assertTrue(job.isActive)
+                    assertEquals(f.id, owners["h"])
+                }
+            }
+        } finally { job.cancel() }
+    }
+
+    @Test fun pausedSourceBranchesPreviousReplyWithoutQueryingOrStoppingCurrentRun() = fixture { f ->
+        val original = f.state()
+        val source = original.copy(messages = original.messages + UserMessageUi("user-live", "new question") +
+            AgentMessageUi("assistant-live-1-0", "partial", isStreaming = true), isStreaming = false, isPaused = true)
+        call(f.app, "updateConversation", f.id, source, false)
+        @Suppress("UNCHECKED_CAST")
+        val owners = get(f.app, "runConversationIds") as MutableMap<String, String>
+        owners["live"] = f.id
+        val job = kotlinx.coroutines.Job()
+        @Suppress("UNCHECKED_CAST")
+        (get(f.app, "runJobs") as MutableMap<String, kotlinx.coroutines.Job>)["live"] = job
+        set(f.app, "branchHistorySnapshotLoader", { _: String, _: String, _: String ->
+            error("Previous completed reply must use its ordinary history")
+        })
+        try {
+            f.app.branchConversation("assistant-h-1")
+            assertTrue(f.busy())
+            val advanced = source.copy(messages = source.messages + AgentMessageUi("assistant-live-2-0", "later"))
+            call(f.app, "updateConversation", f.id, advanced, false)
+            f.settle()
+            assertTrue(f.selected() != f.id)
+            assertEquals(advanced, f.state(f.id))
+            assertTrue(job.isActive)
+            assertEquals(f.id, owners["live"])
+            assertEquals(listOf(f.aSummary, f.hUser, f.hReply), f.state(f.selected()!!).history)
+            assertFalse(f.state(f.selected()!!).messages.any { it.id.contains("live") })
+            assertFalse(f.state(f.selected()!!).isPaused)
+            assertFalse(f.state(f.selected()!!).isStreaming)
+        } finally { job.cancel() }
     }
 
     private class Fixture(val context: Context, val app: AgentAppState) {
@@ -262,6 +358,9 @@ class AgentAppStateRevisionTransactionTest {
             (get(app, "runtimeRecoveryInProgress") as AtomicBoolean).set(false)
             val provider = OpenAiCompatibleProviderSetting("revision-provider", "Test", "https://example.org/v1",
                 models = listOf(Model("m", "gpt-5", "Model", contextWindow = 100000)))
+            io.github.mangi.eta.data.repository.MainAgentSpeedDefaultsRepository(
+                requireNotNull(Prefs.localAgentPreferences()),
+            ).remember(provider, provider.models.single(), GptSpeedMode.FAST)
             call(app, "updateSelectionProviders", listOf(provider))
             set(app, "selectedConversationId", id)
             set(app, "conversationCreatedAt", mapOf(id to 1234L))

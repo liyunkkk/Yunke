@@ -132,7 +132,7 @@ class AgentWireRequestEstimateTest {
         val second = body(c, m)
         assertEquals(before, m.toString())
         assertEquals(first.toString(), second.toString())
-        assertEquals("UNIQUE_SYSTEM", first.getString("system"))
+        assertEquals("UNIQUE_SYSTEM", first.getJSONArray("system").getJSONObject(0).getString("text"))
         assertFalse(first.getJSONArray("messages").toString().contains("UNIQUE_SYSTEM"))
         m.put(msg("user", "short"))
         val appended = body(c, m)

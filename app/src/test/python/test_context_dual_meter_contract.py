@@ -29,7 +29,9 @@ class ContextDualMeterContractTest(unittest.TestCase):
         self.assertIn('internal fun compressionContextUsage(', model)
         bar = self.text('ui/components/AgentChatInputBar.kt')
         self.assertIn('historyTokenCount = historyTokenCount', bar)
-        self.assertIn('shouldBlockSendForContextWindow(autoCompressEnabled, sendBudget)', bar)
+        self.assertIn('contextSendBlocked(measuredContextTokens, autoCompressEnabled)', bar)
+        gate = (ROOT / 'ui/components/ContextSendBudgetGate.kt').read_text()
+        self.assertIn('shouldBlockSendForContextWindow(autoCompressEnabled, budget())', gate)
         app = self.text('ui/app/AgentAppState.kt')
         # Send guard, pre-send tail scaling and post-run tail scaling. Automatic compaction
         # itself reads the ring's cloud receipt, not this silent budget.

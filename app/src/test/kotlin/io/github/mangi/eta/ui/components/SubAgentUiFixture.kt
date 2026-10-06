@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.components
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
@@ -8,7 +9,10 @@ import io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.data.model.AppearanceAccentColor
+import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.ProviderSetting
+import io.github.mangi.eta.ui.app.AgentAppTheme
 import org.robolectric.RuntimeEnvironment
 import java.util.UUID
 
@@ -23,9 +27,10 @@ internal class SubAgentUiFixture(
     canEdit: () -> Boolean = { true },
     providers: List<ProviderSetting>? = null,
     providerLookup: (suspend (String) -> ProviderSetting?)? = null,
+    preferenceTransform: (SharedPreferences) -> SharedPreferences = { it },
 ) {
     val repository = ConversationSubAgentPreferences(
-        RuntimeEnvironment.getApplication().getSharedPreferences("sub-agent-ui-${UUID.randomUUID()}", Context.MODE_PRIVATE))
+        preferenceTransform(RuntimeEnvironment.getApplication().getSharedPreferences("sub-agent-ui-${UUID.randomUUID()}", Context.MODE_PRIVATE)))
     val owner = SubAgentConfigKey.Conversation("ui-${UUID.randomUUID()}")
     init {
         check(repository.update(owner) { ConversationSubAgentConfig(profiles = profiles, enabled = enabled) }
@@ -40,6 +45,13 @@ internal class SubAgentUiFixture(
         }, canEdit)
     }
     fun snapshot(): ConversationSubAgentConfig = repository.snapshot(owner)
+    /** Tests opt in to a catalog entry; the product's missing catalog stays empty. */
+    fun createPreset(name: String = "测试子代理组"): io.github.mangi.eta.agent.delegation.SubAgentPreset {
+        val preset = repository.addPreset(name)
+        check(repository.update(SubAgentConfigKey.Preset(preset.id)) { snapshot().detached() }
+            is ConversationSubAgentPreferences.WriteResult.Saved)
+        return repository.presets().single { it.id == preset.id }
+    }
 }
 
 internal fun ComposeContentTestRule.setSubAgentContent(
@@ -47,9 +59,17 @@ internal fun ComposeContentTestRule.setSubAgentContent(
     content: @Composable () -> Unit,
 ) {
     setContent {
-        CompositionLocalProvider(LocalConversationSubAgentEditor provides fixture.editor) {
-            fixture.editor.observe()
-            content()
+        // Use the production Miuix + Material theme bridge (at the default 1x scale).
+        // Intentionally no Scaffold: window dialogs must work standalone and when opened
+        // from the collaboration Dialog, not silently depend on an Activity's overlay host.
+        AgentAppTheme(
+            appearance = AppearanceSettings(accentColor = AppearanceAccentColor.BLUE),
+            applyInterfaceScale = true,
+        ) {
+            CompositionLocalProvider(LocalConversationSubAgentEditor provides fixture.editor) {
+                fixture.editor.observe()
+                content()
+            }
         }
     }
 }

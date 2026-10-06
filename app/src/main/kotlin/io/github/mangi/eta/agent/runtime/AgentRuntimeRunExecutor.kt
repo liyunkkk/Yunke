@@ -4,6 +4,7 @@ import android.content.Context
 import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionCoordinator
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.config.InteractiveModePreference
 import io.github.mangi.eta.agent.delegation.*
 import io.github.mangi.eta.agent.browser.ChildBrowserSession
 import io.github.mangi.eta.agent.model.AgentToolCatalog
@@ -78,6 +79,8 @@ internal class AgentRuntimeRunExecutor(
         val allowDirect = request.config.deviceDirectTools
         val allowSensitiveRead = request.config.deviceSensitiveReadTools
         val allowSensitiveAction = request.config.deviceSensitiveActionTools
+        // Parent-only prompt policy, frozen for this run rather than re-read between rounds.
+        val interactiveModeEnabled = InteractiveModePreference.read()
         var response: AgentModelClient.ModelResponse.Text? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
@@ -256,7 +259,7 @@ internal class AgentRuntimeRunExecutor(
                         modelParallelLimits = frozenParallelLimits,
                         poolScope = poolScope,
                         allowTimeoutContinuation = true,
-                        diagnostics = if (childConfig.diagnosticsEnabled) SubAgentDiagnostics(request.runId, AndroidAgentLogger::info) else SubAgentDiagnostics(),
+                        diagnostics = SubAgentDiagnostics(request.runId),
                         workspace = workspace,
                         onTaskChanged = { generationForCallback?.let(AgentChildTaskGroups::onTaskChanged) },
                         prepareManualCompactor = { config -> io.github.mangi.eta.agent.model.AgentCompressionEndpoint.apply(
@@ -377,6 +380,8 @@ internal class AgentRuntimeRunExecutor(
                 terminalSessionEnvironmentProvider = executor::terminalSessionEnvironment,
                 terminalSessionIdentityProvider = executor::terminalSessionIdentity,
                 compactPolicy = compactPolicy,
+                onHistorySnapshot = session::publishHistorySnapshot,
+                interactiveModeEnabled = interactiveModeEnabled,
                 onEvent = { event ->
                     timing.accept(event)
                     foregroundReplay.accept(event)
@@ -470,13 +475,23 @@ internal class AgentRuntimeRunExecutor(
             response.takeIf { committed && session.terminalResult?.ok == true }, committed)
     }
 
+    // All stages below start inside this synchronized method: executor monitor acquisition is
+    // excluded. checkpoint.accept includes the recorder call (and its own monitor, if contended).
     @Synchronized private fun acceptEvent(session: AgentRuntimeSession, event: AgentEvent,
         archivedEvents: MutableList<AgentEvent>, entrySurfaceGuard: EntrySurfaceGuard?,
         checkpointRecorder: AgentRunCheckpointRecorder?) {
         if (event is AgentEvent.QuestionRequested || event is AgentEvent.QuestionResolved) {
-            AgentQuestionEventPublisher.publish(session, event) { checkpointRecorder?.accept(event) }
+            AgentQuestionEventPublisher.publish(session, event) {
+                checkpointRecorder?.let { recorder ->
+                    measureRuntimeStreamStage("runtime.checkpoint.accept") { recorder.accept(event) }
+                }
+            }
         } else {
-            if (!session.emit(event) { checkpointRecorder?.accept(event) }) return
+            if (!session.emit(event) {
+                checkpointRecorder?.let { recorder ->
+                    measureRuntimeStreamStage("runtime.checkpoint.accept") { recorder.accept(event) }
+                }
+            }) return
         }
         archivedEvents += event
         if (event is AgentEvent.ModelRetryScheduled) AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")

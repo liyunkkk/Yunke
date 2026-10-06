@@ -146,11 +146,32 @@ class AgentTurnFooterProjectionTest {
         assertEquals(messages, expanded.originalMessages())
     }
 
+    @Test fun activeOrPausedTurnKeepsPreviousFooterButNeverExposesCurrentText() {
+        val oldAnswer = AgentMessageUi("old-answer", "completed answer")
+        for (partialStreaming in listOf(false, true)) {
+            val messages = listOf(UserMessageUi("old-user", "old question"), oldAnswer,
+                UserMessageUi("user", "question"),
+                AgentMessageUi("answer", "partial", isStreaming = partialStreaming), tool("tool"))
+            for (expanded in listOf(false, true)) {
+                val rows = rows(messages, expanded)
+                for ((streaming, paused) in listOf(true to false, false to true, true to true)) {
+                    val footers = rows.turnFooters(isStreaming = streaming, isPaused = paused)
+                    assertSame(oldAnswer, footers.values.single())
+                    assertEquals(oldAnswer.id, footers.keys.single())
+                }
+                assertEquals(2, rows.turnFooters().size)
+            }
+        }
+        assertTrue(rows(listOf(AgentMessageUi("empty", "", isStreaming = true)))
+            .turnFooters(isStreaming = true).isEmpty())
+    }
+
     @Test fun activeStreamingOrCompressionDoesNotExposeAnIntermediateFooter() {
         val rows = rows(listOf(
             UserMessageUi("user", "question"), AgentMessageUi("answer", "intermediate"), tool("tool"),
         ))
         assertTrue(rows.turnFooters(isStreaming = true).isEmpty())
+        assertTrue(rows.turnFooters(isPaused = true).isEmpty())
         assertTrue(rows.turnFooters(isCompressingContext = true).isEmpty())
         assertEquals(setOf("answer"), rows.turnFooters().values.map { it.id }.toSet())
     }

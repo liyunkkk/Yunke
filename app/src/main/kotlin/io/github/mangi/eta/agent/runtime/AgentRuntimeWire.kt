@@ -100,6 +100,11 @@ internal object AgentRuntimeWire {
     const val MSG_QUERY_QUESTION = 20
     const val MSG_QUERY_QUESTION_RESPONSE = 21
 
+    // Read-only request boundary snapshot. Never attach, pause or consume a run result.
+    const val MSG_QUERY_HISTORY = 22
+    const val MSG_QUERY_HISTORY_RESPONSE = 23
+    const val MSG_RELEASE_HISTORY = 24
+
     data class QuestionAnswerSubmission(
         val conversationId: String,
         val runId: String,
@@ -765,6 +770,7 @@ internal object AgentRuntimeWire {
                 putString(KEY_TYPE, "round_started")
                 putInt("round", event.round)
                 putInt("message_count", event.messageCount)
+                putString("history_snapshot_id", event.historySnapshotId)
             }
 
             is AgentEvent.ModelRetryScheduled -> {
@@ -964,6 +970,7 @@ internal object AgentRuntimeWire {
         "round_started" -> AgentEvent.RoundStarted(
             round = bundle.getInt("round"),
             messageCount = bundle.getInt("message_count"),
+            historySnapshotId = bundle.getString("history_snapshot_id").orEmpty(),
         )
 
         "model_retry_scheduled" -> AgentEvent.ModelRetryScheduled(

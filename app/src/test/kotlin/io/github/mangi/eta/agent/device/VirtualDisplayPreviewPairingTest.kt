@@ -99,6 +99,20 @@ class VirtualDisplayPreviewPairingTest {
         assertEquals(0, f.callbacks)
     }
 
+    @Test fun repeatedImmediateRestartsKeepTheExactPortAndCredentials() = Fixture().use { f ->
+        var process = f.manager()
+        val saved = process.open(true)
+        repeat(100) {
+            f.servers.last().stop()
+            process = f.manager()
+            process.restore()
+            assertTrue(process.isRunning())
+            assertEquals(saved, process.open(true))
+            assertEquals(saved, f.store.saved)
+        }
+        assertEquals(0, f.callbacks)
+    }
+
     @Test fun occupiedPairingPortFailsClosedAndNeverFallsBack() = Fixture().use { f ->
         ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { occupied ->
             f.store.saved = VirtualDisplayPreviewHttpServer.Ticket(occupied.localPort, read, null)

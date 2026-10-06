@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -29,12 +30,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.config.InteractiveModePreference
+import io.github.mangi.eta.ui.components.rememberInteractiveModeEnabled
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.components.EtaDropdownMenu
 import io.github.mangi.eta.ui.components.rememberEtaMenuState
@@ -73,6 +77,8 @@ internal fun TopBarOverflowMenu(
     subAgentStatuses: List<SubAgentContextStats> = emptyList(),
 ) {
     val menuState = rememberEtaMenuState()
+    val interactiveModePreference = remember { InteractiveModePreference() }
+    val interactiveModeEnabled by rememberInteractiveModeEnabled(interactiveModePreference)
     val view = LocalView.current
     var showCompressDialog by remember { mutableStateOf(false) }
     var showSearchDialog by remember { mutableStateOf(false) }
@@ -125,6 +131,34 @@ internal fun TopBarOverflowMenu(
                 },
                 onClick = { TouchHaptics.click(view); menuState.dismiss(); showSearchDialog = true },
             )
+            MenuSectionDivider()
+            DropdownMenuItem(
+                modifier = CompactMenuItemModifier.testTag("top-bar-interactive-mode-row"),
+                contentPadding = CompactMenuItemPadding,
+                text = { Text(stringResource(R.string.action_interactive_mode)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Filled.TouchApp,
+                        contentDescription = null,
+                        modifier = Modifier.size(TopBarMenuIconSize),
+                    )
+                },
+                trailingIcon = {
+                    Switch(
+                        checked = interactiveModeEnabled,
+                        onCheckedChange = { enabled ->
+                            TouchHaptics.click(view)
+                            interactiveModePreference.setEnabled(enabled)
+                        },
+                        modifier = Modifier.scale(0.72f).testTag("top-bar-interactive-mode-switch"),
+                    )
+                },
+                onClick = {
+                    TouchHaptics.click(view)
+                    interactiveModePreference.setEnabled(!interactiveModeEnabled)
+                },
+            )
+            MenuSectionDivider()
             DropdownMenuItem(
                 modifier = CompactMenuItemModifier,
                 contentPadding = CompactMenuItemPadding,

@@ -205,6 +205,18 @@ fun AgentAppRoot(
 
     var conversationPaneOpen by remember { mutableStateOf(false) }
     var browserSheetVisible by rememberSaveable { mutableStateOf(false) }
+    val diagnosticLoggingEnabled by remember {
+        io.github.mangi.eta.data.datastore.SettingsDataStore.fileLoggingEnabledFlow()
+    }.collectAsState(initial = false)
+    io.github.mangi.eta.ui.components.StreamPerformanceMonitor(
+        loggingEnabled = diagnosticLoggingEnabled,
+        page = when {
+            browserSheetVisible -> io.github.mangi.eta.ui.components.FrameDiagnosticPage.BrowserOverlay
+            conversationPaneOpen -> io.github.mangi.eta.ui.components.FrameDiagnosticPage.ConversationDrawer
+            else -> (backStack.lastOrNull() as? AppRoute)?.frameDiagnosticPage()
+                ?: io.github.mangi.eta.ui.components.FrameDiagnosticPage.Unknown
+        },
+    )
     var conversationRenameTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
     var conversationDeleteTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
     var conversationMoveTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
@@ -909,7 +921,8 @@ fun AgentAppRoot(
                     feature = io.github.mangi.eta.agent.model.ModelFeature.VISION, onBack = ::popRoute)
             }
             entry<AppRoute.SubAgents>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.SubAgentSettingsScreen(onBack = ::popRoute)
+                io.github.mangi.eta.ui.SubAgentSettingsScreen(onBack = ::popRoute,
+                    isCurrentRoute = backStack.lastOrNull() == AppRoute.SubAgents)
             }
             entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.ModelFeatureSettingsScreen(

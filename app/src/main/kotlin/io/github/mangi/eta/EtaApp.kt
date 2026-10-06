@@ -39,6 +39,27 @@ import kotlinx.coroutines.runBlocking
 class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val subAgentConfigurationLifecycle by lazy {
+        val store = io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences()
+        SubAgentConfigurationResetLifecycle(
+            beginMaintenance = { io.github.mangi.eta.agent.runtime.AgentExecutionService.beginBackupMaintenance() },
+            recoverInterruptedRestoreBeforeWork = {
+                io.github.mangi.eta.data.repository.EtaBackupRepository.recoverInterruptedImport(
+                    this@EtaApp, maintenanceAlreadyHeld = true,
+                )
+            },
+            recoverConfigurationDurability = { store.recoverDurability() },
+            resetLegacyConfigurationOnce = { store.resetLegacyConfigurationOnce() },
+            isConfigurationResetComplete = { store.isConfigurationResetComplete() },
+            endMaintenance = { io.github.mangi.eta.agent.runtime.AgentExecutionService.endBackupMaintenance() },
+        )
+    }
+
+    /** Explicit retry after a failed startup gate; never resets a child process or a live app on demand. */
+    internal suspend fun initializeSubAgentConfigurationBeforeWork(): Boolean =
+        subAgentConfigurationLifecycle.initializeBeforeWork(
+            AppProcessPolicy.shouldInitializeFullRuntime(Application.getProcessName(), packageName),
+        )
 
     interface ServiceStateListener {
         fun onServiceStateChanged(service: XposedService?)
@@ -55,6 +76,26 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
         RootAccess.initialize(this)
         SettingsDataStore.init(this)
         AppFileLogger.install(this)
+        io.github.mangi.eta.ui.components.ComposeSystemTrace.install()
+        AgentMemoryRepository.init(this)
+        ProviderRepository.init(this)
+        AssistantRepository.init(this)
+        McpServerRepository.init(this)
+        runBlocking(Dispatchers.IO) {
+            runCatching {
+                initializeSubAgentConfigurationBeforeWork()
+            }.onFailure { throwable ->
+                AndroidAgentLogger.error(
+                    "Startup backup recovery/sub-agent reset failed: type=${throwable.safeLogType()}"
+                )
+                // Never initialize work admission after incomplete recovery or an unconfirmed reset.
+                throw throwable
+            }
+        }
+        // Complete legacy accounting migration before any UI/runtime can issue a new request.
+        runBlocking(Dispatchers.IO) {
+            io.github.mangi.eta.data.repository.UsageStatsRepository.initializeConversationUsage(this@EtaApp)
+        }
         applicationScope.launch {
             runCatching { SettingsDataStore.incrementLaunchCount() }
             runCatching {
@@ -67,25 +108,6 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
             AppearanceSettingsRepository.settings().predictiveBackEnabled
         }
         PredictiveBackController.apply(applicationInfo, predictiveBackEnabled)
-        AgentMemoryRepository.init(this)
-        ProviderRepository.init(this)
-        AssistantRepository.init(this)
-        McpServerRepository.init(this)
-        runBlocking(Dispatchers.IO) {
-            runCatching {
-                io.github.mangi.eta.data.repository.EtaBackupRepository.recoverInterruptedImport(this@EtaApp)
-            }.onFailure { throwable ->
-                AndroidAgentLogger.error(
-                    "Interrupted backup recovery failed: type=${throwable.safeLogType()}"
-                )
-                // Never initialize work admission after an incomplete rollback.
-                throw throwable
-            }
-        }
-        // Complete legacy accounting migration before any UI/runtime can issue a new request.
-        runBlocking(Dispatchers.IO) {
-            io.github.mangi.eta.data.repository.UsageStatsRepository.initializeConversationUsage(this@EtaApp)
-        }
         // Restore only an explicit, device-local web pairing, never create a virtual display.
         applicationScope.launch {
             runCatching { VirtualDisplayWebPreview.restore(this@EtaApp) }

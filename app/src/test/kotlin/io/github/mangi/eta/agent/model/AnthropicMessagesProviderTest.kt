@@ -113,6 +113,12 @@ class AnthropicMessagesProviderTest {
                 toolCall.getJSONObject("function").getString("arguments")
             )
             assertTrue(requestBody.get().contains("\"tools\""))
+            val sentBody = JSONObject(requestBody.get())
+            assertEquals("ephemeral", sentBody.getJSONArray("tools").getJSONObject(0)
+                .getJSONObject("cache_control").getString("type"))
+            assertEquals("ephemeral", sentBody.getJSONArray("messages").getJSONObject(0)
+                .getJSONArray("content").getJSONObject(0)
+                .getJSONObject("cache_control").getString("type"))
             assertEquals(
                 "Hello",
                 events.filterIsInstance<ProviderEvent.BlockDelta>()

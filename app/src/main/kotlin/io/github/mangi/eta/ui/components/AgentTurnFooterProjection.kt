@@ -24,6 +24,7 @@ import io.github.mangi.eta.ui.model.isSteerSupplement
 internal fun List<AgentTimelineRow>.turnFooters(
     isStreaming: Boolean = false,
     isCompressingContext: Boolean = false,
+    isPaused: Boolean = false,
 ): Map<String, AgentChatMessageUi> = buildMap {
     var actionMessage: AgentChatMessageUi? = null
     var afterRowKey: String? = null
@@ -95,7 +96,8 @@ internal fun List<AgentTimelineRow>.turnFooters(
             is AgentTimelineRow.WorkStep -> afterRowKey = row.key
         }
     }
-    flush(includeOpenTurn = !isStreaming && !isCompressingContext)
+    // A finished text block is not a finished turn while its run is active or paused.
+    flush(includeOpenTurn = !isStreaming && !isPaused && !isCompressingContext)
 }
 
 /**

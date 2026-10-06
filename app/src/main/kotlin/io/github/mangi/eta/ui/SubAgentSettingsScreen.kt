@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,6 +26,14 @@ import io.github.mangi.eta.agent.delegation.SubAgentProfile
 import io.github.mangi.eta.agent.kimi.KimiPermissionMode
 import io.github.mangi.eta.agent.kimi.KimiSubAgentStatusAccess
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
+import io.github.mangi.eta.agent.delegation.SubAgentPreset
+import io.github.mangi.eta.ui.components.ConversationSubAgentEditor
+import io.github.mangi.eta.ui.components.SubAgentPresetCard
+import io.github.mangi.eta.ui.components.SubAgentPresetActionsSheet
+import io.github.mangi.eta.ui.components.SubAgentPresetNameDialog
+import io.github.mangi.eta.ui.components.SubAgentPresetDirectoryStatus
+import io.github.mangi.eta.ui.components.rememberSubAgentPresetDirectory
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor
 import io.github.mangi.eta.ui.components.PreferenceIcon
@@ -32,6 +41,8 @@ import io.github.mangi.eta.ui.components.SubAgentEditorState
 import io.github.mangi.eta.ui.components.SubAgentDropdownMenu
 import io.github.mangi.eta.ui.components.SubAgentProfileRow
 import io.github.mangi.eta.ui.components.WindowSpinnerPreference
+import io.github.mangi.eta.ui.components.SubAgentProfileDraftSession
+import io.github.mangi.eta.ui.components.SubAgentProfileConfigDialog
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
@@ -41,13 +52,127 @@ import top.yukonga.miuix.kmp.basic.DropdownItem
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
-    val editor = LocalConversationSubAgentEditor.current
-    val state = editor?.observe()
-    val config = (state as? SubAgentEditorState.Loaded)?.config
+internal fun SubAgentSettingsScreen(
+    onBack: () -> Unit,
+    repositoryFactory: () -> ConversationSubAgentPreferences = { ConversationSubAgentPreferences() },
+    isCurrentRoute: Boolean = true,
+) {
+    // Deliberately independent of the app's conversation editor (and its running-task lock).
+    val repository = remember { repositoryFactory() }
+    val directory = rememberSubAgentPresetDirectory(repository)
+    var selectedId by remember { mutableStateOf<String?>(null) }
+    val group = directory.entries.firstOrNull { it.id == selectedId }
+    LaunchedEffect(directory.entries, directory.loading, directory.error) {
+        if (!directory.loading && directory.error == null && selectedId != null && group == null) selectedId = null
+    }
+    if (group != null) {
+        key(group.id) {
+            val owner = remember(group.id) { SubAgentConfigKey.Preset(group.id) }
+            val editor = remember(owner) {
+                ConversationSubAgentEditor(owner, repository) {
+                    selectedId == owner.value && try { repository.presetExists(owner.value) } catch (_: Exception) { false }
+                }
+            }
+            DisposableEffect(editor) { onDispose { editor.dispose() } }
+            val detailBack = { editor.dispose(); selectedId = null }
+            BackHandler(enabled = isCurrentRoute, onBack = detailBack)
+            CompositionLocalProvider(LocalConversationSubAgentEditor provides editor) {
+                SubAgentPresetDetail(editor, group.name, detailBack, isCurrentRoute)
+            }
+        }
+        return
+    }
+    var add by remember { mutableStateOf(false) }
+    var rename by remember { mutableStateOf<SubAgentPreset?>(null) }
+    var delete by remember { mutableStateOf<SubAgentPreset?>(null) }
+    var actionsPreset by remember { mutableStateOf<SubAgentPreset?>(null) }
+    var name by remember { mutableStateOf("") }
+    val view = LocalView.current
+    val editable = !directory.loading && directory.error == null
+    CompositionLocalProvider(LocalRippleConfiguration provides null) {
+        WithoutPressRipple {
+            Scaffold(containerColor = MaterialTheme.colorScheme.surface,
+                topBar = { TopAppBar(title = { Text("子代理组") }, navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
+                }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
+                floatingActionButtonPosition = FabPosition.Center,
+                floatingActionButton = {
+                    FilledTonalButton(enabled = editable, onClick = {
+                        TouchHaptics.click(view); name = ""; add = true
+                    }, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp), shape = RoundedCornerShape(50)) {
+                        Text("添加子代理组", style = MaterialTheme.typography.bodyLarge)
+                    }
+                }) { padding ->
+                LazyColumn(Modifier.fillMaxSize().padding(padding).horizontalCutoutPadding(),
+                    contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    item {
+                        Text("预设组可供不同会话复制使用；修改预设不会改变已应用的会话。", style = MaterialTheme.typography.bodyMedium)
+                        SubAgentPresetDirectoryStatus(directory)
+                    }
+                    items(directory.entries, key = { it.id }) { preset ->
+                        SubAgentPresetCard(preset, editable, "编辑子代理组${preset.name}",
+                            onClick = { if (editable) directory.change {
+                                check(repository.presetExists(preset.id)) { "子代理组不存在，请重试" }
+                                selectedId = preset.id
+                            } },
+                            trailing = {
+                                IconButton(modifier = Modifier.padding(end = 8.dp).size(48.dp), enabled = editable, onClick = {
+                                    if (editable) { TouchHaptics.click(view); actionsPreset = preset }
+                                }) { Icon(Icons.Rounded.MoreVert, "${preset.name}组更多操作") }
+                            })
+                    }
+                }
+            }
+            actionsPreset?.takeIf { editable }?.let { preset ->
+                SubAgentPresetActionsSheet(preset, onDismiss = { actionsPreset = null },
+                    onRename = {
+                        if (editable) { name = preset.name; rename = preset }
+                        actionsPreset = null
+                    }, onDelete = {
+                        if (editable) delete = preset
+                        actionsPreset = null
+                    })
+            }
+            if (add || rename != null) SubAgentPresetNameDialog(
+                title = if (add) "添加子代理组" else "重命名子代理组",
+                name = name,
+                onNameChange = { name = it },
+                saveEnabled = editable && name.trim().isNotBlank(),
+                onDismiss = { add = false; rename = null },
+                onSave = {
+                    if (directory.change {
+                        if (add) repository.addPreset(name.trim())
+                        else check(repository.renamePreset(requireNotNull(rename).id, name.trim())) { "子代理组不存在，请重试" }
+                    }) { add = false; rename = null }
+                },
+            )
+            delete?.let { preset ->
+                AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除子代理组？") },
+                    text = { Text("删除“${preset.name}”不会改变已应用此组的会话配置。") },
+                    dismissButton = { TextButton(onClick = { delete = null }) { Text("取消") } },
+                    confirmButton = { TextButton(enabled = editable, onClick = {
+                        if (directory.change { check(repository.removePreset(preset.id)) { "子代理组不存在，请重试" } }) delete = null
+                    }) { Text("删除", color = MaterialTheme.colorScheme.error) } })
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: String, onBack: () -> Unit, isCurrentRoute: Boolean) {
+    val state = editor.observe()
+    val lastLoadedConfig = remember(editor) {
+        arrayOfNulls<io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig>(1)
+    }
+    val loadedConfig = (state as? SubAgentEditorState.Loaded)?.config
+    if (loadedConfig != null) lastLoadedConfig[0] = loadedConfig
+    val config = loadedConfig ?: lastLoadedConfig[0]
     val profiles = config?.profiles.orEmpty()
     val editable = editor?.enabled == true
     val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
+    var addedDraft by remember(editor) { mutableStateOf<SubAgentProfileDraftSession?>(null) }
     var rename by remember(editor) { mutableStateOf<SubAgentProfile?>(null) }
     var delete by remember(editor) { mutableStateOf<SubAgentProfile?>(null) }
     var name by remember(editor) { mutableStateOf("") }
@@ -66,12 +191,17 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
     WithoutPressRipple {
         Scaffold(containerColor = MaterialTheme.colorScheme.surface,
-            topBar = { TopAppBar(title = { Text("子代理") }, navigationIcon = {
+            topBar = { TopAppBar(title = { Text(groupName) }, navigationIcon = {
                 IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
             }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)) },
             floatingActionButtonPosition = FabPosition.Center,
             floatingActionButton = {
-                FilledTonalButton(onClick = { if (editor?.enabled == true) { TouchHaptics.click(view); editor.add() } },
+                FilledTonalButton(onClick = {
+                    if (editor.enabled) SubAgentProfileDraftSession.open(editor)?.let {
+                        TouchHaptics.click(view)
+                        addedDraft = it
+                    }
+                },
                     enabled = editable, modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 168.dp),
                     shape = RoundedCornerShape(50),
                     colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -86,35 +216,14 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                     item {
                         Text(when (state) {
                             is SubAgentEditorState.Error -> "子代理配置读取或保存失败：${state.reason}"
-                            SubAgentEditorState.Loading -> "正在读取本会话子代理配置…"
-                            else -> if (editor == null) "请先选择会话；未选择会话时不可编辑子代理。"
-                                else if (!editable) "主代理尚未停止，当前会话配置暂不可修改。"
-                                else "配置仅属于当前会话；新任务和失败接替使用更新后的配置。"
+                            SubAgentEditorState.Loading -> "正在读取子代理组配置…"
+                            else -> if (!editable) "当前子代理组暂不可修改。"
+                                else "配置属于此预设组；会话应用时复制，后续修改互不影响。"
                         }, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.padding(bottom = 4.dp))
                         if (state is SubAgentEditorState.Error) TextButton(onClick = { editor?.retry() }) { Text("重试恢复配置") }
                     }
                     if (config != null) {
-                        item {
-                            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("自动委派", style = MaterialTheme.typography.bodyLarge)
-                                    Text("按职责自动分配本会话任务", style = MaterialTheme.typography.bodySmall)
-                                }
-                                Switch(checked = config.enabled, enabled = editable,
-                                    onCheckedChange = { if (editor?.enabled == true) editor.setEnabled(it) })
-                            }
-                        }
-                        item {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("子代理诊断日志", style = MaterialTheme.typography.bodyLarge)
-                                    Text("仅保存本会话诊断配置；运行日志接线由运行层处理。", style = MaterialTheme.typography.bodySmall)
-                                }
-                                Switch(checked = config.diagnosticsEnabled, enabled = editable,
-                                    onCheckedChange = { if (editor?.enabled == true) editor.setDiagnosticsEnabled(it) })
-                            }
-                        }
                         item {
                             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
@@ -157,6 +266,7 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                                     style = MaterialTheme.typography.bodyMedium)
                             }
                         }
+                        // Editing a preset does not change its saved automatic-delegation value.
                         items(profiles, key = { it.id }) { profile ->
                             Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp).alpha(if (editable) 1f else 0.38f)) {
                                 Column(Modifier.padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -185,6 +295,14 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                                                 Icon(Icons.Rounded.MoreVert, "${profile.name}更多操作")
                                             }
                                             if (editable) SubAgentDropdownMenu(expanded, { expanded = false }) {
+                                                DropdownMenuItem(text = { Text("配置") }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
+                                                    onClick = {
+                                                        if (editor.enabled) SubAgentProfileDraftSession.open(editor, profile)?.let {
+                                                            TouchHaptics.click(view)
+                                                            addedDraft = it
+                                                        }
+                                                        expanded = false
+                                                    })
                                                 DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) },
                                                     onClick = { if (editor?.enabled == true) { name = profile.name; rename = profile }; expanded = false })
                                                 DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) },
@@ -193,7 +311,7 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                                             }
                                         }
                                     }
-                                    SubAgentProfileRow(profile, providers, enabled = editable, settings = true)
+                                    SubAgentProfileRow(profile, providers, enabled = editable, settings = true, draftAllowed = true)
                                 }
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                             }
@@ -202,15 +320,25 @@ internal fun SubAgentSettingsScreen(onBack: () -> Unit) {
                 }
             }
         }
+        addedDraft?.let { session ->
+            SubAgentProfileConfigDialog(session, editor, providers, enabled = isCurrentRoute, onDismiss = {
+                session.dismiss()
+                if (addedDraft === session) addedDraft = null
+            })
+        }
         rename?.let { profile ->
-            if (editable) AlertDialog(onDismissRequest = { rename = null }, title = { Text("重命名代理") },
-                text = { OutlinedTextField(name, { if (editor?.enabled == true) name = it.take(80) }, label = { Text("名称") },
-                    singleLine = true, enabled = editable, modifier = Modifier.fillMaxWidth()) },
-                dismissButton = { TextButton(onClick = { rename = null }) { Text("取消") } },
-                confirmButton = { TextButton(enabled = editable && name.trim().isNotBlank(), onClick = {
-                    if (editor?.enabled == true && editor.updateProfile(profile.id) { it.copy(name = name.trim()) } is ConversationSubAgentPreferences.WriteResult.Saved)
+            if (editable) SubAgentPresetNameDialog(
+                title = "重命名代理",
+                fieldHint = "名称",
+                name = name,
+                onNameChange = { if (editor.enabled) name = it },
+                saveEnabled = name.trim().isNotBlank(),
+                onDismiss = { rename = null },
+                onSave = {
+                    if (editor.enabled && editor.updateProfile(profile.id) { it.copy(name = name.trim()) } is ConversationSubAgentPreferences.WriteResult.Saved)
                         rename = null
-                }) { Text("保存") } })
+                },
+            )
         }
         delete?.let { profile ->
             if (editable) AlertDialog(onDismissRequest = { delete = null }, title = { Text("删除代理？") },
