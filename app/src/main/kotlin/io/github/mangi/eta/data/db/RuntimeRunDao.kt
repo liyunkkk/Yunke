@@ -61,6 +61,9 @@ internal interface RuntimeRunDao {
     @Query("DELETE FROM runtime_archive_runs")
     suspend fun deleteAllArchivedRuns()
 
+    @Query("DELETE FROM runtime_archive_events WHERE length(CAST(event_json AS BLOB)) > :maxBytes")
+    suspend fun pruneOversizedArchiveEvents(maxBytes: Int)
+
     @Transaction
     suspend fun replaceArchivedRun(
         run: RuntimeArchiveRunEntity,
@@ -100,6 +103,10 @@ internal interface RuntimeRunDao {
 
     @Query("DELETE FROM runtime_inflight_events WHERE run_id = :runId")
     suspend fun deleteInFlightEvents(runId: String)
+
+    // 旧版本可能已写入超限事件：加载前删除，避免 CursorWindow 溢出。
+    @Query("DELETE FROM runtime_inflight_events WHERE length(CAST(event_json AS BLOB)) > :maxBytes")
+    suspend fun pruneOversizedInFlightEvents(maxBytes: Int)
 
     @Query("DELETE FROM runtime_inflight_runs WHERE run_id = :runId")
     suspend fun deleteInFlightRun(runId: String)

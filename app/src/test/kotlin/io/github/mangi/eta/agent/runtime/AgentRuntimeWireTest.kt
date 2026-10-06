@@ -794,4 +794,54 @@ class AgentRuntimeWireTest {
         }
     }
 
+
+    @Test
+    fun oversizedContextCompactedHistoryIsDowngradedBeforePersistence() {
+        val event = AgentEvent.ContextCompacted(
+            round = 3,
+            applied = true,
+            originalCount = 9_000,
+            compactedCount = 420,
+            history = List(420) { index ->
+                io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                    role = "user",
+                    content = "消息 $index " + "x".repeat(4096),
+                    reasoningContent = "",
+                )
+            },
+            compressorLabel = "测试压缩器",
+        )
+
+        val encoded = AgentEventJsonCodec.encode(event)
+        val encodedBytes = encoded.toByteArray(Charsets.UTF_8).size
+        assertTrue(
+            "encoded event must stay under the cursor window budget: $encodedBytes",
+            encodedBytes <= AgentEventJsonCodec.MAX_PERSISTED_EVENT_BYTES,
+        )
+        val decoded = AgentEventJsonCodec.decode(encoded)
+        assertTrue(decoded is AgentEvent.ContextCompacted)
+        val compacted = decoded as AgentEvent.ContextCompacted
+        assertEquals(true, compacted.applied)
+        assertEquals(9_000, compacted.originalCount)
+        assertEquals(420, compacted.compactedCount)
+        assertTrue(compacted.history.isEmpty())
+    }
+
+    @Test
+    fun smallContextCompactedHistorySurvivesPersistenceIntact() {
+        val event = AgentEvent.ContextCompacted(
+            round = 1,
+            applied = true,
+            originalCount = 12,
+            compactedCount = 6,
+            history = List(6) { index ->
+                io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                    role = "user",
+                    content = "短消息 $index",
+                    reasoningContent = "",
+                )
+            },
+        )
+        assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+    }
 }

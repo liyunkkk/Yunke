@@ -3,6 +3,9 @@ package io.github.mangi.eta.agent.runtime
 import android.content.Context
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.db.RuntimeInFlightEventEntity
+import io.github.mangi.eta.data.db.RuntimeInFlightRunEntity
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -158,4 +161,34 @@ class AgentRunCheckpointStoreTest {
             deltaChars = text.length,
             delta = text,
         )
+
+    @Test
+    fun oversizedLegacyEventsArePrunedBeforeReadingInsteadOfCrashing() {
+        val dao = EtaDatabase.get(context).runtimeRunDao()
+        runBlocking {
+            dao.replaceInFlightRun(
+                RuntimeInFlightRunEntity(
+                    runId = "run-oversized",
+                    ownerInstanceId = "test",
+                    handoffId = "handoff-oversized",
+                    handoffSource = AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE,
+                    handoffPayload = "",
+                    dismissEntrySurface = false,
+                    createdAt = 1L,
+                    updatedAt = 1L,
+                )
+            )
+            dao.insertInFlightEvent(
+                RuntimeInFlightEventEntity(
+                    runId = "run-oversized",
+                    sortIndex = 0,
+                    eventJson = "{\"type\":\"run_failed\",\"reason\":\"" + "y".repeat(1_200_000) + "\"}",
+                )
+            )
+        }
+
+        val checkpoints = AgentRunCheckpointStore.list(context)
+        val oversized = checkpoints.single { it.runId == "run-oversized" }
+        assertTrue(oversized.events.isEmpty())
+    }
 }

@@ -88,9 +88,10 @@ internal object AgentRunCheckpointStore {
     /** 返回所有未确认 run；是否 active 或已完成由恢复协调器结合 Runtime 状态判断。 */
     fun list(context: Context): List<Checkpoint> =
         runBlocking(Dispatchers.IO) {
-            EtaDatabase.get(context.applicationContext)
-                .runtimeRunDao()
-                .inFlightRuns()
+            val dao = EtaDatabase.get(context.applicationContext).runtimeRunDao()
+            // 旧版本可能已写入超限事件：读取前先清理，避免 CursorWindow 溢出闪退。
+            dao.pruneOversizedInFlightEvents(AgentEventJsonCodec.MAX_READABLE_EVENT_BYTES)
+            dao.inFlightRuns()
                 .asSequence()
                 .map { stored ->
                     Checkpoint(

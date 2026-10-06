@@ -67,6 +67,8 @@ internal object AgentRunArchiveStore {
 
     private suspend fun prune(dao: RuntimeRunDao): List<RuntimeArchiveRunWithEvents> {
         val now = System.currentTimeMillis()
+        // 旧版本可能已写入超限事件：读取前先清理，避免 CursorWindow 溢出。
+        dao.pruneOversizedArchiveEvents(AgentEventJsonCodec.MAX_READABLE_EVENT_BYTES)
         val pruned = dao.archivedRuns()
             .filter { now - it.run.createdAt <= MAX_AGE_MS }
             .sortedBy { it.run.createdAt }
