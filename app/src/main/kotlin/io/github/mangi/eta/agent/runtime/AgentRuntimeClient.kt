@@ -53,7 +53,7 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
             onRequestIngested = {
                 preparedImagesRef.getAndSet(null)?.close()
                 preparedHistoryRef.getAndSet(null)?.close()
-            }))
+            }).also { it.diagnosticRunId = request.runId })
         val lease = AgentRuntimeConnection.acquire(context, logger)
             ?: return AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 服务绑定失败")
         val serviceMessenger = lease.messenger
@@ -346,7 +346,7 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
                 if (!attached) terminalLatch.countDown()
             }, onResult = { result ->
                 resultRef.set(result); attachLatch.countDown(); terminalLatch.countDown()
-            }))
+            }).also { it.diagnosticRunId = runId })
         val lease = AgentRuntimeConnection.acquire(context, logger) ?: return AttachOutcome.Unavailable
         val deathRecipient = IBinder.DeathRecipient { attachLatch.countDown(); terminalLatch.countDown() }
         try {
@@ -383,16 +383,24 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
     private class ClientHandler(private val onEvent: (AgentEvent) -> Unit,
         private val onResult: (AgentRuntimeWire.RunResult) -> Unit,
         private val onRequestIngested: () -> Unit) : Handler(Looper.getMainLooper()) {
+        var diagnosticRunId: String? = null
         override fun handleMessage(msg: Message) {
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT -> {
                     val data = msg.data ?: return
-                    recordDeliveryTiming(data, live = true)
-                    val event = measureRuntimeStreamStage("ipc.client.decode.live") {
-                        AgentRuntimeWire.eventFromBundle(data)
-                    }
-                    event?.let {
-                        measureRuntimeStreamStage("ipc.client.callback.live") { onEvent(it) }
+                    withRuntimeDiagnosticEvent(diagnosticRunId, replay = false) {
+                        measureRuntimeStreamStage("ipc.client.receive") {
+                            recordDeliveryTiming(data, live = true)
+                            val event = measureRuntimeStreamStage("ipc.client.decode.live") {
+                                AgentRuntimeWire.eventFromBundle(data)
+                            }
+                            bindRuntimeDiagnosticEvent(event)
+                            event?.let {
+                                withRuntimeDecodedEvent(it) {
+                                    measureRuntimeStreamStage("ipc.client.callback.live") { onEvent(it) }
+                                }
+                            }
+                        }
                     }
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
@@ -421,19 +429,28 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
     }
     private class AttachHandler(onReplay: ((List<AgentEvent>) -> Unit)?, onEvent: (AgentEvent) -> Unit,
         onAttachResponse: (Boolean) -> Unit, onResult: (AgentRuntimeWire.RunResult) -> Unit) : Handler(Looper.getMainLooper()) {
+        var diagnosticRunId: String? = null
         // Replay callbacks run at attach ACK/result, not while MSG_EVENT buffers replay history.
         // Keep delivery's null-onReplay fallback: invoke the original onEvent once per replay item.
         private val delivery = AgentRuntimeAttachDelivery(
             onReplay = { events ->
                 if (onReplay != null) {
-                    measureRuntimeStreamStage("ipc.attach.callback.replayBatch") { onReplay(events) }
+                    val attribution = io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
+                        .attribution(diagnosticRunId, kind = "replayBatch", replay = true)
+                    io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics.withAttribution(attribution) {
+                        measureRuntimeStreamStage("ipc.attach.callback.replayBatch") { onReplay(events) }
+                    }
                 } else {
                     events.forEach { event ->
-                        measureRuntimeStreamStage("ipc.attach.callback.replay") { onEvent(event) }
+                        withRuntimeDecodedEvent(event) {
+                            measureRuntimeStreamStage("ipc.attach.callback.replay") { onEvent(event) }
+                        }
                     }
                 }
             },
-            onEvent = { event -> measureRuntimeStreamStage("ipc.attach.callback.live") { onEvent(event) } },
+            onEvent = { event -> withRuntimeDecodedEvent(event) {
+                measureRuntimeStreamStage("ipc.attach.callback.live") { onEvent(event) }
+            } },
             onAttachResponse = onAttachResponse,
             onResult = onResult,
         )
@@ -442,11 +459,16 @@ internal class AgentRuntimeClient(private val context: Context, private val logg
                 AgentRuntimeWire.MSG_EVENT -> {
                     val data = msg.data ?: return
                     val live = delivery.isLive
-                    recordDeliveryTiming(data, live = live)
-                    val event = measureRuntimeStreamStage(
-                        if (live) "ipc.attach.decode.live" else "ipc.attach.decode.replay",
-                    ) { AgentRuntimeWire.eventFromBundle(data) }
-                    event?.let(delivery::event)
+                    withRuntimeDiagnosticEvent(diagnosticRunId, replay = !live) {
+                        measureRuntimeStreamStage("ipc.attach.receive") {
+                            recordDeliveryTiming(data, live = live)
+                            val event = measureRuntimeStreamStage(
+                                if (live) "ipc.attach.decode.live" else "ipc.attach.decode.replay",
+                            ) { AgentRuntimeWire.eventFromBundle(data) }
+                            bindRuntimeDiagnosticEvent(event)
+                            event?.let(delivery::event)
+                        }
+                    }
                 }
                 AgentRuntimeWire.MSG_RESULT -> {
                     val data = msg.data ?: return

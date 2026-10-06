@@ -124,7 +124,7 @@ class StreamPerformanceDiagnosticsTest {
         assertTrue(header.contains("slowMessages=1"))
     }
 
-    @Test fun mainLogSkipsFrameCallbacksAndKeepsSlowOtherMessages() {
+    @Test fun mainLogIncludesFrameCallbacksAndKeepsSlowOtherMessages() {
         val log = MainThreadMessageLog(capacity = 4)
         val frame = ">>>>> Dispatching to Handler (android.view.Choreographer\$FrameHandler) {1} " +
             "android.view.Choreographer\$FrameDisplayEventReceiver@2: 0"
@@ -137,7 +137,9 @@ class StreamPerformanceDiagnosticsTest {
         assertEquals(1L, log.frameMessages)
         assertEquals(2L, log.otherMessages)
         val slow = log.between(0, 100_000_000, originNs = 30_000_000, limit = 10)
-        assertEquals(listOf("atMs=0 durUs=6000 msg=android.os.Handler/kotlinx.Job"), slow)
+        assertEquals(2, slow.size)
+        assertTrue(slow.first().contains("Choreographer"))
+        assertEquals("atMs=0 durUs=6000 msg=android.os.Handler/kotlinx.Job", slow.last())
     }
 
     @Test fun slowMessageReportsTimeCoveredByMeasuredStages() {

@@ -120,7 +120,7 @@ class StreamUiEventDiagnosticsContractTest(unittest.TestCase):
         event = function(self.helper, 'measureEvent')
         self.assertRegex(self.helper, r'inline fun <T> measure\(')
         self.assertRegex(self.helper, r'inline fun <T> measureEvent\(')
-        self.assertEqual(self.helper.count('crossinline block: () -> T'), 2)
+        self.assertEqual(self.helper.count('crossinline block: () -> T'), 3)
         self.assertIn('if (stage == null || !StreamPerformanceDiagnostics.enabled) return block()', measure)
         self.assertIn('if (!StreamPerformanceDiagnostics.enabled) return block()', event)
         ordered(self, measure, '!StreamPerformanceDiagnostics.enabled', 'StreamPerformanceDiagnostics.measure(')
@@ -153,7 +153,7 @@ class StreamUiEventDiagnosticsContractTest(unittest.TestCase):
         self.assertIn('recomputeWaitingQuestion = false', delta)
 
     def test_pending_flush_reasons_do_not_reorder_or_duplicate_applications(self):
-        enqueue = function(self.app, 'enqueueRunEvent')
+        enqueue = function(self.app, 'enqueueRunEventNow')
         ordered(self, enqueue, 'runEventCoalescer.append(runId, event)', '"ui.flush.blockSwitch"',
                 'applyRunEvent(runId, ready)', 'scheduleRunDeltaFlush(runId)',
                 'flushPendingRunDelta(runId, diagnosticStage = "ui.flush.nonDelta")',

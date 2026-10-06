@@ -23,6 +23,14 @@ internal object StreamUiEventDiagnostics {
         return StreamPerformanceDiagnostics.measure(eventStage(event)) { block() }
     }
 
+    inline fun <T> withEvent(runId: String, conversationId: String?, selected: Boolean?, event: AgentEvent,
+        replay: Boolean = false, crossinline block: () -> T): T {
+        if (!StreamPerformanceDiagnostics.enabled) return block()
+        val attribution = StreamPerformanceDiagnostics.eventAttribution(event, runId, conversationId, selected,
+            eventStage(event).removePrefix("ui.event."), replay)
+        return StreamPerformanceDiagnostics.withAttribution(attribution) { block() }
+    }
+
     // Exhaustive sealed-event mapping: new event kinds require an explicit, bounded label.
     fun eventStage(event: AgentEvent): String = when (event) {
         is AgentEvent.AssistantBlockStart -> when (event.kind) {

@@ -4623,6 +4623,18 @@ internal class AgentAppState(
     }
 
     private fun enqueueRunEvent(runId: String, event: AgentEvent) {
+        if (!StreamPerformanceDiagnostics.enabled) {
+            enqueueRunEventNow(runId, event)
+            return
+        }
+        val conversationId = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) runConversationIds[runId] else null
+        StreamUiEventDiagnostics.withEvent(runId, conversationId,
+            conversationId?.let { it == selectedConversationId }, event) {
+            StreamPerformanceDiagnostics.measure("ui.enqueue") { enqueueRunEventNow(runId, event) }
+        }
+    }
+
+    private fun enqueueRunEventNow(runId: String, event: AgentEvent) {
         // Runtime delivers events on the run's IO job. Publishing from that thread races
         // with selecting another conversation on the main thread: the title can already be
         // the new conversation while homeState is still overwritten with this run's text.
@@ -4727,14 +4739,17 @@ internal class AgentAppState(
     private fun scheduleRunDeltaFlush(runId: String) {
         if (runEventFlushJobs[runId]?.isActive == true) return
         val scheduledAtNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else null
+        val diagnosticAttribution = StreamPerformanceDiagnostics.captureAttribution()
         runEventFlushJobs[runId] = scope.launch {
             delay(STREAM_UI_UPDATE_INTERVAL_MS)
             if (scheduledAtNs != null && StreamPerformanceDiagnostics.enabled) {
                 StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
             }
             runEventFlushJobs.remove(runId)
-            StreamPerformanceDiagnostics.measure("ui.flush") {
-                flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer")
+            StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
+                StreamPerformanceDiagnostics.measure("ui.flush") {
+                    flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer")
+                }
             }
         }
     }
@@ -4908,12 +4923,16 @@ internal class AgentAppState(
         replaying: Boolean = false,
     ) {
         // 只加计时：流式增量（value=1）和其它事件分开看单次耗时。
-        StreamPerformanceDiagnostics.measure(
-            "ui.runEvent",
-            if (event is AgentEvent.AssistantBlockDelta) 1L else 0L,
-        ) {
-            StreamUiEventDiagnostics.measureEvent(event) {
-                applyRunEventNow(runId, event, persistSupplement, replaying)
+        val conversationId = if (StreamPerformanceDiagnostics.enabled) runConversationIds[runId] else null
+        StreamUiEventDiagnostics.withEvent(runId, conversationId,
+            conversationId?.let { it == selectedConversationId }, event, replaying) {
+            StreamPerformanceDiagnostics.measure(
+                "ui.runEvent",
+                if (event is AgentEvent.AssistantBlockDelta) 1L else 0L,
+            ) {
+                StreamUiEventDiagnostics.measureEvent(event) {
+                    applyRunEventNow(runId, event, persistSupplement, replaying)
+                }
             }
         }
     }

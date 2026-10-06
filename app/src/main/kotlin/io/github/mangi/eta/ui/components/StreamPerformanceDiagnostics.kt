@@ -7,6 +7,9 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.Trace
+import android.os.Debug
+import android.os.SystemClock
+import java.util.concurrent.atomic.AtomicLong
 import android.view.FrameMetrics
 import android.util.Printer
 import android.view.Window
@@ -28,6 +31,7 @@ internal class StreamTimingStats {
     var valueSum = 0L
     var valueMax = 0L
     val buckets = LongArray(5)
+    val fineBuckets = LongArray(6)
     fun add(ns: Long, value: Long) {
         val duration = ns.coerceAtLeast(0)
         count++
@@ -42,9 +46,17 @@ internal class StreamTimingStats {
             duration <= 100_000_000 -> 3
             else -> 4
         }]++
+        fineBuckets[when {
+            duration <= 8_333_333 -> 0
+            duration <= 16_666_667 -> 1
+            duration <= 33_333_333 -> 2
+            duration <= 50_000_000 -> 3
+            duration <= 100_000_000 -> 4
+            else -> 5
+        }]++
     }
     fun summary(): String = "n=$count avgUs=${totalNs / count.coerceAtLeast(1) / 1000} maxUs=${maxNs / 1000} " +
-        "b16_32_50_100_over=${buckets.joinToString(",")} valueSum=$valueSum valueMax=$valueMax"
+        "b16_32_50_100_over=${buckets.joinToString(",")} b8p33_16p67_33p33_50_100_over=${fineBuckets.joinToString(",")} valueSum=$valueSum valueMax=$valueMax"
 }
 
 /**
@@ -52,7 +64,12 @@ internal class StreamTimingStats {
  * printer 只在主线程被调用；读取在诊断线程，存取环形缓冲时加锁。
  * 只保留 Handler/回调类名和耗时，不保留消息正文或 ID。
  */
-internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACITY) {
+internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACITY,
+    private val onMessage: ((Long, Long, Boolean) -> Unit)? = null) {
+    @Volatile var overwritten = 0L
+        private set
+    @Volatile var outputTruncated = 0L
+        private set
     private val starts = LongArray(capacity)
     private val ends = LongArray(capacity)
     private val names = arrayOfNulls<String>(capacity)
@@ -93,11 +110,9 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
         messageLine = null
         // 装上 printer 时正在处理的那条消息没有起点，忽略。
         if (!open || name == null) return
-        if (name.contains(CHOREOGRAPHER_FRAME_RECEIVER)) {
-            frameMessages++
-            return
-        }
-        otherMessages++
+        val isFrame = name.contains(CHOREOGRAPHER_FRAME_RECEIVER)
+        if (isFrame) frameMessages++ else otherMessages++
+        onMessage?.invoke(started, now, isFrame)
         if (now - started < SLOW_MAIN_MESSAGE_NS) return
         synchronized(this) {
             starts[next] = started
@@ -106,7 +121,7 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             covered[next] = openCoveredNs
             tops[next] = openTopStage?.let { "$it:${openTopNs / 1000}" }
             next = (next + 1) % capacity
-            if (size < capacity) size++
+            if (size < capacity) size++ else overwritten++
         }
     }
 
@@ -127,7 +142,7 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
         for (i in 0 until size) {
             val slot = (first + i) % capacity
             if (ends[slot] < fromNs || starts[slot] > toNs) continue
-            if (out.size >= limit) break
+            if (out.size >= limit) { outputTruncated++; continue }
             var line = "atMs=${(starts[slot] - originNs) / 1_000_000} durUs=${(ends[slot] - starts[slot]) / 1000} " +
                 "msg=${toggleProbeMessageName(names[slot].orEmpty())}"
             // 有打点覆盖时才追加：看这条长消息里有多少时间落在已知阶段，剩下的是 Compose 内部或未打点的协程。
@@ -246,7 +261,25 @@ internal object StreamPerformanceDiagnostics {
         val id = UUID.randomUUID().toString().take(8)
         val started = System.nanoTime()
         val stats = linkedMapOf<String, StreamTimingStats>()
+        val serial = sessionSerial.incrementAndGet()
+        val tokens = AnonymousDiagnosticTokens()
+        val eventLinks = DiagnosticEventLinks()
+        val details = BoundedDiagnosticDetails(started)
+        val sequences = AtomicLong()
+        var timeline: FramePageTimeline? = null
+        private var reportStartNs = started
+        private var invalidLabels = 0L
+        private val pageStats = linkedMapOf<Pair<Int, String>, StreamTimingStats>()
         var closed = false
+        @Synchronized fun rejectLabel() { invalidLabels++ }
+        @Synchronized fun recordPage(page: Int, stage: String, ns: Long, value: Long) {
+            if (closed) return
+            val key = page to stage
+            val stat = pageStats[key]
+            if (stat != null) stat.add(ns, value)
+            else if (pageStats.size < 512) pageStats[key] = StreamTimingStats().also { it.add(ns, value) }
+            else droppedStageRecords++
+        }
         private var lastDeltaNs = 0L
         private var droppedStageRecords = 0L
         @Synchronized fun record(stage: String, ns: Long, value: Long) {
@@ -269,19 +302,26 @@ internal object StreamPerformanceDiagnostics {
                 droppedStageRecords++
             }
         }
-        fun report(final: Boolean): List<String> {
-            val (snapshot, dropped) = synchronized(this) {
-                val snapshot = stats.toMap() to droppedStageRecords
-                stats.clear()
-                droppedStageRecords = 0
+        fun report(final: Boolean, toNs: Long = System.nanoTime()): List<String> {
+            val snapshot: Map<String, StreamTimingStats>
+            val pages: Map<Pair<Int, String>, StreamTimingStats>
+            val dropped: Long
+            val invalid: Long
+            val fromNs: Long
+            synchronized(this) {
+                snapshot = stats.toMap(); pages = pageStats.toMap()
+                dropped = droppedStageRecords; invalid = invalidLabels
+                fromNs = reportStartNs; reportStartNs = toNs
+                stats.clear(); pageStats.clear(); droppedStageRecords = 0; invalidLabels = 0
                 if (final) closed = true
-                snapshot
             }
-            // Format outside the lock; overflow is one bounded line, never a payload label.
-            val prefix = "StreamDiag id=$id final=$final elapsedMs=${(System.nanoTime()-started)/1_000_000} scope=window"
+            val prefix = "StreamDiag id=$id final=$final elapsedMs=${(toNs-started)/1_000_000} scope=window " +
+                "windowStartNs=$fromNs windowEndNs=$toNs boundary=halfOpenCompletion"
             return buildList {
                 snapshot.forEach { (stage, stats) -> add("$prefix stage=$stage ${stats.summary()}") }
+                pages.forEach { (key, stats) -> add("$prefix page=${FrameDiagnosticPage.entries[key.first].name} stage=${key.second} ${stats.summary()}") }
                 if (dropped > 0) add("$prefix stage=diagnostic.stageOverflow droppedRecords=$dropped")
+                if (invalid > 0) add("$prefix rejectedLabels=$invalid")
                 if (isEmpty()) add("$prefix empty=1")
             }
         }
@@ -295,7 +335,7 @@ internal object StreamPerformanceDiagnostics {
     @Volatile private var noteSink: ((String) -> Unit)? = null
 
     /** 当前是否有诊断会话（日志已开启且界面在前台）。 */
-    val enabled: Boolean get() = active != null
+    val enabled: Boolean get() = active != null && AppFileLogger.isEnabled()
 
     /**
      * 写一条单独的诊断行，每个会话最多 [NOTE_MAX_PER_SESSION] 条。没有会话时不拼字符串。
@@ -369,37 +409,91 @@ internal object StreamPerformanceDiagnostics {
         reporter(target)
     }
 
-    fun record(stage: String, ns: Long = 0, value: Long = 0) {
-        active?.record(stage, ns, value)
+    private val sessionSerial = AtomicLong()
+    private val context = DiagnosticThreadContext()
+
+    fun captureAttribution(): StreamDiagnosticAttribution? = if (enabled) context.capture() else null
+
+    /** Existing business identity in, anonymous context out. Never persist raw identity. */
+    fun attribution(runId: String? = null, conversationId: String? = null, selected: Boolean? = null,
+        kind: String = "unknown", replay: Boolean = false, event: Long = 0): StreamDiagnosticAttribution? {
+        if (!enabled) return null
+        val session = active ?: return null
+        return StreamDiagnosticAttribution(session.serial, session.tokens.token(runId), session.tokens.token(conversationId),
+            when (selected) { true -> DiagnosticVisibility.Selected; false -> DiagnosticVisibility.Hidden; null -> DiagnosticVisibility.Unknown },
+            StreamDiagnosticLabels.kind(kind), replay, event)
     }
 
-    // 只在主线程读写：嵌套的 measure 只把最外层计入当前主线程消息。
-    private var mainMeasureDepth = 0
+    fun newEventAttribution(runId: String?, replay: Boolean): StreamDiagnosticAttribution? {
+        if (!enabled) return null
+        val session = active ?: return null
+        return attribution(runId, replay = replay, event = session.sequences.incrementAndGet())
+    }
+
+    fun eventAttribution(event: Any, runId: String?, conversationId: String?, selected: Boolean?,
+        kind: String, replay: Boolean): StreamDiagnosticAttribution? {
+        if (!enabled) return null
+        val session = active ?: return null
+        val linked = session.eventLinks.find(event)
+        val current = context.capture()?.takeIf { it.session == session.serial }
+        val base = linked ?: current?.takeIf { it.event != 0L }
+            ?: attribution(runId, kind = kind, replay = replay, event = session.sequences.incrementAndGet())!!
+        val owner = attribution(runId, conversationId, selected, kind, replay)!!
+        return base.copy(run = owner.run.takeIf { it != 0 } ?: base.run, conversation = owner.conversation.takeIf { it != 0 } ?: base.conversation,
+            visibility = if (selected == null) base.visibility else owner.visibility,
+            kind = owner.kind, replay = replay).also { session.eventLinks.bind(event, it) }
+    }
+
+    fun bindEvent(event: Any, attribution: StreamDiagnosticAttribution?) {
+        if (!enabled) return
+        val session = active ?: return
+        if (attribution?.session == session.serial) session.eventLinks.bind(event, attribution)
+    }
+
+    fun <T> withAttribution(attribution: StreamDiagnosticAttribution?, block: () -> T): T {
+        if (!enabled) return block()
+        val session = active ?: return block()
+        if (attribution == null || attribution.session != session.serial) return block()
+        val parent = context.current()?.span ?: attribution.sourceSpan
+        return context.with(DiagnosticSpanContext(attribution, parent), block)
+    }
+
+    fun record(stage: String, ns: Long = 0, value: Long = 0) {
+        if (!enabled) return
+        val session = active ?: return
+        val label = StreamDiagnosticLabels.canonicalStage(stage) ?: run { session.rejectLabel(); return }
+        session.record(label, ns, value)
+    }
+
+    fun <T> measureDetail(stage: String, value: Long = 0, block: () -> T): T = measure(stage, value, block)
 
     fun <T> measure(stage: String, value: Long = 0, block: () -> T): T {
+        if (!enabled) return block()
         val session = active ?: return block()
-        val log = mainLog
-        val onMain = log != null && Looper.myLooper() === Looper.getMainLooper()
-        if (onMain) mainMeasureDepth++
+        val label = StreamDiagnosticLabels.canonicalStage(stage) ?: run { session.rejectLabel(); return block() }
+        val previous = context.current()
+        val span = session.sequences.incrementAndGet()
+        val parent = previous?.span ?: 0L
+        val attr = previous?.attribution?.takeIf { it.session == session.serial }
+        val onMain = Looper.myLooper() === Looper.getMainLooper()
         val started = System.nanoTime()
-        Trace.beginSection("Eta.$stage")
-        try { return block() } finally {
+        Trace.beginSection("Eta.$label")
+        try { return context.with(DiagnosticSpanContext(attr, span), block) } finally {
             Trace.endSection()
-            val elapsed = System.nanoTime() - started
-            session.record(stage, elapsed, value)
-            if (onMain) {
-                mainMeasureDepth--
-                if (mainMeasureDepth == 0) log!!.addCovered(stage, elapsed)
-            }
-            // 单次超过一帧预算的阶段单独记一条，能和同一时刻的 spike 对上。
-            if (elapsed >= SLOW_STAGE_NS) {
-                note("slow") { "stage=$stage us=${elapsed / 1000} value=$value main=$onMain" }
-            }
+            val ended = System.nanoTime()
+            val elapsed = ended - started
+            session.record(label, elapsed, value)
+            val page = session.timeline?.attribute(started, ended)
+            val aggregatePage = page?.aggregatePage ?: FrameDiagnosticPage.Unknown
+            session.recordPage(aggregatePage.ordinal, label, elapsed, value)
+            session.details.span(label, span, parent, started, ended, Thread.currentThread().id, onMain, attr,
+                (page?.start ?: FrameDiagnosticPage.Unknown).ordinal, (page?.end ?: FrameDiagnosticPage.Unknown).ordinal, value)
+            if (onMain && (previous?.span ?: 0L) == 0L) mainLog?.addCovered(label, elapsed)
         }
     }
 
     fun attach(window: Window, pages: FramePageTimeline): () -> Unit {
-        val session = Session()
+        val session = Session().also { it.timeline = pages }
         active = session
         val thread = HandlerThread("Eta-StreamDiag").apply { start() }
         val handler = Handler(thread.looper)
@@ -407,9 +501,15 @@ internal object StreamPerformanceDiagnostics {
         probe?.let { previous -> probeReporter?.let { finishProbe(previous, it) } }
         // 整个诊断会话都记主线程慢消息：点击窗口和窗口外的尖峰都要能对上当时主线程在干什么。
         // 这是项目里唯一设置 Looper 日志的地方；会话结束时恢复为 null。
-        val log = MainThreadMessageLog()
+        val log = MainThreadMessageLog(onMessage = { begin, end, frame ->
+            if (active === session && enabled) {
+                session.record(if (frame) "main.doFrame" else "main.message", end - begin, 0)
+            }
+        })
         mainLog = log
-        Looper.getMainLooper().setMessageLogging(log.printer)
+        Looper.getMainLooper().setMessageLogging(Printer { line ->
+            if (active === session && enabled) log.onLine(line, System.nanoTime())
+        })
         synchronized(this) { generation++ }
         val sessionGeneration = generation
         val reportProbe: (ToggleProbe) -> Unit = { target ->
@@ -423,36 +523,92 @@ internal object StreamPerformanceDiagnostics {
         }
         probeReporter = reportProbe
         probeTimeoutHandler = handler
-        var notes = 0
+        val notes = AtomicLong()
+        val noteDropped = AtomicLong()
         noteSink = { line ->
-            handler.post {
-                if (notes < NOTE_MAX_PER_SESSION) {
-                    notes++
-                    runCatching {
-                        AppFileLogger.diagnosticInfo("StreamDiag id=${session.id} gen=$sessionGeneration note=$notes $line")
-                    }
+            val reserved = notes.incrementAndGet()
+            if (reserved <= NOTE_MAX_PER_SESSION) handler.post {
+                runCatching {
+                    AppFileLogger.diagnosticInfo("StreamDiag id=${session.id} gen=$sessionGeneration note=$reserved $line")
                 }
+            } else noteDropped.incrementAndGet()
+        }
+        val packageName = window.context.packageName
+        // Package lookup and all formatting happen once on the diagnostic worker.
+        var packageIdentity = "package=$packageName versionCode=unknown versionName=unknown buildType=unknown"
+        handler.post {
+            runCatching {
+                val info = window.context.packageManager.getPackageInfo(packageName, 0)
+                val version = info.versionName?.takeIf { it.length <= 64 && it.all { c -> c.isLetterOrDigit() || c in ".-_" } } ?: "unknown"
+                packageIdentity = "package=$packageName versionCode=${info.longVersionCode} versionName=$version buildType=unknown"
             }
         }
-        var spikes = 0
+        var previousGc = emptyMap<String, Long>()
+        var previousFrameMessages = 0L
+        var previousOtherMessages = 0L
         fun emit(final: Boolean) {
             runCatching {
+                val now = System.nanoTime()
+                val detail = session.details.drain(now)
+                val prefix = "StreamDiag id=${session.id} windowStartNs=${detail.fromNs} windowEndNs=${detail.toNs} final=$final"
+                AppFileLogger.diagnosticInfo("$prefix v=2 type=window anchorNanoNs=$now uptimeMs=${SystemClock.uptimeMillis()} " +
+                    "elapsedRealtimeNs=${SystemClock.elapsedRealtimeNanos()} $packageIdentity " +
+                    "duration=inclusive heap=proxyNotAllocationStack gcTime=runtimeCounterNotPause " +
+                    "spanCapacity=2048 slowBudget=256 frameBudget=120 ringOverwritten=${detail.overwritten} " +
+                    "slowBudgetDropped=${detail.slowBudgetDropped} frameBudgetDropped=${detail.frameBudgetDropped} " +
+                    "spanOutputTruncated=${detail.spanOutputTruncated} tokenSaturated=${session.tokens.saturated} " +
+                    "eventLinksOverwritten=${session.eventLinks.overwritten} mainRingOverwritten=${log.overwritten} " +
+                    "mainOutputTruncated=${log.outputTruncated} noteBudgetDropped=${noteDropped.get()}")
                 val runtime = Runtime.getRuntime()
                 session.record("heap.usedBytes", 0, runtime.totalMemory() - runtime.freeMemory())
-                session.record("main.frameMessages", 0, log.frameMessages)
-                session.record("main.otherMessages", 0, log.otherMessages)
-                session.report(final).forEach(AppFileLogger::diagnosticInfo)
+                session.record("main.frameMessages", 0, log.frameMessages - previousFrameMessages)
+                session.record("main.otherMessages", 0, log.otherMessages - previousOtherMessages)
+                previousFrameMessages = log.frameMessages; previousOtherMessages = log.otherMessages
+                val runtimeStats = runCatching { Debug.getRuntimeStats() }.getOrNull()
+                val gcKeys = listOf("art.gc.gc-count", "art.gc.gc-time", "art.gc.bytes-allocated", "art.gc.bytes-freed",
+                    "art.gc.blocking-gc-count", "art.gc.blocking-gc-time")
+                val currentGc = linkedMapOf<String, Long>()
+                for (key in gcKeys) {
+                    val value = runtimeStats?.get(key)?.toLongOrNull()
+                    if (value == null) AppFileLogger.diagnosticInfo("$prefix v=2 type=runtime runtimeCounter=$key supported=false")
+                    else {
+                        currentGc[key] = value
+                        val previous = previousGc[key]
+                        val delta = if (previous != null && value >= previous) (value - previous).toString() else "unknown"
+                        AppFileLogger.diagnosticInfo("$prefix v=2 type=runtime runtimeCounter=$key supported=true cumulative=$value delta=$delta")
+                    }
+                }
+                previousGc = currentGc
+                session.report(final, now).forEach(AppFileLogger::diagnosticInfo)
+                detail.spans.forEach { span ->
+                    val a = span.attribution
+                    AppFileLogger.diagnosticInfo("$prefix v=2 type=span span=${span.span} parent=${span.parent} stage=${span.stage} " +
+                        "beginNs=${span.beginNs} endNs=${span.endNs} thread=${span.thread} main=${span.main} " +
+                        "duration=inclusive value=${span.value} runToken=${a?.run ?: 0} conversationToken=${a?.conversation ?: 0} " +
+                        "visibility=${a?.visibility ?: DiagnosticVisibility.Unknown} kind=${a?.kind ?: "unknown"} " +
+                        "replay=${a?.replay ?: false} eventSeq=${a?.event ?: 0} sourceSpan=${a?.sourceSpan ?: 0} " +
+                        "page=${FrameDiagnosticPage.entries[span.page].name} pageEnd=${FrameDiagnosticPage.entries[span.pageEnd].name}")
+                }
+                detail.frames.forEachIndexed { index, frame ->
+                    val page = FramePageAttribution(FrameDiagnosticPage.entries[frame.page], FrameDiagnosticPage.entries[frame.pageEnd], frame.changed)
+                    AppFileLogger.diagnosticInfo("$prefix v=2 type=frame abnormalFrame=$index ${page.fields()} intendedVsyncNs=${frame.intendedNs} " +
+                        "vsyncNs=${frame.vsyncNs} totalNs=${frame.totalNs} deadlineNs=${frame.deadlineNs} deadlineMiss=${frame.missed} " +
+                        "metricsDropped=${frame.metricsDropped} unknownNs=${frame.unknownNs} inputNs=${frame.inputNs} animationNs=${frame.animationNs} " +
+                        "layoutNs=${frame.layoutNs} drawNs=${frame.drawNs} syncNs=${frame.syncNs} commandNs=${frame.commandNs} " +
+                        "swapNs=${frame.swapNs} gpuNs=${frame.gpuNs}")
+                    val messages = log.between(frame.intendedNs - SPIKE_LOOKBACK_NS, frame.intendedNs + frame.totalNs, frame.intendedNs, 12)
+                    messages.forEach { AppFileLogger.diagnosticInfo("$prefix abnormalFrame=$index main $it") }
+                }
             }
         }
         val periodic = object : Runnable {
             override fun run() {
                 emit(false)
-                spikes = 0 // A long foreground session must not permanently exhaust spike reporting.
                 handler.postDelayed(this, 5000)
             }
         }
         val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
-            if (AppFileLogger.isEnabled() && frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) != 1L) {
+            if (active === session && enabled && frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) != 1L) {
                 val total = frame.getMetric(FrameMetrics.TOTAL_DURATION)
                 val deadline = frame.getMetric(FrameMetrics.DEADLINE)
                 val unknown = frame.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION)
@@ -467,25 +623,34 @@ internal object StreamPerformanceDiagnostics {
                 val missed = deadline > 0 && total > deadline
                 val intended = frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
                 val page = pages.attributeFrame(intended, total)
-                // Only this counter is per-page; the other stage aggregates remain window-wide.
+                // All metric stages have a timestamp-resolved page segment, including transitions.
+                fun metric(stage: String, ns: Long, value: Long) {
+                    session.record(stage, ns, value)
+                    session.recordPage(page.aggregatePage.ordinal, stage, ns, value)
+                }
+                if ((missed || total >= SPIKE_FRAME_NS) && session.details.reserveFrame()) {
+                    session.details.frame(DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
+                        total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
+                        unknown, input, animation, layout, draw, sync, command, swap, gpu))
+                }
                 session.record(page.aggregatePage.frameStage, total, if (missed) 1 else 0)
-                session.record("frame.total", total, if (missed) 1 else 0)
-                session.record("frame.layout", layout, 0)
-                session.record("frame.draw", draw, 0)
-                session.record("frame.sync", sync, 0)
-                session.record("frame.gpu", gpu, 0)
-                session.record("frame.input", input, 0)
-                session.record("frame.unknown", unknown, 0)
-                session.record("frame.animation", animation, 0)
-                session.record("frame.command", command, 0)
-                session.record("frame.swap", swap, 0)
+                metric("frame.total", total, if (missed) 1 else 0)
+                metric("frame.layout", layout, 0)
+                metric("frame.draw", draw, 0)
+                metric("frame.sync", sync, 0)
+                metric("frame.gpu", gpu, 0)
+                metric("frame.input", input, 0)
+                metric("frame.unknown", unknown, 0)
+                metric("frame.animation", animation, 0)
+                metric("frame.command", command, 0)
+                metric("frame.swap", swap, 0)
                 val gap = frameUnaccountedNs(total, unknown, input, animation, layout, draw, sync, command, swap)
-                if (gap >= 0) session.record("frame.unaccounted", gap, 0)
-                else session.record("frame.overlap", -gap, 1)
+                if (gap >= 0) metric("frame.unaccounted", gap, 0)
+                else metric("frame.overlap", -gap, 1)
                 val late = frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP) - intended
-                session.record("frame.vsyncLate", late.coerceAtLeast(0), if (late > 8_333_333L) 1 else 0)
-                session.record("frame.metricsDropped", 0, dropped.toLong())
-                session.record("frame.deadline", deadline, 0)
+                metric("frame.vsyncLate", late.coerceAtLeast(0), if (late > 8_333_333L) 1 else 0)
+                metric("frame.metricsDropped", 0, dropped.toLong())
+                metric("frame.deadline", deadline, 0)
                 val parts = "${page.fields()} totalUs=${total / 1000} deadlineUs=${deadline / 1000} " +
                     "miss=${if (missed) 1 else 0} " +
                     "unknownUs=${unknown / 1000} inputUs=${input / 1000} " +
@@ -502,16 +667,7 @@ internal object StreamPerformanceDiagnostics {
                     }
                 } else {
                     if (target != null && target.expired(System.nanoTime())) finishProbe(target, reportProbe)
-                    // 点击窗口外的大尖峰：记下这一帧和它前后的主线程慢消息。
-                    if (total >= SPIKE_FRAME_NS && spikes < SPIKE_MAX_PER_WINDOW) {
-                        spikes++
-                        val messages = log.between(intended - SPIKE_LOOKBACK_NS, intended + total, intended, 12)
-                        val prefix = "StreamDiag id=${session.id} spike=$spikes gen=$sessionGeneration"
-                        runCatching {
-                            AppFileLogger.diagnosticInfo("$prefix $parts slowMessages=${messages.size}")
-                            messages.forEach { AppFileLogger.diagnosticInfo("$prefix main $it") }
-                        }
-                    }
+                    // Detailed anomalies (including <33ms deadline misses) are reserved above and formatted at emit.
                 }
             }
         }
