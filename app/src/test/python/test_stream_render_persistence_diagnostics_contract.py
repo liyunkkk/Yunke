@@ -163,9 +163,26 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
 
     def test_datastore_times_edit_entry_transform_and_commit_tail_without_suspend_in_measure(self):
         store = source("data/datastore/SettingsDataStore.kt")
-        for prefix in ("settings", "usage"):
-            for suffix in ("editEntryWait", "transform", "commitTail"):
-                self.assertIn('"' + prefix + '.' + suffix + '"', store)
+        for suffix in ("editEntryWait", "transform", "commitTail"):
+            self.assertIn('"settings.' + suffix + '"', store)
+        # The ledger moved to its own store; the same three usage stages must still be emitted
+        # there, with the same ordering and the same nullable-exit semantics as before.
+        ledger_store = source("data/datastore/UsageLedgerStore.kt")
+        for suffix in ("editEntryWait", "transform", "commitTail"):
+            self.assertIn('"usage.' + suffix + '"', ledger_store)
+        self.assertEqual(ledger_store.count('update("usage.editEntryWait", "usage.transform", "usage.commitTail")'), 2)
+        ledger_update = between(ledger_store, "suspend fun update(", "private suspend fun ensureLoaded")
+        self.assertIn('measure(transformStage) { transform(current) }', ledger_update)
+        self.assertIn("var transformExited: Long? = null", ledger_update)
+        self.assertIn("val exited = transformExited", ledger_update)
+        self.assertIn("if (exited != null && StreamPerformanceDiagnostics.enabled)", ledger_update)
+        self.assertIn("System.nanoTime() - exited", ledger_update)
+        self.assertNotIn("transformExited = 0L", ledger_update)
+        self.assertNotIn("transformExited != 0L", ledger_update)
+        self.assertIn('record(entryStage, System.nanoTime() - requested)', ledger_update)
+        self.assertIn("finally", ledger_update)
+        self.assertNotIn("measure(entryStage)", ledger_update)
+        self.assertNotIn("pureDisk", ledger_store)
         helper = between(store, "private suspend fun diagnosticEdit", "\n    }\n")
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled)", helper)
         self.assertIn("dataStore.edit { prefs -> transform(prefs) }", helper)
@@ -183,24 +200,41 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
     def test_usage_existing_reads_update_and_serializer_are_wired_once(self):
         usage = source("data/repository/UsageStatsRepository.kt")
         for stage in ("usage.load.dao.perDay", "usage.load.dao.conversations", "usage.load.dao.messages",
-                      "usage.load.dao.liveIds", "usage.load.decode", "usage.lockWait", "usage.ledger.update"):
+                      "usage.load.dao.liveIds", "usage.load.decode", "usage.lockWait"):
             self.assertIn('"' + stage + '"', usage)
+        # Exactly one apply site emits usage.ledger.update, and it is the ledger store's apply.
+        joined = usage + source("data/datastore/UsageLedgerStore.kt")
+        self.assertEqual(joined.count('measure("usage.ledger.update"'), 1)
+        self.assertIn('measure("usage.ledger.update") { working.apply(delta) }', joined)
         for call in ("dao.conversationCountPerDay(startAt)", "dao.conversationCount()", "dao.totalMessageCount()", "dao.conversations()"):
             self.assertEqual(usage.count(call), 1)
         record = between(usage, "suspend fun recordModelUsage", "// Suspend DAO calls")
-        self.assertEqual(record.count("applyModelUsageDelta(current, delta)"), 1)
         self.assertIn("modelUsageLock.withLock", record)
         self.assertIn("withAttribution(attribution)", record)
+        self.assertIn("SettingsDataStore.recordModelUsage(delta)", record)
         read = between(usage, "private suspend inline fun", "\n}\n")
         self.assertIn("block: suspend () -> T", read)
         self.assertIn("try", read)
         self.assertIn("finally", read)
         self.assertNotIn(".measure(", read)
-        ledger = between(source("data/repository/ModelUsageLedger.kt"), "internal fun applyModelUsageDelta", "private fun decodeEvents")
-        self.assertEqual(ledger.count("encodeEvents(trimmed)"), 1)
-        self.assertEqual(ledger.count("root.toString()"), 1)
-        self.assertIn('"usage.ledger.encodeEvents"', ledger)
-        self.assertIn('"usage.ledger.serialize"', ledger)
+        model_ledger = source("data/repository/ModelUsageLedger.kt")
+        self.assertIn('"usage.ledger.encodeEvents"', model_ledger)
+        self.assertIn('"usage.ledger.serialize"', model_ledger)
+        self.assertEqual(model_ledger.count('measure("usage.ledger.serialize")'), 2)
+        self.assertEqual(model_ledger.count('measure("usage.ledger.encodeEvents"'), 2)
+        single = between(model_ledger, "fun serialize(): String {", "private class WorkingModel")
+        self.assertIn('measure("usage.ledger.serialize") { root!!.toString() }', single)
+        # The batch entry point reuses the same mutable ledger instead of a second serializer.
+        batch = between(model_ledger, "internal fun applyModelUsageDeltas", "private fun decodeEvents")
+        self.assertIn("MutableModelUsageLedger(raw.orEmpty()).also { ledger -> deltas.forEach { ledger.apply(it) } }.serialize()", batch)
+        self.assertNotIn('measure("usage.ledger.serialize")', batch)
+        # Event encoding stays inside the single mutable ledger and is measured exactly once there.
+        materialize = between(model_ledger, "fun materialize()", "private fun JSONObject.isBatchSafeLedger")
+        self.assertEqual(materialize.count('measure("usage.ledger.encodeEvents"'), 1)
+        self.assertIn("encodeEvents(events)", materialize)
+        trim = between(model_ledger, "if (working.events.size > MAX_MODEL_EVENTS)", "working.applied = true")
+        self.assertIn("clear()", trim)
+        self.assertIn('measure("usage.ledger.encodeEvents"', model_ledger)
 
     def test_checkpoint_keeps_same_monitor_schedule_and_single_write_encode(self):
         recorder = source("agent/runtime/AgentRunCheckpointRecorder.kt")

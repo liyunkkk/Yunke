@@ -3,6 +3,7 @@ package io.github.mangi.eta.data.datastore
 import io.github.mangi.eta.data.repository.ConversationUsageTotals
 import io.github.mangi.eta.data.repository.ModelUsageDelta
 import io.github.mangi.eta.data.repository.MutableModelUsageLedger
+import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -115,7 +116,8 @@ internal class UsageLedgerStore(
         mutex.withLock {
             ensureLoaded(requireDurable = true)
             val working = checkNotNull(ledger)
-            if (!working.apply(delta)) return@withLock
+            val applied = StreamPerformanceDiagnostics.measure("usage.ledger.update") { working.apply(delta) }
+            if (!applied) return@withLock
             totalsState.value = working.conversationTotalsSnapshot()
             dirtyEdits++
             if (dirtyEdits >= maxDirtyEdits) {
@@ -133,21 +135,51 @@ internal class UsageLedgerStore(
         }
     }
 
-    suspend fun replace(raw: String) = update { raw }
-
-    suspend fun update(transform: (String) -> String) = withContext(NonCancellable + Dispatchers.IO) {
+    /**
+     * Entry wait is mutex-acquisition time here (there is no DataStore edit queue), tail runs from
+     * transform exit to the committed write return; neither is pure disk time.
+     */
+    suspend fun update(
+        entryStage: String,
+        transformStage: String,
+        tailStage: String,
+        transform: (String) -> String,
+    ) = withContext(NonCancellable + Dispatchers.IO) {
+        val requested = System.nanoTime()
+        var transformExited: Long? = null
         mutex.withLock {
             ensureLoaded(requireDurable = true)
+            if (StreamPerformanceDiagnostics.enabled) {
+                StreamPerformanceDiagnostics.record(entryStage, System.nanoTime() - requested)
+            }
             val current = if (dirtyEdits > 0) checkNotNull(ledger).serialize() else committed
-            val replacement = transform(current)
+            val replacement = try {
+                StreamPerformanceDiagnostics.measure(transformStage) { transform(current) }
+            } finally {
+                transformExited = System.nanoTime()
+            }
             // Commit first: an exception must leave both the previous durable snapshot and the
             // pending working tree intact. Backup import and legacy seeding share this barrier.
-            storage.write(replacement)
+            try {
+                storage.write(replacement)
+            } finally {
+                val exited = transformExited
+                if (exited != null && StreamPerformanceDiagnostics.enabled) {
+                    StreamPerformanceDiagnostics.record(tailStage, System.nanoTime() - exited)
+                }
+            }
             cancelTimer()
             dirtyEdits = 0
             install(replacement)
         }
     }
+
+    /** Fixed helpers: only the declared stage names, never payload text or identifiers. */
+    suspend fun replace(raw: String) =
+        update("usage.editEntryWait", "usage.transform", "usage.commitTail") { raw }
+
+    suspend fun legacySeed(transform: (String) -> String) =
+        update("usage.editEntryWait", "usage.transform", "usage.commitTail") { transform(it) }
 
     private suspend fun ensureLoaded(requireDurable: Boolean) {
         if (!loaded) {

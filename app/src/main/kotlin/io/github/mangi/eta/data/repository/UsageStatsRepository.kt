@@ -113,6 +113,8 @@ internal object UsageStatsRepository {
                     StreamPerformanceDiagnostics.record("usage.lockWait", elapsed)
                 }
             }
+            // usage.ledger.update is emitted once by the ledger store itself, where the apply
+            // actually happens; never wrap it here as well.
             SettingsDataStore.recordModelUsage(delta)
         }
     }

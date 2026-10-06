@@ -467,7 +467,7 @@ internal object SettingsDataStore {
 
     suspend fun updateModelUsage(transform: (String) -> String) {
         ensureInitialized()
-        usageLedger.update(transform)
+        usageLedger.update("usage.editEntryWait", "usage.transform", "usage.commitTail", transform)
     }
 
     /**
