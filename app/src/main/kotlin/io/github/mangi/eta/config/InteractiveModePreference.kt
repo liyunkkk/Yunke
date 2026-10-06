@@ -3,18 +3,15 @@ package io.github.mangi.eta.config
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
-import io.github.mangi.eta.agent.device.AgentTaskSurface
-import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** App-wide switch for asking where phone UI actions should run before the first action. */
+/** Independent local interaction switch; never infer or migrate the execution location. */
 internal class InteractiveModePreference(
     private val preferences: SharedPreferences? = Prefs.localAgentPreferences(),
 ) {
-    val enabled: Boolean get() = AgentTaskSurface.stored() == AgentTaskSurfaceMode.ASK
-
+    val enabled: Boolean get() = read(preferences)
     fun setEnabled(enabled: Boolean) {
-        AgentTaskSurface.save(if (enabled) AgentTaskSurfaceMode.ASK else AgentTaskSurfaceMode.FOREGROUND)
+        preferences?.edit()?.putBoolean(PREF_KEY, enabled)?.apply()
     }
 
     fun observe(onChanged: (Boolean) -> Unit): AutoCloseable {
@@ -22,7 +19,7 @@ internal class InteractiveModePreference(
         val closed = AtomicBoolean(false)
         val refresh = Runnable { if (!closed.get()) onChanged(enabled) }
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == null || key == AgentTaskSurface.PREF_KEY) {
+            if (!closed.get() && (key == null || key == PREF_KEY)) {
                 if (Looper.myLooper() == main.looper) refresh.run() else main.post(refresh)
             }
         }
@@ -34,5 +31,10 @@ internal class InteractiveModePreference(
                 main.removeCallbacks(refresh)
             }
         }
+    }
+    companion object {
+        const val PREF_KEY = "interactive_mode"
+        fun read(preferences: SharedPreferences? = Prefs.localAgentPreferences()): Boolean =
+            runCatching { preferences?.getBoolean(PREF_KEY, false) ?: false }.getOrDefault(false)
     }
 }
