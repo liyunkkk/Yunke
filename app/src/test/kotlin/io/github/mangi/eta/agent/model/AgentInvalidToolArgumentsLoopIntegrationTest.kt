@@ -81,19 +81,42 @@ class AgentInvalidToolArgumentsLoopIntegrationTest {
     }
 
     @Test fun emptyOrWhitespaceIdsNamesAndArgumentFormattingDoNotBypassBudget() {
-        val run = runBatches(listOf(
-            listOf(invalid("", arguments = "")),
-            listOf(invalid("   ", name = "  run_command\t", arguments = " \n\t")),
-            listOf(invalid("fresh-id", name = "\trun_command ", arguments = " {  } ")),
-        ))
-        assertStopped(run, requests = 3, results = 3)
+        // One batch preserves distinct fallback indices while exercising blank raw IDs.
+        val run = runBatches(listOf(listOf(
+            invalid("", arguments = ""),
+            invalid("   ", name = "  run_command\t", arguments = " \n\t"),
+            invalid("fresh-id", name = "\trun_command ", arguments = " {  } "),
+        )))
+        assertStopped(run, requests = 1, results = 3)
+        assertTrue(run.executed.isEmpty())
+        assertEquals(listOf(INVALID, INVALID, STOP), run.results.map { it.getString("code") })
+    }
+
+    @Test fun repeatedRejectedIdIsBlockedBeforeParameterBudgetCanBeExhausted() {
+        val run = runBatches(List(3) { listOf(invalid("same-id")) })
+        assertNotNull(run.failure)
+        assertNull(run.completion)
+        assertEquals(AgentToolReplayGuard.CODE, run.failure!!.code)
+        assertFalse(run.failure.retryable)
+        assertEquals(2, run.requests)
+        assertEquals(1, run.results.size)
+        assertEquals(INVALID, run.results.single().getString("code"))
         assertTrue(run.executed.isEmpty())
     }
 
-    @Test fun repeatedIdStillCountsEachRejectedCallRatherThanDistinctIds() {
-        val run = runBatches(List(3) { listOf(invalid("same-id")) })
-        assertStopped(run, requests = 3, results = 3)
-        assertTrue(run.executed.isEmpty())
+    @Test fun sameRejectedIdStillCountsEachCallAtTheParameterBudgetLayer() {
+        // The loop's stronger replay barrier stays intact. The independent budget
+        // still counts each validation rejection, not distinct IDs; no executor exists here.
+        val call = AgentModelClient.ToolCall("same-id", "run_command", "{}")
+        val validator = AgentToolCallValidator(tools())
+        val guard = AgentInvalidToolArgumentsGuard()
+        val codes = List(3) {
+            val error = requireNotNull(validator.validate(call))
+            assertTrue(error.contains("command"))
+            guard.reject(call.name, validator.declares(call.name), error).code
+        }
+        assertEquals(listOf(INVALID, INVALID, STOP), codes)
+        assertTrue(requireNotNull(guard.stopMessage).contains("本次调用未执行"))
     }
 
     @Test fun differentInvalidArgumentsShareTheSameToolBudget() {

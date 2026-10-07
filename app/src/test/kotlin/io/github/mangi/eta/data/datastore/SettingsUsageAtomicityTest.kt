@@ -3,6 +3,7 @@ package io.github.mangi.eta.data.datastore
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import io.github.mangi.eta.data.model.ErrorReconnectPolicy
 import io.github.mangi.eta.data.repository.applyModelUsageDelta
 import io.github.mangi.eta.data.repository.decodeModelUsageSnapshot
 import java.io.File
@@ -27,6 +28,8 @@ class SettingsUsageAtomicityTest {
         selectedProviderId = "provider", selectedModelId = model, memoryEnabled = false,
         fileLoggingEnabled = true, linuxDistribution = "ubuntu", linuxBackends = mapOf("ubuntu" to "proot"),
         selectedModelByProvider = mapOf("provider" to model),
+        errorReconnectPolicy = ErrorReconnectPolicy.CONTINUOUS.persistedValue,
+        errorReconnectPolicyVersion = ErrorReconnectPolicy.STORAGE_VERSION,
         modelUsageJson = applyModelUsageDelta(null, usageDelta(model, input)),
         retiredInputTokens = input + 1, retiredOutputTokens = input + 2, retiredCachedTokens = input + 3,
         retiredConversations = 5, retiredMessages = 9, retiredHeatmapJson = "{\"2026-01-01\":5}",
@@ -35,7 +38,9 @@ class SettingsUsageAtomicityTest {
     @Test fun actualRestoreIsOneEditAndCommitFailureChangesNeitherSettingsNorAnyStatistics() = runBlocking {
         val store = FaultPreferencesStore()
         withSettingsStore(store) {
-            SettingsDataStore.restoreBackup(richBackup(11, "old"))
+            SettingsDataStore.restoreBackup(richBackup(11, "old").copy(
+                errorReconnectPolicy = ErrorReconnectPolicy.NONE.persistedValue,
+            ))
             val before = store.committed.value
             val beforeSnapshot = SettingsDataStore.backupSnapshot()
             val receipt = before[USAGE_ROLLBACK_RECEIPT]

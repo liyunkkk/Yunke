@@ -531,11 +531,12 @@ class AgentModelClientLoopTest {
                 .put(toolCall("duplicate", "get_current_context", "{}"))
                 .put(toolCall("duplicate", "get_current_context", "{}"))))
         var executed = 0
-        val failure = assertThrows(AgentModelFailure::class.java) {
+        val failure = assertThrows(AgentModelExecutionException::class.java) {
             AgentModelClient.complete(config = modelConfig(), prompt = "开始", provider = provider,
                 toolExecutor = AgentModelClient.ToolExecutor { executed++; AgentModelClient.ToolResult("unexpected") })
         }
-        assertEquals(AgentToolReplayGuard.CODE, failure.code)
+        assertTrue(failure.cause is AgentModelFailure)
+        assertEquals(AgentToolReplayGuard.CODE, (failure.cause as AgentModelFailure).code)
         assertEquals(0, executed)
         assertEquals(1, provider.requests.size)
     }
