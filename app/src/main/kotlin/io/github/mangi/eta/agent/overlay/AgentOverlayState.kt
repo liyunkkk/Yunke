@@ -21,6 +21,14 @@ internal data class AgentOverlayState(
     }
 }
 
+/** Late model progress must not replace the authoritative paused control state. */
+internal fun AgentOverlayState.applyControlledEvent(event: AgentEvent, isPaused: Boolean): AgentOverlayState {
+    val projected = applyEvent(event)
+    return if (isPaused && event !is AgentEvent.RunFinished && event !is AgentEvent.RunFailed) {
+        projected.copy(phase = AgentOverlayPhase.PAUSED, status = AgentOverlayStatus.Paused)
+    } else projected
+}
+
 /**
  * 将一个 [AgentEvent] 折叠进当前渲染状态。
  *

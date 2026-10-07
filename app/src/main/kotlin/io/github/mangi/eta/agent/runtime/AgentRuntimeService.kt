@@ -47,6 +47,7 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
 import io.github.mangi.eta.agent.overlay.AgentOverlayState
 import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
+import io.github.mangi.eta.agent.overlay.applyControlledEvent
 import io.github.mangi.eta.agent.overlay.applyEvent
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -636,7 +637,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             runCatching {
                 val ownsOverlay = claimOverlay(session, revealsForegroundOperation && entrySurfaceReady)
                 if (ownsOverlay) {
-                    state.value = state.value.applyEvent(event)
+                    state.value = state.value.applyControlledEvent(event, session.controller.isPaused)
                 }
                 if (revealsForegroundOperation && entrySurfaceReady && ownsOverlay) {
                     if (orbView == null) {

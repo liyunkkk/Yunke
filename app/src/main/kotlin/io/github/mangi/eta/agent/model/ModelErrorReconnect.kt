@@ -34,7 +34,11 @@ internal class ModelErrorReconnect(
 ) {
     private val lock = Any()
     private val startedMs = timing.nowMs()
-    private val id = UUID.randomUUID().toString()
+    private var id = UUID.randomUUID().toString()
+    private var pausedAtMs: Long? = null
+    private var pausedDurationMs = 0L
+    private var started = false
+    private var wakeupGeneration = 0L
     private var elapsedMs = 0L
     private var terminal = false
     private var wakeup: AutoCloseable? = null
@@ -46,6 +50,8 @@ internal class ModelErrorReconnect(
 
     fun start() = synchronized(lock) {
         if (terminal) return@synchronized
+        started = true
+        if (pausedAtMs != null) return@synchronized
         if (windowMs == 0L) finishLocked("failed")
         else {
             sendLocked("running")
@@ -53,11 +59,54 @@ internal class ModelErrorReconnect(
         }
     }
 
+    /** Pause closes the visible segment and freezes its budget, not the task/tool owners. */
+    fun bind(controller: AgentRunController): AutoCloseable {
+        val stopBinding = controller.register(wakeBeforeCleanup = true) { finish("stopped") }
+        val pauseBinding = controller.observePause { paused ->
+            try { setPaused(paused) }
+            catch (failure: Throwable) {
+                observerFailure = failure
+                synchronized(lock) { transport }?.cancelTransport()
+            }
+        }
+        return AutoCloseable { pauseBinding.close(); stopBinding.close() }
+    }
+
+    private fun setPaused(paused: Boolean) {
+        val interruptedScope = synchronized(lock) {
+            if (terminal) return
+            if (paused) {
+                if (pausedAtMs != null) return
+                elapsedLocked()
+                pausedAtMs = timing.nowMs()
+                wakeupGeneration++
+                wakeup?.close()
+                wakeup = null
+                sendLocked("stopped")
+                transport
+            } else {
+                val pauseStart = pausedAtMs ?: return
+                pausedDurationMs += (timing.nowMs() - pauseStart).coerceAtLeast(0)
+                pausedAtMs = null
+                // Stopped IDs are terminal in chat projection. Resume uses a new visible segment.
+                id = UUID.randomUUID().toString()
+                if (started) {
+                    sendLocked("running")
+                    scheduleLocked()
+                }
+                null
+            }
+        }
+        // Expire the old attempt gate as well as its HTTP resources. Fast resume cannot
+        // make callbacks from a paused request look like fresh recovery evidence.
+        interruptedScope?.cancelTransport()
+    }
+
     fun updateReason(reason: AgentModelFailure) = synchronized(lock) { lastReason = reason }
 
     fun attach(scope: AgentRunController.TransportScope) = synchronized(lock) {
         transport = scope
-        if (expired || observerFailure != null) scope.cancelTransport()
+        if (expired || pausedAtMs != null || observerFailure != null) scope.cancelTransport()
     }
     fun detach(scope: AgentRunController.TransportScope) = synchronized(lock) {
         if (transport === scope) transport = null
@@ -84,16 +133,17 @@ internal class ModelErrorReconnect(
 
     fun finish(status: String) = synchronized(lock) {
         if (terminal) return@synchronized
-        if (status == "succeeded" && (expired || (windowMs != null && elapsedLocked() >= windowMs))) {
+        val finalStatus = if (pausedAtMs != null) "stopped" else status
+        if (finalStatus == "succeeded" && (expired || (windowMs != null && elapsedLocked() >= windowMs))) {
             expired = true
             throw AgentModelFailure("ERROR_RECONNECT_DEADLINE", false,
                 "错误重连期限已到，未接纳迟到的响应；此前正文和工具结果已保留。", lastReason)
         }
-        finishLocked(status)
+        finishLocked(finalStatus)
     }
 
     private fun elapsedLocked(): Long {
-        elapsedMs = maxOf(elapsedMs, (timing.nowMs() - startedMs).coerceAtLeast(0))
+        elapsedMs = maxOf(elapsedMs, ((pausedAtMs ?: timing.nowMs()) - startedMs - pausedDurationMs).coerceAtLeast(0))
         return elapsedMs
     }
     private fun sendLocked(status: String) {
@@ -102,19 +152,21 @@ internal class ModelErrorReconnect(
     }
     private fun finishLocked(status: String) {
         terminal = true
+        wakeupGeneration++
         wakeup?.close()
         wakeup = null
         sendLocked(status)
     }
     private fun scheduleLocked() {
-        if (terminal) return
+        if (terminal || pausedAtMs != null) return
+        val generation = ++wakeupGeneration
         val delay = windowMs?.let { minOf(1_000L, (it - elapsedLocked()).coerceAtLeast(1)) } ?: 1_000L
-        wakeup = timing.schedule(delay) { tick() }
+        wakeup = timing.schedule(delay) { tick(generation) }
     }
-    private fun tick() {
+    private fun tick(generation: Long) {
         var cancel: AgentRunController.TransportScope? = null
         synchronized(lock) {
-            if (terminal) return
+            if (terminal || pausedAtMs != null || generation != wakeupGeneration) return
             try {
                 if (windowMs != null && elapsedLocked() >= windowMs) {
                     expired = true

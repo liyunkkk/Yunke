@@ -149,7 +149,7 @@ internal class AgentLoop(
     private var invalidArgumentsInBatch = 0
     private var shellFailuresInBatch = 0
     private var postToolReconnect: ModelErrorReconnect? = null
-    private var postToolReconnectBinding: AgentRunController.ResourceBinding? = null
+    private var postToolReconnectBinding: AutoCloseable? = null
     private var postToolRetryCount = 0
 
     private fun finishPostToolReconnect(status: String) {
@@ -168,7 +168,7 @@ internal class AgentLoop(
         val state = postToolReconnect ?: ModelErrorReconnect(round, policy.windowMillis,
             reconnectTiming, onEvent, failure, listOf(config.apiKey)).also {
             postToolReconnect = it
-            postToolReconnectBinding = runController.register(wakeBeforeCleanup = true) { it.finish("stopped") }
+            postToolReconnectBinding = it.bind(runController)
             it.start()
         }
         state.updateReason(failure)

@@ -431,4 +431,60 @@ class AgentRunControllerTest {
         assertTrue(controller.steer("还能追加"))
         assertEquals("还能追加", controller.pollSteeringMessage())
     }
+    @Test fun pauseObserversSeeRegistrationSnapshotAndRepeatedTransitionsWithoutCancellingOwners() {
+        val control = AgentRunController()
+        val states = mutableListOf<Boolean>()
+        var toolStops = 0
+        control.register { toolStops++ }
+        control.pause()
+        val binding = control.observePause { states += it }
+        assertEquals(listOf(true), states)
+        control.resume()
+        control.pause()
+        control.resume()
+        assertEquals(listOf(true, false, true, false), states)
+        assertEquals(0, toolStops)
+        binding.close()
+        control.pause()
+        assertEquals(4, states.size)
+        control.cancel()
+        assertEquals(1, toolStops)
+    }
+
+    @Test fun transportRegisteredAfterPauseIsInterruptedWithoutCancellingTheRun() {
+        val control = AgentRunController()
+        control.pause()
+        var interrupted = 0
+        val binding = control.register(interruptible = true) { interrupted++ }
+        assertEquals(1, interrupted)
+        assertTrue(control.hasPausedInterrupt)
+        assertFalse(control.isCancelled)
+        binding.close()
+        control.resume()
+        assertTrue(control.consumePausedInterrupt())
+    }
+
+    @Test fun retryWaitWakesOnPauseWithoutMarkingAProviderDraftInterrupted() {
+        val control = AgentRunController()
+        val finished = java.util.concurrent.CountDownLatch(1)
+        val thread = Thread {
+            try { control.awaitRetryDelay(60_000) } finally { finished.countDown() }
+        }
+        thread.start()
+        try {
+            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
+            while (thread.state != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) Thread.yield()
+            assertEquals(Thread.State.TIMED_WAITING, thread.state)
+            control.pause()
+            assertTrue(finished.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(control.hasPausedInterrupt)
+            assertFalse(control.isCancelled)
+            control.resume()
+            assertFalse(control.consumePausedInterrupt())
+        } finally {
+            control.cancel()
+            thread.join(2_000)
+        }
+    }
+
 }

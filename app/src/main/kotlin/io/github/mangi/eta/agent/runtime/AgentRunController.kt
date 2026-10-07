@@ -12,6 +12,8 @@ import kotlin.concurrent.withLock
 
 internal class AgentRunController {
     private val resources = CopyOnWriteArraySet<CancellableResource>()
+    private val pauseObserverLock = Any()
+    private val pauseObservers = CopyOnWriteArraySet<(Boolean) -> Unit>()
     private val transportScope = ThreadLocal<TransportScope>()
 
     /** Cancels only the current model transport, never the user run or its tool owners. */
@@ -109,13 +111,20 @@ internal class AgentRunController {
     internal fun interruptSteering(interrupt: Boolean) { if (interrupt) interruptCurrentRequest() }
 
     fun requestCompact(keepRecentMessages: Int? = null, compressModelConfig: AgentModelClient.ModelConfig? = null): Boolean {
-        lock.withLock {
-            if (cancelled || !acceptingSteering) return false
-            pendingCompact = CompactRequest(keepRecentMessages, compressModelConfig)
-            paused = false
-            pauseCondition.signalAll()
-        }
+        if (!enqueueCompact(keepRecentMessages, compressModelConfig)) return false
+        resumeForCompact()
         return true
+    }
+    // Admission may run under a session lock; timer observers must run only after it is released.
+    internal fun enqueueCompact(keepRecentMessages: Int?, compressModelConfig: AgentModelClient.ModelConfig?): Boolean = lock.withLock {
+        if (cancelled || !acceptingSteering) return false
+        pendingCompact = CompactRequest(keepRecentMessages, compressModelConfig)
+        true
+    }
+    internal fun resumeForCompact() = synchronized(pauseObserverLock) {
+        lock.withLock { if (!cancelled) paused = false }
+        notifyPauseObservers()
+        lock.withLock { pauseCondition.signalAll() }
     }
     val hasPendingCompact: Boolean get() = lock.withLock { pendingCompact != null }
     fun takePendingCompact(): CompactRequest? = lock.withLock {
@@ -125,7 +134,7 @@ internal class AgentRunController {
     }
     private fun interruptCurrentRequest() {
         val interruptibles = resources.filter { it.interruptible }
-        if (paused && interruptibles.isNotEmpty()) pausedInterrupt = true
+        if (paused && interruptibles.any { it.marksPausedInterrupt }) pausedInterrupt = true
         interruptibles.forEach { resource -> runCatching { resource.cancel() } }
     }
     fun pollSteeringMessage(): String? = pollSteeringInput()?.text
@@ -169,16 +178,29 @@ internal class AgentRunController {
 
     /** Legacy cooperative-only pause; supervised children use pause() to bound stalled SSE. */
     fun pauseAtCheckpoint() { lock.withLock { if (!cancelled) checkpointPaused = true } }
-    fun pause() {
+    fun pause() = synchronized(pauseObserverLock) {
         lock.withLock { if (!cancelled) paused = true }
+        notifyPauseObservers()
         interruptCurrentRequest()
     }
-    fun resume() {
+    fun resume() = synchronized(pauseObserverLock) {
         lock.withLock {
             checkpointPaused = false
             paused = false
-            pauseCondition.signalAll()
         }
+        // Restore model timers before waking a paused request thread.
+        notifyPauseObservers()
+        lock.withLock { pauseCondition.signalAll() }
+    }
+
+    /** Persistent across pause/resume; unlike interruptible resources it is not one-shot. */
+    fun observePause(observer: (Boolean) -> Unit): ResourceBinding = synchronized(pauseObserverLock) {
+        pauseObservers.add(observer)
+        observer(paused)
+        ResourceBinding { synchronized(pauseObserverLock) { pauseObservers.remove(observer) } }
+    }
+    private fun notifyPauseObservers() {
+        pauseObservers.forEach { observer -> runCatching { observer(paused) } }
     }
 
     fun throwIfCancelled() {
@@ -208,7 +230,7 @@ internal class AgentRunController {
         if (hasPendingImmediateSteering || paused) return
         val cancelledLatch = CountDownLatch(1)
         // Retry waits are model-request boundaries: steering/pause may wake them too.
-        val binding = register(interruptible = true, wakeBeforeCleanup = true) { cancelledLatch.countDown() }
+        val binding = register(interruptible = true, wakeBeforeCleanup = true, marksPausedInterrupt = false) { cancelledLatch.countDown() }
         try {
             // Close the race between the first boundary check and registration.
             if (hasPendingImmediateSteering || paused) cancelledLatch.countDown()
@@ -219,18 +241,23 @@ internal class AgentRunController {
         // Let the caller preserve its draft before entering a pause checkpoint.
         if (cancelled) throw AgentRunCancelledException()
     }
-    fun register(interruptible: Boolean = false, wakeBeforeCleanup: Boolean = false, cancel: () -> Unit): ResourceBinding {
-        val resource = CancellableResource(cancel, interruptible, wakeBeforeCleanup)
+    fun register(interruptible: Boolean = false, wakeBeforeCleanup: Boolean = false,
+        marksPausedInterrupt: Boolean = interruptible, cancel: () -> Unit): ResourceBinding {
+        val resource = CancellableResource(cancel, interruptible, wakeBeforeCleanup, marksPausedInterrupt)
         resources.add(resource)
         if (interruptible) transportScope.get()?.attach(resource)
         if (cancelled) resource.cancel()
+        else if (interruptible && paused) {
+            if (marksPausedInterrupt) pausedInterrupt = true
+            resource.cancel()
+        }
         return ResourceBinding { resources.remove(resource) }
     }
     inner class ResourceBinding internal constructor(private val closeBlock: () -> Unit) {
         fun close() { closeBlock() }
     }
     internal class CancellableResource(private val cancelBlock: () -> Unit, val interruptible: Boolean,
-        val wakeBeforeCleanup: Boolean) {
+        val wakeBeforeCleanup: Boolean, val marksPausedInterrupt: Boolean) {
         private val cancelled = AtomicBoolean(false)
         fun cancel() { if (cancelled.compareAndSet(false, true)) cancelBlock() }
     }

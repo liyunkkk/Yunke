@@ -373,24 +373,152 @@ class AgentErrorReconnectTest {
     private fun localTools() = JSONArray().put(JSONObject().put("type", "function")
         .put("function", JSONObject().put("name", "supervise_task").put("parameters", JSONObject().put("type", "object"))))
 
-    @Test fun steeringAndPauseDuringBackoffDoNotIssueAnOldRequestOrLoseTheDraft() {
-        for (pause in listOf(false, true)) {
-            val controller = AgentRunController()
-            val events = mutableListOf<AgentEvent>()
-            var calls = 0
-            val result = run(Clock(), ErrorReconnectPolicy.WINDOW_30S, provider { _, _, emit ->
-                calls++
-                emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "preserved draft"))
-                throw IOException()
-            }, events, controller, wait = { control, _ ->
-                if (pause) control.pause() else assertTrue(control.steer("new steering"))
-            })
-            assertEquals(1, calls)
-            assertEquals(AssistantStopReason.INTERRUPTED, result.response.stopReason)
-            assertEquals("preserved draft", result.response.assistantMessage.getString("content"))
-            assertEquals("stopped", events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
-            if (!pause) assertEquals("new steering", controller.pollSteeringMessage())
+    @Test fun steeringDuringBackoffDoesNotIssueAnOldRequestOrLoseTheDraft() {
+        val controller = AgentRunController()
+        val events = mutableListOf<AgentEvent>()
+        var calls = 0
+        val result = run(Clock(), ErrorReconnectPolicy.WINDOW_30S, provider { _, _, emit ->
+            calls++
+            emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "preserved draft"))
+            throw IOException()
+        }, events, controller, wait = { control, _ -> assertTrue(control.steer("new steering")) })
+        assertEquals(1, calls)
+        assertEquals(AssistantStopReason.INTERRUPTED, result.response.stopReason)
+        assertEquals("preserved draft", result.response.assistantMessage.getString("content"))
+        assertEquals("stopped", events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
+        assertEquals("new steering", controller.pollSteeringMessage())
+    }
+
+    @Test fun ordinaryPauseHoldsTheRetryFrameUntilResumeAndPreservesTheDraft() {
+        val clock = Clock()
+        val control = AgentRunController()
+        val events = java.util.concurrent.CopyOnWriteArrayList<AgentEvent>()
+        val paused = java.util.concurrent.CountDownLatch(1)
+        val done = java.util.concurrent.CountDownLatch(1)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val result = java.util.concurrent.atomic.AtomicReference<AgentModelRetry.Result>()
+        val error = java.util.concurrent.atomic.AtomicReference<Throwable>()
+        val thread = Thread {
+            try {
+                result.set(run(clock, ErrorReconnectPolicy.WINDOW_30S, provider { _, _, emit ->
+                    if (calls.incrementAndGet() == 1) {
+                        emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "preserved draft"))
+                        throw IOException()
+                    }
+                    ok(" fresh")
+                }, events, control, wait = { controller, _ ->
+                    clock.advance(10_000)
+                    controller.pause()
+                    paused.countDown()
+                }))
+            } catch (failure: Throwable) { error.set(failure) }
+            finally { done.countDown() }
         }
+        thread.start()
+        try {
+            assertTrue(paused.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            val count = events.size
+            clock.advance(120_000)
+            assertEquals(count, events.size)
+            assertEquals(1, calls.get())
+            assertEquals(1L, done.count)
+            assertTrue(control.isPaused)
+            control.resume()
+            assertTrue(done.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            assertNull(error.get())
+            assertEquals(2, calls.get())
+            assertEquals("preserved draft fresh", result.get().response.assistantMessage.getString("content"))
+            assertEquals(10_000L, events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().elapsedMs)
+        } finally {
+            control.cancel()
+            thread.join(2_000)
+        }
+    }
+
+    @Test fun pauseDuringHostedRecoveryStopsProgressWithoutSpendingTheWindow() {
+        val clock = Clock()
+        val events = mutableListOf<AgentEvent>()
+        var calls = 0
+        val result = run(clock, ErrorReconnectPolicy.WINDOW_30S, provider { _, _, _ ->
+            if (calls++ == 0) throw IOException()
+            ok()
+        }, events, hosted = true, wait = { control, delay ->
+            control.pause()
+            assertEquals("stopped", events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
+            val count = events.size
+            clock.advance(120_000)
+            assertEquals(count, events.size)
+            assertEquals(1, calls)
+            control.resume()
+            clock.advance(delay)
+        })
+        assertEquals(2, calls)
+        assertEquals("done", result.response.assistantMessage.getString("content"))
+        val changes = events.filterIsInstance<AgentEvent.ErrorReconnectChanged>()
+        assertEquals(2, changes.map { it.reconnectId }.distinct().size)
+        assertEquals("succeeded", changes.last().status)
+        assertEquals(2_000L, changes.last().elapsedMs)
+    }
+
+    @Test fun fastResumeDiscardsPausedAttemptAndKeepsRecoveryBudget() {
+        val clock = Clock()
+        val events = mutableListOf<AgentEvent>()
+        val providerEvents = mutableListOf<ProviderEvent>()
+        var calls = 0
+        val result = run(clock, ErrorReconnectPolicy.WINDOW_30S, provider { _, control, emit ->
+            when (++calls) {
+                1 -> throw IOException()
+                2 -> {
+                    val binding = control.register(interruptible = true) {}
+                    try {
+                        control.pause()
+                        clock.advance(120_000)
+                        control.resume()
+                        emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "late"))
+                        ok("late")
+                    } finally { binding.close() }
+                }
+                else -> ok("fresh")
+            }
+        }, events, providerEvents = providerEvents)
+        assertEquals(3, calls)
+        assertEquals("fresh", result.response.assistantMessage.getString("content"))
+        assertTrue(providerEvents.none { it is ProviderEvent.BlockDelta && it.delta == "late" })
+        val changes = events.filterIsInstance<AgentEvent.ErrorReconnectChanged>()
+        assertEquals("succeeded", changes.last().status)
+        assertEquals(6_000L, changes.last().elapsedMs)
+        assertEquals(2, changes.map { it.reconnectId }.distinct().size)
+    }
+
+    @Test fun ordinaryPauseDuringRetryKeepsRemainingWindowInsteadOfStartingOver() {
+        val clock = Clock()
+        val events = mutableListOf<AgentEvent>()
+        var calls = 0
+        var waits = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            run(clock, ErrorReconnectPolicy.WINDOW_30S, provider { _, _, _ ->
+                calls++
+                throw IOException()
+            }, events, wait = { control, delay ->
+                if (++waits == 1) {
+                    clock.advance(20_000)
+                    val waitBinding = control.register(interruptible = true, marksPausedInterrupt = false) {}
+                    control.pause()
+                    assertFalse(control.hasPausedInterrupt)
+                    val count = events.size
+                    clock.advance(120_000)
+                    assertEquals(count, events.size)
+                    control.resume()
+                    waitBinding.close()
+                }
+                clock.advance(delay)
+            })
+        }
+        assertEquals("ERROR_RECONNECT_DEADLINE", failure.code)
+        assertEquals(3, calls)
+        val changes = events.filterIsInstance<AgentEvent.ErrorReconnectChanged>()
+        assertEquals(2, changes.map { it.reconnectId }.distinct().size)
+        assertEquals(30_000L, changes.last().elapsedMs)
     }
 
     @Test fun rebuildingRecoveryHistoryPreservesTheGuardedEnvelopeCorrection() {
