@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.AgentIncrementalList
+import io.github.mangi.eta.ui.model.incrementalSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import io.github.mangi.eta.ui.model.isSteerSupplement
@@ -27,36 +29,49 @@ internal class AgentTimelineProjectionCache(
         val previous = source
         val mapping = sourceToEntry
         if (previous != null && mapping != null && previous.size == messages.size) {
-            val changedIndices = ArrayList<Int>(1)
-            var compatible = true
-            for (index in messages.indices) {
-                val old = previous[index]
-                val current = messages[index]
-                if (old === current) continue
-                if (old !is AgentMessageUi || current !is AgentMessageUi ||
-                    old.id != current.id || mapping[index] < 0
-                ) {
-                    compatible = false
-                    break
+            val changed = (messages as? AgentIncrementalList<AgentChatMessageUi>)?.singleReplacementFrom(previous)
+            if (changed != null) {
+                val old = previous[changed]
+                val current = messages[changed]
+                if (old is AgentMessageUi && current is AgentMessageUi && old.id == current.id && old.isStreaming && current.isStreaming &&
+                    current.content.startsWith(old.content) && mapping[changed] >= 0) {
+                    entries = entries.incrementalSnapshot().replacing(mapping[changed], AgentTimelineEntry.Message(current))
+                    source = messages
+                    return entries
                 }
-                changedIndices += index
             }
-            if (compatible) {
-                if (changedIndices.isEmpty()) return entries
-                val updated = entries.toMutableList()
-                changedIndices.forEach { index ->
-                    updated[mapping[index]] = AgentTimelineEntry.Message(messages[index])
+            if (changed == null) {
+                val changedIndices = ArrayList<Int>(1)
+                var compatible = true
+                for (index in messages.indices) {
+                    val old = previous[index]
+                    val current = messages[index]
+                    if (old === current) continue
+                    if (old !is AgentMessageUi || current !is AgentMessageUi ||
+                        old.id != current.id || mapping[index] < 0
+                    ) {
+                        compatible = false
+                        break
+                    }
+                    changedIndices += index
                 }
-                // Neither the old input snapshot nor any previously returned list
-                // is mutated. Also tolerate a caller reusing its list container.
-                source = messages.toList()
-                entries = updated
-                return updated
+                if (compatible) {
+                    if (changedIndices.isEmpty()) return entries
+                    val updated = entries.toMutableList()
+                    changedIndices.forEach { index ->
+                        updated[mapping[index]] = AgentTimelineEntry.Message(messages[index])
+                    }
+                    // Neither the old input snapshot nor any previously returned list
+                    // is mutated. Also tolerate a caller reusing its list container.
+                    source = if (messages is AgentIncrementalList<AgentChatMessageUi>) messages else messages.toList()
+                    entries = updated.incrementalSnapshot()
+                    return entries
+                }
             }
         }
 
-        val input = messages.toList()
-        val projected = fullProjection(input)
+        val input = messages.incrementalSnapshot()
+        val projected = fullProjection(input).incrementalSnapshot()
         source = input
         entries = projected
         sourceToEntry = mapAssistantSlots(input, projected)

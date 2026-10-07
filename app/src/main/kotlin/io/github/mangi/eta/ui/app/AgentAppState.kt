@@ -235,8 +235,12 @@ internal class AgentAppState(
     private val conversationSummaryCache = ConversationSummaryCache()
     private val runEventFlushJobs = mutableMapOf<String, Job>()
     private val runEventBudgets = mutableMapOf<String, AgentRunEventBudget<AgentEvent>>()
-    private val runEventBudgetCallbacks = mutableMapOf<String, Choreographer.FrameCallback>()
+    private val runEventBudgetCallbacks = linkedSetOf<String>()
+    private val runEventDeferredFlushes = mutableMapOf<String, () -> Unit>()
+    private val runFrameEventBudget = AgentFrameEventBudget(STREAM_EVENT_FRAME_BUDGET_NS)
+    private var runEventBudgetFrameCallback: Choreographer.FrameCallback? = null
     private val drainingRunEventBudgets = mutableSetOf<String>()
+    private var runEventFrameWorkDepth = 0
     private val runJobs = androidx.compose.runtime.mutableStateMapOf<String, Job>()
     private val imageGenerationRunIds = mutableSetOf<String>()
     private val directMediaRuns = DirectMediaRunControl()
@@ -4667,37 +4671,72 @@ internal class AgentAppState(
         }
     }
 
-    private fun drainRunEventBudget(runId: String, force: Boolean) {
+    private fun drainRunEventBudget(runId: String, force: Boolean, singleEvent: Boolean = false) {
         val queue = runEventBudgets[runId] ?: return
-        if (!drainingRunEventBudgets.add(runId)) return
-        try {
-            queue.drain(force) { event -> enqueueRunEventNow(runId, event) }
-        } finally {
-            drainingRunEventBudgets.remove(runId)
-        }
-        if (queue.isEmpty) {
-            runEventBudgets.remove(runId)
-            cancelRunEventBudgetCallback(runId)
-        } else {
+        if (!force && runEventFrameWorkDepth > 0) {
             scheduleRunEventBudgetDrain(runId)
+            return
+        }
+        if (!drainingRunEventBudgets.add(runId)) return
+        runFrameEventBudget.measureWork {
+            // Also schedule a one-shot reset when this drain empties the queue. New
+            // arrivals in the same frame must not receive another fresh 2 ms budget.
+            scheduleRunEventBudgetDrain(runId)
+            runEventFrameWorkDepth++
+            try {
+                queue.drain(force, frameBudget = runFrameEventBudget,
+                    maxEvents = if (singleEvent) 1 else Int.MAX_VALUE,
+                ) { event -> enqueueRunEventNow(runId, event) }
+            } finally {
+                runEventFrameWorkDepth--
+                drainingRunEventBudgets.remove(runId)
+            }
+            if (queue.isEmpty) {
+                runEventBudgets.remove(runId)
+                cancelRunEventBudgetCallback(runId)
+            } else {
+                scheduleRunEventBudgetDrain(runId)
+            }
         }
     }
 
     private fun scheduleRunEventBudgetDrain(runId: String) {
-        if (runEventBudgetCallbacks.containsKey(runId)) return
-        val callback = Choreographer.FrameCallback {
-            runEventBudgetCallbacks.remove(runId)
-            drainRunEventBudget(runId, force = false)
+        if (runEventBudgets.containsKey(runId) || runId in runEventDeferredFlushes) runEventBudgetCallbacks.add(runId)
+        if (runEventBudgetFrameCallback != null) return
+        val callback = Choreographer.FrameCallback { frameTimeNs ->
+            runEventBudgetFrameCallback = null
+            runFrameEventBudget.beginFrame(frameTimeNs)
+            runFrameEventBudget.measureWork {
+                // One event per turn: a busy run goes behind the other waiting runs.
+                // All runs share the frame budget without starving later arrivals.
+                while (runEventBudgetCallbacks.isNotEmpty() && !runFrameEventBudget.exhausted) {
+                    val nextRun = runEventBudgetCallbacks.first()
+                    runEventBudgetCallbacks.remove(nextRun)
+                    val deferredFlush = runEventDeferredFlushes.remove(nextRun)
+                    if (deferredFlush != null) {
+                        deferredFlush()
+                        if (runEventBudgets.containsKey(nextRun)) scheduleRunEventBudgetDrain(nextRun)
+                    } else {
+                        drainRunEventBudget(nextRun, force = false, singleEvent = true)
+                    }
+                }
+                if (runEventBudgetCallbacks.isNotEmpty()) {
+                    scheduleRunEventBudgetDrain(runEventBudgetCallbacks.first())
+                }
+            }
         }
-        runEventBudgetCallbacks[runId] = callback
+        runEventBudgetFrameCallback = callback
         Choreographer.getInstance().postFrameCallback(callback)
     }
 
     private fun cancelRunEventBudgetCallback(runId: String) {
-        runEventBudgetCallbacks.remove(runId)?.let { Choreographer.getInstance().removeFrameCallback(it) }
+        if (runId !in runEventDeferredFlushes) runEventBudgetCallbacks.remove(runId)
+        // Keep the single pending frame callback: it resets the budget even if
+        // the last queue was emptied or cancelled before the next vsync.
     }
 
     private fun discardQueuedRunEvents(runId: String) {
+        runEventDeferredFlushes.remove(runId)
         runEventFlushJobs.remove(runId)?.cancel()
         cancelRunEventBudgetCallback(runId)
         runEventBudgets.remove(runId)
@@ -4809,13 +4848,26 @@ internal class AgentAppState(
                 StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
             }
             runEventFlushJobs.remove(runId)
-            StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
-                StreamPerformanceDiagnostics.measure("ui.flush") {
-                    flushPendingRunDelta(
-                        runId,
-                        diagnosticStage = "ui.flush.timer",
-                        drainQueuedEvents = false,
-                    )
+            if (runFrameEventBudget.exhausted) {
+                runEventDeferredFlushes[runId] = {
+                    StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
+                        StreamPerformanceDiagnostics.measure("ui.flush") {
+                            flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer", drainQueuedEvents = false)
+                        }
+                    }
+                }
+                scheduleRunEventBudgetDrain(runId)
+                return@launch
+            }
+            runFrameEventBudget.measureWork {
+                StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
+                    StreamPerformanceDiagnostics.measure("ui.flush") {
+                        flushPendingRunDelta(
+                            runId,
+                            diagnosticStage = "ui.flush.timer",
+                            drainQueuedEvents = false,
+                        )
+                    }
                 }
             }
         }
@@ -4829,12 +4881,25 @@ internal class AgentAppState(
         if (drainQueuedEvents && runId !in drainingRunEventBudgets) {
             drainRunEventBudget(runId, force = true)
         }
+        runEventDeferredFlushes.remove(runId)
         runEventFlushJobs.remove(runId)?.cancel()
         runEventCoalescer.flush(runId)?.let { event ->
             // Only count a reason when a pending delta is actually applied. Other
             // callers (replay/result/stop) retain their existing default flush path.
-            StreamUiEventDiagnostics.measure(diagnosticStage) {
-                applyRunEvent(runId, event)
+            val started = if (drainQueuedEvents) null else System.nanoTime()
+            if (started != null) {
+                scheduleRunEventBudgetDrain(runId)
+                runEventFrameWorkDepth++
+            }
+            try {
+                StreamUiEventDiagnostics.measure(diagnosticStage) {
+                    applyRunEvent(runId, event)
+                }
+            } finally {
+                if (started != null) {
+                    runEventFrameWorkDepth--
+                    runFrameEventBudget.record(System.nanoTime() - started)
+                }
             }
         }
     }

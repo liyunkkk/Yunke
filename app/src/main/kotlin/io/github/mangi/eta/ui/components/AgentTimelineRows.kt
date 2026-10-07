@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.AgentIncrementalList
+import io.github.mangi.eta.ui.model.incrementalSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
@@ -90,33 +92,46 @@ internal class AgentTimelineRowsCache(
         if (previous != null && mapping != null && previous.size == entries.size &&
             expanded == expandedOverrides && streaming == isStreaming && retained == retainedSteps
         ) {
-            val changedIndices = ArrayList<Int>(1)
-            var compatible = true
-            for (index in entries.indices) {
-                val old = previous[index]
-                val current = entries[index]
-                if (old === current) continue
-                val oldMessage = (old as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
-                val newMessage = (current as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
-                if (oldMessage == null || newMessage == null || oldMessage.id != newMessage.id || mapping[index] < 0) {
-                    compatible = false
-                    break
+            val changed = (entries as? AgentIncrementalList<AgentTimelineEntry>)?.singleReplacementFrom(previous)
+            if (changed != null) {
+                val old = (previous[changed] as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
+                val current = (entries[changed] as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
+                if (old != null && current != null && old.id == current.id && old.isStreaming && current.isStreaming &&
+                    current.content.startsWith(old.content) && mapping[changed] >= 0) {
+                    rows = rows.incrementalSnapshot().replacing(mapping[changed], AgentTimelineRow.Message(current))
+                    source = entries
+                    return rows
                 }
-                changedIndices += index
             }
-            if (compatible) {
-                if (changedIndices.isEmpty()) return rows
-                val updated = rows.toMutableList()
-                changedIndices.forEach { index ->
-                    updated[mapping[index]] = AgentTimelineRow.Message((entries[index] as AgentTimelineEntry.Message).message)
+            if (changed == null) {
+                val changedIndices = ArrayList<Int>(1)
+                var compatible = true
+                for (index in entries.indices) {
+                    val old = previous[index]
+                    val current = entries[index]
+                    if (old === current) continue
+                    val oldMessage = (old as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
+                    val newMessage = (current as? AgentTimelineEntry.Message)?.message as? AgentMessageUi
+                    if (oldMessage == null || newMessage == null || oldMessage.id != newMessage.id || mapping[index] < 0) {
+                        compatible = false
+                        break
+                    }
+                    changedIndices += index
                 }
-                source = entries.toList()
-                rows = updated
-                return updated
+                if (compatible) {
+                    if (changedIndices.isEmpty()) return rows
+                    val updated = rows.toMutableList()
+                    changedIndices.forEach { index ->
+                        updated[mapping[index]] = AgentTimelineRow.Message((entries[index] as AgentTimelineEntry.Message).message)
+                    }
+                    source = if (entries is AgentIncrementalList<AgentTimelineEntry>) entries else entries.toList()
+                    rows = updated.incrementalSnapshot()
+                    return rows
+                }
             }
         }
-        val input = entries.toList()
-        val result = fullProjection(input, expandedOverrides, isStreaming, retainedSteps)
+        val input = entries.incrementalSnapshot()
+        val result = fullProjection(input, expandedOverrides, isStreaming, retainedSteps).incrementalSnapshot()
         source = input
         expanded = expandedOverrides.toMap()
         streaming = isStreaming

@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.AgentIncrementalList
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
@@ -15,6 +16,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunMessageProjectorTest {
+    @Test fun continuousTailDeltasPublishImmutableSnapshotsWithCertifiedChanges() {
+        val projector = AgentRunMessageProjector()
+        var current: List<AgentChatMessageUi> = projector.appendTextDelta("live", 1, 0, "start", emptyList())
+        val saved = current
+        val hash = saved.hashCode()
+        repeat(100) {
+            val previous = current
+            current = projector.appendTextDelta("live", 1, 0, ".", current)
+            assertEquals(0, (current as AgentIncrementalList<*>).singleReplacementFrom(previous))
+        }
+        assertEquals("start", (saved.last() as AgentMessageUi).content)
+        assertEquals(hash, saved.hashCode())
+        assertEquals("start" + ".".repeat(100), (current.last() as AgentMessageUi).content)
+        projector.seal("live")
+        assertTrue(projector.appendTextDelta("live", 1, 0, "late", current) === current)
+    }
+
     @Test
     fun longHistoryContinuousTailDeltasKeepOrderAndTerminalFlags() {
         val projector = AgentRunMessageProjector { 1_000L }

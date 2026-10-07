@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.AgentIncrementalList
+import io.github.mangi.eta.ui.model.incrementalSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.normalizeTerminalRunMessages
@@ -30,6 +32,7 @@ internal class AgentRunReplayBatch private constructor(
     private var activeRunId: String? = null
     private var cachedRunId: String? = null
     private var cachedMessages: List<AgentChatMessageUi>? = null
+    private var cachedHasNotice = false
 
     internal var incrementalFastPathHits: Int = 0
         private set
@@ -40,12 +43,13 @@ internal class AgentRunReplayBatch private constructor(
         if (activeRunId == runId) return messages
         if (incrementalOrderIsPayloadIndependent && canPatchCachedPayload(runId, messages)) {
             incrementalFastPathHits++
-            cachedMessages = messages.toList()
+            cachedMessages = if (messages is AgentIncrementalList<AgentChatMessageUi>) messages else messages.toList()
             return messages
         }
         val normalized = order(runId, messages)
         cachedRunId = runId
-        cachedMessages = normalized.toList()
+        cachedMessages = if (normalized is AgentIncrementalList<AgentChatMessageUi>) normalized else normalized.toList()
+        cachedHasNotice = normalized.any { it is SystemNoticeMessageUi }
         return normalized
     }
 
@@ -53,6 +57,13 @@ internal class AgentRunReplayBatch private constructor(
         if (cachedRunId != runId) return false
         val previous = cachedMessages ?: return false
         if (previous.size != messages.size) return false
+        val certified = (messages as? AgentIncrementalList<AgentChatMessageUi>)?.singleReplacementFrom(previous)
+        if (certified != null) {
+            val old = previous[certified] as? AgentMessageUi ?: return false
+            val current = messages[certified] as? AgentMessageUi ?: return false
+            return !cachedHasNotice && old.id == current.id && old.isStreaming && current.isStreaming &&
+                current.content.startsWith(old.content)
+        }
         var changedIndex = -1
         for (index in messages.indices) {
             val old = previous[index]

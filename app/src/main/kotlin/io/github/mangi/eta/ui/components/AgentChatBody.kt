@@ -242,13 +242,9 @@ internal fun AgentChatBody(
             }
             .distinctUntilChanged()
     }.collectAsState(initial = Triple(false, null, null))
+    val visibleMessagesCache = remember { AgentVisibleMessagesCache() }
     val visibleMessages = remember(messages, messageEdit?.targetMessageId) {
-        AgentConversationRevisionReducer.visibleMessagesForEdit(
-            messages = messages,
-            targetMessageId = messageEdit?.targetMessageId,
-        ).filterNot { message ->
-            message is AgentMessageUi && message.content.isBlank()
-        }
+        visibleMessagesCache.project(messages, messageEdit?.targetMessageId)
     }
     LaunchedEffect(visibleMessages, isStreaming) {
         val last = visibleMessages.filterIsInstance<AgentMessageUi>().lastOrNull()
