@@ -40,6 +40,8 @@ class PreparedMarkdownProductionTest {
     @Test fun realWorkerReusesPlainPrefixAndRefreshesThemeCorrectionAndTerminal() {
         val retained = StreamingMarkdownState()
         val prefix = "Stable **bold** and `code`.\n\n"
+        // Keep the original mikepenz CODE_SPAN padding; assert exact text, not a trimmed oracle.
+        val expectedPrefix = "Stable bold and  code ."
         val message = mutableStateOf(AgentMessageUi("prepared", prefix + "Tail", isStreaming = true))
         val paused = mutableStateOf(true)
         val dark = mutableStateOf(false)
@@ -68,8 +70,8 @@ class PreparedMarkdownProductionTest {
         }
         await(message.value.content)
         val first = requireNotNull(retained.snapshot).preparedBlocks.first()
-        assertNotNull(first.text(first.node, requireNotNull(first.spec).typography.paragraph.toSpanStyle()))
-        compose.onNodeWithText("Stable bold and code.", useUnmergedTree = true).assertExists()
+        assertEquals(expectedPrefix, requireNotNull(first.text(first.node, requireNotNull(first.spec).typography.paragraph.toSpanStyle())).text)
+        compose.onNodeWithText(expectedPrefix, useUnmergedTree = true).assertExists()
         compose.runOnIdle { message.value = message.value.copy(content = prefix + "Tail grows") }
         await(message.value.content)
         assertSame(first, requireNotNull(retained.snapshot).preparedBlocks.first())
@@ -80,10 +82,10 @@ class PreparedMarkdownProductionTest {
         compose.waitForIdle()
         val themed = requireNotNull(retained.snapshot).preparedBlocks.first()
         assertNotSame(first, themed)
-        assertNotNull(themed.text(themed.node, requireNotNull(themed.spec).typography.paragraph.toSpanStyle()))
+        assertEquals(expectedPrefix, requireNotNull(themed.text(themed.node, requireNotNull(themed.spec).typography.paragraph.toSpanStyle())).text)
         compose.runOnIdle { width.value = 220.dp; scale.value = 1.3f }
         compose.waitForIdle()
-        compose.onNodeWithText("Stable bold and code.", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText(expectedPrefix, useUnmergedTree = true).assertExists()
 
         compose.runOnIdle { message.value = message.value.copy(content = "Corrected **prefix**.\n\nNew tail") }
         await(message.value.content)
