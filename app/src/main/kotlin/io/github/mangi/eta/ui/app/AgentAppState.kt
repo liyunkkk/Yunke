@@ -5864,6 +5864,19 @@ internal class AgentAppState(
             } else {
                 projected
             }
+            // A sealed/filtered event can legitimately project the exact same immutable list.
+            // Delta paths already disable timestamp and waiting-question recomputation, so
+            // publishing that no-op only invalidates Compose observers and repeats routing work.
+            if (shouldSkipNoOpStreamingPublication(
+                    state.messages,
+                    nextMessages,
+                    updateTimestamp,
+                    normalizeTerminalOrder,
+                    recomputeWaitingQuestion,
+                )
+            ) {
+                return@measure
+            }
             StreamUiEventDiagnostics.measure("ui.messages.publish", nextMessages.size.toLong()) {
                 updateConversationProjected(
                     conversationId = conversationId,
@@ -5913,6 +5926,16 @@ internal class AgentAppState(
         ).withCurrentGptSpeedBinding()
         conversationPaneState = conversationPaneState.copy(selectedConversationId = null)
     }
+
+    private fun shouldSkipNoOpStreamingPublication(
+        previousMessages: List<AgentChatMessageUi>,
+        nextMessages: List<AgentChatMessageUi>,
+        updateTimestamp: Boolean,
+        normalizeTerminalOrder: Boolean,
+        recomputeWaitingQuestion: Boolean,
+    ): Boolean =
+        nextMessages === previousMessages && !updateTimestamp &&
+            !normalizeTerminalOrder && !recomputeWaitingQuestion
 
     private fun updateConversation(
         conversationId: String,
