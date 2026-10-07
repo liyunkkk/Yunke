@@ -146,10 +146,11 @@ public class EndedOwnedRecentTest {
         assertEquals(ids(1), EndedOwnedRecent.presentIds(Arrays.asList(root(1, true, 1, -1))));
     }
 
-    @Test public void unprovenRecentAndForeignActiveTaskStillRefuse() {
+    @Test public void unprovenRecentIsIgnoredWhileAForeignActiveTaskStillRefuses() {
         LaunchTargetOccupancy.Recent recent = new LaunchTargetOccupancy.Recent(38, TARGET,
                 null, null, TARGET, null, true);
-        assertEquals(LaunchTargetOccupancy.RECENT, LaunchTargetOccupancy.decide(TARGET,
+        // A recent entry alone no longer refuses; it only records that the package ran before.
+        assertNull(LaunchTargetOccupancy.decide(TARGET,
                 Arrays.asList(root(1, true)), Arrays.asList(recent)).code);
         LaunchTargetOccupancy.Root target = new LaunchTargetOccupancy.Root(38, TARGET,
                 TARGET, TARGET, TARGET, null, true, 1, true, new int[0], true, new String[0],

@@ -268,11 +268,12 @@ final class LaunchTargetOccupancy {
         }
         for (Recent recent : recents == null ? java.util.Collections.<Recent>emptyList() : recents) {
             if (recent == null) { if (unknown == null) unknown = "null recent"; continue; }
-            if (contains(target, recent.base, recent.baseActivity,
-                    recent.topActivity, recent.realActivity, recent.origActivity)) {
-                if (reuse > 0 && recent.taskId == reuse) continue;
-                return new Decision(RECENT, "existing recent task");
-            }
+            // A recent entry only records that the package ran at some point; it never proves a
+            // live task, and the root scan above already refuses one. Refusing here made every
+            // package the user had ever touched - including this app's own previous
+            // virtual-display session of the same target - impossible to launch again on the
+            // secondary display, so a matching recent is ignored. An unreadable recent identity
+            // still fails closed below.
             if ((!recent.componentsKnown || (recent.base == null && recent.baseActivity == null
                     && recent.topActivity == null && recent.realActivity == null
                     && recent.origActivity == null)) && unknown == null)

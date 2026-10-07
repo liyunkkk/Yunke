@@ -151,7 +151,8 @@ public class LaunchTargetOccupancyTest {
                 decide(root(3, null, null, null, null, true, 0,
                         true, new int[]{4, 5}, true,
                         new String[]{TARGET, null}, true, true)).code);
-        assertEquals(LaunchTargetOccupancy.RECENT,
+        // The recent no longer decides; the unreadable root inventory still fails closed.
+        assertEquals(LaunchTargetOccupancy.UNKNOWN,
                 decide(root(3, null, null, null, null, true, 0,
                         true, new int[]{-2}, false, null),
                         new LaunchTargetOccupancy.Recent(TARGET, null, null, null, null, true)).code);
@@ -178,13 +179,14 @@ public class LaunchTargetOccupancyTest {
         assertEquals(LaunchTargetOccupancy.UNKNOWN, decide(root(3, null, null, null, null, true, 0,
                 true, new int[]{4, 5}, true, new String[]{"com.other.one"})).code);
     }
-    @Test public void recentTargetRefusesEvenWhenRootInventoryContainsAnUnknown() {
-        assertEquals(LaunchTargetOccupancy.RECENT,
+    @Test public void recentTargetNoLongerRefusesAnUnknownRootInventory() {
+        assertEquals(LaunchTargetOccupancy.UNKNOWN,
                 decide(root(3, null, null, null, null, false, -1, false, null, false, null),
                         new LaunchTargetOccupancy.Recent(null, null, null, TARGET, null, true)).code);
     }
-    @Test public void recentTargetStillWinsWhenRootListIsEmpty() {
-        assertEquals(LaunchTargetOccupancy.RECENT,
+    @Test public void recentTargetNoLongerWinsWhenRootListIsEmpty() {
+        // An empty root inventory stays unknown; a recent entry never decides on its own.
+        assertEquals(LaunchTargetOccupancy.UNKNOWN,
                 LaunchTargetOccupancy.decide(TARGET, Collections.emptyList(),
                         Collections.singletonList(new LaunchTargetOccupancy.Recent(
                                 null, null, null, TARGET, null, true))).code);
@@ -303,12 +305,16 @@ public class LaunchTargetOccupancyTest {
         assertEquals(LaunchTargetOccupancy.ACTIVE, decideReusable(Arrays.asList(self(191, TARGET)),
                 Collections.<LaunchTargetOccupancy.Recent>emptyList()).code);
     }
-    @Test public void otherTargetRecentStillRefusesReuse() {
-        assertEquals(LaunchTargetOccupancy.RECENT, decideReusable(Arrays.asList(self(191, TARGET)),
-                Arrays.asList(new LaunchTargetOccupancy.Recent(77, TARGET, null, null, null, null, true)), 191).code);
-        // A recent whose id is unreadable can never be proven to be the reused task.
-        assertEquals(LaunchTargetOccupancy.RECENT, decideReusable(Arrays.asList(self(191, TARGET)),
-                Arrays.asList(new LaunchTargetOccupancy.Recent(TARGET, null, null, null, null, true)), 191).code);
+    @Test public void otherTargetRecentNoLongerBlocksReuse() {
+        // A recent entry is not a live task: the owned live task on this display is still reused.
+        LaunchTargetOccupancy.Decision first = decideReusable(Arrays.asList(self(191, TARGET)),
+                Arrays.asList(new LaunchTargetOccupancy.Recent(77, TARGET, null, null, null, null, true)), 191);
+        assertTrue(first.reuses());
+        assertEquals(191, first.reuseTaskId);
+        LaunchTargetOccupancy.Decision second = decideReusable(Arrays.asList(self(191, TARGET)),
+                Arrays.asList(new LaunchTargetOccupancy.Recent(TARGET, null, null, null, null, true)), 191);
+        assertTrue(second.reuses());
+        assertEquals(191, second.reuseTaskId);
     }
     @Test public void unknownInventoryWinsOverReuse() {
         LaunchTargetOccupancy.Decision d = decideReusable(Arrays.asList(self(191, TARGET),
