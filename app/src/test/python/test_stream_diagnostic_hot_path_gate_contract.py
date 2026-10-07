@@ -25,7 +25,10 @@ val parts = "${page.fields()} totalUs=${total / 1000} deadlineUs=${deadline / 10
 # The listener minus the relocated, gate-only formatting. Keep aggregation/admission/expiry exact.
 LISTENER_WITHOUT_PARTS = '''
 val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
-    if (active === session && enabled && frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) != 1L) {
+    val delivered = System.nanoTime()
+    val intendedFrame = frame.getMetric(FrameMetrics.INTENDED_VSYNC_TIMESTAMP)
+    if (session.admitFrame(intendedFrame, AppFileLogger.isEnabled())) {
+        val firstDraw = frame.getMetric(FrameMetrics.FIRST_DRAW_FRAME) == 1L
         val total = frame.getMetric(FrameMetrics.TOTAL_DURATION)
         val deadline = frame.getMetric(FrameMetrics.DEADLINE)
         val unknown = frame.getMetric(FrameMetrics.UNKNOWN_DELAY_DURATION)
@@ -44,13 +47,33 @@ val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
         fun metric(stage: String, ns: Long, value: Long) {
             session.recordMetric(page.aggregatePage.ordinal, stage, ns, value)
         }
-        if ((missed || total >= SPIKE_FRAME_NS) && session.details.reserveFrame()) {
-            session.details.frame(DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
+        session.observerCosts.add(DiagnosticObserverCosts.Phase.CallbackLag, delivered - (intended + total))
+        val severe = total >= SPIKE_FRAME_NS || unknown >= UNKNOWN_DELAY_DETAIL_NS
+        if ((firstDraw || missed || severe) && session.details.reserveFrame(severe)) {
+            val record = DiagnosticFrameRecord(intended, frame.getMetric(FrameMetrics.VSYNC_TIMESTAMP),
                 total, deadline, page.start.ordinal, page.end.ordinal, page.changed, dropped,
-                unknown, input, animation, layout, draw, sync, command, swap, gpu))
+                unknown, input, animation, layout, draw, sync, command, swap, gpu,
+                firstDraw = firstDraw, pageSegment = page.startSegment)
+            // One bounded capture per retained frame, never for normal or budget-rejected frames.
+            // Include retention, source matching and dispatch capture in non-recursive observer cost.
+            session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
+                val evidence = session.details.protectFrame(record)
+                val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
+                    session.listSamples.forFrame(record, evidence) else null
+                val mainMessages = log.timingsBetween(intended - FRAME_CORRELATION_LOOKBACK_NS, intended + total)
+                    .sortedByDescending { diagnosticOverlapNs(it.beginNs, it.endNs, intended, intended + total) }
+                session.details.frame(record.copy(listSnapshot = listSnapshot, mainMessages = mainMessages,
+                    sourceWindowLoss = evidence.sourceWindowLoss, sourceWindowUnknown = evidence.sourceWindowUnknown))
+            }
+        }
+        // Capture first-draw evidence without changing legacy steady-frame/probe statistics.
+        if (firstDraw) {
+            metric("frame.firstDraw", total, if (missed) 1 else 0)
+            return@OnFrameMetricsAvailableListener
         }
         session.record(page.aggregatePage.frameStage, total, if (missed) 1 else 0)
         metric("frame.total", total, if (missed) 1 else 0)
+        metric("frame.steady", total, if (missed) 1 else 0)
         metric("frame.layout", layout, 0)
         metric("frame.draw", draw, 0)
         metric("frame.sync", sync, 0)
@@ -101,12 +124,18 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
         actual_parts = inside.split("val tenths =", 1)[0]
         self.assertEqual(normalized_lines(PARTS), normalized_lines(actual_parts))
 
-    def test_all_other_listener_work_and_output_are_unchanged(self):
+    def test_metrics_admission_and_expiry_are_unchanged_with_bounded_anomaly_capture(self):
         listener_lines = normalized_lines(self.listener)
         parts_lines = normalized_lines(PARTS)
         self.assertEqual(listener_lines.count(parts_lines), 1)
         without_parts = listener_lines.replace(parts_lines + "\n", "", 1)
         self.assertEqual(normalized_lines(LISTENER_WITHOUT_PARTS), without_parts)
+        first_draw, steady = self.listener.split("return@OnFrameMetricsAvailableListener", 1)
+        self.assertIn('metric("frame.firstDraw", total, if (missed) 1 else 0)', first_draw)
+        self.assertIn('session.details.frame(record.copy(', first_draw)
+        self.assertNotIn('metric("frame.total"', first_draw)
+        self.assertNotIn('target.addFrame(', first_draw)
+        self.assertIn('metric("frame.steady", total, if (missed) 1 else 0)', steady)
 
     def test_probe_precision_capacity_and_expiry_are_unchanged(self):
         for exact in (
@@ -121,12 +150,13 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
     def test_measure_observer_uses_stage_equality_and_default_node_invalidation(self):
         helper = (COMPONENTS / "StreamDiagnosticModifier.kt").read_text(encoding="utf-8")
         measure, draw = helper.split("internal fun Modifier.streamDiagnosticDraw", 1)
+        draw = draw.split("/** Placement-only observer.", 1)[0]
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", measure)
-        self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage))", measure)
-        self.assertIn("private data class StreamDiagnosticMeasureElement(val stage: String)", measure)
+        self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage, attribution))", measure)
+        self.assertIn("private data class StreamDiagnosticMeasureElement(val stage: String, val attribution: StreamDiagnosticAttribution?)", measure)
         self.assertIn("ModifierNodeElement<StreamDiagnosticMeasureNode>()", measure)
-        self.assertIn("override fun create() = StreamDiagnosticMeasureNode(stage)", measure)
-        self.assertIn("override fun update(node: StreamDiagnosticMeasureNode) { node.stage = stage }", measure)
+        self.assertIn("override fun create() = StreamDiagnosticMeasureNode(stage, attribution)", measure)
+        self.assertIn("override fun update(node: StreamDiagnosticMeasureNode) { node.stage = stage; node.attribution = attribution }", measure)
         self.assertIn("Modifier.Node(), LayoutModifierNode", measure)
         self.assertEqual(measure.count("measurable.measure(constraints)"), 1)
         self.assertEqual(measure.count("layout(child.width, child.height) { child.placeRelative(0, 0) }"), 1)
@@ -137,10 +167,27 @@ class StreamDiagnosticHotPathGateContract(unittest.TestCase):
                           "override fun maxIntrinsic", "mutableState", "semantics", "graphicsLayer"):
             self.assertNotIn(forbidden, measure_code)
         self.assertEqual(normalized_lines(draw), normalized_lines('''
-            (stage: String): Modifier {
+            (stage: String, attribution: StreamDiagnosticAttribution? = null): Modifier {
+                // A construction in composition observes only attach/detach, even when initially OFF.
+                StreamPerformanceDiagnostics.sessionGeneration.longValue
                 if (!StreamPerformanceDiagnostics.enabled) return this
-                return drawWithContent {
-                    StreamPerformanceDiagnostics.measureDetail(stage) { drawContent() }
+                return this.then(StreamDiagnosticDrawElement(stage, attribution))
+            }
+
+            private data class StreamDiagnosticDrawElement(val stage: String, val attribution: StreamDiagnosticAttribution?) : ModifierNodeElement<StreamDiagnosticDrawNode>() {
+                override fun create() = StreamDiagnosticDrawNode(stage, attribution)
+                override fun update(node: StreamDiagnosticDrawNode) { node.stage = stage; node.attribution = attribution }
+                override fun InspectorInfo.inspectableProperties() {
+                    name = "streamDiagnosticDraw"
+                    properties["stage"] = stage
+                }
+            }
+
+            private class StreamDiagnosticDrawNode(var stage: String, var attribution: StreamDiagnosticAttribution?) : Modifier.Node(), DrawModifierNode {
+                override fun ContentDrawScope.draw() {
+                    StreamPerformanceDiagnostics.withRenderAttribution(attribution) {
+                        StreamPerformanceDiagnostics.measureDetail(stage) { drawContent() }
+                    }
                 }
             }
         '''))

@@ -1,7 +1,11 @@
 package io.github.mangi.eta.ui.components
 
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.AgentIncrementalList
+import io.github.mangi.eta.ui.model.incrementalSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.isSteerSupplement
 
 /**
  * Cache only the last projection, not individual historical messages forever.
@@ -25,38 +29,49 @@ internal class AgentTimelineProjectionCache(
         val previous = source
         val mapping = sourceToEntry
         if (previous != null && mapping != null && previous.size == messages.size) {
-            var changed = false
-            var compatible = true
-            for (index in messages.indices) {
-                val old = previous[index]
-                val current = messages[index]
-                if (old === current) continue
-                if (old !is AgentMessageUi || current !is AgentMessageUi ||
-                    old.id != current.id || mapping[index] < 0
-                ) {
-                    compatible = false
-                    break
+            val changed = (messages as? AgentIncrementalList<AgentChatMessageUi>)?.singleReplacementFrom(previous)
+            if (changed != null) {
+                val old = previous[changed]
+                val current = messages[changed]
+                if (old is AgentMessageUi && current is AgentMessageUi && old.id == current.id && old.isStreaming && current.isStreaming &&
+                    current.content.startsWith(old.content) && mapping[changed] >= 0) {
+                    entries = entries.incrementalSnapshot().replacing(mapping[changed], AgentTimelineEntry.Message(current))
+                    source = messages
+                    return entries
                 }
-                changed = true
             }
-            if (compatible) {
-                if (!changed) return entries
-                val updated = entries.toMutableList()
+            if (changed == null) {
+                val changedIndices = ArrayList<Int>(1)
+                var compatible = true
                 for (index in messages.indices) {
-                    if (previous[index] !== messages[index]) {
+                    val old = previous[index]
+                    val current = messages[index]
+                    if (old === current) continue
+                    if (old !is AgentMessageUi || current !is AgentMessageUi ||
+                        old.id != current.id || mapping[index] < 0
+                    ) {
+                        compatible = false
+                        break
+                    }
+                    changedIndices += index
+                }
+                if (compatible) {
+                    if (changedIndices.isEmpty()) return entries
+                    val updated = entries.toMutableList()
+                    changedIndices.forEach { index ->
                         updated[mapping[index]] = AgentTimelineEntry.Message(messages[index])
                     }
+                    // Neither the old input snapshot nor any previously returned list
+                    // is mutated. Also tolerate a caller reusing its list container.
+                    source = if (messages is AgentIncrementalList<AgentChatMessageUi>) messages else messages.toList()
+                    entries = updated.incrementalSnapshot()
+                    return entries
                 }
-                // Neither the old input snapshot nor any previously returned list
-                // is mutated. Also tolerate a caller reusing its list container.
-                source = messages.toList()
-                entries = updated
-                return updated
             }
         }
 
-        val input = messages.toList()
-        val projected = fullProjection(input)
+        val input = messages.incrementalSnapshot()
+        val projected = fullProjection(input).incrementalSnapshot()
         source = input
         entries = projected
         sourceToEntry = mapAssistantSlots(input, projected)
@@ -84,5 +99,78 @@ internal class AgentTimelineProjectionCache(
             if (message is AgentMessageUi && mapping[index] < 0) return null
         }
         return mapping
+    }
+}
+
+/**
+ * Prefaces are strings only; never cache a footer's message/callback owner here.
+ * A selected owner depends on all earlier assistant bodies since its ordinary
+ * user boundary. Precompute those dependency slots after each full traversal.
+ * Unlike the entry projection, historical body edits are NOT a compatible delta.
+ */
+internal class AgentSpeechPrefaceCache(
+    private val fullProjection: (List<AgentChatMessageUi>, Set<String>) -> Map<String, String> =
+        ::visibleTurnSpeechPrefaces,
+) {
+    private var source: List<AgentChatMessageUi>? = null
+    private var finalIds: Set<String> = emptySet()
+    private var ownerDependentSlots: BooleanArray? = null
+    private var prefaces: Map<String, String> = emptyMap()
+
+    fun project(messages: List<AgentChatMessageUi>, selectedIds: Set<String>): Map<String, String> {
+        val previous = source
+        val dependent = ownerDependentSlots
+        if (previous != null && dependent != null && previous.size == messages.size && finalIds == selectedIds) {
+            var compatible = true
+            for (index in messages.indices) {
+                val old = previous[index]
+                val current = messages[index]
+                if (old === current) continue
+                if (old !is AgentMessageUi || current !is AgentMessageUi || old.id != current.id ||
+                    !old.isStreaming || !current.isStreaming ||
+                    !current.content.startsWith(old.content) || dependent[index]
+                ) {
+                    compatible = false
+                    break
+                }
+            }
+            if (compatible) {
+                source = messages.toList()
+                return prefaces
+            }
+        }
+        val input = messages.toList()
+        val ids = selectedIds.toSet()
+        val result = fullProjection(input, ids)
+        source = input
+        finalIds = ids
+        prefaces = result
+        ownerDependentSlots = ownerDependencies(input, ids)
+        return result
+    }
+
+    private fun ownerDependencies(messages: List<AgentChatMessageUi>, ids: Set<String>): BooleanArray? {
+        val seen = HashSet<String>(messages.size)
+        messages.forEach { if (!seen.add(it.id)) return null }
+        val dependent = BooleanArray(messages.size)
+        var ownerAhead = false
+        for (index in messages.indices.reversed()) {
+            val message = messages[index]
+            // The legacy algorithm captures a selected user's preface BEFORE
+            // clearing parts. Respect that order even for unusual owner sets.
+            if (message is UserMessageUi && !message.isSteerSupplement()) ownerAhead = false
+            if (message.id in ids) ownerAhead = true
+            dependent[index] = ownerAhead
+        }
+        // Fail closed for an already selected owner behind a changed slot too:
+        // no selected owner may lie between a delta and its ordinary user boundary.
+        var ownerBehind = false
+        for (index in messages.indices) {
+            val message = messages[index]
+            if (message is UserMessageUi && !message.isSteerSupplement()) ownerBehind = false
+            if (message.id in ids) ownerBehind = true
+            dependent[index] = dependent[index] || ownerBehind
+        }
+        return dependent
     }
 }

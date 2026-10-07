@@ -1,6 +1,9 @@
 package io.github.mangi.eta.agent.tool
 
 import android.content.Context
+import android.app.ActivityOptions
+import android.view.Display
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
@@ -67,7 +70,7 @@ import org.json.JSONObject
 internal class AgentLocalTools(
     private val context: Context,
     private val logger: AgentLogger,
-    private val browserRunId: String = "",
+    private val browserRunId: String = java.util.UUID.randomUUID().toString(),
     /**
      * 当前 Eta 对话 id，作为 Kimi 子代理的会话绑定键。
      *
@@ -118,6 +121,9 @@ internal class AgentLocalTools(
      * toolName 是触发选择的工具；cancelled 是本工具执行器自己的关闭状态，等待期间要一起检查。
      */
     private val chooseSurface: ((toolName: String, cancelled: () -> Boolean) -> io.github.mangi.eta.agent.device.AgentTaskSurfaceMode?)? = null,
+    private val selfForegroundPackage: () -> String? = {
+        AgentAccessibilityService.current()?.currentMainDisplayPackageName()
+    },
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
     /** ASK 只在第一次界面操作前问一次，之后整轮 run 都用选定的位置。 */
@@ -129,10 +135,18 @@ internal class AgentLocalTools(
     private val backgroundSurface: Boolean
         get() = runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
     private val virtualLifecycle = setOf("start_virtual_session", "keep_virtual_result", "finish_virtual_session")
-    private fun virtualRouted(name: String) = backgroundSurface &&
-        (io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(name) || name in virtualLifecycle)
+    private val selfSurface = AgentSelfAppSurface(context.packageName)
+    private val surfaceRouteLock = java.util.concurrent.locks.ReentrantLock()
+    private fun virtualRouted(name: String, route: AgentSelfAppSurface.Route) = backgroundSurface &&
+        (name in virtualLifecycle || (route == AgentSelfAppSurface.Route.BASE &&
+            io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(name)))
     private val closed = AtomicBoolean(false)
-    private val deviceController = RootShellDeviceController(logger, screenshotExcludedPackages, rootAvailable)
+    private val deviceController = RootShellDeviceController(logger, {
+        val excluded = screenshotExcludedPackages()
+        if (selfSurface.active && runCatching(selfForegroundPackage).getOrNull() == context.packageName) {
+            excluded - context.packageName
+        } else excluded
+    }, rootAvailable)
     private val rootCommandExecutor = BoundedRootCommandExecutor(logger, rootAvailable = rootAvailable)
     private val structuredDeviceTools = AgentStructuredDeviceTools(
         context = context,
@@ -239,24 +253,90 @@ internal class AgentLocalTools(
         terminalController.sessionIdentity(sessionId)
 
     override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
-        var chosenNow: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode? = null
-        if (runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK &&
-            io.github.mangi.eta.agent.device.AgentTaskSurface.needsSurfaceChoice(toolCall.name)
-        ) {
-            val outcome = resolveAskedSurface(toolCall.name)
-            if (outcome == null) {
-                return textResult(
-                    if (closed.get()) errorResult("RUN_CLOSED", "任务已关闭")
-                    else errorResult(
-                        "TASK_SURFACE_CANCELLED",
-                        "用户没有选择或已取消执行位置，本次未执行，本次回复内不会再询问；不要再调用界面工具，改用其他方式或说明情况",
-                    ),
-                )
-            }
-            if (outcome.second) chosenNow = outcome.first
+        val gui = io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(toolCall.name) ||
+            toolCall.name in virtualLifecycle
+        if (!gui) return executeOnSurface(toolCall, AgentSelfAppSurface.Route.BASE)
+        try {
+            surfaceRouteLock.lockInterruptibly()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return textResult(errorResult("RUN_CLOSED", "屏幕操作等待已中断，本次未执行"))
         }
-        val result = executeOnSurface(toolCall)
-        return chosenNow?.let { withSurfaceNote(result, it) } ?: result
+        try {
+            if (closed.get()) return textResult(errorResult("RUN_CLOSED", "任务已关闭"))
+            val args = runCatching { JSONObject(toolCall.argumentsJson.ifBlank { "{}" }) }.getOrElse {
+                return textResult(errorResult("INVALID_ARGUMENT", "工具参数不是合法 JSON"))
+            }
+            val prepared = if (toolCall.name == "launch_app") runCatching { prepareLaunchApp(args) }.getOrElse {
+                selfSurface.leave()
+                publishedObservation.set(PublishedObservation())
+                return textResult(errorResult("APP_RESOLUTION_FAILED", "应用目标解析失败，本次未启动"))
+            } else null
+            if (prepared?.error != null) {
+                selfSurface.leave()
+                publishedObservation.set(PublishedObservation())
+                return textResult(prepared.error)
+            }
+            val wasSelf = selfSurface.active
+            val route = selfSurface.route(
+                toolCall.name,
+                launchPackage = prepared?.app?.packageName?.takeIf {
+                    prepared?.intent?.component?.packageName == it
+                },
+                button = args.optString("button"),
+                waitPackage = args.optString("package_name").trim(),
+            )
+            if (wasSelf != selfSurface.active || toolCall.name == "launch_app") {
+                publishedObservation.set(PublishedObservation())
+            }
+            var chosenNow: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode? = null
+            if (route == AgentSelfAppSurface.Route.BASE &&
+                runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK &&
+                io.github.mangi.eta.agent.device.AgentTaskSurface.needsSurfaceChoice(toolCall.name)
+            ) {
+                // Reject occupied main-screen access before opening a potentially blocking ASK UI.
+                foregroundAdmissionError(ForegroundExclusiveGate.checkAvailability(browserRunId) { closed.get() })
+                    ?.let { return it }
+                val outcome = resolveAskedSurface(toolCall.name)
+                if (outcome == null) {
+                    return textResult(
+                        if (closed.get()) errorResult("RUN_CLOSED", "任务已关闭")
+                        else errorResult("TASK_SURFACE_CANCELLED",
+                            "用户没有选择或已取消执行位置，本次未执行，本次回复内不会再询问；不要再调用普通应用界面工具"),
+                    )
+                }
+                if (outcome.second) chosenNow = outcome.first
+            }
+            // Pin the resolved package for both routes; never re-resolve a display name after admission.
+            val resolvedCall = prepared?.app?.let {
+                toolCall.copy(argumentsJson = JSONObject(args.toString()).put("package_name", it.packageName).toString())
+            } ?: toolCall
+            val result = executeOnSurface(resolvedCall, route, prepared)
+            if (route == AgentSelfAppSurface.Route.SELF_LAUNCH) {
+                selfSurface.launchedSelf(runCatching { JSONObject(result.content).optBoolean("ok") }.getOrDefault(false))
+            }
+            if (route != AgentSelfAppSurface.Route.BASE) {
+                // An action may navigate away. Never replay it on another display.
+                if (route == AgentSelfAppSurface.Route.SELF_GUI &&
+                    !selfSurface.validateForeground(runCatching(selfForegroundPackage).getOrNull())) {
+                    publishedObservation.set(PublishedObservation())
+                }
+                val note = runCatching {
+                    JSONObject(result.content)
+                        .put("task_surface", "foreground")
+                        .put("task_surface_scope", "self_app")
+                        .put("base_task_surface", runSurface.wire)
+                        .put("self_app_segment_active", selfSurface.active)
+                        .put("self_app_segment_lost", selfSurface.lost)
+                        .put("surface_note", "仅代鱼自身前台片段；其它应用仍按基础ASK/后台偏好执行")
+                        .toString()
+                }.getOrDefault(result.content)
+                return result.copy(content = note)
+            }
+            return chosenNow?.let { withSurfaceNote(result, it) } ?: result
+        } finally {
+            surfaceRouteLock.unlock()
+        }
     }
 
     /** 返回选定的位置，以及是否是这次调用刚选的（需要告诉模型）。 */
@@ -284,30 +364,52 @@ internal class AgentLocalTools(
         mode: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode,
     ): AgentModelClient.ToolResult {
         val surface = mode.wire
-        val note = runCatching { JSONObject(result.content).put("task_surface", surface).toString() }
+        val note = runCatching { JSONObject(result.content).put("task_surface", surface).put("task_surface_scope", "ordinary_run").toString() }
             .getOrElse { "{\"task_surface\":\"$surface\"}\n" + result.content }
         return result.copy(content = note)
     }
 
-    private fun executeOnSurface(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
+    private fun executeOnSurface(
+        toolCall: AgentModelClient.ToolCall,
+        route: AgentSelfAppSurface.Route,
+        prepared: PreparedLaunch? = null,
+    ): AgentModelClient.ToolResult {
         val handoffBlocksGui = runCatching {
-            io.github.mangi.eta.agent.device.AgentTaskSurface.blocksGuiTool(toolCall.name, runSurface) && !backgroundSurface
+            route == AgentSelfAppSurface.Route.BASE &&
+                io.github.mangi.eta.agent.device.AgentTaskSurface.blocksGuiTool(toolCall.name, runSurface) && !backgroundSurface
         }.getOrDefault(true)
         if (handoffBlocksGui) {
             return textResult(errorResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.NOT_READY, "副屏交接未就绪，本次未执行；请在设置改为前台"))
         }
-        if (virtualRouted(toolCall.name) || !ForegroundExclusiveGate.shouldSerialize(toolCall.name)) {
-            return executeInternal(toolCall)
+        if (virtualRouted(toolCall.name, route) || !ForegroundExclusiveGate.shouldSerialize(toolCall.name)) {
+            return executeInternal(toolCall, route, prepared)
         }
-        if (!ForegroundExclusiveGate.acquire(browserRunId) { closed.get() }) {
-            return textResult(
-                errorResult("FOREGROUND_BUSY", "其他会话正在操作屏幕，当前任务已停止等待"),
-            )
-        }
-        return executeInternal(toolCall)
+        foregroundAdmissionError(ForegroundExclusiveGate.acquire(browserRunId) { closed.get() })
+            ?.let { return it }
+        return executeInternal(toolCall, route, prepared)
     }
 
-    private fun executeInternal(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult =
+    private fun foregroundAdmissionError(admission: ForegroundExclusiveGate.Admission): AgentModelClient.ToolResult? =
+        when (admission) {
+            ForegroundExclusiveGate.Admission.CLOSED ->
+                textResult(errorResult("RUN_CLOSED", "任务已关闭或屏幕控制身份无效，本次未执行"))
+            ForegroundExclusiveGate.Admission.BUSY -> textResult(
+                JSONObject(errorResult("FOREGROUND_BUSY",
+                    "另一个会话尚未结束屏幕控制，本次操作已拒绝且未执行；不会排队或抢占。" +
+                        "请直接向用户说明原因，不要自动等待、重试或改用 Shell 绕过；待该会话结束后由用户重新发起。"))
+                    .put("executed", false)
+                    .put("retryable", false)
+                    .put("queued", false)
+                    .toString(),
+            )
+            ForegroundExclusiveGate.Admission.ACQUIRED -> null
+        }
+
+    private fun executeInternal(
+        toolCall: AgentModelClient.ToolCall,
+        route: AgentSelfAppSurface.Route,
+        prepared: PreparedLaunch? = null,
+    ): AgentModelClient.ToolResult =
         runCatching {
             if (closed.get()) return@runCatching textResult(errorResult("RUN_CLOSED", "任务已关闭"))
             if (AssistantRepository.isReady() && AssistantRepository.currentProfile(memoryAssistantId) == null) {
@@ -321,7 +423,7 @@ internal class AgentLocalTools(
             ) {
                 return@runCatching textResult(errorResult("ROOT_REQUIRED", "此操作需要 Root 授权，本次未执行"))
             }
-            if (virtualRouted(toolCall.name)) {
+            if (virtualRouted(toolCall.name, route)) {
                 if (!rootAvailable()) return@runCatching textResult(errorResult("ROOT_REQUIRED", "后台副屏需要 Root"))
                 return@runCatching when(toolCall.name) {
                     "start_virtual_session" -> textResult(io.github.mangi.eta.agent.device.VirtualDisplaySession.start(context,browserRunId).toString())
@@ -345,11 +447,19 @@ internal class AgentLocalTools(
                     )
                 }
             }
+            if (route == AgentSelfAppSurface.Route.SELF_GUI &&
+                !selfSurface.validateForeground(runCatching(selfForegroundPackage).getOrNull())) {
+                publishedObservation.set(PublishedObservation())
+                return@runCatching textResult(errorResult(
+                    "SELF_APP_TARGET_LOST",
+                    "未确认主屏焦点仍为代鱼自身，本次未执行；请重新打开代鱼，或按原偏好打开其它应用并重新观察，勿重放旧坐标",
+                ))
+            }
             when (toolCall.name) {
                 "get_current_context" -> textResult(DeviceContextTool.current(context))
                 "text_to_speech" -> textResult(textToSpeech(args))
                 "search_apps" -> textResult(searchApps(args))
-                "launch_app" -> textResult(launchApp(args))
+                "launch_app" -> textResult(launchApp(prepared ?: prepareLaunchApp(args), route == AgentSelfAppSurface.Route.SELF_LAUNCH))
                 "inspect_virtual_backend" -> textResult(io.github.mangi.eta.agent.device.VirtualDisplayBackendBridge.inspect(context).toString())
                 "keep_virtual_result" -> textResult(keepVirtualResult(args))
                 "open_uri" -> textResult(openUri(args))
@@ -788,7 +898,9 @@ internal class AgentLocalTools(
             "虚拟副屏交接尚未就绪；只读阶段不支持保留、恢复或关闭应用，本次未执行",
         )
 
-    private fun launchApp(args: JSONObject): String {
+    private data class PreparedLaunch(val app: AppInfo? = null, val intent: Intent? = null, val error: String? = null)
+
+    private fun prepareLaunchApp(args: JSONObject): PreparedLaunch {
         val packageName = args.optString("package_name").trim().ifBlank { null }
         val appName = args.optString("app_name").trim().ifBlank { null }
 
@@ -796,36 +908,49 @@ internal class AgentLocalTools(
             findAppByPackage(packageName) ?: AppInfo(packageName = packageName, appName = appName ?: packageName)
         } else {
             if (appName == null) {
-                return errorResult("INVALID_ARGUMENT", "package_name 和 app_name 至少提供一个")
+                return PreparedLaunch(error = errorResult("INVALID_ARGUMENT", "package_name 和 app_name 至少提供一个"))
             }
             val matches = findAppsByName(appName, includeSystem = false)
             val exactMatches = matches.filter { it.appName.equals(appName, ignoreCase = true) }
             when {
                 exactMatches.size == 1 -> exactMatches.single()
                 matches.size == 1 -> matches.single()
-                matches.isEmpty() -> return errorResult(
+                matches.isEmpty() -> return PreparedLaunch(error = errorResult(
                     code = "APP_NOT_FOUND",
                     message = "未找到应用：$appName"
-                )
-                else -> return JSONObject()
+                ))
+                else -> return PreparedLaunch(error = JSONObject()
                     .put("ok", false)
                     .put("code", "AMBIGUOUS_APP")
                     .put("message", "匹配到多个应用，请指定 package_name")
                     .put("candidates", matches.take(10).toJsonArray())
-                    .toString()
+                    .toString())
             }
         }
 
         val context = requireContext()
         val launchIntent = context.packageManager.getLaunchIntentForPackage(app.packageName)
         if (launchIntent == null) {
-            return errorResult(
+            return PreparedLaunch(error = errorResult(
                 code = "APP_NOT_LAUNCHABLE",
                 message = "应用不可启动或未安装：${app.packageName}"
-            )
+            ))
         }
+        return PreparedLaunch(app, launchIntent)
+    }
+
+    private fun launchApp(prepared: PreparedLaunch, selfLaunch: Boolean): String {
+        prepared.error?.let { return it }
+        val app = checkNotNull(prepared.app)
+        val launchIntent = Intent(checkNotNull(prepared.intent))
+        val context = requireContext()
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        context.startActivity(launchIntent)
+        if (selfLaunch) {
+            val options = ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY)
+            context.startActivity(launchIntent, options.toBundle())
+        } else {
+            context.startActivity(launchIntent)
+        }
         logger.info("Agent local tool action=launch_app outcome=started")
         return JSONObject()
             .put("ok", true)

@@ -68,8 +68,28 @@ internal fun emitChatBodyTrace(
  * `SideEffect { traceChatBodyRun("thinking", bodyTraceMount) }`. The gate is
  * read here, per emission, and is never cached in snapshot state.
  */
+/** A commit count, never the elapsed cost of composing the content body. */
+internal fun interface ChatBodyCommitSink {
+    fun record(stage: String)
+}
+
+internal fun emitChatBodyDiagnosticCommit(kind: String, enabled: Boolean, sink: ChatBodyCommitSink) {
+    if (!enabled || kind !in CHAT_BODY_TRACE_KINDS) return
+    sink.record("render.compose")
+}
+
 internal fun traceChatBodyRun(kind: String, mountId: Long) {
-    emitChatBodyTrace(kind, mountId, Trace.isEnabled(), AndroidChatBodyTraceSink)
+    // Runs in the existing SideEffect: no new state, effect, body wrapper or recomposition request.
+    if (StreamPerformanceDiagnostics.enabled) {
+        emitChatBodyDiagnosticCommit(kind, enabled = true, sink = AndroidChatBodyCommitSink)
+    }
+    emitChatBodyTrace(kind, mountId, StreamDiagnosticControl.allowed && Trace.isEnabled(), AndroidChatBodyTraceSink)
+}
+
+private object AndroidChatBodyCommitSink : ChatBodyCommitSink {
+    override fun record(stage: String) {
+        StreamPerformanceDiagnostics.record(stage, value = 1)
+    }
 }
 
 private object AndroidChatBodyTraceSink : ChatBodyTraceSink {

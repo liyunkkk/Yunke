@@ -275,28 +275,13 @@ internal object Prefs {
      * 首次升级优先把已有 RemotePreferences 值迁入本地；之后本地值是事实源，并在框架
      * 可用时回写远端，让仍在目标进程中组装请求的 Hook 入口拿到一致的初始配置。
      */
+    private val agentPreferenceReconciler = AgentPreferenceReconciler(
+        Keys.LOCAL_AGENT_KEYS.associateWith(Keys.BOOLEAN_DEFAULTS::getValue),
+    )
+
     fun reconcileAgentPreferences(service: XposedService?) {
         val local = localAgent ?: return
         val remotePreferences = remotePreferencesForUi(service) ?: return
-        val localEditor = local.edit()
-        val remoteEditor = remotePreferences.edit()
-        var updateLocal = false
-        var updateRemote = false
-
-        Keys.LOCAL_AGENT_KEYS.forEach { key ->
-            val default = Keys.BOOLEAN_DEFAULTS.getValue(key)
-            when {
-                local.contains(key) -> {
-                    remoteEditor.putBoolean(key, local.getBoolean(key, default))
-                    updateRemote = true
-                }
-                remotePreferences.contains(key) -> {
-                    localEditor.putBoolean(key, remotePreferences.getBoolean(key, default))
-                    updateLocal = true
-                }
-            }
-        }
-        if (updateLocal) localEditor.commit()
-        if (updateRemote) runCatching { remoteEditor.commit() }
+        agentPreferenceReconciler.reconcile(requireNotNull(service), local, remotePreferences)
     }
 }

@@ -40,18 +40,21 @@ private fun orderTerminalBodies(
     val owners = messages.knownTerminalRunIds()
     // A bare run ID cannot resolve an assistant ID that is also a longer run's ID.
     if (owners.isEmpty() || (onlyRunId != null && onlyRunId !in owners)) return messages
-    val messageOwners = messages.map { it.ownerAmong(owners) }
+    // Most live events belong to a run that has no terminal notice yet. Historic
+    // notices alone must not make us parse every body ID on each tool boundary.
+    // Discover the applicable notices first, using the same ownership grammar.
     val runs = linkedMapOf<String, TerminalBodyOrder>()
     messages.forEachIndexed { index, message ->
-        val owner = messageOwners[index]
-        if (owner != null && owner.isNotBlank() && (onlyRunId == null || owner == onlyRunId) &&
-            message is SystemNoticeMessageUi && message.code.isTerminal()) {
+        if (message !is SystemNoticeMessageUi || !message.code.isTerminal()) return@forEachIndexed
+        val owner = message.ownerAmong(owners)
+        if (owner != null && owner.isNotBlank() && (onlyRunId == null || owner == onlyRunId)) {
             val run = runs[owner]
             if (run == null) runs[owner] = TerminalBodyOrder(index, message.id, message)
             else run.latestNotice = message
         }
     }
     if (runs.isEmpty()) return messages
+    val messageOwners = messages.map { it.ownerAmong(owners) }
     messages.forEachIndexed { index, message ->
         val run = runs[messageOwners[index]]
         if (run != null && message.isRunBody()) {

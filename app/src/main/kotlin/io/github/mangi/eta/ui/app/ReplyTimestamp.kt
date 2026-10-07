@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.incrementalSnapshot
 
 /** Timestamp only the final visible reply. Replays retain the recorded completion instant. */
 internal fun stampCompletedReply(
@@ -11,9 +12,9 @@ internal fun stampCompletedReply(
 ): List<AgentChatMessageUi> {
     if (generatedAtMillis == null || generatedAtMillis <= 0L) return messages
     val index = AgentRunMessageProjector.resultTargetIndex(runId, messages)
-    return messages.mapIndexed { i, message ->
-        if (i == index && message is AgentMessageUi && message.content.isNotBlank()) {
-            message.copy(generatedAtMillis = message.generatedAtMillis ?: generatedAtMillis)
-        } else message
-    }
+    val target = messages.getOrNull(index) as? AgentMessageUi ?: return messages
+    if (target.content.isBlank() || target.generatedAtMillis != null) return messages
+    return messages.incrementalSnapshot().replacing(
+        index, target.copy(generatedAtMillis = generatedAtMillis),
+    ).withoutReplacementHint()
 }

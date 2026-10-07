@@ -118,8 +118,8 @@ class AgentVirtualDeliveryCompletionTest {
         }
 
         val stored = runBlocking(Dispatchers.IO) {
-            EtaDatabase.get(context).runtimeRunDao().archivedRuns()
-                .associate { it.run.runId to it.run.virtualDeliveryCompleted }
+            EtaDatabase.get(context).runtimeRunDao().archivedRunHeaders()
+                .associate { it.runId to it.virtualDeliveryCompleted }
         }
         assertEquals(expected, stored)
         EtaDatabase.closeForTests()

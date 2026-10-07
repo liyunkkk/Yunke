@@ -13,8 +13,9 @@ internal object ResponsesRequestBuilder {
         tools: JSONArray,
         sessionId: String = "",
         singleToolCall: Boolean = false,
+        localOnlyRecovery: Boolean = false,
     ): JSONObject {
-        val input = buildInput(messages, config)
+        val input = buildInput(messages, config, localOnlyRecovery)
         val responseTools = buildTools(tools, config.hostedWebSearchEnabled)
         val instructions = OpenAiRequestMessages.responsesInstructions(messages)
             .ifBlank { config.systemPrompt }
@@ -78,17 +79,17 @@ internal object ResponsesRequestBuilder {
         return request
     }
 
-    private fun buildInput(messages: JSONArray, config: AgentModelClient.ModelConfig): JSONArray = JSONArray().also { input ->
+    private fun buildInput(messages: JSONArray, config: AgentModelClient.ModelConfig, localOnlyRecovery: Boolean): JSONArray = JSONArray().also { input ->
         val legacyCalls = mutableSetOf<String>()
         val needsReasoningReplay = config.model.contains("deepseek", ignoreCase = true) &&
             config.effectiveReasoningEffort != ReasoningEffort.OFF
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
-            ResponsesEphemeralState.outputItems(message)?.let { items ->
+            (if (localOnlyRecovery) null else ResponsesEphemeralState.outputItems(message))?.let { items ->
                 for (itemIndex in 0 until items.length()) input.put(deepCopy(items.opt(itemIndex)))
                 continue
             }
-            val reasoning = ResponsesReasoningState.items(message, config)
+            val reasoning = if (localOnlyRecovery) null else ResponsesReasoningState.items(message, config)
             val calls = message.optJSONArray("tool_calls")
             // Old checkpoints cannot recreate the provider's original reasoning. Keep their
             // evidence as quoted history, not a fabricated valid thinking/tool-call exchange.

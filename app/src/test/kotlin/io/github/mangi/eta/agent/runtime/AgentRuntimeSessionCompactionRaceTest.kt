@@ -47,6 +47,27 @@ class AgentRuntimeSessionCompactionRaceTest {
     @Test fun callbackCompleteDoesNotWaitForChildWhileHoldingCoordinatorLock() =
         assertCoordinatorCallbackDoesNotWait(complete = true)
 
+    @Test fun mainCompactionRestoresPauseObserversOutsideTheSessionLock() {
+        val session = AgentRuntimeSession("compact-paused")
+        val lock = AgentRuntimeSession::class.java.getDeclaredField("lock").apply { isAccessible = true }
+            .get(session) as ReentrantLock
+        session.controller.pause()
+        var resumed = false
+        val binding = session.controller.observePause { paused ->
+            if (!paused) {
+                assertFalse("Timer observer retained session lock", lock.isHeldByCurrentThread)
+                assertTrue(session.emit(AgentEvent.ErrorReconnectChanged(1, "resume", "running", 1000)))
+                resumed = true
+            }
+        }
+        try {
+            assertTrue(session.requestCompact())
+            assertTrue(resumed)
+            assertFalse(session.controller.isPaused)
+            assertTrue(session.controller.hasPendingCompact)
+        } finally { binding.close(); session.cancel("test finished") }
+    }
+
     private fun assertCoordinatorCallbackDoesNotWait(complete: Boolean) {
         val coordinator = ReentrantLock()
         val childEntered = CountDownLatch(1)

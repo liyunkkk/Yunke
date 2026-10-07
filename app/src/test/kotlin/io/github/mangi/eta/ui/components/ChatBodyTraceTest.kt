@@ -27,6 +27,18 @@ class ChatBodyTraceTest {
         assertEquals(listOf("chat.body.md.phase.success m=3"), sink.sections)
     }
 
+    @Test fun diagnosticCommitCountIsOptInAndUsesOnlyTheRegisteredLiteral() {
+        val stages = mutableListOf<String>()
+        val sink = ChatBodyCommitSink { stages += it }
+        emitChatBodyDiagnosticCommit("md", enabled = false, sink = sink)
+        assertTrue(stages.isEmpty())
+        emitChatBodyDiagnosticCommit("md", enabled = true, sink = sink)
+        emitChatBodyDiagnosticCommit("md.doc", enabled = true, sink = sink)
+        emitChatBodyDiagnosticCommit("PRIVATE_PAYLOAD", enabled = true, sink = sink)
+        assertEquals(listOf("render.compose", "render.compose"), stages)
+        assertTrue(stages.all(StreamDiagnosticLabels::stage))
+    }
+
     @Test fun markerNameCarriesNoContentOrIdentity() {
         val name = chatBodyTraceName("md.doc", 12L)
         assertEquals("chat.body.md.doc m=12", name)

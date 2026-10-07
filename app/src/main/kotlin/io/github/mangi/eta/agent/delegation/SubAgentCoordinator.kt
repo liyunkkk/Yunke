@@ -400,7 +400,7 @@ internal class SubAgentCoordinator(
                             // Never wait for a pause while holding the task monitor: resume,
                             // cancellation and snapshots all need it. Finalization waits below.
                             if (t.controller.isCancelled || t.state !in ACTIVE) throw io.github.mangi.eta.agent.runtime.AgentRunCancelledException()
-                            val report = answer.take(16000) + if (answer.length > 16000) "\n[结果已截断]" else ""
+                            val report = answer // Keep the final report; only public query pages are bounded.
                             if (role == "implementation") t.modelReport = report else t.result = report
                         }
                         awaitFinalization(t)
@@ -605,6 +605,7 @@ internal class SubAgentCoordinator(
     }
     @Synchronized private fun find(id: String): Task = tasks[id] ?: throw UnknownTaskException()
     private fun get(args: JSONObject): JSONObject {
+        SubAgentResultPage.validate(args)
         if (!args.has("task_id")) {
             val all = synchronized(this) { tasks.values.toList().asReversed() }
             val offset = args.optInt("offset", 0).coerceAtLeast(0)
@@ -620,7 +621,7 @@ internal class SubAgentCoordinator(
             catch (_: java.util.concurrent.ExecutionException) { } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
         val limit = args.optInt("event_limit", 16)
-        return snapshot(task, args.optLong("after_seq", 0), limit).also { json ->
+        return snapshot(task, args.optLong("after_seq", 0), limit, args).also { json ->
             if (limit > MAX_EVENT_LIMIT) json.put("event_limit_used", MAX_EVENT_LIMIT)
             if (args.optLong("wait_ms", 0) > MAX_WAIT_MS) json.put("wait_ms_used", MAX_WAIT_MS)
         }
@@ -677,7 +678,11 @@ internal class SubAgentCoordinator(
         try { task.controller.cancel(); task.future?.cancel(true); if (cleanupQueued) releaseWorkspaceLease(task) }
         finally { if (cleanupQueued) synchronized(task) { task.preparing = false; changed() }; releaseIfClosedAndIdle() }
     }
-    private fun snapshot(task: Task, after: Long = 0, limit: Int = 16): JSONObject = synchronized(task) {
+    /** Internal process-local archive export; never exposed as an unbounded tool response. */
+    internal fun archiveRecord(taskId: String): JSONObject = snapshot(find(taskId), exportRecord = true)
+
+    private fun snapshot(task: Task, after: Long = 0, limit: Int = 16,
+        textArgs: JSONObject = JSONObject(), exportRecord: Boolean = false): JSONObject = synchronized(task) {
         val model = workers[task.worker]
         val replaceReason = when {
             task.role in MEDIA -> "media_delivery_uncertain"
@@ -690,9 +695,9 @@ internal class SubAgentCoordinator(
         }
         val paused = task.state == "awaiting_decision"
         val pendingPause = task.role !in MEDIA && task.state in setOf("queued", "running") && pendingGroupPauses.get() > 0
-        val snapshot = JSONObject().put("ok", true).put("task_id", task.id).put("worker", task.worker + 1).put("agent_id", workerIds[task.worker]).put("agent_name", workerNames[task.worker])
+        val record = JSONObject().put("ok", true).put("task_id", task.id).put("worker", task.worker + 1).put("agent_id", workerIds[task.worker]).put("agent_name", workerNames[task.worker])
             .put("model", model.model).put("model_display_name", model.modelDisplayName.ifBlank { model.model }).put("provider_id", model.providerId).put("provider_name", model.providerName)
-            .put("status", task.state).put("result", task.result).put("partial_result", task.confirmedText.value()).put("partial_result_unverified", true)
+            .put("status", task.state).put("result", task.result).put("partial_result", task.confirmedText.value()).put("partial_result_unverified", true).put("partial_result_truncated", task.confirmedText.truncated)
             .put("delivery_state", when {
                 task.role != "implementation" -> "not_applicable"
                 task.state == "completed" && task.artifactEvidence != null -> "artifact_ready_pending_review"
@@ -718,12 +723,12 @@ internal class SubAgentCoordinator(
             .put("allowed_actions", JSONArray(allowedActions(task))).put("next_step", nextStep(task))
             .put("continuation_count", task.continuationCount).put("parallel_limit", SubAgentModelPools.currentLimit(poolLeases[task.worker])).put("supervision", task.journal.page(after.coerceAtLeast(0), limit))
             .put("continuation_note", if (paused && !closed && !stopping) "已请求在安全边界暂停，pause_confirmed 表示已到达边界；保留同一任务、上下文与工作树。主代理可显式 continue_task 或 cancel_task，不重放正在进行的请求/工具。" else "")
-            .put("continuation_note", if (paused) "已请求在安全边界暂停，pause_confirmed 表示已到达边界；保留同一任务、上下文与工作树。主代理可显式 continue_task 或 cancel_task，不重放正在进行的请求/工具。" else "")
         task.budgetPlan?.let { plan ->
-            snapshot.put("budget", JSONObject().put("scope", plan.scope.wire).put("max_rounds", plan.maxRounds)
+            record.put("budget", JSONObject().put("scope", plan.scope.wire).put("max_rounds", plan.maxRounds)
                 .put("token_budget", plan.tokenBudget).put("sample_count", plan.sampleCount).put("from_history", plan.fromHistory))
         }
-        snapshot
+        SubAgentResultPage.attachRevision(record)
+        if (exportRecord) record else SubAgentResultPage.project(record, textArgs)
     }
     @Synchronized private fun manage(args: JSONObject): JSONObject {
         if (closed || stopping) return errorResult("RUN_CLOSED")

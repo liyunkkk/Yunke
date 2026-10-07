@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.runtime
 import android.content.Context
 import io.github.mangi.eta.agent.delegation.SubAgentContextStats
 import io.github.mangi.eta.agent.delegation.SubAgentCoordinator
+import io.github.mangi.eta.agent.delegation.SubAgentResultPage
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.core.AndroidAgentLogger
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,13 +38,12 @@ internal object AgentChildTaskGroups {
         var leaseHeld = true
         var workspaceEnvironment: String? = null
         var snapshots: Map<String, String> = emptyMap()
-        var snapshotBytes = 0
+        var snapshotBytes = 0L
     }
     private data class Claim(val predecessorGeneration: String, val successorGeneration: String, val successorId: String)
     private data class Lineage(val predecessorId: String, val predecessorGeneration: String, val successorGeneration: String)
     private const val MAX_ARCHIVED_GROUPS = 24
     private const val MAX_ARCHIVED_BYTES = 2 * 1024 * 1024
-    private const val MAX_RESULT_CHARS = 2048
     private const val MAX_CHECKPOINT_CHARS = 1024
     private const val HANDOFF_WAIT_MS = 2000L
     private val groups = linkedMapOf<String, Group>()
@@ -58,7 +58,6 @@ internal object AgentChildTaskGroups {
     private val changes = MutableStateFlow(0L)
     val revision: StateFlow<Long> = changes
     private fun changed() { changes.update { it + 1 } }
-    private fun releaseChild(block: () -> Unit) = AgentChildToolOwnership.releaseChild(block)
 
     fun register(context: Context, ownerId: String, runId: String, coordinator: SubAgentCoordinator,
         releaseTools: () -> Unit, workers: List<Worker> = emptyList(), workspaceEnvironment: String? = null): String? {
@@ -211,10 +210,9 @@ internal object AgentChildTaskGroups {
             "workspace_path", "workspace_ownership_verified", "review_required", "can_continue", "can_replace", "replace_reason",
             "continuation_count", "parallel_limit", "successor_task_id", "replaces_task_id", "context_usage",
             "pause_supported", "pause_requested", "pause_confirmed", "pause_source", "execution_exited",
-            "execution_stopped", "handoff_version", "partial_result_unverified", "stopping", "allowed_actions", "next_step", "browser_access", "delivery_state", "artifact_verified", "artifact_evidence", "acceptance_verified").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
+            "execution_stopped", "handoff_version", "text_revision", "text_evicted", "partial_result_truncated", "partial_result_unverified", "stopping", "allowed_actions", "next_step", "browser_access", "delivery_state", "artifact_verified", "artifact_evidence", "acceptance_verified").forEach { key -> if (json.has(key)) snapshot.put(key, json.get(key)) }
         listOf("result", "partial_result", "model_report_unverified").forEach { key ->
-            snapshot.put(key, json.optString(key).take(MAX_RESULT_CHARS))
-            snapshot.put("${key}_truncated", json.optString(key).length > MAX_RESULT_CHARS)
+            snapshot.put(key, json.optString(key))
         }
         json.optJSONObject("supervision")?.let { evidence ->
             val supervision = JSONObject(evidence.toString())
@@ -228,21 +226,21 @@ internal object AgentChildTaskGroups {
         val snapshots = linkedMapOf<String, String>()
         try {
             coordinator.taskIds().forEach { id ->
-                val response = coordinator.execute(AgentModelClient.ToolCall("archive-$id", "get_task_result",
-                    JSONObject().put("task_id", id).toString()))
-                snapshots[id] = archiveSnapshot(group.handoffs.observe(JSONObject(response.content)))
+                snapshots[id] = archiveSnapshot(group.handoffs.observe(coordinator.archiveRecord(id)))
             }
         } catch (_: Exception) {
             synchronized(this) { group.retiring = false; changed(); (this as java.lang.Object).notifyAll() }
             return
         }
+        boundArchive(snapshots)
+        group.handoffs.retainOnly(snapshots.keys)
         val binding: AgentRuntimeConnection.Lease?
         val release: (() -> Unit)?
         val held: Boolean
         synchronized(this) {
             if (groups[group.generation] !== group || group.closed || group.coordinator !== coordinator) return
             group.snapshots = snapshots
-            group.snapshotBytes = snapshots.values.sumOf { it.length * 2 }
+            group.snapshotBytes = snapshots.values.sumOf { it.length.toLong() * 2 }
             group.coordinator = null
             group.retiring = false
             binding = group.binding.also { group.binding = null }
@@ -254,10 +252,26 @@ internal object AgentChildTaskGroups {
         try { coordinator.releaseExecutionResources() } finally {
             if (held) AgentExecutionService.release(group.leaseId)
             binding?.close()
-            release?.let { runCatching { releaseChild(it) } }
+            release?.let { runCatching { it() } }
             prune()
         }
     }
+    private fun boundArchive(snapshots: LinkedHashMap<String, String>) {
+        var bytes = snapshots.values.sumOf { it.length.toLong() * 2 }
+        if (bytes <= MAX_ARCHIVED_BYTES) return
+        snapshots.replaceAll { _, raw -> JSONObject(raw).apply {
+            SubAgentResultPage.fields.forEach { put(it, "") }
+            put("text_evicted", true)
+        }.toString() }
+        bytes = snapshots.values.sumOf { it.length.toLong() * 2 }
+        // Metadata can also exceed the budget. Evict oldest tasks like old archived groups.
+        val iterator = snapshots.entries.iterator()
+        while (bytes > MAX_ARCHIVED_BYTES && iterator.hasNext()) {
+            bytes -= iterator.next().value.length.toLong() * 2
+            iterator.remove()
+        }
+    }
+
     private fun forgetGeneration(generation: String) {
         claimed.entries.removeAll { (_, claim) -> claim.predecessorGeneration == generation }
         replacedBy.entries.removeAll { (_, lineage) -> lineage.predecessorGeneration == generation || lineage.successorGeneration == generation }
@@ -297,11 +311,16 @@ internal object AgentChildTaskGroups {
         val json = runCatching { JSONObject(response.content) }.getOrNull() ?: return response
         return AgentModelClient.ToolResult(group.handoffs.observe(json).toString(), sensitive = true)
     }
+    private fun archivedResult(raw: String, call: AgentModelClient.ToolCall): AgentModelClient.ToolResult = try {
+        AgentModelClient.ToolResult(SubAgentResultPage.project(JSONObject(raw), JSONObject(call.argumentsJson)).toString(), sensitive = true)
+    } catch (_: IllegalArgumentException) { error("INVALID_TASK_ARGUMENTS") }
+      catch (_: org.json.JSONException) { error("INVALID_TASK_ARGUMENTS") }
+
     private fun result(group: Group, id: String, call: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
         val deadline = System.nanoTime() + HANDOFF_WAIT_MS * 1_000_000
         while (true) {
             val snapshot = synchronized(this) { group.snapshots[id] }
-            if (snapshot != null) return if (call.name == "get_task_result") AgentModelClient.ToolResult(snapshot, sensitive = true) else error("TASK_FINISHED")
+            if (snapshot != null) return if (call.name == "get_task_result") archivedResult(snapshot, call) else error("TASK_FINISHED")
             if (call.name != "get_task_result" && synchronized(this) { group.stopping }) return error("RUN_CLOSED")
             val coordinator = begin(group)
             if (coordinator != null) return try { observe(group, coordinator.execute(call)) } finally { end(group) }
@@ -316,7 +335,7 @@ internal object AgentChildTaskGroups {
             }
             if (!waiting) {
                 val archived = synchronized(this) { group.snapshots[id] }
-                return if (archived != null && call.name == "get_task_result") AgentModelClient.ToolResult(archived, sensitive = true)
+                return if (archived != null && call.name == "get_task_result") archivedResult(archived, call)
                     else error(if (synchronized(this) { group.retiring && !group.closed }) "TASK_RESULT_PENDING" else if (archived != null) "TASK_FINISHED" else "TASK_NOT_FOUND")
             }
             if (System.nanoTime() >= deadline) return error("TASK_RESULT_PENDING")
@@ -374,39 +393,39 @@ internal object AgentChildTaskGroups {
         }
     }
 
-    private fun hasRetainedTasks(group: Group): Boolean =
-        group.snapshots.isNotEmpty() || group.coordinator?.taskIds()?.isNotEmpty() == true
-
-    /** Ordinary dispatch may only be routed to a generation whose coordinator is still alive. */
-    private fun hasLiveRetainedTasks(group: Group): Boolean =
-        synchronized(this) { group.coordinator }?.taskIds()?.isNotEmpty() == true
+    /**
+     * Capture configuration, not execution ownership, before constructing this run's groups.
+     * A live retained coordinator can be paused (including by a successful previous parent).
+     * Its immutable candidates still govern ordinary dispatch, but new work must NOT execute
+     * through that historical coordinator. Archived result-only groups do not constrain new work.
+     * Missing frozen candidates fail closed; the current setting is only for explicit replacement.
+     */
+    fun ordinaryDispatchPlan(ownerId: String,
+        current: List<ChildTaskConfigPolicy.Candidate<ChildWorkerConfigResolver.Configuration>>,
+    ): ChildTaskOrdinaryDispatchSelection.Plan<ChildWorkerConfigResolver.Configuration> = synchronized(this) {
+        val retained = groups.values.lastOrNull { group ->
+            group.ownerId == ownerId && !group.closed && group.coordinator?.taskIds()?.isNotEmpty() == true
+        }
+        ChildTaskOrdinaryDispatchSelection.plan(current, retained?.workers?.mapNotNull { it.configuration },
+            retainedTasks = retained != null)
+    }
 
     fun execute(ownerId: String, currentGeneration: String?, call: AgentModelClient.ToolCall,
         currentRunId: String? = null, replacementGeneration: String? = currentGeneration): AgentModelClient.ToolResult {
         val args = runCatching { JSONObject(call.argumentsJson) }.getOrNull() ?: return error("INVALID_TASK_ARGUMENTS")
-        val id = args.optString("task_id")
+        // delegate_task never controls an existing task merely because task_id was supplied.
+        val id = if (call.name == "delegate_task") "" else args.optString("task_id")
         if (call.name == "get_task_result" && id.isBlank()) return list(ownerId, args)
         val candidates = ownerGroups(ownerId)
         val wantsReplacement = call.name == "delegate_task" && args.optString("replace_task_id").isNotBlank()
         val selectedGeneration = if (wantsReplacement) replacementGeneration else currentGeneration
-        val current = candidates.firstOrNull { it.generation == selectedGeneration && it.attached }
+        val current = candidates.firstOrNull { it.generation == selectedGeneration && it.attached &&
+            (currentRunId == null || it.runId == currentRunId) }
         if (wantsReplacement) return replace(candidates, current, call, args)
-        // A new parent must continue ordinary delegation through the retained coordinator when one
-        // still owns the historical task. This coordinator contains the original model snapshot.
-        // Only a live coordinator can dispatch. An archived generation holds read-only snapshots of
-        // finished tasks; routing new work there would answer TASK_FINISHED forever for this owner.
-        // A race where the chosen live generation retires before dispatch still yields TASK_FINISHED
-        // and never falls back to the current user setting for that retained generation.
-        val retained = if (id.isBlank()) candidates.lastOrNull { it !== current && hasLiveRetainedTasks(it) } else null
-        val ordinary = if (retained != null) {
-            val plan = ChildTaskOrdinaryDispatchSelection.plan(
-                current = current?.workers?.mapNotNull { it.configuration }.orEmpty(),
-                frozen = retained.workers.mapNotNull { it.configuration },
-                retainedTasks = true,
-            )
-            retained.takeIf { plan.ordinary.isNotEmpty() }
-        } else current
-        val group = if (id.isNotBlank()) candidates.firstOrNull { owns(it, id) } else ordinary
+        // New dispatch is run-local. The construction entry point supplies frozen ordinary
+        // candidates to this run's coordinator; historical coordinators remain task_id controls.
+        // Never resume, adopt or fall back to a retained group just to create a new task.
+        val group = if (id.isNotBlank()) candidates.firstOrNull { owns(it, id) } else current
         if (group == null) return error(if (id.isNotBlank()) "TASK_NOT_FOUND" else "RUN_CLOSED")
         if (synchronized(this) { group.coordinator == null && !group.retiring } && call.name != "get_task_result") return error("TASK_FINISHED")
         val response = if (call.name == "continue_task") continueOwned(group, currentRunId ?: current?.runId, call) else result(group, id, call)

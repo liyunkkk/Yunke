@@ -478,10 +478,10 @@ class AgentModelClientLoopTest {
     }
 
     @Test
-    fun malformedAndDuplicateToolCallsReceiveStableTerminalResults() {
+    fun malformedCallsAndUniqueIdsReceiveStableTerminalResults() {
         val malformedCalls = JSONArray()
-            .put(toolCall("duplicate", "get_current_context", "{}"))
-            .put(toolCall("duplicate", "get_current_context", "{}"))
+            .put(toolCall("first", "get_current_context", "{}"))
+            .put(toolCall("second", "get_current_context", "{}"))
             .put("not-an-object")
         val firstResponse = assistant(content = "", finishReason = "tool_calls")
             .put("tool_calls", malformedCalls)
@@ -503,25 +503,41 @@ class AgentModelClientLoopTest {
 
         assertEquals(
             listOf(
-                "duplicate" to "get_current_context",
-                "duplicate_1" to "get_current_context",
+                "first" to "get_current_context",
+                "second" to "get_current_context",
             ),
             executed,
         )
         val secondRequest = provider.requests[1]
         assertEquals(
-            listOf("duplicate", "duplicate_1", "tool_call_2"),
+            listOf("first", "second", "tool_call_2"),
             secondRequest
                 .getJSONObject(secondRequest.length() - 4)
                 .getJSONArray("tool_calls")
                 .let { calls -> (0 until calls.length()).map { calls.getJSONObject(it).getString("id") } },
         )
         assertEquals(
-            listOf("duplicate", "duplicate_1", "tool_call_2"),
+            listOf("first", "second", "tool_call_2"),
             (3 downTo 1).map { offset ->
                 secondRequest.getJSONObjectFromEnd(offset).getString("tool_call_id")
             },
         )
+    }
+
+    @Test
+    fun duplicateRawToolIdsRejectTheBatchWithoutExecutingEitherCall() {
+        val provider = ScriptedProvider(assistant(content = "", finishReason = "tool_calls")
+            .put("tool_calls", JSONArray()
+                .put(toolCall("duplicate", "get_current_context", "{}"))
+                .put(toolCall("duplicate", "get_current_context", "{}"))))
+        var executed = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            AgentModelClient.complete(config = modelConfig(), prompt = "开始", provider = provider,
+                toolExecutor = AgentModelClient.ToolExecutor { executed++; AgentModelClient.ToolResult("unexpected") })
+        }
+        assertEquals(AgentToolReplayGuard.CODE, failure.code)
+        assertEquals(0, executed)
+        assertEquals(1, provider.requests.size)
     }
 
     @Test
@@ -860,7 +876,10 @@ class AgentModelClientLoopTest {
         assertEquals(List(3) { "conversation-retry" }, sessions)
         val retriedHistory = JSONArray(requests[2])
         assertEquals(requests[1], JSONArray().apply {
-            for (index in 0 until retriedHistory.length() - 1) put(retriedHistory.getJSONObject(index))
+            for (index in 0 until retriedHistory.length() - 1) {
+                val message = retriedHistory.getJSONObject(index)
+                if (!AgentRecoveryContext.isActive(JSONArray().put(message))) put(message)
+            }
         }.toString())
         assertTrue(requests[2].contains("Continue the interrupted task"))
         assertTrue(requests[2].contains("data:image/png"))

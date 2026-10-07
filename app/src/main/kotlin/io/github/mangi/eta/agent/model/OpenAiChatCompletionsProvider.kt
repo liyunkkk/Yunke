@@ -50,7 +50,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .build()
 
         val requestJson = request.restrictReconnectPayload(buildRequestJson(config, request.messages, request.tools), capabilities.endpoint)
-        val requestBody = requestJson.toString()
+        val serializedBody = requestJson.toString()
+        val requestBody = serializedBody
             .toRequestBody(JSON_MEDIA_TYPE)
 
         val httpRequest = Request.Builder()
@@ -62,7 +63,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         try {
             runController.throwIfCancelled()
             onEvent(ProviderEvent.RequestStarted)
-            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength())
+            AgentWireRequestEstimate.publish(requestJson, capabilities.endpoint, request, onEvent, requestBody.contentLength(), serializedBody)
             val assistantMessage = readStreamingAssistantMessage(httpRequest, runController, onEvent, request.requiresCompleteStream)
             onEvent(ProviderEvent.Completed(assistantMessage.optString("finish_reason").ifBlank { null }))
             return ProviderResponse(assistantMessage)

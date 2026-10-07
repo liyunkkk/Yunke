@@ -6,13 +6,21 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
 internal class AgentRunRetryState {
     private val waiting = mutableSetOf<String>()
     private val reconnecting = mutableMapOf<String, MutableSet<String>>()
+    private val endedReconnects = mutableMapOf<String, MutableSet<String>>()
 
     fun accept(runId: String, event: AgentEvent) {
         when (event) {
             is AgentEvent.ModelRetryScheduled -> waiting.add(runId)
             is AgentEvent.ErrorReconnectChanged -> {
-                if (event.status == "running") reconnecting.getOrPut(runId) { mutableSetOf() }.add(event.reconnectId)
-                else reconnecting[runId]?.remove(event.reconnectId)
+                if (event.status == "running") {
+                    if (endedReconnects[runId]?.contains(event.reconnectId) != true) {
+                        reconnecting.getOrPut(runId) { mutableSetOf() }.add(event.reconnectId)
+                    }
+                } else if (event.status in setOf("stopped", "succeeded", "failed")) {
+                    endedReconnects.getOrPut(runId) { mutableSetOf() }.add(event.reconnectId)
+                    reconnecting[runId]?.remove(event.reconnectId)
+                    waiting.remove(runId)
+                }
             }
             is AgentEvent.ProviderRequestStarted -> waiting.remove(runId)
             is AgentEvent.RunFinished,
@@ -26,5 +34,6 @@ internal class AgentRunRetryState {
     fun clear(runId: String) {
         waiting.remove(runId)
         reconnecting.remove(runId)
+        endedReconnects.remove(runId)
     }
 }

@@ -362,7 +362,12 @@ internal class AgentRuntimeSession(
     ): Boolean {
         if (childTaskId == null) return withSessionLock {
             if (state != State.RUNNING) return false
-            controller.requestCompact(keepRecentMessages, compressModelConfig)
+            if (!controller.enqueueCompact(keepRecentMessages, compressModelConfig)) return false
+            // Pause observers emit back into the session; never notify while holding its lock.
+            afterUnlock += {
+                if (withSessionLock { state == State.RUNNING }) controller.resumeForCompact()
+            }
+            true
         }
         // A child callback runs outside the session lock but can still own its coordinator.
         if (lock.isHeldByCurrentThread || (childCompactionDepth.get() ?: 0) > 0) return false

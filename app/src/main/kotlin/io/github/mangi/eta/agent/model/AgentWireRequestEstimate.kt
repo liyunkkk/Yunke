@@ -56,10 +56,10 @@ internal object AgentWireRequestEstimate {
 
     /** Same numeric snapshot drives the existing estimate channel and the bounded diagnostic. */
     fun publish(body: JSONObject, endpoint: EndpointKind, request: ProviderRequest, onEvent: (ProviderEvent) -> Unit,
-        serializedBodyBytes: Long? = null) {
+        serializedBodyBytes: Long? = null, serializedBody: String? = null) {
         val shape = measure(body, endpoint)
         runCatching {
-            request.toolDiagnosticAttempt?.emit("request_shape",
+            request.toolDiagnosticAttempt?.requestShape(
                 AgentRequestContextDiagnostics.wireBodyFields(shape).apply {
                     serializedBodyBytes?.takeIf { it >= 0 }?.let { put("body_utf8_bytes", it) }
                     if (endpoint == EndpointKind.RESPONSES) {
@@ -67,7 +67,7 @@ internal object AgentWireRequestEstimate {
                             AgentRequestContextDiagnostics.responseBody(body, request.messages))
                         legacy.keys().forEach { key -> if (!has(key)) put(key, legacy.get(key)) }
                     }
-                })
+                }, serializedBody, body)
         }
         onEvent(ProviderEvent.RequestEstimate(shape.tokens))
     }

@@ -6,8 +6,6 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.RuntimeArchiveEventEntity
 import io.github.mangi.eta.data.db.RuntimeArchiveRunEntity
-import io.github.mangi.eta.data.db.RuntimeArchiveRunWithEvents
-import io.github.mangi.eta.data.db.RuntimeArchiveRunWithEventsSeed
 import io.github.mangi.eta.data.db.RuntimeRunDao
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -50,8 +48,12 @@ internal object AgentRunArchiveStore {
     fun list(context: Context): List<ArchivedRun> {
         val appContext = context.applicationContext
         return runBlocking(Dispatchers.IO) {
-            prune(EtaDatabase.get(appContext).runtimeRunDao())
-                .mapNotNull { it.toDomain() }
+            val dao = EtaDatabase.get(appContext).runtimeRunDao()
+            prune(dao).mapNotNull { run ->
+                runCatching {
+                    run.toDomain(loadArchiveEvents(dao, run.archiveRunId))
+                }.getOrNull()
+            }
         }
     }
 
@@ -65,16 +67,22 @@ internal object AgentRunArchiveStore {
         }
     }
 
-    private suspend fun prune(dao: RuntimeRunDao): List<RuntimeArchiveRunWithEvents> {
+    private suspend fun prune(dao: RuntimeRunDao): List<RuntimeArchiveRunEntity> {
         val now = System.currentTimeMillis()
-        // 旧版本可能已写入超限事件：读取前先清理，避免 CursorWindow 溢出。
-        dao.pruneOversizedArchiveEvents(AgentEventJsonCodec.MAX_READABLE_EVENT_BYTES)
-        val pruned = dao.archivedRuns()
-            .filter { now - it.run.createdAt <= MAX_AGE_MS }
-            .sortedBy { it.run.createdAt }
+        val headers = dao.archivedRunHeaders()
+        val retained = headers
+            .filter { now - it.createdAt <= MAX_AGE_MS }
+            .sortedBy { it.createdAt }
             .takeLast(MAX_ARCHIVED)
-        dao.replaceArchivedRuns(pruned.map { it.toSeed() })
-        return dao.archivedRuns()
+        val retainedIds = retained.mapTo(mutableSetOf()) { it.archiveRunId }
+        headers
+            .asSequence()
+            .filterNot { it.archiveRunId in retainedIds }
+            .forEach { run ->
+                dao.deleteArchivedEvents(run.archiveRunId)
+                dao.deleteArchivedRunByArchiveId(run.archiveRunId)
+            }
+        return retained
     }
 
     private val ArchivedRun.archiveRunId: String
@@ -103,39 +111,41 @@ internal object AgentRunArchiveStore {
             RuntimeArchiveEventEntity(
                 archiveRunId = archiveRunId,
                 sortIndex = index,
-                eventJson = AgentEventJsonCodec.encode(event),
+                eventJson = AgentEventJsonCodec.encodeForCheckpoint(event).json,
             )
         }
 
-    private fun RuntimeArchiveRunWithEvents.toDomain(): ArchivedRun? =
+    private fun RuntimeArchiveRunEntity.toDomain(
+        events: List<RuntimeArchiveEventEntity>,
+    ): ArchivedRun? =
         runCatching {
             ArchivedRun(
                 handoff = AgentRuntimeWire.EntryHandoff(
-                    id = run.handoffId,
-                    source = run.handoffSource,
-                    payload = run.handoffPayload,
-                    dismissEntrySurfaceOnForegroundOperation = run.dismissEntrySurface,
+                    id = handoffId,
+                    source = handoffSource,
+                    payload = handoffPayload,
+                    dismissEntrySurfaceOnForegroundOperation = dismissEntrySurface,
                 ),
                 result = AgentRuntimeWire.RunResult(
-                    runId = run.runId.ifBlank { run.archiveRunId },
-                    ok = run.ok,
-                    content = run.content,
-                    error = run.error,
-                    reasoningContent = run.reasoningContent,
-                    virtualDeliveryCompleted = run.virtualDeliveryCompleted,
-                    transcript = AgentConversationCodec.decodeTranscript(run.transcriptJson).ifEmpty {
-                        if (!run.ok || run.content.isBlank()) return@ifEmpty emptyList()
+                    runId = runId.ifBlank { archiveRunId },
+                    ok = ok,
+                    content = content,
+                    error = error,
+                    reasoningContent = reasoningContent,
+                    virtualDeliveryCompleted = virtualDeliveryCompleted,
+                    transcript = AgentConversationCodec.decodeTranscript(transcriptJson).ifEmpty {
+                        if (!ok || content.isBlank()) return@ifEmpty emptyList()
                         listOf(
                             AgentModelClient.ConversationMessage(
                                 role = "assistant",
-                                content = run.content,
-                                reasoningContent = run.reasoningContent,
+                                content = content,
+                                reasoningContent = reasoningContent,
                             )
                         )
                     },
                 ),
-                createdAt = run.createdAt,
-                userImagePreviews = JSONArray(run.userImagePreviewsJson).let { previews ->
+                createdAt = createdAt,
+                userImagePreviews = JSONArray(userImagePreviewsJson).let { previews ->
                     buildList {
                         for (index in 0 until previews.length()) {
                             previews.optString(index)
@@ -150,13 +160,25 @@ internal object AgentRunArchiveStore {
             )
         }.getOrNull()
 
-    private fun RuntimeArchiveRunWithEvents.toSeed(): RuntimeArchiveRunWithEventsSeed =
-        RuntimeArchiveRunWithEventsSeed(
-            run = run,
-            events = events
-                .sortedBy { it.sortIndex }
-                .map { it.copy(id = 0) },
-        )
+    private suspend fun loadArchiveEvents(
+        dao: RuntimeRunDao,
+        archiveRunId: String,
+    ): List<RuntimeArchiveEventEntity> = buildList {
+        var offset = 0
+        while (true) {
+            val page = dao.archivedEvents(
+                archiveRunId = archiveRunId,
+                limit = ARCHIVE_EVENT_PAGE_SIZE,
+                offset = offset,
+            )
+            if (page.isEmpty()) break
+            addAll(page)
+            offset += page.size
+            if (page.size < ARCHIVE_EVENT_PAGE_SIZE) break
+        }
+    }
+
+    private const val ARCHIVE_EVENT_PAGE_SIZE = 8
 
     private fun compactEvents(events: List<AgentEvent>): List<AgentEvent> {
         val compacted = mutableListOf<AgentEvent>()

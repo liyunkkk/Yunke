@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.agent.model.AgentToolSchema
+import io.github.mangi.eta.agent.delegation.SubAgentResultPage
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -14,8 +15,8 @@ internal object ExistingChildTaskTools {
                 JSONObject().put("type", "object").put("properties", properties)
                     .put("required", required).put("additionalProperties", false)))
         }
-        add("get_task_result", "Read an old task's status, actual model and result; omit task_id to list this conversation's tasks. Read the current result/checkpoint before any successor and confirm the old execution has stopped. Parent network failure is not evidence of child model failure. Never replay uncertain paid media. wait_ms up to 10000, after_seq/event_limit page supervision events.",
-            JSONObject().put("task_id", id).put("offset", number).put("wait_ms", number)
+        add("get_task_result", "Running polls omit prose. Read text_fields/text_page; use text_field + text_offset + text_limit for bounded prose pages, independent of after_seq. partial_result/model_report_unverified are opt-in. Read an old task's status, actual model and result; omit task_id to list this conversation's tasks. Read the current result/checkpoint before any successor and confirm the old execution has stopped. Parent network failure is not evidence of child model failure. Never replay uncertain paid media. wait_ms up to 10000, after_seq/event_limit page supervision events.",
+            SubAgentResultPage.addProperties(JSONObject()).put("task_id", id).put("offset", number).put("wait_ms", number)
                 .put("after_seq", number).put("event_limit", number))
         add("manage_agent_workspace", "Inspect or manage persistently owned workspaces from this conversation, including after restart. list accepts offset/limit and returns next_offset; empty is success; do not discard useful unmerged work without user intent. Configuration changes do not authorize workspace takeover or direct replacement; preserve ownership checks and isolated handoff.",
             JSONObject().put("action", JSONObject().put("type", "string")

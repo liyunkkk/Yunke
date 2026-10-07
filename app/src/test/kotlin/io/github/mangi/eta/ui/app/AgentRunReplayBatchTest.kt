@@ -19,6 +19,24 @@ import org.junit.Test
 
 class AgentRunReplayBatchTest {
     @Test
+    fun streamingAssistantAppendUsesIncrementalNormalizationUntilStructureChanges() {
+        val runId = "incremental"
+        val user = UserMessageUi("user-$runId", "task")
+        val first = AgentMessageUi("assistant-$runId", "a", isStreaming = true)
+        val batch = AgentRunReplayBatch()
+
+        assertEquals(listOf(user, first), batch.normalize(runId, listOf(user, first)))
+        val second = first.copy(content = "ab")
+        assertSame(second, batch.normalize(runId, listOf(user, second)).last())
+        assertEquals(1, batch.incrementalFastPathHits)
+
+        val terminal = first.copy(content = "ab", isStreaming = false)
+        val notice = SystemNoticeMessageUi("notice-$runId", SystemNoticeCode.Stopped)
+        batch.normalize(runId, listOf(user, notice, terminal))
+        assertEquals("Terminal state and structure use the full path", 1, batch.incrementalFastPathHits)
+    }
+
+    @Test
     fun thousandMixedReplayEventsOn3200MessageHistoryNormalizeAndSummarizeOnce() {
         val events = buildList<AgentEvent> {
             repeat(100) { round ->

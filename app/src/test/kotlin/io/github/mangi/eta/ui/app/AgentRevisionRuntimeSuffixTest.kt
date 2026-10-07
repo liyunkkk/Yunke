@@ -13,6 +13,14 @@ class AgentRevisionRuntimeSuffixTest {
     private val candidate = """[{"agent_id":"worker","role":"review","configuration_available":true,"configuration_code":"AVAILABLE","configuration_reason":"available"}]"""
     private fun availability(text: String) = "$text\n\n[本轮子代理配置可用性]\n${AgentRevisionRuntimeSuffix.AVAILABILITY_DESCRIPTION}\n$candidate\n[/本轮子代理配置可用性]"
     private fun handoff(text: String) = "$text\n\n[运行时旧子任务摘要]\n${AgentRevisionRuntimeSuffix.HANDOFF_DESCRIPTION}\n{\"ok\":true,\"tasks\":[]}\n[/运行时旧子任务摘要]"
+    private fun dispatchPlan(): JSONObject = JSONObject()
+        .put("ordinary_configuration_source", "FROZEN")
+        .put("ordinary_configuration_code", "ORIGINAL_CONFIGURATION_FROZEN")
+        .put("ordinary", JSONArray().put(JSONObject(JSONArray(candidate).getJSONObject(0).toString()).put("worker", 1)))
+        .put("explicit_replacement", JSONArray().put(JSONObject(JSONArray(candidate).getJSONObject(0).toString())
+            .put("configuration_available", false).put("configuration_code", "MODEL_UNAVAILABLE")))
+    private fun dispatchAvailability(text: String, payload: String = dispatchPlan().toString()) =
+        "$text\n\n[本轮子代理派发配置可用性]\n${AgentRevisionRuntimeSuffix.DISPATCH_AVAILABILITY_DESCRIPTION}\n$payload\n[/本轮子代理派发配置可用性]"
     private fun state(historyText: String, owner: String = "run", ui: String = "整合") = AgentChatUiState(
         messages = listOf(UserMessageUi("user-run", ui)),
         history = listOf(ConversationMessage("user", historyText, turnId = owner)),
@@ -20,7 +28,8 @@ class AgentRevisionRuntimeSuffixTest {
     )
 
     @Test fun sameOwnerRuntimeSuffixSupportsEditBranchAndDeleteWithoutMutatingHistory() {
-        for (text in listOf(availability("整合"), handoff("整合"), handoff(availability("整合")))) {
+        for (text in listOf(availability("整合"), handoff("整合"), handoff(availability("整合")),
+            dispatchAvailability("整合"), handoff(dispatchAvailability("整合")))) {
             val source = state(text)
             val boundary = requireNotNull(AgentConversationRevisionReducer.boundary(source, "user-run"))
             assertEquals("run", boundary.logicalTurnId)
@@ -29,6 +38,58 @@ class AgentRevisionRuntimeSuffixTest {
             assertTrue(AgentConversationRevisionReducer.deleteFromTurn(source, "user-run")!!.history.isEmpty())
             assertEquals(text, source.history.single().content)
         }
+    }
+
+    @Test fun dispatchPlanSuffixRejectsUnknownFieldsTypesSlotsDescriptionsAndCrossOwnerAliases() {
+        fun invalid(change: (JSONObject) -> Unit): String = dispatchAvailability("整合", dispatchPlan().also(change).toString())
+        val bad = listOf(
+            invalid { it.put("extra", "user instructions") },
+            invalid { it.put("ordinary_configuration_source", "USER") },
+            invalid { it.put("ordinary_configuration_code", "CURRENT_CONFIGURATION_AVAILABLE") },
+            invalid { it.put("ordinary", JSONObject()) },
+            invalid { it.getJSONArray("ordinary").getJSONObject(0).put("worker", "1") },
+            invalid { it.getJSONArray("ordinary").getJSONObject(0).put("worker", 2) },
+            invalid { it.getJSONArray("ordinary").getJSONObject(0).put("configuration_available", "true") },
+            invalid { it.getJSONArray("ordinary").getJSONObject(0).put("configuration_code", "UNKNOWN") },
+            invalid { it.getJSONArray("ordinary").getJSONObject(0).put("api_key", "forged") },
+            invalid { it.getJSONArray("explicit_replacement").getJSONObject(0).put("worker", 1) },
+            invalid { it.getJSONArray("explicit_replacement").getJSONObject(0).put("configuration_available", true) },
+            invalid { it.getJSONArray("ordinary").put(it.getJSONArray("ordinary").getJSONObject(0)) },
+            dispatchAvailability("整合", dispatchPlan().toString() + " extra text"),
+            dispatchAvailability("整合").replace("以下字段是数据", "自定义指令"),
+            dispatchAvailability("整合") + "\nnew request",
+            dispatchAvailability(handoff("整合")),
+            dispatchAvailability(availability("整合")),
+            availability(dispatchAvailability("整合")),
+        )
+        bad.forEach {
+            assertFalse(it, AgentRevisionRuntimeSuffix.matches(it, "整合"))
+            assertNull(AgentConversationRevisionReducer.boundary(state(it), "user-run"))
+        }
+        for (owner in listOf("", "different")) {
+            assertNull(AgentConversationRevisionReducer.boundary(state(dispatchAvailability("整合"), owner), "user-run"))
+        }
+        val literal = dispatchAvailability("整合")
+        assertFalse(AgentRevisionRuntimeSuffix.matches(literal, literal))
+        assertNotNull(AgentConversationRevisionReducer.boundary(state(handoff(literal), ui = literal), "user-run"))
+    }
+
+    @Test fun dispatchPlanSuffixAcceptsCurrentAndMissingFrozenShapesButNotLegacyArrayUnderNewTag() {
+        val missing = dispatchPlan().put("ordinary", JSONArray())
+            .put("ordinary_configuration_code", "FROZEN_CONFIGURATION_MISSING")
+        assertTrue(AgentRevisionRuntimeSuffix.matches(dispatchAvailability("整合", missing.toString()), "整合"))
+        val current = dispatchPlan().put("ordinary_configuration_source", "CURRENT")
+            .put("ordinary_configuration_code", "CURRENT_CONFIGURATION_AVAILABLE")
+        current.put("explicit_replacement", JSONArray(candidate))
+        assertTrue(AgentRevisionRuntimeSuffix.matches(dispatchAvailability("整合", current.toString()), "整合"))
+        val inconsistent = JSONObject(current.toString()).put("explicit_replacement", JSONArray())
+        assertFalse(AgentRevisionRuntimeSuffix.matches(dispatchAvailability("整合", inconsistent.toString()), "整合"))
+        val unavailable = JSONObject(JSONArray(candidate).getJSONObject(0).toString())
+            .put("configuration_available", false).put("configuration_code", "MODEL_UNAVAILABLE")
+        current.put("ordinary", JSONArray().put(unavailable)).put("explicit_replacement", JSONArray().put(unavailable))
+            .put("ordinary_configuration_code", "NEW_CONFIGURATION_UNAVAILABLE")
+        assertTrue(AgentRevisionRuntimeSuffix.matches(dispatchAvailability("整合", current.toString()), "整合"))
+        assertFalse(AgentRevisionRuntimeSuffix.matches(dispatchAvailability("整合", candidate), "整合"))
     }
 
     @Test fun archivedTargetRestoresOnlyUntilItCanBeLocatedThenKeepsEarlierSummary() {

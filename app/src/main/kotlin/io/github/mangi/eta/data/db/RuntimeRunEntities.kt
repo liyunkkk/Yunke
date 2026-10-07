@@ -1,12 +1,10 @@
 package io.github.mangi.eta.data.db
 
 import androidx.room.ColumnInfo
-import androidx.room.Embedded
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
-import androidx.room.Relation
 
 @Entity(tableName = "runtime_results")
 internal data class RuntimeResultEntity(
@@ -66,15 +64,6 @@ internal data class RuntimeArchiveEventEntity(
     @ColumnInfo(name = "event_json") val eventJson: String,
 )
 
-internal data class RuntimeArchiveRunWithEvents(
-    @Embedded val run: RuntimeArchiveRunEntity,
-    @Relation(
-        parentColumn = "archive_run_id",
-        entityColumn = "archive_run_id",
-    )
-    val events: List<RuntimeArchiveEventEntity>,
-)
-
 @Entity(tableName = "runtime_inflight_runs")
 internal data class RuntimeInFlightRunEntity(
     @PrimaryKey @ColumnInfo(name = "run_id") val runId: String,
@@ -85,6 +74,8 @@ internal data class RuntimeInFlightRunEntity(
     @ColumnInfo(name = "dismiss_entry_surface") val dismissEntrySurface: Boolean,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(name = "recovery_incomplete", defaultValue = "0")
+    val recoveryIncomplete: Boolean = false,
 )
 
 @Entity(
@@ -107,13 +98,4 @@ internal data class RuntimeInFlightEventEntity(
     @ColumnInfo(name = "run_id") val runId: String,
     @ColumnInfo(name = "sort_index") val sortIndex: Int,
     @ColumnInfo(name = "event_json") val eventJson: String,
-)
-
-internal data class RuntimeInFlightRunWithEvents(
-    @Embedded val run: RuntimeInFlightRunEntity,
-    @Relation(
-        parentColumn = "run_id",
-        entityColumn = "run_id",
-    )
-    val events: List<RuntimeInFlightEventEntity>,
 )

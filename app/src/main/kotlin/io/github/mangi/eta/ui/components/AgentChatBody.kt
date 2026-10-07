@@ -247,13 +247,9 @@ internal fun AgentChatBody(
             }
             .distinctUntilChanged()
     }.collectAsState(initial = Triple(false, null, null))
+    val visibleMessagesCache = remember { AgentVisibleMessagesCache() }
     val visibleMessages = remember(messages, messageEdit?.targetMessageId) {
-        AgentConversationRevisionReducer.visibleMessagesForEdit(
-            messages = messages,
-            targetMessageId = messageEdit?.targetMessageId,
-        ).filterNot { message ->
-            message is AgentMessageUi && message.content.isBlank()
-        }
+        visibleMessagesCache.project(messages, messageEdit?.targetMessageId)
     }
     LaunchedEffect(visibleMessages, isStreaming) {
         val last = visibleMessages.filterIsInstance<AgentMessageUi>().lastOrNull()
@@ -442,7 +438,7 @@ internal fun AgentChatBody(
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun AgentChatScaffold(
+internal fun AgentChatScaffold(
     visibleMessages: List<AgentChatMessageUi>,
     timelineEntries: List<AgentTimelineEntry>,
     hasMessages: Boolean,
@@ -535,7 +531,9 @@ private fun AgentChatScaffold(
                 input = input,
                 draftField = draftField,
                 modelPickerState = modelPickerState,
-                history = history,
+                history = historyForContextSendBudget(
+                    history, measuredContextTokens, autoCompressEnabled,
+                ),
                 billedContextTokens = billedContextTokens,
                 projectedContextTokens = projectedContextTokens,
                 billedHistoryTokens = billedHistoryTokens,
@@ -660,14 +658,21 @@ internal fun AgentConversationMessages(
     // Independent, trace-gated telemetry also covers idle conversations. No frame loop.
     val scrollTraceEnabled = rememberChatScrollTraceEnabled()
     val chatListTrace = ChatScrollMonitor(state = scrollState, enabled = scrollTraceEnabled)
+    // Observe attach/detach only; never change lazy keys or remount completed content.
+    val diagnosticGeneration = StreamPerformanceDiagnostics.sessionGeneration.longValue
+    val diagnosticList = remember(scrollState, diagnosticGeneration) { nextStreamDiagnosticListId() }
+    val diagnosticListAttribution = StreamPerformanceDiagnostics.listAttribution(diagnosticList)
     traceChatListOwnerExecution(chatListTrace, scrollTraceEnabled)
     // Retain successful parses beyond individual lazy-row compositions.
     val completedMarkdownCache = remember(scrollState) { CompletedMarkdownCache() }
     // AgentChatBody supplies this projection so the initial tail anchor and the
     // rendered rows share one remembered full-list derivation. The standalone voice
     // panel still computes it here when it calls this renderer directly.
+    val standaloneTimelineProjection = remember { AgentTimelineProjectionCache() }
     val projectedTimelineEntries = timelineEntries ?: remember(visibleMessages) {
-        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { visibleMessages.toTimelineEntries() }
+        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) {
+            standaloneTimelineProjection.project(visibleMessages)
+        }
     }
     val expansionSaver = remember {
         listSaver<Map<String, Boolean>, String>(
@@ -711,8 +716,11 @@ internal fun AgentConversationMessages(
         }
     }
     val retainedWorkSteps = workAnimations.mapValues { it.value.retainedStepKeys }
+    val timelineRowsProjection = remember { AgentTimelineRowsCache() }
     val timelineRows = remember(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps) {
-        projectedTimelineEntries.toLazyTimelineRows(workExpansionOverrides, isStreaming, retainedWorkSteps)
+        StreamPerformanceDiagnostics.measure("timeline.project", projectedTimelineEntries.size.toLong()) {
+            timelineRowsProjection.project(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps)
+        }
     }
     LaunchedEffect(scrollToMessageId, timelineRows) {
         val target = scrollToMessageId ?: return@LaunchedEffect
@@ -1005,14 +1013,19 @@ internal fun AgentConversationMessages(
     // 不额外请求帧。跟底上提时列表裁在静止线上，真正画进输入框的只能是没在上提的时候；
     // 上提时越线的部分被裁掉，只计数。跟底的各个条件变化、越线开始和结束各记一行。
     LaunchedEffect(scrollState) {
-        snapshotFlow { currentStreaming.value || isBottomSettling }
+        snapshotFlow {
+            val generation = StreamPerformanceDiagnostics.sessionGeneration.longValue
+            generation to (StreamPerformanceDiagnostics.enabled && (currentStreaming.value || isBottomSettling))
+        }
             .distinctUntilChanged()
-            .collectLatest { active ->
+            .collectLatest { (generation, active) ->
                 if (!active) return@collectLatest
                 var lastState = ""
                 var breachSamples = 0
                 var breachMaxPx = 0
                 snapshotFlow {
+                    if (StreamPerformanceDiagnostics.sessionGeneration.longValue != generation ||
+                        !StreamPerformanceDiagnostics.enabled) return@snapshotFlow null
                     val info = scrollState.layoutInfo
                     val sentinel = info.visibleItemsInfo.firstOrNull { it.key == ChatBottomSentinelKey }
                     val last = info.visibleItemsInfo.lastOrNull()
@@ -1044,7 +1057,8 @@ internal fun AgentConversationMessages(
                 }
                     .distinctUntilChanged()
                     .collect { sample ->
-                        if (!StreamPerformanceDiagnostics.enabled) return@collect
+                        if (sample == null || StreamPerformanceDiagnostics.sessionGeneration.longValue != generation ||
+                            !StreamPerformanceDiagnostics.enabled) return@collect
                         val over = sample.overPx
                         if (sample.state != lastState) {
                             StreamPerformanceDiagnostics.note("follow") {
@@ -1288,9 +1302,10 @@ internal fun AgentConversationMessages(
                 clipRect(bottom = restLine) { this@drawWithContent.drawContent() }
             },
     ) {
+        val speechPrefaceProjection = remember { AgentSpeechPrefaceCache() }
         val speechPrefaces = remember(visibleMessages, finalResultMessageIds) {
             StreamPerformanceDiagnostics.measure("timeline.prefaces", visibleMessages.size.toLong()) {
-                visibleTurnSpeechPrefaces(visibleMessages, finalResultMessageIds)
+                speechPrefaceProjection.project(visibleMessages, finalResultMessageIds)
             }
         }
         val messageActions = remember { ChatMessageActions() }
@@ -1304,6 +1319,8 @@ internal fun AgentConversationMessages(
             messageActions.onBranchMessage = onBranchMessage
             messageActions.onQuestionDraftChanged = onQuestionDraftChanged
             messageActions.onSubmitQuestionAnswer = onSubmitQuestionAnswer
+            // Commit count only (ns=0): proves this content lambda was applied, not its cost.
+            StreamPerformanceDiagnostics.record("chat.content.commit", value = 1)
         }
         LazyColumn(
             state = scrollState,
@@ -1313,6 +1330,8 @@ internal fun AgentConversationMessages(
                 Arrangement.Top
             },
             modifier = Modifier
+                .streamDiagnosticMeasure("list.measure", diagnosticListAttribution)
+                .streamDiagnosticPlacement("list.place", diagnosticListAttribution)
                 .fillMaxSize()
                 .graphicsLayer {
                     val overflow = scrollState.followTailOverflow()
@@ -1329,6 +1348,7 @@ internal fun AgentConversationMessages(
                     }
                 }
                 .onGloballyPositioned {
+                    StreamPerformanceDiagnostics.recordListGeometry(diagnosticList, scrollState, visibleMessages.size)
                     // Post-layout, before draw: pinned work insertion preserves a measured
                     // pre-click key even when the tail is outside the lazy measurement window.
                     // Normal follow still consumes only excess beyond the existing draw buffer.
@@ -1401,7 +1421,10 @@ internal fun AgentConversationMessages(
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalExpansionHoldsBottom provides expansionHoldsBottom,
                     LocalCompletedMarkdownCache provides completedMarkdownCache,
+                    LocalStreamDiagnosticRow provides StreamPerformanceDiagnostics.rowAttribution(
+                        diagnosticList, entry.key, timelineDiagnosticRowType(entry)),
                 ) {
+                val diagnosticRow = LocalStreamDiagnosticRow.current
                 val firstMessageAppearance = if (entry is AgentTimelineRow.Message) {
                     // Retire an existing root's appearance on an explicit work toggle even
                     // if LazyColumn retains its composition while temporarily unmeasured.
@@ -1409,7 +1432,11 @@ internal fun AgentConversationMessages(
                     remember(entry.key, workExpansionOverrides) { appearedMessageKeys.add(entry.key) }
                 } else false
                 Column(
-                    modifier = Modifier.fillMaxWidth().then(
+                    modifier = Modifier
+                        .streamDiagnosticMeasure("row.measure", diagnosticRow)
+                        .streamDiagnosticPlacement("row.place", diagnosticRow)
+                        .streamDiagnosticDraw("row.draw", diagnosticRow)
+                        .fillMaxWidth().then(
                         if (entry is AgentTimelineRow.Message) Modifier.animateItem(
                             fadeInSpec = if (firstMessageAppearance) tween(durationMillis = 180) else null,
                             placementSpec = null,

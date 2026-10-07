@@ -59,6 +59,19 @@ class BoundedStreamDiagnosticsTest {
     private fun frame(intended: Long = 0) = DiagnosticFrameRecord(intended, intended, 10_000_000, 8_333_333,
         0, 0, false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
+    @Test fun frameResidualIsSignedAndGpuAndVsyncAreNotExtraParts() {
+        val residual = frame().copy(totalNs = 100, unknownNs = 40, inputNs = 5, animationNs = 5,
+            layoutNs = 10, drawNs = 10, syncNs = 5, commandNs = 10, swapNs = 5,
+            gpuNs = 99, intendedNs = 1000, vsyncNs = 1020)
+        assertEquals(10L, residual.unaccountedNs)
+        assertEquals(0L, residual.overlapNs)
+        assertEquals(20L, residual.vsyncLateNs)
+        val overlapping = residual.copy(totalNs = 80)
+        assertEquals(0L, overlapping.unaccountedNs)
+        assertEquals(10L, overlapping.overlapNs)
+        assertEquals(0L, residual.copy(vsyncNs = 900).vsyncLateNs)
+    }
+
     @Test fun ringOverwriteBudgetAndWindowReset() {
         val ring = BoundedDiagnosticDetails(0, capacity = 2, slowLimit = 2, frameLimit = 1)
         span(ring, 1, 0, 1)
@@ -66,12 +79,15 @@ class BoundedStreamDiagnosticsTest {
         span(ring, 3, 0, 5_000_000)
         span(ring, 4, 0, 6_000_000)
         assertTrue(ring.reserveFrame()); ring.frame(frame())
-        assertFalse(ring.reserveFrame())
-        val first = ring.drain(10_000_000)
-        assertEquals(1L, first.overwritten)
+        assertFalse(ring.reserveFrame(severe = false)) // A severe reservation may evict this light frame.
+        val raw = ring.snapshot(10_000_000)
+        assertEquals(listOf(2L, 3L, 4L), raw.recentForFrame(frame()).map { it.span })
+        val first = raw.select()
+        assertEquals(2L, first.overwritten)
         assertEquals(1L, first.slowBudgetDropped)
         assertEquals(1L, first.frameBudgetDropped)
         assertEquals(listOf(2L, 3L), first.spans.map { it.span })
+        assertEquals(1L, first.spanOutputTruncated) // fourth slow span still entered the ordinary ring
         assertTrue(first.spans.all { it.value == 42L })
         assertTrue(first.frames.single().missed) // <33ms is still abnormal.
         assertEquals(0L, first.fromNs); assertEquals(10_000_000L, first.toNs)
@@ -145,6 +161,26 @@ class BoundedStreamDiagnosticsTest {
             "usage.load.dao.perDay usage.load.decode usage.lockWait usage.transform").split(' ')
         assertEquals(56, labels.size)
         for (label in labels) assertEquals(label, StreamDiagnosticLabels.canonicalStage(label))
+    }
+
+    @Test fun settingsMeasurementBoundariesKeepTheirFixedLabels() {
+        for (label in listOf("settings.topbar.measure", "settings.lazy.measure")) {
+            assertTrue(StreamDiagnosticLabels.stage(label))
+            assertEquals(label, StreamDiagnosticLabels.canonicalStage(label))
+        }
+    }
+
+    @Test fun retestBoundariesAreFixedLabelsWithoutUserOrServiceIdentity() {
+        for (label in listOf(
+            "settings.prefs.initial", "settings.prefs.refresh", "settings.prefs.capture",
+            "settings.prefs.reconcile", "settings.service.subscribe",
+            "render.userPrompt.parse", "render.userBubble.compose", "render.userBubble.measure",
+            "render.userBubble.draw", "render.userText.measure", "render.userText.draw",
+        )) {
+            assertTrue(StreamDiagnosticLabels.stage(label))
+            assertEquals(label, StreamDiagnosticLabels.canonicalStage(label))
+        }
+        assertEquals("render.unknown", StreamDiagnosticLabels.canonicalStage("render.private-prompt"))
     }
 
     @Test fun labelsNeverRetainUnknownSuffixOrPayload() {

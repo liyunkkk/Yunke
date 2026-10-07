@@ -6,31 +6,102 @@ import org.json.JSONObject
 
 /** Runtime 事件的稳定 JSON 投影；只编码 IPC 已公开的安全字段。 */
 internal object AgentEventJsonCodec {
-    // 单条事件持久化上限（字节）：SQLite CursorWindow 单窗口约 2MB，取 512KB 留约 4 倍边界。
-    internal const val MAX_PERSISTED_EVENT_BYTES = 512 * 1024
-    // 读取前自愈清理阈值：旧版本写入的超限行在加载前删除，避免读取时 CursorWindow 溢出。
-    internal const val MAX_READABLE_EVENT_BYTES = 1024 * 1024
-    // 未知字段膨胀时的最小占位；读取端对未知 type 返回 null，会被跳过。
-    private const val OVERSIZED_PLACEHOLDER_JSON = "{\"type\":\"oversized_dropped\"}"
+    /** Keep every checkpoint row well below Android CursorWindow's per-row limit. */
+    const val MAX_CHECKPOINT_EVENT_BYTES = 64 * 1024
 
-    fun encode(event: AgentEvent): String {
-        val json = bundleToJson(AgentRuntimeWire.eventToBundle(event)).toString()
-        if (json.toByteArray(Charsets.UTF_8).size <= MAX_PERSISTED_EVENT_BYTES) return json
-        // 已知膨胀源：context_compacted 在 historyDescriptor == null 时内联全量压缩历史。
-        // 降级为同型但去掉 history 的事件：applied/计数/原因保留，恢复重放按「无历史」处理。
-        if (event is AgentEvent.ContextCompacted && event.history.isNotEmpty()) {
-            val downgraded = bundleToJson(
-                AgentRuntimeWire.eventToBundle(event.copy(history = emptyList()))
-            ).toString()
-            if (downgraded.toByteArray(Charsets.UTF_8).size <= MAX_PERSISTED_EVENT_BYTES) return downgraded
+    private const val CHECKPOINT_DEGRADED_KEY = "__eta_checkpoint_degraded"
+    private const val CHECKPOINT_SKIPPED_KEY = "__eta_checkpoint_skipped"
+    private const val MAX_CHECKPOINT_TOOL_NAMES = 8
+
+    data class CheckpointEncoding(
+        val json: String,
+        val degraded: Boolean,
+    )
+
+    /** Unbounded encoding used by the archive store; checkpoint callers use the bounded API. */
+    fun encode(event: AgentEvent): String = bundleToJson(
+        AgentRuntimeWire.eventToBundle(event)
+    ).toString()
+
+    /**
+     * Encode without truncating either JSON or UTF-8. Oversized payloads are replaced by a
+     * valid metadata-only event, or by a small explicit marker when no safe projection exists.
+     */
+    fun encodeForCheckpoint(
+        event: AgentEvent,
+        completeJson: String = encode(event),
+    ): CheckpointEncoding {
+        val complete = completeJson
+        if (complete.utf8ByteSize() <= MAX_CHECKPOINT_EVENT_BYTES) {
+            return CheckpointEncoding(complete, degraded = false)
         }
-        // 兜底：未知字段膨胀时存最小占位，读取端解码为 null 并被跳过。
-        return OVERSIZED_PLACEHOLDER_JSON
+
+        val projection = event.checkpointSizeSafeProjection()
+        if (projection != null) {
+            val projected = runCatching {
+                JSONObject(encode(projection))
+                    .put(CHECKPOINT_DEGRADED_KEY, true)
+                    .toString()
+            }.getOrNull()
+            if (projected != null && projected.utf8ByteSize() <= MAX_CHECKPOINT_EVENT_BYTES) {
+                return CheckpointEncoding(projected, degraded = true)
+            }
+        }
+
+        // Never persist a partial JSON value. The missing event is observable during recovery.
+        return CheckpointEncoding(
+            JSONObject().put(CHECKPOINT_SKIPPED_KEY, true).toString(),
+            degraded = true,
+        )
     }
+
+    fun isCheckpointDegraded(raw: String): Boolean = runCatching {
+        val json = JSONObject(raw)
+        json.optBoolean(CHECKPOINT_DEGRADED_KEY, false) ||
+            json.optBoolean(CHECKPOINT_SKIPPED_KEY, false)
+    }.getOrDefault(false)
 
     fun decode(raw: String): AgentEvent? = runCatching {
         AgentRuntimeWire.eventFromBundle(jsonToBundle(JSONObject(raw)))
     }.getOrNull()
+
+    private fun String.utf8ByteSize(): Int = toByteArray(Charsets.UTF_8).size
+
+    /** Drop only payloads that are not needed to reconstruct the visible recovery trace. */
+    private fun AgentEvent.checkpointSizeSafeProjection(): AgentEvent? = when (this) {
+        is AgentEvent.RunStarted -> this
+        is AgentEvent.RoundStarted -> copy(historySnapshotId = "")
+        is AgentEvent.ModelRetryScheduled -> copy(reasonDetail = "")
+        is AgentEvent.ErrorReconnectChanged -> copy(reasonDetail = "")
+        is AgentEvent.ProviderRequestStarted -> this
+        is AgentEvent.ProviderResponseStarted -> this
+        is AgentEvent.AssistantBlockStart -> copy(blockId = null, name = null)
+        is AgentEvent.AssistantBlockDelta -> copy(delta = "")
+        is AgentEvent.AssistantBlockEnd -> copy(blockId = null, name = null, replacementContent = null)
+        is AgentEvent.AssistantReceived -> copy(
+            reasoningContent = "",
+            toolNames = toolNames.take(MAX_CHECKPOINT_TOOL_NAMES),
+        )
+        is AgentEvent.ChildContextUpdated -> null
+        is AgentEvent.UsageReceived -> this
+        is AgentEvent.UserSupplementReceived -> copy(text = "", requestId = "", imagesJson = "[]")
+        is AgentEvent.QuestionRequested -> null
+        is AgentEvent.QuestionResolved -> copy(answer = null)
+        is AgentEvent.ToolStarted -> copy(argsPreview = "", command = null)
+        is AgentEvent.ToolFinished -> copy(resultSummary = "")
+        is AgentEvent.HostedToolStarted -> this
+        is AgentEvent.HostedToolFinished -> this
+        is AgentEvent.ToolImagesAttached -> this
+        is AgentEvent.AutoCompactWaiting -> this
+        is AgentEvent.ContextCompactionStarted -> copy(modelName = "")
+        is AgentEvent.ContextCompacted -> copy(
+            history = emptyList(),
+            compressorLabel = "",
+            reason = "",
+        )
+        is AgentEvent.RunFinished -> this
+        is AgentEvent.RunFailed -> copy(reason = "")
+    }
 
     @Suppress("DEPRECATION")
     private fun bundleToJson(bundle: Bundle): JSONObject =

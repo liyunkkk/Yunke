@@ -46,7 +46,9 @@ class AgentPostToolReconnectTest {
     private data class Run(val history: JSONArray, val events: List<AgentEvent>, val requests: Int,
         val executed: List<String>, val failure: AgentModelFailure?, val completion: AgentLoop.Result?)
 
-    private fun run(policy: ErrorReconnectPolicy, clock: Clock, repairAfter: Int? = null): Run {
+    private fun run(policy: ErrorReconnectPolicy, clock: Clock, repairAfter: Int? = null,
+        duringWait: ((AgentRunController, Long, List<AgentEvent>, Int) -> Unit)? = null,
+        terminalFailure: Throwable? = null): Run {
         val history = JSONArray().put(AgentConversationCodec.userTextMessage("finish task"))
         val events = mutableListOf<AgentEvent>()
         val executed = mutableListOf<String>()
@@ -85,13 +87,36 @@ class AgentPostToolReconnectTest {
                     AgentModelClient.ToolResult("{\"ok\":true}")
                 },
                 runController = AgentRunController(), traceFormatter = AgentTraceFormatter(),
-                onEvent = events::add, reconnectTiming = clock,
-                waitForReconnect = { _, delay -> clock.advance(delay) },
+                onEvent = { event ->
+                    events += event
+                    if (event is AgentEvent.ErrorReconnectChanged && event.status == "failed" && terminalFailure != null)
+                        throw terminalFailure
+                }, reconnectTiming = clock,
+                waitForReconnect = { control, delay ->
+                    if (duringWait != null) duringWait(control, delay, events, requests.get())
+                    else clock.advance(delay)
+                },
             ).run()
         } catch (error: AgentModelFailure) {
             failure = error
         }
         return Run(history, events, requests.get(), executed, failure, completion)
+    }
+
+    @Test fun terminalObserverFailureDoesNotReplacePrimaryFailureOrLeakPauseBinding() {
+        val clock = Clock()
+        val primary = IllegalStateException("primary wait failure")
+        val cleanup = IllegalStateException("terminal observer failure")
+        var control: AgentRunController? = null
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            run(ErrorReconnectPolicy.WINDOW_30S, clock,
+                duringWait = { current, _, _, _ -> control = current; throw primary },
+                terminalFailure = cleanup)
+        }
+        assertSame(primary, thrown)
+        assertTrue(thrown.suppressed.any { it === cleanup })
+        val observers = AgentRunController::class.java.getDeclaredField("pauseObservers").apply { isAccessible = true }
+        assertEquals(0, (observers.get(requireNotNull(control)) as Collection<*>).size)
     }
 
     @Test fun exhaustedArgumentsKeepTaskAliveAndRunOnlyNewValidatedCall() {
@@ -120,6 +145,30 @@ class AgentPostToolReconnectTest {
         assertEquals("failed", result.events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
         assertEquals(listOf(1, 2, 3, 1, 2, 3, 1), result.events
             .filterIsInstance<AgentEvent.ModelRetryScheduled>().map { it.attempt })
+    }
+
+    @Test fun postToolPauseStopsTimerAndPreservesPairedResultsUntilResume() {
+        val clock = Clock()
+        val result = run(ErrorReconnectPolicy.WINDOW_30S, clock, repairAfter = 3,
+            duringWait = { control, delay, events, requests ->
+                assertEquals(3, requests)
+                control.pause()
+                assertEquals("stopped", events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().status)
+                val count = events.size
+                clock.advance(120_000)
+                assertEquals(count, events.size)
+                assertFalse(control.isCancelled)
+                control.resume()
+                clock.advance(delay)
+            })
+        assertNull(result.failure)
+        assertEquals("done", result.completion?.content)
+        assertEquals(5, result.requests)
+        assertEquals(listOf("call-4"), result.executed)
+        val changes = result.events.filterIsInstance<AgentEvent.ErrorReconnectChanged>()
+        assertEquals(2, changes.map { it.reconnectId }.distinct().size)
+        assertEquals("succeeded", changes.last().status)
+        assertEquals(2_000L, changes.last().elapsedMs)
     }
 
     @Test fun disabledReconnectPreservesBoundedStop() {

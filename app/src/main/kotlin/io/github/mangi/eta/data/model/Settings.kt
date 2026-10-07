@@ -11,5 +11,5 @@ data class Settings(
     val memoryEnabled: Boolean = true,
     val fileLoggingEnabled: Boolean = true,
     val appearance: AppearanceSettings = AppearanceSettings(),
-    val errorReconnectPolicy: ErrorReconnectPolicy = ErrorReconnectPolicy.NONE,
+    val errorReconnectPolicy: ErrorReconnectPolicy = ErrorReconnectPolicy.DEFAULT,
 )

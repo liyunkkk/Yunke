@@ -1,5 +1,7 @@
-# Local opt-in capture. No app payload logs or heap object snapshots.
-# Exact trace loss must be queried after recording.
+# Local opt-in CPU-only second pass; no app payload logs or heap object snapshots.
+# Generate a NEW private copy with ONE unique, non-existing service-owned output_path
+# for each run; perfetto --txt -c <private-config>, NO -o, no SELinux changes.
+# See tools/stream-diagnostics/README.md. Exact trace loss must be queried after recording.
 buffers { size_kb: 131072 fill_policy: RING_BUFFER }
 buffers { size_kb: 32768 fill_policy: RING_BUFFER }
 duration_ms: 30000
@@ -37,8 +39,9 @@ data_sources { config { name: "linux.process_stats" target_buffer: 1
 data_sources { config { name: "android.surfaceflinger.frametimeline" target_buffer: 1 }}
 data_sources { config { name: "android.gpu.memory" target_buffer: 1 }}
 
-# Short second pass only; sampled profiling changes overhead. Never mix its FPS
-# into the unprofiled pass or claim sampled allocation counts are exact.
+# Separate 99 Hz CPU-clock sampling pass; changes overhead. It is NOT an ON/OFF
+# pair or a stack capture of the same first-pass frame. Never mix its FPS into
+# the unsampled pass. CPU callstacks are NOT allocation counts or allocation stacks.
 # AgentRuntimeService and AgentExecutionService use the main process in Manifest.
 data_sources { config { name: "linux.perf" target_buffer: 1
  perf_event_config {
@@ -46,13 +49,6 @@ data_sources { config { name: "linux.perf" target_buffer: 1
   callstack_sampling { scope { target_cmdline: "io.github.mangi.eta" } }
  }
 }}
-data_sources { config { name: "android.heapprofd" target_buffer: 1
- heapprofd_config {
-  sampling_interval_bytes: 16384
-  process_cmdline: "io.github.mangi.eta"
-  heaps: "libc.malloc"
-  heaps: "com.android.art"
-  shmem_size_bytes: 8388608
-  continuous_dump_config { dump_interval_ms: 5000 }
- }
-}}
+# CPU-only second pass. No allocation counts/stacks, heap objects or heap snapshots.
+# Permission/producer failure is unavailable; report observed zero samples separately.
+# Neither proves idle CPU, no allocations, or complete method coverage.

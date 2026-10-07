@@ -13,6 +13,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.PowerManager
+import android.view.Choreographer
 import android.provider.Settings
 import android.text.format.DateFormat
 import android.widget.Toast
@@ -109,6 +110,7 @@ import io.github.mangi.eta.ui.model.AgentOwnerContextState
 import io.github.mangi.eta.ui.model.normalizeTerminalRunMessages
 import io.github.mangi.eta.ui.model.withTerminalBodiesInOrder
 import io.github.mangi.eta.ui.model.AgentMemoryUiState
+import io.github.mangi.eta.ui.model.incrementalSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
@@ -234,7 +236,15 @@ internal class AgentAppState(
     private val runMessageProjector = AgentRunMessageProjector()
     private val runReplayBatch = AgentRunReplayBatch()
     private val runEventCoalescer = AgentRunEventCoalescer()
+    private val conversationSummaryCache = ConversationSummaryCache()
     private val runEventFlushJobs = mutableMapOf<String, Job>()
+    private val runEventBudgets = mutableMapOf<String, AgentRunEventBudget<AgentEvent>>()
+    private val runEventBudgetCallbacks = linkedSetOf<String>()
+    private val runEventDeferredFlushes = mutableMapOf<String, () -> Unit>()
+    private val runFrameEventBudget = AgentFrameEventBudget(STREAM_EVENT_FRAME_BUDGET_NS)
+    private var runEventBudgetFrameCallback: Choreographer.FrameCallback? = null
+    private val drainingRunEventBudgets = mutableSetOf<String>()
+    private var runEventFrameWorkDepth = 0
     private val runJobs = androidx.compose.runtime.mutableStateMapOf<String, Job>()
     private val imageGenerationRunIds = mutableSetOf<String>()
     private val directMediaRuns = DirectMediaRunControl()
@@ -914,12 +924,13 @@ internal class AgentAppState(
         scope.launch {
             combine(SettingsDataStore.settingsFlow(), ProviderRepository.providersFlow()) { settings, providers ->
                 Triple(settings.selectedProviderId, settings.selectedModelId, providers)
-            }.collectLatest { (providerId, modelId, providers) ->
-                updateSelectionProviders(providers)
-                defaultProviderId = providerId
-                defaultModelId = modelId
-                refreshBoundModelPicker()
-            }
+            }.distinctUntilChanged(::runtimeSelectionUnchanged)
+                .collectLatest { (providerId, modelId, providers) ->
+                    updateSelectionProviders(providers)
+                    defaultProviderId = providerId
+                    defaultModelId = modelId
+                    refreshBoundModelPicker()
+                }
         }
     }
 
@@ -1390,12 +1401,16 @@ internal class AgentAppState(
                 val payload = AgentUiHandoffPayload.from(completedRun.handoff.payload)
                 val conversationId = payload.conversationId
                 val state = conversationState(conversationId) ?: return@forEach
-                recoveryPlan.checkpoint?.let { checkpoint ->
-                    stateChanged = restoreCheckpointTrace(
-                        checkpoint = checkpoint,
-                        interrupted = false,
-                    ) || stateChanged
-                }
+                // A degraded checkpoint may omit an event boundary; apply the authoritative
+                // result but do not replay an incomplete trace into conversation history.
+                recoveryPlan.checkpoint
+                    ?.takeUnless { it.recoveryIncomplete }
+                    ?.let { checkpoint ->
+                        stateChanged = restoreCheckpointTrace(
+                            checkpoint = checkpoint,
+                            interrupted = false,
+                        ) || stateChanged
+                    }
                 val result = completedRun.result
                 val beforeRecovery = conversationState(conversationId) ?: state
                 val recovery = AgentPendingResultRecovery.apply(
@@ -1430,10 +1445,14 @@ internal class AgentAppState(
 
             plan.interrupted.forEach { checkpoint ->
                 removeAfterSave += checkpoint.runId
-                stateChanged = restoreCheckpointTrace(
-                    checkpoint = checkpoint,
-                    interrupted = true,
-                ) || stateChanged
+                // An interrupted run with an incomplete checkpoint is intentionally
+                // abandoned rather than replayed from an unsafe partial boundary.
+                if (!checkpoint.recoveryIncomplete) {
+                    stateChanged = restoreCheckpointTrace(
+                        checkpoint = checkpoint,
+                        interrupted = true,
+                    ) || stateChanged
+                }
             }
             if (stateChanged) refreshConversationSummaries()
             stateChanged || acknowledgeAfterSave.isNotEmpty() || removeAfterSave.isNotEmpty()
@@ -4180,7 +4199,9 @@ internal class AgentAppState(
         // Immediate UI feedback, without cancelling the result subscriber or losing history.
         setConversationStreaming(runId, false)
         if (imageGen) {
+            discardQueuedRunEvents(runId)
             runMessageProjector.clearRun(runId)
+            runMessageProjector.seal(runId)
             runGeneratedAtMillis.remove(runId)
             branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
@@ -4253,7 +4274,9 @@ internal class AgentAppState(
             scope.launch(Dispatchers.IO) {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId)
             }
+            discardQueuedRunEvents(runId)
             runMessageProjector.clearRun(runId)
+            runMessageProjector.seal(runId)
             runGeneratedAtMillis.remove(runId)
             branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
@@ -4705,24 +4728,104 @@ internal class AgentAppState(
 
     private fun enqueueRunEvent(runId: String, event: AgentEvent) {
         if (!StreamPerformanceDiagnostics.enabled) {
-            enqueueRunEventNow(runId, event)
+            enqueueRunEventBudgeted(runId, event)
             return
         }
         val conversationId = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) runConversationIds[runId] else null
         StreamUiEventDiagnostics.withEvent(runId, conversationId,
             conversationId?.let { it == selectedConversationId }, event) {
-            StreamPerformanceDiagnostics.measure("ui.enqueue") { enqueueRunEventNow(runId, event) }
+            StreamPerformanceDiagnostics.measure("ui.enqueue") { enqueueRunEventBudgeted(runId, event) }
         }
     }
 
-    private fun enqueueRunEventNow(runId: String, event: AgentEvent) {
-        // Runtime delivers events on the run's IO job. Publishing from that thread races
-        // with selecting another conversation on the main thread: the title can already be
-        // the new conversation while homeState is still overwritten with this run's text.
+    private fun enqueueRunEventBudgeted(runId: String, event: AgentEvent) {
+        // Runtime delivers events on an IO job. Keep the existing main-thread
+        // ownership, but do not let a burst monopolize one dispatcher turn.
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
             scope.launch(Dispatchers.Main.immediate) { enqueueRunEvent(runId, event) }
             return
         }
+        if (runMessageProjector.isSealed(runId) && !event.allowedAfterSeal()) return
+        runEventBudgets.getOrPut(runId) { AgentRunEventBudget(STREAM_EVENT_FRAME_BUDGET_NS) }
+            .offer(event)
+        if (runId !in runEventBudgetCallbacks) {
+            drainRunEventBudget(runId, force = false)
+        }
+    }
+
+    private fun drainRunEventBudget(runId: String, force: Boolean, singleEvent: Boolean = false) {
+        val queue = runEventBudgets[runId] ?: return
+        if (!force && runEventFrameWorkDepth > 0) {
+            scheduleRunEventBudgetDrain(runId)
+            return
+        }
+        if (!drainingRunEventBudgets.add(runId)) return
+        runFrameEventBudget.measureWork {
+            // Also schedule a one-shot reset when this drain empties the queue. New
+            // arrivals in the same frame must not receive another fresh 2 ms budget.
+            scheduleRunEventBudgetDrain(runId)
+            runEventFrameWorkDepth++
+            try {
+                queue.drain(force, frameBudget = runFrameEventBudget,
+                    maxEvents = if (singleEvent) 1 else Int.MAX_VALUE,
+                ) { event -> enqueueRunEventNow(runId, event) }
+            } finally {
+                runEventFrameWorkDepth--
+                drainingRunEventBudgets.remove(runId)
+            }
+            if (queue.isEmpty) {
+                runEventBudgets.remove(runId)
+                cancelRunEventBudgetCallback(runId)
+            } else {
+                scheduleRunEventBudgetDrain(runId)
+            }
+        }
+    }
+
+    private fun scheduleRunEventBudgetDrain(runId: String) {
+        if (runEventBudgets.containsKey(runId) || runId in runEventDeferredFlushes) runEventBudgetCallbacks.add(runId)
+        if (runEventBudgetFrameCallback != null) return
+        val callback = Choreographer.FrameCallback { frameTimeNs ->
+            runEventBudgetFrameCallback = null
+            runFrameEventBudget.beginFrame(frameTimeNs)
+            runFrameEventBudget.measureWork {
+                // One event per turn: a busy run goes behind the other waiting runs.
+                // All runs share the frame budget without starving later arrivals.
+                while (runEventBudgetCallbacks.isNotEmpty() && !runFrameEventBudget.exhausted) {
+                    val nextRun = runEventBudgetCallbacks.first()
+                    runEventBudgetCallbacks.remove(nextRun)
+                    val deferredFlush = runEventDeferredFlushes.remove(nextRun)
+                    if (deferredFlush != null) {
+                        deferredFlush()
+                        if (runEventBudgets.containsKey(nextRun)) scheduleRunEventBudgetDrain(nextRun)
+                    } else {
+                        drainRunEventBudget(nextRun, force = false, singleEvent = true)
+                    }
+                }
+                if (runEventBudgetCallbacks.isNotEmpty()) {
+                    scheduleRunEventBudgetDrain(runEventBudgetCallbacks.first())
+                }
+            }
+        }
+        runEventBudgetFrameCallback = callback
+        Choreographer.getInstance().postFrameCallback(callback)
+    }
+
+    private fun cancelRunEventBudgetCallback(runId: String) {
+        if (runId !in runEventDeferredFlushes) runEventBudgetCallbacks.remove(runId)
+        // Keep the single pending frame callback: it resets the budget even if
+        // the last queue was emptied or cancelled before the next vsync.
+    }
+
+    private fun discardQueuedRunEvents(runId: String) {
+        runEventDeferredFlushes.remove(runId)
+        runEventFlushJobs.remove(runId)?.cancel()
+        cancelRunEventBudgetCallback(runId)
+        runEventBudgets.remove(runId)
+        runEventCoalescer.flush(runId)
+    }
+
+    private fun enqueueRunEventNow(runId: String, event: AgentEvent) {
         if (event is AgentEvent.AssistantBlockDelta) {
             StreamPerformanceDiagnostics.record("ui.delta.received", value = event.delta.length.toLong())
         }
@@ -4827,21 +4930,58 @@ internal class AgentAppState(
                 StreamPerformanceDiagnostics.record("ui.flushDelay", System.nanoTime() - scheduledAtNs)
             }
             runEventFlushJobs.remove(runId)
-            StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
-                StreamPerformanceDiagnostics.measure("ui.flush") {
-                    flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer")
+            if (runFrameEventBudget.exhausted) {
+                runEventDeferredFlushes[runId] = {
+                    StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
+                        StreamPerformanceDiagnostics.measure("ui.flush") {
+                            flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer", drainQueuedEvents = false)
+                        }
+                    }
+                }
+                scheduleRunEventBudgetDrain(runId)
+                return@launch
+            }
+            runFrameEventBudget.measureWork {
+                StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
+                    StreamPerformanceDiagnostics.measure("ui.flush") {
+                        flushPendingRunDelta(
+                            runId,
+                            diagnosticStage = "ui.flush.timer",
+                            drainQueuedEvents = false,
+                        )
+                    }
                 }
             }
         }
     }
 
-    private fun flushPendingRunDelta(runId: String, diagnosticStage: String? = null) {
+    private fun flushPendingRunDelta(
+        runId: String,
+        diagnosticStage: String? = null,
+        drainQueuedEvents: Boolean = true,
+    ) {
+        if (drainQueuedEvents && runId !in drainingRunEventBudgets) {
+            drainRunEventBudget(runId, force = true)
+        }
+        runEventDeferredFlushes.remove(runId)
         runEventFlushJobs.remove(runId)?.cancel()
         runEventCoalescer.flush(runId)?.let { event ->
             // Only count a reason when a pending delta is actually applied. Other
             // callers (replay/result/stop) retain their existing default flush path.
-            StreamUiEventDiagnostics.measure(diagnosticStage) {
-                applyRunEvent(runId, event)
+            val started = if (drainQueuedEvents) null else System.nanoTime()
+            if (started != null) {
+                scheduleRunEventBudgetDrain(runId)
+                runEventFrameWorkDepth++
+            }
+            try {
+                StreamUiEventDiagnostics.measure(diagnosticStage) {
+                    applyRunEvent(runId, event)
+                }
+            } finally {
+                if (started != null) {
+                    runEventFrameWorkDepth--
+                    runFrameEventBudget.record(System.nanoTime() - started)
+                }
             }
         }
     }
@@ -5736,13 +5876,9 @@ internal class AgentAppState(
                     usage = usage,
                 )
             } else {
-                messages.mapIndexed { index, message ->
-                    if (index == targetIndex && message is AgentMessageUi) {
-                        message.copy(usage = usage)
-                    } else {
-                        message
-                    }
-                }
+                // Preserve every previous snapshot; only the target chunk changes.
+                val target = messages[targetIndex] as AgentMessageUi
+                messages.incrementalSnapshot().replacing(targetIndex, target.copy(usage = usage))
             }
         }
         billedOverheadConversationId = conversationId
@@ -5943,6 +6079,19 @@ internal class AgentAppState(
             } else {
                 projected
             }
+            // A sealed/filtered event can legitimately project the exact same immutable list.
+            // Delta paths already disable timestamp and waiting-question recomputation, so
+            // publishing that no-op only invalidates Compose observers and repeats routing work.
+            if (shouldSkipNoOpStreamingPublication(
+                    state.messages,
+                    nextMessages,
+                    updateTimestamp,
+                    normalizeTerminalOrder,
+                    recomputeWaitingQuestion,
+                )
+            ) {
+                return@measure
+            }
             StreamUiEventDiagnostics.measure("ui.messages.publish", nextMessages.size.toLong()) {
                 updateConversationProjected(
                     conversationId = conversationId,
@@ -5992,6 +6141,16 @@ internal class AgentAppState(
         ).withCurrentGptSpeedBinding()
         conversationPaneState = conversationPaneState.copy(selectedConversationId = null)
     }
+
+    private fun shouldSkipNoOpStreamingPublication(
+        previousMessages: List<AgentChatMessageUi>,
+        nextMessages: List<AgentChatMessageUi>,
+        updateTimestamp: Boolean,
+        normalizeTerminalOrder: Boolean,
+        recomputeWaitingQuestion: Boolean,
+    ): Boolean =
+        nextMessages === previousMessages && !updateTimestamp &&
+            !normalizeTerminalOrder && !recomputeWaitingQuestion
 
     private fun updateConversation(
         conversationId: String,
@@ -6152,6 +6311,20 @@ internal class AgentAppState(
     }
 
     private fun refreshConversationSummariesNow() {
+        // Date labels depend on the local day (including year), locale, zone and clock format.
+        // Capture once per refresh, not once per conversation; midnight/config changes invalidate
+        // all entries without changing the createdAt-before-updatedAt ordering/label semantics.
+        val nowMillis = System.currentTimeMillis()
+        val timeZone = java.util.TimeZone.getDefault()
+        val locale = appContext.resources.configuration.locales[0]
+        val use24HourClock = DateFormat.is24HourFormat(appContext)
+        val environment = ConversationSummaryEnvironment(
+            configuration = appContext.resources.configuration.toString(),
+            localDay = java.time.Instant.ofEpochMilli(nowMillis).atZone(timeZone.toZoneId()).toLocalDate().toEpochDay(),
+            timeZone = timeZone,
+            use24HourClock = use24HourClock,
+        )
+        conversationSummaryCache.retain(conversationsById.keys)
         val summaries = conversationsById.entries
             .sortedWith(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
@@ -6162,57 +6335,72 @@ internal class AgentAppState(
             )
             .map { (id, state) ->
                 val lastMessage = state.messages.lastOrNull()
-                ConversationSummaryUi(
-                    id = id,
-                    title = conversationTitles[id].orEmpty().ifBlank {
-                        appContext.getString(R.string.conversation_unnamed)
-                    },
-                    preview = when (lastMessage) {
-                        is UserMessageUi -> AgentFileReferencePromptCodec
-                            .parse(lastMessage.content)
-                            .let { parsed ->
-                                AgentFileReferencePolicy.titleSource(
-                                    request = parsed.request,
-                                    references = parsed.references,
-                                )
-                            }
-                        is AgentMessageUi -> lastMessage.content.ifBlank {
-                            appContext.getString(R.string.conversation_preview_reasoning)
-                        }
-                        is SystemNoticeMessageUi -> appContext.getString(
-                            when (lastMessage.code) {
-                                SystemNoticeCode.Stopped -> R.string.system_notice_stopped
-                                SystemNoticeCode.EmptyResult -> R.string.system_notice_empty_result
-                                SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
-                                SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
-                                SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
-                                SystemNoticeCode.Completed -> R.string.system_notice_completed
-                            },
-                        )
-                        is ThinkingMessageUi -> appContext.getString(R.string.conversation_preview_reasoning)
-                        is ToolActivityMessageUi -> appContext.getString(
-                            R.string.conversation_preview_tool_call,
-                            lastMessage.toolName,
-                        )
-                        else -> appContext.getString(R.string.conversation_preview_empty)
-                    }.take(MAX_PREVIEW_CHARS),
-                    timeLabel = (conversationCreatedAt[id] ?: conversationUpdatedAt[id])?.let { timestamp ->
-                        ConversationTimeLabels.label(
-                            timestampMillis = timestamp,
-                            locale = appContext.resources.configuration.locales[0],
-                            use24HourClock = DateFormat.is24HourFormat(appContext),
-                            yesterdayLabel = appContext.getString(R.string.time_yesterday),
-                            recentLabel = appContext.getString(R.string.time_recent),
-                        )
-                    } ?: appContext.getString(R.string.time_recent),
-                    updatedAtMillis = conversationUpdatedAt[id] ?: 0L,
-                    createdAtMillis = conversationCreatedAt[id] ?: conversationUpdatedAt[id] ?: 0L,
-                    mode = ConversationModeUi.Chat,
+                val key = ConversationSummaryKey(
+                    title = conversationTitles[id].orEmpty(),
+                    previewInput = conversationSummaryPreviewInput(lastMessage),
+                    createdAtMillis = conversationCreatedAt[id],
+                    updatedAtMillis = conversationUpdatedAt[id],
                     isPinned = id in conversationPinned,
                     isActiveRun = state.isStreaming,
                     hasCompletionMarker = id in conversationCompletionMarkers,
                     folderId = conversationFolderIds[id],
+                    environment = environment,
                 )
+                conversationSummaryCache.getOrBuild(id, key) {
+                    ConversationSummaryUi(
+                        id = id,
+                        title = conversationTitles[id].orEmpty().ifBlank {
+                            appContext.getString(R.string.conversation_unnamed)
+                        },
+                        preview = when (lastMessage) {
+                            is UserMessageUi -> AgentFileReferencePromptCodec
+                                .parse(lastMessage.content)
+                                .let { parsed ->
+                                    AgentFileReferencePolicy.titleSource(
+                                        request = parsed.request,
+                                        references = parsed.references,
+                                    )
+                                }
+                            is AgentMessageUi -> lastMessage.content.ifBlank {
+                                appContext.getString(R.string.conversation_preview_reasoning)
+                            }
+                            is SystemNoticeMessageUi -> appContext.getString(
+                                when (lastMessage.code) {
+                                    SystemNoticeCode.Stopped -> R.string.system_notice_stopped
+                                    SystemNoticeCode.EmptyResult -> R.string.system_notice_empty_result
+                                    SystemNoticeCode.ModelRetry -> R.string.system_notice_model_retry
+                                    SystemNoticeCode.RuntimeFailed -> R.string.system_notice_runtime_failed
+                                    SystemNoticeCode.Interrupted -> R.string.system_notice_interrupted
+                                    SystemNoticeCode.Completed -> R.string.system_notice_completed
+                                },
+                            )
+                            is ThinkingMessageUi -> appContext.getString(R.string.conversation_preview_reasoning)
+                            is ToolActivityMessageUi -> appContext.getString(
+                                R.string.conversation_preview_tool_call,
+                                lastMessage.toolName,
+                            )
+                            else -> appContext.getString(R.string.conversation_preview_empty)
+                        }.take(MAX_PREVIEW_CHARS),
+                        timeLabel = (conversationCreatedAt[id] ?: conversationUpdatedAt[id])?.let { timestamp ->
+                            ConversationTimeLabels.label(
+                                timestampMillis = timestamp,
+                                nowMillis = nowMillis,
+                                locale = locale,
+                                timeZone = timeZone,
+                                use24HourClock = use24HourClock,
+                                yesterdayLabel = appContext.getString(R.string.time_yesterday),
+                                recentLabel = appContext.getString(R.string.time_recent),
+                            )
+                        } ?: appContext.getString(R.string.time_recent),
+                        updatedAtMillis = conversationUpdatedAt[id] ?: 0L,
+                        createdAtMillis = conversationCreatedAt[id] ?: conversationUpdatedAt[id] ?: 0L,
+                        mode = ConversationModeUi.Chat,
+                        isPinned = id in conversationPinned,
+                        isActiveRun = state.isStreaming,
+                        hasCompletionMarker = id in conversationCompletionMarkers,
+                        folderId = conversationFolderIds[id],
+                    )
+                }
             }
         val folderVisible = summaries.filterForFolder(selectedFolderId)
         conversationPaneState = conversationPaneState.copy(
@@ -6431,6 +6619,8 @@ internal class AgentAppState(
         // 数据状态以较粗粒度发布，文字显现由独立的帧时钟连续推进。
         // 这与 Kimi 将流式数据和视觉动画分层的做法一致。
         const val STREAM_UI_UPDATE_INTERVAL_MS = 150L
+        // A 120 Hz frame is 8.33 ms; reserve most of it for Compose/layout/draw.
+        const val STREAM_EVENT_FRAME_BUDGET_NS = 2_000_000L
 
         fun emptyChatState(thinkingEnabled: Boolean): AgentChatHomeUiState =
             AgentChatHomeUiState(
@@ -7192,5 +7382,64 @@ private fun hasAppListAccess(context: Context): Boolean {
         packages.size > 10
     } catch (e: Exception) {
         false
+    }
+}
+
+/** Full provider/model value comparison, never an ID-only or picker-option comparison.
+ * Repository emissions are immutable domain data classes (including nested model/config lists).
+ * A settings-only preferences re-emission retains the providers reference, so the common path
+ * does no list walk. A newly loaded list is compared in order and includes every config field.
+ */
+internal fun runtimeSelectionUnchanged(
+    previous: Triple<String?, String?, List<io.github.mangi.eta.data.model.ProviderSetting>>,
+    next: Triple<String?, String?, List<io.github.mangi.eta.data.model.ProviderSetting>>,
+): Boolean = previous.first == next.first && previous.second == next.second &&
+    (previous.third === next.third || previous.third == next.third)
+
+internal data class ConversationSummaryEnvironment(
+    val configuration: String,
+    val localDay: Long,
+    val timeZone: java.util.TimeZone,
+    val use24HourClock: Boolean,
+)
+
+/** Do not retain attachments/history or invalidate on usage, thinking text and reveal flags. */
+internal data class ConversationSummaryPreviewInput(val kind: String, val text: String = "", val notice: SystemNoticeCode? = null)
+
+internal fun conversationSummaryPreviewInput(message: AgentChatMessageUi?): ConversationSummaryPreviewInput = when (message) {
+    is UserMessageUi -> ConversationSummaryPreviewInput("user", message.content)
+    is AgentMessageUi -> ConversationSummaryPreviewInput("assistant", message.content)
+    is SystemNoticeMessageUi -> ConversationSummaryPreviewInput("notice", notice = message.code)
+    is ThinkingMessageUi -> ConversationSummaryPreviewInput("thinking")
+    is ToolActivityMessageUi -> ConversationSummaryPreviewInput("tool", message.toolName)
+    else -> ConversationSummaryPreviewInput("empty")
+}
+
+/** Only inputs read by the existing summary projection, not the full transcript/history. */
+internal data class ConversationSummaryKey(
+    val title: String,
+    val previewInput: ConversationSummaryPreviewInput,
+    val createdAtMillis: Long?,
+    val updatedAtMillis: Long?,
+    val isPinned: Boolean,
+    val isActiveRun: Boolean,
+    val hasCompletionMarker: Boolean,
+    val folderId: String?,
+    val environment: ConversationSummaryEnvironment,
+)
+
+/** Main-owned, one entry per live conversation; deleted/archive-replaced IDs are pruned. */
+internal class ConversationSummaryCache {
+    private data class Entry(val key: ConversationSummaryKey, val summary: ConversationSummaryUi)
+    private val entries = mutableMapOf<String, Entry>()
+
+    fun retain(ids: Set<String>) {
+        entries.keys.retainAll(ids)
+    }
+
+    fun getOrBuild(id: String, key: ConversationSummaryKey, build: () -> ConversationSummaryUi): ConversationSummaryUi {
+        val previous = entries[id]
+        if (previous?.key == key) return previous.summary
+        return build().also { entries[id] = Entry(key, it) }
     }
 }

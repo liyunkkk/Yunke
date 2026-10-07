@@ -15,6 +15,28 @@ class SubAgentCoordinatorTest {
     private fun start(c: SubAgentCoordinator) = JSONObject(c.execute(call("delegate_task", JSONObject().put("task", "check evidence"))).content)
     private fun get(c: SubAgentCoordinator, id: String, wait: Int = 1000) = JSONObject(c.execute(call("get_task_result", JSONObject().put("task_id", id).put("wait_ms", wait))).content)
 
+    @Test fun finalReportsAreRetainedBeyondThePublicPageLimit() {
+        val complete = "REPORT_".repeat(3000)
+        SubAgentCoordinator(listOf(model)) { _, _, _ -> complete }.use { coordinator ->
+            val id = start(coordinator).getString("task_id")
+            val first = get(coordinator, id)
+            assertEquals("completed", first.getString("status"))
+            assertEquals(4000, first.getString("result").length)
+            assertEquals(complete.length, first.getJSONObject("text_fields").getJSONObject("result").getInt("total_chars"))
+            assertTrue(first.getJSONObject("text_page").getBoolean("has_more"))
+            assertEquals(complete, coordinator.archiveRecord(id).getString("result"))
+            val remaining = StringBuilder(first.getString("result"))
+            var cursor = first.getJSONObject("text_page").getInt("next_offset")
+            while (cursor < complete.length) {
+                val page = JSONObject(coordinator.execute(call("get_task_result", JSONObject()
+                    .put("task_id", id).put("text_field", "result").put("text_offset", cursor))).content)
+                remaining.append(page.getString("result"))
+                cursor = page.getJSONObject("text_page").getInt("next_offset")
+            }
+            assertEquals(complete, remaining.toString())
+        }
+    }
+
     @Test fun callerCancellationIsNotReportedAsWorkerFailure() {
         SubAgentCoordinator(listOf(model)) { _, _, controller ->
             controller.cancel()
@@ -442,7 +464,11 @@ class SubAgentCoordinatorTest {
             assertTrue(started.getString("workspace_path").contains("worktrees"))
             val finished = get(coordinator, started.getString("task_id"))
             assertEquals("completed", finished.getString("status"))
-            assertEquals("edited", finished.getString("model_report_unverified"))
+            assertEquals("", finished.getString("model_report_unverified"))
+            val report = JSONObject(coordinator.execute(call("get_task_result", JSONObject()
+                .put("task_id", started.getString("task_id")).put("text_field", "model_report_unverified"))).content)
+            assertEquals("edited", report.getString("model_report_unverified"))
+            assertTrue(report.getJSONObject("text_page").getBoolean("unverified"))
             assertEquals("artifact_ready_pending_review", finished.getString("delivery_state"))
             assertFalse(finished.getBoolean("acceptance_verified"))
         }

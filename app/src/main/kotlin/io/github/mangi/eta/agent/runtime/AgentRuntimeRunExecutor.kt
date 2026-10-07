@@ -70,6 +70,8 @@ internal class AgentRuntimeRunExecutor(
         var toolsBinding: AgentRunController.ResourceBinding? = null
         var toolsOwner: AgentChildToolOwnership? = null
         var groupGeneration: String? = null
+        var replacementGeneration: String? = null
+        val registeredChildGenerations = mutableListOf<String>()
         val childContextSink = AtomicReference<((SubAgentContextStats) -> Unit)?>(null)
         // “每次询问”选前台后补给服务的 ToolStarted 来源。
         val foregroundReplay = AgentForegroundReplay()
@@ -197,9 +199,7 @@ internal class AgentRuntimeRunExecutor(
             val ownerKey = SubAgentConfigKey.Conversation(request.effectiveModelSessionId)
             val childConfig = ConversationSubAgentPreferences().snapshot(ownerKey)
             val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig, parentConfig = request.config) }
-            val configuredChildren = AgentChildWorkerAvailability.configuredChildren(childCandidates)
-            val childModels = configuredChildren.map { it.second }
-            val frozenParallelLimits = childModels.map { childConfig.parallelLimit(SubAgentParallelModel(it.providerId, it.model)) }
+            val childDispatchPlan = AgentChildTaskGroups.ordinaryDispatchPlan(childSessionId, childCandidates)
             val workspaceEnvironment = LinuxEnvironmentSettingsRepository.current(appContext).wireName
             val childWorkspace = if (allowTerminal && currentPermissions().terminalTools) SubAgentWorkspace(
                 appContext, executor, ownerId = childSessionId, initialEnvironment = workspaceEnvironment,
@@ -209,9 +209,13 @@ internal class AgentRuntimeRunExecutor(
                 } },
                 legacyIds = { project -> AgentChildTaskGroups.ownedWorkspaceIds(childSessionId, project, workspaceEnvironment) },
             ) else null
-            if (childModels.isNotEmpty()) {
+            fun createChildGroup(candidates: List<ChildTaskConfigPolicy.Candidate<ChildWorkerConfigResolver.Configuration>>): String? {
+                val configuredChildren = AgentChildWorkerAvailability.configuredChildren(candidates)
+                val childModels = configuredChildren.map { it.second }
+                if (childModels.isEmpty()) return null
+                val frozenParallelLimits = childModels.map { childConfig.parallelLimit(SubAgentParallelModel(it.providerId, it.model)) }
                 // Retain BEFORE construction, which allocates scheduler and pool leases. Transfer only after registration.
-                check(ownership.retain()) { "父任务已终止，无法创建子任务" }
+                val childLease = checkNotNull(ownership.retain()) { "父任务已终止，无法创建子任务" }
                 var childOwnershipTransferred = false
                 var children: SubAgentCoordinator? = null
                 try {
@@ -280,23 +284,34 @@ internal class AgentRuntimeRunExecutor(
                         runTextChild(config, prompt, controller, "", null, false)
                     }
                     val registered = AgentChildTaskGroups.register(appContext, request.effectiveModelSessionId, request.runId, children,
-                        releaseTools = { ownership.release() }, workspaceEnvironment = workspaceEnvironment,
-                        workers = AgentChildWorkerAvailability.workers(childCandidates))
+                        releaseTools = childLease::close, workspaceEnvironment = workspaceEnvironment,
+                        workers = AgentChildWorkerAvailability.workers(candidates))
                     if (registered == null) error("无法启动子代理前台执行服务，请返回 Eta 后重试")
                     childOwnershipTransferred = true
                     generationForCallback = registered
-                    groupGeneration = registered
+                    registeredChildGenerations.add(registered)
                     AgentChildRunControl.registered(session, childSessionId, registered)
                     runController.throwIfCancelled()
-                    SubAgentTools.appendTo(mcpTools, configuredChildren.mapIndexed { i, (slot, model) ->
-                        SubAgentPreferences.workerDescription(slot, i + 1, model, frozenParallelLimits[i])
-                    }, workspaceEnabled = workspace != null)
+                    return registered
                 } finally {
                     if (!childOwnershipTransferred) {
                         try { children?.close() }
-                        finally { AgentChildToolOwnership.releaseChild { ownership.release() } }
+                        finally { childLease.close() }
                     }
                 }
+            }
+            // Frozen configuration does not imply historical execution ownership: ordinary work
+            // gets a fresh coordinator. Only explicit replacement may use current user settings.
+            groupGeneration = createChildGroup(childDispatchPlan.ordinary)
+            replacementGeneration = if (childDispatchPlan.ordinary === childDispatchPlan.replacement) groupGeneration
+                else createChildGroup(childDispatchPlan.replacement)
+            val toolChildren = AgentChildWorkerAvailability.configuredChildren(
+                if (groupGeneration != null) childDispatchPlan.ordinary else childDispatchPlan.replacement)
+            if (groupGeneration != null || replacementGeneration != null) {
+                SubAgentTools.appendTo(mcpTools, toolChildren.mapIndexed { i, (slot, model) ->
+                    SubAgentPreferences.workerDescription(slot, i + 1, model,
+                        childConfig.parallelLimit(SubAgentParallelModel(model.providerId, model.model)))
+                }, workspaceEnabled = childWorkspace != null)
             } else {
                 ExistingChildTaskTools.appendTo(mcpTools)
             }
@@ -345,12 +360,13 @@ internal class AgentRuntimeRunExecutor(
                     AgentModelClient.ToolResult(payload.toString(), sensitive = true)
                 } else if (call.name in SubAgentTools.names) {
                     // Even with no new coordinator, explicit continue adopts into THIS run.
-                    AgentChildTaskGroups.execute(childSessionId, groupGeneration, call, currentRunId = request.runId)
+                    AgentChildTaskGroups.execute(childSessionId, groupGeneration, call, currentRunId = request.runId,
+                        replacementGeneration = replacementGeneration)
                 } else routingExecutor.execute(call)
             }
             val compactPolicy = runBlocking { AgentCompressionPolicy.resolve(request.config) }
             val promptWithChildHandoff = AgentChildTaskHandoff.appendToPrompt(
-                AgentChildWorkerAvailability.appendToPrompt(request.prompt, childCandidates), childSessionId)
+                AgentChildWorkerAvailability.appendToPrompt(request.prompt, childDispatchPlan), childSessionId)
             runController.throwIfCancelled()
             val completedResponse = AgentModelClient.complete(
                 config = request.config, sessionId = request.effectiveModelSessionId,
@@ -444,7 +460,7 @@ internal class AgentRuntimeRunExecutor(
             }
             session.childCompactor = null
             childContextSink.set(null)
-            groupGeneration?.let(AgentChildTaskGroups::detach)
+            registeredChildGenerations.forEach(AgentChildTaskGroups::detach)
             runCatching { toolsBinding?.close() }
             runCatching { toolsOwner?.release() }
             unownedSkillRoot?.let { root -> runCatching { SkillRuntime.releaseRunSkills(appContext, root) } }

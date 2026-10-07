@@ -112,6 +112,71 @@ class StreamPerformanceDiagnosticsTest {
         assertEquals(0L, final.lateSpans)
     }
 
+    @Test fun twoPhaseStopRejectsNewSpansButDrainsOriginalFramesAndExistingSpansAtFixedCutoff() {
+        var now = 0L
+        val old = StreamPerformanceDiagnostics.Session { now }
+        val span = old.beginSpan()!!
+        now = 20_000_000
+        assertEquals(now, old.stopAdmission())
+        now = 40_000_000
+        assertEquals(20_000_000L, old.stopAdmission())
+        assertNull(old.beginSpan())
+        assertTrue(old.admitFrame(10_000_000))
+        assertFalse(old.admitFrame(30_000_000))
+        val fresh = StreamPerformanceDiagnostics.Session { now }
+        old.finishSpan("markdown.parse", span, 0, 0, 30_000_000, 1, true, null, 0, 0, 0, 0)
+        val final = old.snapshot(true)
+        assertEquals(20_000_000L, final.rawDetails.toNs)
+        assertEquals(1L, final.openAtStop); assertEquals(0L, final.openSpans)
+        assertEquals(listOf(span), final.openIdsAtStop)
+        assertEquals(1L, final.callbackRejected); assertEquals(1L, final.lateSpans)
+        assertFalse(old.admitFrame(10_000_000))
+        assertTrue(fresh.snapshot(false).stats.isEmpty())
+    }
+
+    @Test fun observerBucketsAreBoundedNonRecursiveAndIncludeInjectedWallCost() {
+        var now = 10L
+        val costs = DiagnosticObserverCosts { now }
+        assertEquals(42, costs.observe(DiagnosticObserverCosts.Phase.Enter) { now = 30; 42 })
+        repeat(1000) { costs.add(DiagnosticObserverCosts.Phase.CallbackLag, 5) }
+        val lines = costs.summary()
+        assertEquals(6, lines.size)
+        assertTrue(lines.single { "observerPhase=Enter " in it }.contains("totalNs=20"))
+        assertTrue(lines.single { "observerPhase=CallbackLag " in it }.contains("count=1000"))
+        val ids = DiagnosticThreadIds(1)
+        assertEquals(-1, ids.osTid(100))
+        ids.register(100, 42); ids.register(101, 43)
+        assertEquals(42, ids.osTid(100)); assertEquals(-1, ids.osTid(101))
+        assertEquals(1L, ids.saturated)
+    }
+
+    @Test fun defaultThreadIdCapacitySaturationIsObservableAndNeverGuessesSchedulerTid() {
+        val ids = DiagnosticThreadIds()
+        repeat(128) { ids.register(it.toLong() + 1, it + 1001) }
+        ids.register(129, 9999)
+        assertEquals(1L, ids.saturated)
+        assertEquals(-1, ids.osTid(129))
+        assertEquals(1001, ids.osTid(1))
+        assertEquals("threadIdCapacity=128 threadIdSaturated=1", ids.fields())
+        ids.register(1, 9999) // Existing mappings remain stable even after saturation.
+        assertEquals(1L, ids.saturated); assertEquals(1001, ids.osTid(1))
+        assertEquals("threadIdCapacity=128 threadIdSaturated=0", DiagnosticThreadIds().fields())
+    }
+
+    @Test fun globalOffDoesNotToggleFileLoggingAndOnlyChangesOnSwitch() {
+        StreamDiagnosticControl.update(null)
+        val before = StreamDiagnosticControl.changes.intValue
+        StreamDiagnosticControl.update("0")
+        assertEquals(before, StreamDiagnosticControl.changes.intValue)
+        StreamDiagnosticControl.update("1")
+        assertFalse(StreamDiagnosticControl.allowed)
+        assertEquals(before + 1, StreamDiagnosticControl.changes.intValue)
+        StreamDiagnosticControl.update("1")
+        assertEquals(before + 1, StreamDiagnosticControl.changes.intValue)
+        StreamDiagnosticControl.update(null)
+        assertTrue(StreamDiagnosticControl.allowed)
+    }
+
     @Test fun noteBudgetIsReservedBeforeLazyDetailAndResetsOnlyWithNewSession() {
         val session = StreamPerformanceDiagnostics.Session()
         var evaluations = 0
@@ -253,6 +318,59 @@ class StreamPerformanceDiagnosticsTest {
         // 消息之外的计时不计入。
         log.addCovered("ui.flush", 5_000_000)
         assertEquals(1, log.between(0, Long.MAX_VALUE, 0, 10).size)
+    }
+
+    @Test fun numericDispatchAccountingKeepsNestedRevealAsASubsetAndDoesNotLeakNames() {
+        var callback: List<Long>? = null
+        val log = MainThreadMessageLog(capacity = 4, onMessage = { begin, end, _, covered, reveal ->
+            callback = listOf(begin, end, covered, reveal)
+        })
+        log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} PRIVATE_PAYLOAD@4: 0", 0)
+        // The collector receives only outermost scopes, so a child reveal is not covered twice.
+        log.addCovered("ui.flush", 12_000_000)
+        log.addReveal(3_000_000)
+        log.onLine("<<<<< Finished", 30_000_000)
+        assertEquals(listOf(0L, 30_000_000L, 12_000_000L, 3_000_000L), callback)
+        val sample = log.timingsBetween(0, 30_000_000).single()
+        assertEquals(18_000_000L, sample.uninstrumentedNs)
+        assertEquals(27_000_000L, sample.nonRevealNs)
+        assertFalse(sample.frameDispatch)
+        assertFalse(sample.toString().contains("PRIVATE_PAYLOAD"))
+        assertTrue(log.timingsBetween(30_000_000, 40_000_000).isEmpty())
+    }
+
+    @Test fun revealAndCoveredCountersResetAndAreClampedToDispatchWallTime() {
+        val log = MainThreadMessageLog(capacity = 2)
+        log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} x@4: 0", 0)
+        log.addCovered("ui.flush", 30_000_000)
+        log.addReveal(50_000_000)
+        log.onLine("<<<<< Finished", 10_000_000)
+        log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} x@4: 0", 20_000_000)
+        log.onLine("<<<<< Finished", 30_000_000)
+        val samples = log.timingsBetween(0, 40_000_000)
+        assertEquals(0L, samples[0].uninstrumentedNs)
+        assertEquals(0L, samples[0].nonRevealNs)
+        assertEquals(10_000_000L, samples[1].uninstrumentedNs)
+        assertEquals(10_000_000L, samples[1].nonRevealNs)
+    }
+
+    @Test fun disabledMeasureRunsTheOriginalBlockExactlyOnceWithoutAnyRecord() {
+        assertFalse(StreamPerformanceDiagnostics.enabled)
+        var calls = 0
+        val result = StreamPerformanceDiagnostics.measure("main.uninstrumented") { ++calls; "result" }
+        assertEquals("result", result)
+        assertEquals(1, calls)
+    }
+
+    @Test fun supplementalStageRegistryContainsOnlyFixedShortLiterals() {
+        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"),
+            StreamDiagnosticGapLabels.stages)
+        for (stage in StreamDiagnosticGapLabels.stages) {
+            assertTrue(Regex("[a-z]+(?:\\.[a-zA-Z]+)+").matches(stage))
+            assertEquals(stage, StreamDiagnosticLabels.canonicalStage(stage))
+        }
+        assertNull(StreamDiagnosticLabels.canonicalStage("list.PRIVATE_PAYLOAD"))
+        assertNull(StreamDiagnosticLabels.canonicalStage("main.PRIVATE_PAYLOAD"))
     }
 
     @Test fun mainLogIgnoresMessageThatStartedBeforePrinterWasInstalled() {

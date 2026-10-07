@@ -8,6 +8,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.ui.platform.ComposeView
 import io.github.mangi.eta.agent.device.AgentTaskSurface
 import io.github.mangi.eta.agent.device.AgentTaskSurfaceMode
+import io.github.mangi.eta.agent.runtime.AgentChildRunControl
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRuntimeService
 import io.github.mangi.eta.agent.runtime.AgentRuntimeSession
@@ -276,6 +277,31 @@ class AgentVirtualRunOverlayServiceTest {
             }
             editor.commit()
         }
+    }
+
+    @Test
+    fun `queued retry progress reads paused control when the main looper handles it`() = withService { service ->
+        val session = AgentRuntimeSession("paused-retry", taskSurfaceMode = AgentTaskSurfaceMode.FOREGROUND)
+        AgentChildRunControl.begin(session)
+        registry(service).put(session)
+        assertTrue(call(service, "claimOverlay", session, true) as Boolean)
+        for (event in listOf(
+            AgentEvent.ErrorReconnectChanged(1, "old", "running", 0),
+            AgentEvent.ModelRetryScheduled(1, 1, 3, 2000, "network"),
+            AgentEvent.ErrorReconnectChanged(1, "old", "stopped", 1000),
+        )) call(service, "handleAcceptedRunEvent", session, event, null)
+        call(service, "requestPause", session.runId)
+        idle()
+        assertEquals(AgentOverlayPhase.PAUSED, overlayState(service).phase)
+        assertEquals(AgentOverlayStatus.Paused, overlayState(service).status)
+        call(service, "requestResume", session.runId)
+        assertEquals(AgentOverlayPhase.RUNNING, overlayState(service).phase)
+        assertEquals(AgentOverlayStatus.Continuing, overlayState(service).status)
+        call(service, "handleAcceptedRunEvent", session,
+            AgentEvent.ErrorReconnectChanged(1, "new", "running", 1000), null)
+        idle()
+        assertEquals(AgentOverlayPhase.RUNNING, overlayState(service).phase)
+        AgentChildRunControl.finish(session)
     }
 
     private fun events(): List<AgentEvent> = listOf(

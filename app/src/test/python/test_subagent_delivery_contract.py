@@ -55,10 +55,23 @@ class SubAgentDeliveryContractTest(unittest.TestCase):
         archive = groups.split('private fun archiveSnapshot(', 1)[1].split('private fun retire(', 1)[0]
         for key in ('delivery_state', 'artifact_verified', 'artifact_evidence', 'acceptance_verified', 'model_report_unverified'):
             self.assertIn('"' + key + '"', archive)
-        self.assertIn('json.optString(key).take(MAX_RESULT_CHARS)', archive)
+        self.assertIn('snapshot.put(key, json.optString(key))', archive)
+        self.assertNotIn('take(MAX_RESULT_CHARS)', archive)
+        self.assertIn('coordinator.archiveRecord(id)', groups)
+        self.assertIn('SubAgentResultPage.project(JSONObject(raw), JSONObject(call.argumentsJson))', groups)
+        self.assertIn('put("text_evicted", true)', groups)
         listing = groups.split('private fun list(ownerId:', 1)[1]
         for key in ('delivery_state', 'artifact_verified', 'acceptance_verified', 'error_code', 'workspace_id', 'review_required', 'next_step'):
             self.assertIn('"' + key + '"', listing)
+
+    def test_text_paging_is_wired_to_live_and_existing_task_tools(self):
+        for path in ('delegation/SubAgentTools.kt', 'runtime/ExistingChildTaskTools.kt'):
+            self.assertIn('SubAgentResultPage.addProperties(JSONObject())', source(path))
+        coordinator = source('delegation/SubAgentCoordinator.kt')
+        self.assertIn('SubAgentResultPage.validate(args)', coordinator)
+        self.assertIn('SubAgentResultPage.project(record, textArgs)', coordinator)
+        self.assertNotIn('answer.take(16000)', coordinator)
+        self.assertIn('text_page.has_more', source('model/AgentPromptBuilder.kt'))
 
     def test_prompt_and_error_hints_distinguish_artifact_from_acceptance(self):
         tools = source('delegation/SubAgentTools.kt')

@@ -75,6 +75,115 @@ class FramePageTimelineTest {
         }
     }
 
+    @Test fun segmentsFollowExactTimestampBoundaries() {
+        val pages = FramePageTimeline()
+        pages.mark(chat, 100)
+        pages.mark(settings, 200)
+        val unknown = FrameDiagnosticPage.Unknown
+
+        assertEquals(FramePageAttribution(unknown, unknown, false, 0, 0), pages.attribute(99, 99))
+        assertEquals(FramePageAttribution(unknown, chat, true, 0, 1), pages.attribute(99, 100))
+        assertEquals(FramePageAttribution(chat, chat, false, 1, 1), pages.attribute(100, 199))
+        assertEquals(FramePageAttribution(chat, settings, true, 1, 2), pages.attribute(199, 200))
+        assertEquals(FramePageAttribution(settings, settings, false, 2, 2), pages.attribute(200, 200))
+        assertEquals(FramePageAttribution(chat, chat, false, 1, 1), pages.attributeFrame(150, 0))
+        assertEquals(FramePageAttribution(chat, settings, true, 1, 2), pages.attributeFrame(150, 50))
+        assertEquals(FramePageAttribution(settings, settings, false, 2, 2), pages.attributeFrame(200, 50))
+    }
+
+    @Test fun segmentsDistinguishReturnVisitsToTheSamePage() {
+        val pages = FramePageTimeline()
+        pages.mark(chat, 100)
+        pages.mark(settings, 200)
+        pages.mark(chat, 300)
+
+        assertEquals(FramePageAttribution(chat, settings, true, 1, 2), pages.attribute(150, 250))
+        assertEquals(FramePageAttribution(chat, chat, true, 1, 3), pages.attributeFrame(150, 200))
+        assertEquals(FramePageAttribution(chat, chat, false, 3, 3), pages.attribute(300, 350))
+        pages.mark(settings, 400)
+        pages.mark(chat, 500)
+        assertEquals(FramePageAttribution(chat, chat, true, 1, 5), pages.attribute(150, 550))
+        assertEquals(FramePageAttribution(chat, chat, false, 5, 5), pages.attribute(500, 550))
+    }
+
+    @Test fun segmentsSelectTheLastMarkAtTheSameTimestamp() {
+        val pages = FramePageTimeline()
+        val unknown = FrameDiagnosticPage.Unknown
+        pages.mark(chat, 100)
+        pages.mark(settings, 100)
+        pages.mark(chat, 100)
+
+        assertEquals(FramePageAttribution(unknown, chat, true, 0, 3), pages.attribute(99, 100))
+        assertEquals(FramePageAttribution(chat, chat, false, 3, 3), pages.attribute(100, 100))
+        pages.mark(settings, 200)
+        pages.mark(chat, 200)
+        assertEquals(FramePageAttribution(chat, chat, true, 3, 5), pages.attribute(199, 200))
+        assertEquals(FramePageAttribution(chat, chat, false, 5, 5), pages.attribute(200, 200))
+    }
+
+    @Test fun duplicatePageMarksNeitherAllocateSegmentsNorEvictHistory() {
+        val pages = FramePageTimeline(capacity = 2)
+        pages.mark(chat, 100)
+        pages.mark(settings, 200)
+        pages.mark(settings, Long.MIN_VALUE)
+        pages.mark(settings, 200)
+        repeat(1000) { pages.mark(settings, 300L + it) }
+
+        assertEquals(FramePageAttribution(chat, settings, true, 1, 2), pages.attribute(100, 200))
+        // Ignored duplicates neither advance the segment counter nor the last accepted timestamp.
+        pages.mark(chat, 300)
+        assertEquals(FramePageAttribution(settings, chat, true, 2, 3), pages.attribute(200, 300))
+    }
+
+    @Test fun segmentIdsRemainStableAndAreNotReusedAfterEviction() {
+        val pages = FramePageTimeline(capacity = 2)
+        val unknown = FrameDiagnosticPage.Unknown
+        pages.mark(chat, 100)
+        pages.mark(settings, 200)
+        assertEquals(FramePageAttribution(chat, chat, false, 1, 1), pages.attribute(100, 100))
+        pages.mark(chat, 300)
+
+        assertEquals(FramePageAttribution(unknown, unknown, false, 0, 0), pages.attribute(150, 150))
+        assertEquals(FramePageAttribution(unknown, settings, true, 0, 2), pages.attribute(150, 250))
+        assertEquals(FramePageAttribution(settings, settings, false, 2, 2), pages.attribute(200, 299))
+        assertEquals(FramePageAttribution(settings, chat, true, 2, 3), pages.attribute(200, 300))
+        pages.mark(FrameDiagnosticPage.Home, 400)
+        assertEquals(FramePageAttribution(unknown, chat, true, 0, 3), pages.attribute(250, 350))
+        pages.mark(settings, 500)
+        assertEquals(FramePageAttribution(unknown, unknown, false, 0, 0), pages.attribute(300, 300))
+        assertEquals(FramePageAttribution(FrameDiagnosticPage.Home, settings, true, 4, 5), pages.attribute(400, 500))
+    }
+
+    @Test fun recordedUnknownPageHasARealSegmentUnlikeMissingHistory() {
+        val pages = FramePageTimeline()
+        val unknown = FrameDiagnosticPage.Unknown
+        assertEquals(FramePageAttribution(unknown, unknown, false, 0, 0), pages.attribute(100, 100))
+        pages.mark(unknown, 100)
+
+        assertEquals(FramePageAttribution(unknown, unknown, true, 0, 1), pages.attribute(99, 100))
+        assertEquals(FramePageAttribution(unknown, unknown, false, 1, 1), pages.attribute(100, 100))
+        pages.mark(chat, 200)
+        assertEquals(FramePageAttribution(unknown, chat, true, 1, 2), pages.attribute(100, 200))
+    }
+
+    @Test fun extremeTimestampsKeepSegmentsButInvalidFramesHaveNone() {
+        val pages = FramePageTimeline(capacity = 2)
+        val unknown = FramePageAttribution(FrameDiagnosticPage.Unknown, FrameDiagnosticPage.Unknown, false, 0, 0)
+        pages.mark(chat, Long.MIN_VALUE)
+        pages.mark(settings, -1)
+        assertEquals(FramePageAttribution(chat, settings, true, 1, 2), pages.attribute(Long.MIN_VALUE, -1))
+        pages.mark(chat, Long.MAX_VALUE)
+
+        assertEquals(unknown, pages.attribute(Long.MIN_VALUE, Long.MIN_VALUE))
+        assertEquals(FramePageAttribution(settings, chat, true, 2, 3), pages.attribute(-1, Long.MAX_VALUE))
+        assertEquals(FramePageAttribution(settings, chat, true, 2, 3), pages.attributeFrame(0, Long.MAX_VALUE))
+        assertEquals(FramePageAttribution(chat, chat, false, 3, 3), pages.attributeFrame(Long.MAX_VALUE, 0))
+        for ((start, duration) in listOf(-1L to 1L, 0L to -1L, Long.MAX_VALUE to 1L, (Long.MAX_VALUE - 2) to 10L)) {
+            assertEquals(unknown, pages.attributeFrame(start, duration))
+        }
+        assertEquals(unknown, pages.attribute(Long.MAX_VALUE, -1))
+    }
+
     /** Kept deliberately independent of the indexed implementation: this is the old algorithm. */
     private class ReferenceTimeline(private val capacity: Int) {
         private data class Entry(val atNs: Long, val page: FrameDiagnosticPage)
@@ -105,7 +214,11 @@ class FramePageTimelineTest {
     }
 
     private fun assertEquivalent(expected: FramePageAttribution, actual: FramePageAttribution) {
-        assertEquals(expected, actual)
+        // The frozen algorithm has no segment identity. Compare its complete legacy contract;
+        // segment IDs are checked independently against explicit expectations in dedicated tests.
+        assertEquals("start page", expected.start, actual.start)
+        assertEquals("end page", expected.end, actual.end)
+        assertEquals("route changed", expected.changed, actual.changed)
         assertEquals(expected.aggregatePage, actual.aggregatePage)
         assertEquals(expected.fields(), actual.fields())
     }

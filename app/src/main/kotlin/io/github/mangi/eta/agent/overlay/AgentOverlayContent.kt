@@ -13,7 +13,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import android.view.MotionEvent
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,18 +50,32 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick as semanticsClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
@@ -99,15 +114,20 @@ private fun phaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
 }
 
 /**
- * 助手光球窗口：始终显示在屏幕右侧中下，点击展开/收起小气泡。
+ * 助手光球窗口：默认显示在屏幕右侧中下，可拖动；点击展开/收起小气泡。
  * 独立小窗口（WRAP_CONTENT），不遮挡页面操作。
  */
 @Composable
 internal fun AgentOverlayOrb(
     phase: AgentOverlayPhase,
+    collapsed: Boolean,
     onToggleCollapse: () -> Unit,
+    onDragStart: () -> Unit,
+    onDrag: (Float, Float) -> Unit,
 ) {
     var visible by remember { mutableStateOf(false) }
+    val clickLabel = stringResource(if (collapsed) R.string.overlay_expand else R.string.overlay_collapse)
+    val orbLabel = stringResource(R.string.app_name)
 
     LaunchedEffect(Unit) {
         visible = true
@@ -129,7 +149,14 @@ internal fun AgentOverlayOrb(
     ) {
         // 点击直接交给 Service 侧 toggle，不在 Compose 协程作用域里做延迟动作，
         // 避免 scope 取消导致浮层残留。
-        AssistantOrb(phase = phase, onClick = onToggleCollapse)
+        AssistantOrb(
+            phase = phase,
+            clickLabel = clickLabel,
+            orbLabel = orbLabel,
+            onClick = onToggleCollapse,
+            onDragStart = onDragStart,
+            onDrag = onDrag,
+        )
     }
 }
 
@@ -137,16 +164,67 @@ internal fun AgentOverlayOrb(
  * 助手光球：外层径向光晕 + 实心球体 + 高光点。
  * 运行中光晕呼吸，暂停/完成/失败静止，颜色随阶段变化。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun AssistantOrb(
     phase: AgentOverlayPhase,
     modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null,
+    clickLabel: String,
+    orbLabel: String,
+    onClick: () -> Unit,
+    onDragStart: () -> Unit,
+    onDrag: (Float, Float) -> Unit,
 ) {
     val accent = phaseAccent(phase)
     // Read pulse only during drawing; 20 Hz is enough for a 2.8-second breathing cycle.
     val pulse = rememberAgentOrbPulse(phase)
-    val tapModifier = if (onClick != null) Modifier.clickable { onClick() } else Modifier
+    val touchSlop = LocalViewConfiguration.current.touchSlop
+    val gesture = remember(touchSlop) { AgentOrbDragGesture(touchSlop) }
+    val activationKey = remember { AgentOrbActivationKey() }
+    // Screen coordinates stay stable while WindowManager moves this small window.
+    // One recognizer owns the physical stream: dragging never toggles the controls.
+    val tapModifier = Modifier
+        .semantics {
+            role = Role.Button
+            contentDescription = orbLabel
+            semanticsClick(label = clickLabel) { onClick(); true }
+        }
+        .onKeyEvent { event ->
+            if (event.key == Key.Enter || event.key == Key.NumPadEnter ||
+                event.key == Key.DirectionCenter || event.key == Key.Spacebar
+            ) {
+                when (event.type) {
+                    KeyEventType.KeyDown -> activationKey.down(event.key.hashCode())
+                    KeyEventType.KeyUp -> if (activationKey.up(event.key.hashCode())) onClick()
+                    else -> Unit
+                }
+                true
+            } else false
+        }
+        .onFocusChanged { if (!it.isFocused) activationKey.cancel() }
+        .focusable()
+        .pointerInteropFilter { event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    gesture.begin(event.getPointerId(0), event.rawX, event.rawY)
+                    onDragStart()
+                }
+                MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP -> {
+                    if (event.pointerCount != 1) gesture.cancel()
+                    else {
+                        gesture.move(event.getPointerId(0), event.rawX, event.rawY)?.let {
+                            onDrag(it.x, it.y)
+                        }
+                        if (event.actionMasked == MotionEvent.ACTION_UP &&
+                            gesture.finish(event.getPointerId(0))
+                        ) onClick()
+                    }
+                }
+                MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_DOWN,
+                MotionEvent.ACTION_POINTER_UP -> gesture.cancel()
+            }
+            true
+        }
     Box(
         modifier = modifier
             .then(tapModifier)

@@ -155,6 +155,34 @@ class UsageStatsRepositoryTest {
     }
 
     @Test
+    fun initializedLargeLedgerIsNotReplayedOrZeroedByRoomMigration() = runBlocking {
+        val store = io.github.mangi.eta.data.datastore.FaultPreferencesStore()
+        io.github.mangi.eta.data.datastore.withSettingsStore(store) {
+            val raw = io.github.mangi.eta.data.datastore.largeUsageLedger()
+            SettingsDataStore.addModelUsage(raw)
+            val dao = EtaDatabase.get(context).conversationDao()
+            dao.insertConversations(listOf(ConversationEntity(
+                id = "owner-0", title = "synthetic", thinkingEnabled = false,
+                reasoningEffort = ReasoningEffort.DEFAULT.wireValue, createdAt = 1, updatedAt = 1,
+            )))
+            dao.insertMessages(listOf(ConversationMessageEntity(
+                id = "legacy-synthetic", conversationId = "owner-0", sortIndex = 0,
+                type = "assistant", content = "synthetic", inputTokens = 5, outputTokens = 2, cachedTokens = 1,
+            )))
+            repeat(2) { UsageStatsRepository.initializeConversationUsage(context) }
+            assertEquals(ConversationUsageTotals(9007199254740993L, 11, 7, 3),
+                UsageStatsRepository.conversationUsageFlow("owner-0").first())
+            UsageStatsRepository.recordModelUsage(ModelUsageDelta(
+                "provider-0", "Provider 0", "model", "Model", 9, 1,
+                conversationId = "owner-0", requestId = "fresh", atMillis = 9000,
+            ))
+            UsageStatsRepository.initializeConversationUsage(context)
+            assertEquals(9007199254741002L, UsageStatsRepository.conversationUsageFlow("owner-0").first()!!.input)
+            assertEquals(12, UsageStatsRepository.load(context).modelUsage.providers.size)
+        }
+    }
+
+    @Test
     fun statsInputUsesAssistantReportedTokens() {
         val totals = aggregateVisibleTokens(
             listOf(

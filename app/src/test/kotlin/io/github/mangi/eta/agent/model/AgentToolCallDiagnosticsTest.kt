@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.model.AgentModelClient.ToolCall
 import io.github.mangi.eta.agent.model.AgentModelClient.ToolResult
+import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -324,23 +325,90 @@ class AgentToolCallDiagnosticsTest {
         assertTrue(lines.isEmpty())
     }
 
-    @Test fun attemptAndRunRecordBudgetsAreHardCapsEvenWithFailingSinks() {
+    @Test fun criticalQuotasResetPerAttemptEvenBeyondTheOldRunCapAndFailingSinks() {
         val capture = Capture()
-        repeat(10) {
-            val attempt = capture.diagnostics.beginAttempt(it, "provider")
-            repeat(300) { attempt?.failed("timeout") }
+        repeat(10) { round ->
+            val attempt = capture.begin(round = round)
+            repeat(300) { attempt.failed("timeout") }
         }
-        assertEquals(512, capture.lines.size)
-        assertTrue(capture.records().groupBy { it.getInt("attempt") }.values.all { it.size <= 128 })
-        assertNull(capture.diagnostics.beginAttempt(11, "provider"))
+        assertEquals(640, capture.stage("failed").size)
+        assertTrue(capture.records().groupBy { it.getInt("attempt") }.values.all { it.size == 65 })
+        assertNotNull(capture.diagnostics.beginAttempt(11, "provider"))
         assertSafeLines(capture.lines)
         var calls = 0
         val throwing = AgentToolCallDiagnostics(enabled = { true }, sink = { calls++; error("sink") })
         repeat(10) {
-            val attempt = throwing.beginAttempt(it, "provider")
-            repeat(300) { attempt?.failed("timeout") }
+            val attempt = requireNotNull(throwing.beginAttempt(it, "provider"))
+            repeat(300) { attempt.failed("timeout") }
         }
-        assertEquals(512, calls)
+        assertEquals(650, calls)
+    }
+
+    @Test fun detailExhaustionDoesNotHideRequestUsageOrHistoryOnLaterAttempts() {
+        val capture = Capture()
+        val call = ToolCall("call", "get_task_result", "{}")
+        repeat(6) { round ->
+            val attempt = capture.begin(round = round)
+            repeat(300) { attempt.emit("parsed", JSONObject()) }
+            attempt.requestShape(JSONObject(), "{}", JSONObject())
+            attempt.usage(AgentTokenUsage(inputTokens = 214558 + round, cachedTokens = 0))
+            attempt.historyResult(call, JSONObject().put("content", "PRIVATE_REPORT"))
+        }
+        assertEquals(6 * 127, capture.stage("parsed").size)
+        assertEquals(6, capture.stage("request_shape").size)
+        assertEquals(6, capture.stage("usage").size)
+        assertEquals(6, capture.stage("history_result").size)
+        assertTrue(capture.stage("request_shape").all { it.getBoolean("detail_exhausted") && it.getLong("detail_dropped_attempt") > 0 })
+        assertEquals(6 * 173L, capture.stage("usage").last().getLong("detail_dropped_total"))
+        assertFalse(capture.lines.joinToString().contains("PRIVATE_REPORT"))
+    }
+
+    @Test fun bodyAndResultFingerprintsDistinguishExactBytesWithoutLoggingTheBody() {
+        val capture = Capture()
+        val attempt = capture.begin()
+        val plain = "PRIVATE_BODY中文🙂" + "x".repeat(4095) + "🙂"
+        val call = ToolCall("id", "get_task_result", "{}")
+        val raw = ToolResult(plain, sensitive = true)
+        val guarded = ToolResult(plain + " ", sensitive = true)
+        attempt.result(call, guarded, rawResult = raw)
+        attempt.historyResult(call, JSONObject().put("content", guarded.content))
+        attempt.requestShape(JSONObject(), plain, JSONObject())
+        attempt.requestShape(JSONObject(), plain, JSONObject())
+        attempt.requestShape(JSONObject(), plain + " ", JSONObject())
+        val result = capture.stage("result").single()
+        assertEquals(plain.length, result.getInt("raw_result_chars"))
+        assertEquals(plain.toByteArray(Charsets.UTF_8).size.toLong(), result.getLong("raw_result_utf8_bytes"))
+        assertNotEquals(result.getString("raw_result_hmac"), result.getString("guarded_result_hmac"))
+        assertEquals(result.getString("guarded_result_hmac"), capture.stage("history_result").single().getString("history_result_hmac"))
+        val shapes = capture.stage("request_shape")
+        assertEquals(shapes[0].getString("body_hmac"), shapes[1].getString("body_hmac"))
+        assertNotEquals(shapes[0].getString("body_hmac"), shapes[2].getString("body_hmac"))
+        assertEquals("serialized_utf8", shapes[0].getString("body_hmac_basis"))
+        assertFalse(capture.lines.joinToString().contains("PRIVATE_BODY"))
+        assertSafeLines(capture.lines)
+    }
+
+    @Test fun usageReceiptsAreNotMergedAndReasoningIdentifiersAreOnlyCounted() {
+        val capture = Capture()
+        val attempt = capture.begin(round = 22)
+        attempt.usage(AgentTokenUsage(inputTokens = 214558, cachedTokens = 0))
+        attempt.usage(AgentTokenUsage(outputTokens = 54))
+        assertEquals(listOf(1L, 2L), capture.stage("usage").map { it.getLong("receipt_ordinal") })
+        val later = capture.stage("usage")[1]
+        assertFalse(later.getBoolean("input_tokens_present"))
+        assertFalse(later.has("input_tokens"))
+        assertFalse(later.getBoolean("cached_tokens_present"))
+        val body = JSONObject().put("input", JSONArray()
+            .put(JSONObject().put("type", "reasoning").put("id", "PRIVATE_ID"))
+            .put(JSONObject().put("type", "reasoning").put("id", "PRIVATE_ID"))
+            .put(JSONObject().put("type", "reasoning")))
+        attempt.requestShape(JSONObject(), body.toString(), body)
+        val shape = capture.stage("request_shape").single()
+        assertEquals(1L, shape.getLong("reasoning_id_missing"))
+        assertEquals(1L, shape.getLong("reasoning_id_duplicates"))
+        assertFalse(capture.lines.joinToString().contains("PRIVATE_ID"))
+        capture.begin(round = 23).usage(AgentTokenUsage(inputTokens = 326594))
+        assertEquals(1L, capture.stage("usage").last().getLong("receipt_ordinal"))
     }
 
     @Test fun callTrackingAndOrphanDeltaStorageAreBoundedWithoutPerDeltaLogging() {

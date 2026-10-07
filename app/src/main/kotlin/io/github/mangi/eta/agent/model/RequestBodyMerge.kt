@@ -49,6 +49,7 @@ internal object RequestBodyMerge {
 
     private fun JsonPrimitive.toJsonValue(): Any? = when {
         this is JsonNull -> JSONObject.NULL
+        isString -> content // Quoted booleans/numbers are JSON strings, including nested values.
         booleanOrNull != null -> booleanOrNull!!
         intOrNull != null -> intOrNull!!
         longOrNull != null -> longOrNull!!

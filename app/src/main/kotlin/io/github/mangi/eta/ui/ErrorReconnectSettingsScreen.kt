@@ -32,6 +32,7 @@ import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.map
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
@@ -41,8 +42,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 internal fun ErrorReconnectSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val policyFlow = remember { SettingsDataStore.errorReconnectPolicyFlow() }
-    val policy by policyFlow.collectAsState(initial = ErrorReconnectPolicy.NONE)
+    val policyFlow = remember { SettingsDataStore.errorReconnectPolicyFlow().map { it as ErrorReconnectPolicy? } }
+    val loadedPolicy by policyFlow.collectAsState(initial = null)
+    val policy = loadedPolicy ?: ErrorReconnectPolicy.DEFAULT
     var saving by remember { mutableStateOf(false) }
 
     MiuixScaffoldPage(
@@ -54,9 +56,9 @@ internal fun ErrorReconnectSettingsScreen(onBack: () -> Unit) {
             Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                 ErrorReconnectPolicyOptions(
                     selectedPolicy = policy,
-                    enabled = !saving,
+                    enabled = loadedPolicy != null && !saving,
                     onSelect = { selected ->
-                        if (!saving && selected != policy) {
+                        if (loadedPolicy != null && !saving && selected != loadedPolicy) {
                             saving = true
                             scope.launch {
                                 try {

@@ -52,16 +52,25 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
 
     def test_idle_toggle_marker_precedes_stream_gate_without_starting_probe(self):
         toggle = body(self.stream, 'markToggle')
-        self.assertLess(toggle.index('traceChatToggle(kind, expanded)'), toggle.index('if (active == null) return 0'))
-        self.assertLess(toggle.index('if (active == null) return 0'), toggle.index('probeRequests.intValue++'))
+        self.assertLess(toggle.index('traceChatToggle(kind, expanded)'), toggle.index('if (!enabled) return 0'))
+        self.assertLess(toggle.index('if (!enabled) return 0'), toggle.index('probeRequests.intValue++'))
         self.assertNotRegex(toggle, r'\battach\s*\(')
+
+    def test_android_sink_rechecks_live_off_gate_without_unbalanced_sections(self):
+        counter = (ROOT / 'ChatScrollDiagnostics.kt').read_text().split('private object AndroidChatScrollTraceSink', 1)[1]
+        self.assertEqual(counter.count('if (!StreamDiagnosticControl.allowed || !Trace.isEnabled()) return'), 2)
+        self.assertLess(counter.index('if (!StreamDiagnosticControl.allowed'), counter.index('Trace.setCounter'))
+        section = counter.split('override fun section', 1)[1].split('private val chatScrollTraceIds', 1)[0]
+        self.assertLess(section.index('if (!StreamDiagnosticControl.allowed'), section.index('Trace.beginSection'))
+        self.assertEqual(section.count('Trace.beginSection'), 1)
+        self.assertEqual(section.count('Trace.endSection'), 1)
 
     def test_window_monitor_requires_opt_in_and_foreground_not_streaming(self):
         # Page-level jank diagnostics are explicitly enabled by the global log switch.
         monitor = body(self.stream, 'StreamPerformanceMonitor')
         self.assertIn('lifecycleState.isAtLeast(Lifecycle.State.RESUMED)', monitor)
-        self.assertIn('if (loggingEnabled && resumed && window != null)', monitor)
-        self.assertIn('DisposableEffect(view, loggingEnabled, resumed, pages)', monitor)
+        self.assertIn('if (loggingEnabled && diagnosticAllowed && resumed && window != null)', monitor)
+        self.assertIn('DisposableEffect(view, loggingEnabled, resumed, pages, diagnosticAllowed)', monitor)
         self.assertIn('onDispose { detach?.invoke() }', monitor)
         self.assertNotIn('isStreaming', monitor)
         self.assertNotIn('scrollTraceEnabled', monitor)
@@ -77,7 +86,7 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         self.assertIn('page.aggregatePage.frameStage', attach)
         self.assertIn('${page.fields()}', (ROOT / 'StreamPerformanceDiagnostics.kt').read_text())
         self.assertIn('snapshot.rawDetails.select()', attach)
-        self.assertIn('session.details.reserveFrame()', attach)
+        self.assertIn('session.details.reserveFrame(severe)', attach)
         self.assertIn('handler.postDelayed(this, 5000)', attach)
         self.assertIn('active === session && enabled', attach)
 
@@ -87,11 +96,13 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         for name in ('recordMetric', 'finishSpan', 'snapshot'):
             self.assertRegex(session, rf'@Synchronized\s+fun\s+{name}\s*\(')
         snapshot = body(session, 'snapshot')
-        self.assertIn('val raw = details.snapshot(clock(), final)', snapshot)
+        # Stop fixes the logical window end for all remaining snapshots: an in-flight
+        # periodic emit must not move it beyond the final cutoff (backward window).
+        self.assertIn('val raw = details.snapshot(stopCutoffNs ?: clock(), final)', snapshot)
         self.assertIn('if (final) closed = true', snapshot)
         self.assertRegex(snapshot, r'SessionSnapshot\(raw,\s*stats,\s*pageStats,\s*droppedStageRecords,\s*invalidLabels,')
         # The maps in the snapshot must be detached, not cleared in place.
-        steps = ('details.snapshot(clock(), final)', 'if (final) closed = true',
+        steps = ('details.snapshot(stopCutoffNs ?: clock(), final)', 'if (final) closed = true',
                  'val result = SessionSnapshot(', 'stats = linkedMapOf()',
                  'pageStats = linkedMapOf()', 'droppedStageRecords = 0',
                  'invalidLabels = 0', 'return result')
@@ -111,7 +122,8 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         self.assertNotRegex(raw, r'\.select\s*\(|DiagnosticSpanRecord\s*\(|diagnosticInfo')
         selection = class_body(self.bounded, 'DiagnosticRawDetailSnapshot')
         self.assertNotRegex(selection, r'@Synchronized|\bsynchronized\s*\(')
-        self.assertIn('DiagnosticSpanRecord(', body(selection, 'select'))
+        self.assertIn('candidates(includeProtected = true)', body(selection, 'select'))
+        self.assertIn('DiagnosticSpanRecord(', body(selection, 'candidates'))
 
     def test_emit_selects_and_reports_the_same_snapshot_outside_the_lock(self):
         attach = body(self.stream, 'attach')
@@ -119,38 +131,37 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
         self.assertNotRegex(attach, r'@Synchronized\s+fun\s+emit\s*\(')
         emit = body(attach, 'emit')
         self.assertIn('val snapshot = closedSnapshot ?: run {', emit)
-        locks = list(re.finditer(r'\bsynchronized\s*\([^)]*\)\s*\{', emit))
-        self.assertEqual(len(locks), 1)
-        lock_start = emit.index('{', locks[0].start())
-        lock_end = balanced_end(emit, lock_start, '{', '}')
-        self.assertRegex(locks[0].group(), r'synchronized\(session\)')
-        locked = emit[lock_start + 1:lock_end]
-        self.assertLess(locked.index('if (session.closed) return'), locked.index('session.snapshot(final)'))
-        self.assertNotRegex(locked, r'\.(?:select|report)\s*\(|diagnosticInfo')
+        # snapshot owns the lock itself; the observer timer starts BEFORE acquiring it.
+        self.assertNotRegex(emit, r'\bsynchronized\s*\(')
+        lock_end = emit.index('session.snapshot(final)')
+        self.assertLess(emit.index('Phase.Snapshot'), lock_end)
         selected = emit.index('val detail = snapshot.rawDetails.select()')
         reported = emit.index('snapshot.report(session.id, session.started, final)')
         self.assertLess(lock_end, selected)
         self.assertLess(selected, reported)
         self.assertNotIn('session.report(', emit)
 
-    def test_detach_captures_the_final_snapshot_before_queuing_output(self):
+    def test_detach_stops_new_admission_then_drains_original_worker_before_final_completion(self):
         attach = body(self.stream, 'attach')
-        returns = list(re.finditer(r'\breturn\s*\{', attach))
-        self.assertEqual(len(returns), 1)
-        start = attach.index('{', returns[0].start())
-        detach = attach[start + 1:balanced_end(attach, start, '{', '}')]
-        self.assertRegex(detach, r'^\s*val finalSnapshot = session.snapshot\(final = true\)')
-        self.assertEqual(detach.count('session.snapshot('), 1)
-        final = detach.index('val finalSnapshot = session.snapshot(final = true)')
-        for step in ('window.removeOnFrameMetricsAvailableListener(listener)',
-                     'active = null', 'handler.removeCallbacks(periodic)', 'handler.post {'):
-            self.assertLess(final, detach.index(step))
-        self.assertRegex(detach, r'handler\.post\s*\{\s*emit\(true, finalSnapshot\);\s*thread\.quitSafely\(\)\s*\}')
+        stop = attach[attach.index('val stop:'):]
+        steps = ('session.stopAdmission()', 'window.removeOnFrameMetricsAvailableListener(listener)',
+                 'publishSession(null)', 'log.closeOpen(cutoff)', 'handler.removeCallbacks(periodic)',
+                 'val drainUntil =', 'val emitted = emit(true)', 'AppFileLogger.diagnosticCompletion(',
+                 'completion.complete(', 'thread.quitSafely()')
+        positions = [stop.index(step) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('250_000_000L', stop)
+        self.assertIn('handler.postDelayed(this, 10)', stop)
+        self.assertNotRegex(stop, r'Thread\.sleep|\.await\(|completion\.get\(')
+        self.assertIn('return { stop(); Unit }', stop)
+        self.assertNotIn('active === session && enabled &&', attach)
+        self.assertIn('session.admitFrame(intendedFrame, AppFileLogger.isEnabled())', attach)
 
     def test_trace_gate_polls_only_while_resumed(self):
         gate = body(self.helper, 'rememberChatScrollTraceEnabled')
         self.assertIn('repeatOnLifecycle(Lifecycle.State.RESUMED)', gate)
-        self.assertIn('enabled.value = Trace.isEnabled()', gate)
+        self.assertIn('enabled.value = StreamDiagnosticControl.allowed && Trace.isEnabled()', gate)
+        self.assertIn('if (!allowed)', gate)
         self.assertIn('delay(CHAT_SCROLL_TRACE_POLL_MS)', gate)
         self.assertIn('enabled.value = false', gate)
         self.assertNotIn('layoutInfo', gate)
@@ -177,4 +188,4 @@ class ChatScrollDiagnosticsContractTest(unittest.TestCase):
 
     def test_toggle_does_no_work_when_platform_trace_is_disabled(self):
         toggle = body(self.helper, 'traceChatToggle')
-        self.assertLess(toggle.index('if (!Trace.isEnabled()) return'), toggle.index('emitChatScrollToggle('))
+        self.assertLess(toggle.index('if (!StreamDiagnosticControl.allowed || !Trace.isEnabled()) return'), toggle.index('emitChatScrollToggle('))

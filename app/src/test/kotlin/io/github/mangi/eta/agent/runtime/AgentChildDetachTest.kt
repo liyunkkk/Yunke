@@ -10,12 +10,12 @@ class AgentChildDetachTest {
         var closeCount = 0
         val tools = AgentChildToolOwnership { closeCount++ }
         val parentBinding = session.controller.register { tools.release() }
-        assertTrue(tools.retain())
+        val childLease = requireNotNull(tools.retain())
         parentBinding.close() // parent worker unregisters after its run
         tools.release() // relinquish parent ownership once
         assertTrue(session.complete(AgentRuntimeWire.RunResult("parent", true, "done")))
         assertEquals(0, closeCount)
-        AgentChildToolOwnership.releaseChild { tools.release() }
+        childLease.close()
         assertEquals(1, closeCount)
     }
 
@@ -24,11 +24,11 @@ class AgentChildDetachTest {
         var closeCount = 0
         val tools = AgentChildToolOwnership { closeCount++ }
         session.controller.register { tools.release() }
-        assertTrue(tools.retain())
+        val childLease = requireNotNull(tools.retain())
         assertTrue(session.requestStop())
         tools.release() // duplicate release in parent worker finally
         assertEquals(0, closeCount)
-        AgentChildToolOwnership.releaseChild { tools.release() }
+        childLease.close()
         assertEquals(1, closeCount)
     }
 }

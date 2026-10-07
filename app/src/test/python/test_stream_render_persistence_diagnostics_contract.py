@@ -25,16 +25,16 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         helper = code(source("ui/components/StreamDiagnosticModifier.kt"))
         construction = between(helper, "internal fun Modifier.streamDiagnosticMeasure", "private data class StreamDiagnosticMeasureElement")
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", construction)
-        self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage))", construction)
+        self.assertIn("return this.then(StreamDiagnosticMeasureElement(stage, attribution))", construction)
         self.assertLess(construction.index("return this"), construction.index("return this.then"))
         element = between(helper, "private data class StreamDiagnosticMeasureElement", "private class StreamDiagnosticMeasureNode")
-        self.assertIn("(val stage: String) : ModifierNodeElement<StreamDiagnosticMeasureNode>()", element)
-        self.assertIn("override fun create() = StreamDiagnosticMeasureNode(stage)", element)
-        self.assertIn("override fun update(node: StreamDiagnosticMeasureNode) { node.stage = stage }", element)
+        self.assertIn("(val stage: String, val attribution: StreamDiagnosticAttribution?) : ModifierNodeElement<StreamDiagnosticMeasureNode>()", element)
+        self.assertIn("override fun create() = StreamDiagnosticMeasureNode(stage, attribution)", element)
+        self.assertIn("override fun update(node: StreamDiagnosticMeasureNode) { node.stage = stage; node.attribution = attribution }", element)
         self.assertNotIn("override fun equals", element)  # Data-class equality is by the fixed stage label.
         self.assertNotIn("override fun hashCode", element)
         measure = between(helper, "private class StreamDiagnosticMeasureNode", "internal fun Modifier.streamDiagnosticDraw")
-        self.assertIn("(var stage: String) : Modifier.Node(), LayoutModifierNode", measure)
+        self.assertIn("(var stage: String, var attribution: StreamDiagnosticAttribution?) : Modifier.Node(), LayoutModifierNode", measure)
         self.assertIn("override fun MeasureScope.measure(measurable: Measurable, constraints: Constraints): MeasureResult", measure)
         self.assertEqual(measure.count("measurable.measure(constraints)"), 1)
         self.assertEqual(measure.count("layout(child.width, child.height)"), 1)
@@ -46,12 +46,14 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
             self.assertNotIn(forbidden, construction + element + measure)
         draw = helper.split("internal fun Modifier.streamDiagnosticDraw", 1)[1]
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled) return this", draw)
-        self.assertLess(draw.index("return this"), draw.index("return drawWithContent"))
+        self.assertLess(draw.index("return this"), draw.index("return this.then(StreamDiagnosticDrawElement(stage, attribution))"))
         self.assertEqual(draw.count("drawContent()"), 1)
         self.assertIn("measureDetail(stage) { drawContent() }", draw)
         for forbidden in ("semantics", "graphicsLayer", "mutableState", "post", "note(", "launch", "coroutineScope", "onAttach", "onDetach"):
             self.assertNotIn(forbidden, helper)
-        self.assertEqual(helper.count("!StreamPerformanceDiagnostics.enabled"), 2)
+        original_helpers = helper.split("internal fun Modifier.streamDiagnosticPlacement", 1)[0]
+        self.assertEqual(original_helpers.count("!StreamPerformanceDiagnostics.enabled"), 2)
+        self.assertEqual(helper.count("!StreamPerformanceDiagnostics.enabled"), 3)
 
     def test_hidden_item_still_measures_once_and_never_places_hidden_child(self):
         hidden = code(source("ui/components/StreamingListItemLayout.kt"))
@@ -87,7 +89,7 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         self.assertEqual(cell.count("buildAnnotatedString {"), 1)
         frozen = between(chat, "private fun FrozenMarkdownElement", "internal fun shouldFreezeStreamingMarkdownBlock")
         self.assertIn("Modifier.graphicsLayer()", frozen)
-        self.assertIn('streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure")', frozen)
+        self.assertIn('streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure", diagnosticAttribution)', frozen)
         self.assertIn('measure("markdown.blockDraw")', frozen)
         self.assertIn('if (freeze) "markdown.stable.draw" else "markdown.tail.draw"', frozen)
         enabled, rest = frozen.split("} else {", 1)
@@ -161,9 +163,21 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
 
     def test_datastore_times_edit_entry_transform_and_commit_tail_without_suspend_in_measure(self):
         store = source("data/datastore/SettingsDataStore.kt")
-        for prefix in ("settings", "usage"):
-            for suffix in ("editEntryWait", "transform", "commitTail"):
-                self.assertIn('"' + prefix + '.' + suffix + '"', store)
+        for suffix in ("editEntryWait", "transform", "commitTail"):
+            self.assertIn('"settings.' + suffix + '"', store)
+        # Atomic ledger edits reuse SettingsDataStore's SAME diagnosticEdit queue/commit timer.
+        # No second file-store timing, no renamed stages, no suspend inside measure.
+        ledger_store = source("data/datastore/PreferencesUsageLedger.kt")
+        for suffix in ("editEntryWait", "transform", "commitTail"):
+            self.assertIn('"usage.' + suffix + '"', store)
+        self.assertIn('usageLedger = PreferencesUsageLedger(preferencesStore) { transform ->', store)
+        self.assertEqual(store.count('diagnosticEdit("usage.editEntryWait", "usage.transform", "usage.commitTail", transform)'), 1)
+        ledger_update = between(ledger_store, "suspend fun update(", "suspend fun replace(")
+        self.assertIn("withContext(NonCancellable + Dispatchers.IO)", ledger_update)
+        self.assertIn("edit { prefs ->", ledger_update)
+        self.assertIn("replaceIn(prefs, transform(current))", ledger_update)
+        self.assertNotIn("storage.write", ledger_store)
+        self.assertNotIn("pureDisk", ledger_store)
         helper = between(store, "private suspend fun diagnosticEdit", "\n    }\n")
         self.assertIn("if (!StreamPerformanceDiagnostics.enabled)", helper)
         self.assertIn("dataStore.edit { prefs -> transform(prefs) }", helper)
@@ -181,24 +195,41 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
     def test_usage_existing_reads_update_and_serializer_are_wired_once(self):
         usage = source("data/repository/UsageStatsRepository.kt")
         for stage in ("usage.load.dao.perDay", "usage.load.dao.conversations", "usage.load.dao.messages",
-                      "usage.load.dao.liveIds", "usage.load.decode", "usage.lockWait", "usage.ledger.update"):
+                      "usage.load.dao.liveIds", "usage.load.decode", "usage.lockWait"):
             self.assertIn('"' + stage + '"', usage)
+        # Exactly one apply site emits usage.ledger.update: the atomic Preferences transform.
+        joined = usage + source("data/datastore/PreferencesUsageLedger.kt")
+        self.assertEqual(joined.count('measure("usage.ledger.update"'), 1)
+        self.assertIn('measure("usage.ledger.update") { applyModelUsageDelta(raw, delta) }', joined)
         for call in ("dao.conversationCountPerDay(startAt)", "dao.conversationCount()", "dao.totalMessageCount()", "dao.conversations()"):
             self.assertEqual(usage.count(call), 1)
         record = between(usage, "suspend fun recordModelUsage", "// Suspend DAO calls")
-        self.assertEqual(record.count("applyModelUsageDelta(current, delta)"), 1)
         self.assertIn("modelUsageLock.withLock", record)
         self.assertIn("withAttribution(attribution)", record)
+        self.assertIn("SettingsDataStore.recordModelUsage(delta)", record)
         read = between(usage, "private suspend inline fun", "\n}\n")
         self.assertIn("block: suspend () -> T", read)
         self.assertIn("try", read)
         self.assertIn("finally", read)
         self.assertNotIn(".measure(", read)
-        ledger = between(source("data/repository/ModelUsageLedger.kt"), "internal fun applyModelUsageDelta", "private fun decodeEvents")
-        self.assertEqual(ledger.count("encodeEvents(trimmed)"), 1)
-        self.assertEqual(ledger.count("root.toString()"), 1)
-        self.assertIn('"usage.ledger.encodeEvents"', ledger)
-        self.assertIn('"usage.ledger.serialize"', ledger)
+        model_ledger = source("data/repository/ModelUsageLedger.kt")
+        self.assertIn('"usage.ledger.encodeEvents"', model_ledger)
+        self.assertIn('"usage.ledger.serialize"', model_ledger)
+        self.assertEqual(model_ledger.count('measure("usage.ledger.serialize")'), 2)
+        self.assertEqual(model_ledger.count('measure("usage.ledger.encodeEvents"'), 2)
+        single = between(model_ledger, "fun serialize(): String {", "private class WorkingModel")
+        self.assertIn('measure("usage.ledger.serialize") { root!!.toString() }', single)
+        # The batch entry point reuses the same mutable ledger instead of a second serializer.
+        batch = between(model_ledger, "internal fun applyModelUsageDeltas", "private fun decodeEvents")
+        self.assertIn("MutableModelUsageLedger(raw.orEmpty()).also { ledger -> deltas.forEach { ledger.apply(it) } }.serialize()", batch)
+        self.assertNotIn('measure("usage.ledger.serialize")', batch)
+        # Event encoding stays inside the single mutable ledger and is measured exactly once there.
+        materialize = between(model_ledger, "fun materialize()", "private fun JSONObject.isBatchSafeLedger")
+        self.assertEqual(materialize.count('measure("usage.ledger.encodeEvents"'), 1)
+        self.assertIn("encodeEvents(events)", materialize)
+        trim = between(model_ledger, "if (working.events.size > MAX_MODEL_EVENTS)", "working.applied = true")
+        self.assertIn("clear()", trim)
+        self.assertIn('measure("usage.ledger.encodeEvents"', model_ledger)
 
     def test_checkpoint_keeps_same_monitor_schedule_and_single_write_encode(self):
         recorder = source("agent/runtime/AgentRunCheckpointRecorder.kt")

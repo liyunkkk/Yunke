@@ -35,6 +35,8 @@ fun MiuixScaffoldPage(
     modifier: Modifier = Modifier,
     actions: @Composable RowScope.() -> Unit = {},
     listState: LazyListState = rememberLazyListState(),
+    topBarModifier: Modifier = Modifier,
+    listModifier: Modifier = Modifier,
     content: LazyListScope.() -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
@@ -48,6 +50,7 @@ fun MiuixScaffoldPage(
             TopBarBackdrop(backdrop) {
                 AdaptiveTopAppBar(
                     title = title,
+                    modifier = topBarModifier,
                     color = topBarColor,
                     navigationIcon = { MiuixBackButton(onClick = onBack) },
                     actions = actions,
@@ -60,7 +63,7 @@ fun MiuixScaffoldPage(
             // 保留 MiuixTheme 注入的默认越界工厂，让短内容页也能回弹到顶栏采样区。
             LazyColumn(
                 state = listState,
-                modifier = Modifier
+                modifier = listModifier
                     .fillMaxSize()
                     .horizontalCutoutPadding()
                     .captureForTopBar(backdrop)

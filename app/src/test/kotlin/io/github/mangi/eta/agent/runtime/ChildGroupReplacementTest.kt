@@ -129,8 +129,26 @@ class ChildGroupReplacementTest {
         assertTrue(archived.getBoolean("artifact_verified"))
         assertFalse(archived.getBoolean("acceptance_verified"))
         assertEquals(evidence.toString(), archived.getJSONObject("artifact_evidence").toString())
-        assertTrue(archived.getBoolean("model_report_unverified_truncated"))
-        assertEquals(2048, archived.getString("model_report_unverified").length)
+        assertFalse(archived.optBoolean("model_report_unverified_truncated"))
+        assertEquals("model-claim ".repeat(600), archived.getString("model_report_unverified"))
+    }
+
+    @Test fun oversizedArchivesEvictProseAndStillEnforceAMetadataBudget() {
+        val method = AgentChildTaskGroups.javaClass.declaredMethods.single { it.name == "boundArchive" }
+            .apply { isAccessible = true }
+        val snapshots = linkedMapOf("large" to JSONObject().put("result", "x".repeat(1100000))
+            .put("text_revision", "stable-revision").put("artifact_verified", true).toString())
+        method.invoke(AgentChildTaskGroups, snapshots)
+        val evicted = JSONObject(snapshots.getValue("large"))
+        assertEquals("", evicted.getString("result"))
+        assertTrue(evicted.getBoolean("text_evicted"))
+        assertTrue(evicted.getBoolean("artifact_verified"))
+        assertEquals("stable-revision", evicted.getString("text_revision"))
+        val metadata = linkedMapOf<String, String>()
+        repeat(600) { metadata["task-$it"] = JSONObject().put("artifact_evidence", "m".repeat(2000)).toString() }
+        method.invoke(AgentChildTaskGroups, metadata)
+        assertTrue(metadata.size < 600)
+        assertTrue(metadata.values.sumOf { it.length.toLong() * 2 } <= 2 * 1024 * 1024)
     }
 
     @Suppress("UNCHECKED_CAST")

@@ -199,6 +199,34 @@ internal abstract class EtaDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Bound legacy runtime event rows before any Room relation can read them.
+         * SQLite measures TEXT as characters unless it is explicitly cast to BLOB;
+         * the byte check therefore matches the checkpoint codec's UTF-8 limit.
+         */
+        internal val MIGRATION_32_33 = Migration(32, 33) { database ->
+            database.execSQL(
+                "ALTER TABLE runtime_inflight_runs ADD COLUMN " +
+                    "recovery_incomplete INTEGER NOT NULL DEFAULT 0"
+            )
+            database.execSQL(
+                "UPDATE runtime_inflight_runs SET recovery_incomplete = 1 " +
+                    "WHERE run_id IN (" +
+                    "SELECT run_id FROM runtime_inflight_events " +
+                    "WHERE length(CAST(event_json AS BLOB)) > 65536)"
+            )
+            database.execSQL(
+                "UPDATE runtime_inflight_events SET event_json = " +
+                    "'{\"__eta_checkpoint_skipped\":true}' " +
+                    "WHERE length(CAST(event_json AS BLOB)) > 65536"
+            )
+            database.execSQL(
+                "UPDATE runtime_archive_events SET event_json = " +
+                    "'{\"__eta_checkpoint_skipped\":true}' " +
+                    "WHERE length(CAST(event_json AS BLOB)) > 65536"
+            )
+        }
+
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->
             database.execSQL(
                 "ALTER TABLE model_providers ADD COLUMN session_gateway_json TEXT NOT NULL DEFAULT ''"

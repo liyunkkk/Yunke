@@ -21,6 +21,24 @@ class UsageRecordingProviderTest {
     }
     private fun answer() = ProviderResponse(JSONObject().put("content", "done").put("finish_reason", "stop"))
 
+    @Test fun rawDiagnosticReceiptsStaySeparateFromIdempotentAccounting() {
+        val logs = mutableListOf<String>()
+        val diagnostics = AgentToolCallDiagnostics(enabled = { true }, sink = { logs += it })
+        val records = mutableListOf<ModelUsageDelta>()
+        val received = AgentTokenUsage(inputTokens = 326594, cachedTokens = 3328)
+        val decorated = UsageRecordingProvider(provider { emit ->
+            repeat(2) { emit(ProviderEvent.Usage(received)) }
+            answer()
+        }) { records += it }
+        val tagged = request.copy(toolDiagnosticAttempt = diagnostics.beginAttempt(23, "provider"))
+        decorated.complete(tagged, AgentRunController()) {}
+        val receipts = logs.map { JSONObject(it.removePrefix("ToolCallDiag ")) }.filter { it.optString("stage") == "usage" }
+        assertEquals(2, receipts.size)
+        assertEquals(listOf(1L, 2L), receipts.map { it.getLong("receipt_ordinal") })
+        assertTrue(receipts.all { it.getInt("input_tokens") == 326594 && it.getInt("round") == 23 })
+        assertEquals(1, records.size)
+    }
+
     @Test fun identicalUsageEventsAreIdempotentAndNewInvocationsAccumulate() {
         var raw = ""
         val records = mutableListOf<ModelUsageDelta>()
@@ -126,6 +144,103 @@ class UsageRecordingProviderTest {
         }) { records += it }
         decorated.complete(request, AgentRunController()) {}
         assertEquals(784_267L, records.single().inputTokens)
+    }
+
+    @Test fun requestCompletionFlushesAfterAllPartialsEvenWhenProviderFails() {
+        val order = mutableListOf<String>()
+        val original = IllegalStateException("stream ended")
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 100)))
+            emit(ProviderEvent.Usage(AgentTokenUsage(outputTokens = 7)))
+            throw original
+        }, finish = { order += "flush" }) { delta -> order += "record:${delta.outputTokens}" }
+        assertSame(original, assertThrows(IllegalStateException::class.java) {
+            decorated.complete(request, AgentRunController()) { }
+        })
+        assertEquals(listOf("record:0", "record:7", "flush"), order)
+    }
+
+    @Test fun flushFailureCannotReplaceSuccessfulResponseOrConsumerError() {
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 100)))
+            answer()
+        }, finish = { error("flush failed") }) { }
+        assertEquals("done", decorated.complete(request, AgentRunController()) { }.assistantMessage.getString("content"))
+        val consumerError = IllegalStateException("consumer failed")
+        assertSame(consumerError, assertThrows(IllegalStateException::class.java) {
+            decorated.complete(request, AgentRunController()) { throw consumerError }
+        })
+    }
+
+    @Test fun failedReceiptAndAmbiguousCommitRetryAreObservableAndNeverDoubleCharged() {
+        var raw = ""
+        var attempts = 0
+        val failures = mutableListOf<Throwable>()
+        val ids = mutableListOf<String?>()
+        val writeFailure = java.io.IOException("ambiguous storage acknowledgement")
+        val response = answer()
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 19, outputTokens = 2)))
+            response
+        }, reportFailure = { failures += it }) { delta ->
+            ids += delta.requestId
+            raw = applyModelUsageDelta(raw, delta) // Simulate commit before acknowledgement failure.
+            if (attempts++ == 0) throw writeFailure
+        }
+        assertSame(response, decorated.complete(request, AgentRunController()) {})
+        assertEquals(listOf(writeFailure), failures)
+        assertEquals(2, attempts)
+        assertEquals(ids.first(), ids.last())
+        assertEquals(19L, decodeModelUsageSnapshot(raw).totalInputTokens)
+        assertEquals(1, decodeModelUsageSnapshot(raw).providers.single().models.single().events.size)
+    }
+
+    @Test fun accountingFailuresAreReportedAndSuppressedWithoutReplacingCancellationOrConsumerError() {
+        for (original in listOf(kotlinx.coroutines.CancellationException("cancelled"), IllegalStateException("consumer"))) {
+            val storage = java.io.IOException("storage failed")
+            val finishError = java.io.IOException("finish failed")
+            val observed = mutableListOf<Throwable>()
+            val decorated = UsageRecordingProvider(provider { emit ->
+                emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 13)))
+                answer()
+            }, finish = { throw finishError }, reportFailure = { observed += it }) { throw storage }
+            val thrown = assertThrows(original.javaClass) {
+                decorated.complete(request, AgentRunController()) { throw original }
+            }
+            assertSame(original, thrown)
+            assertTrue(observed.contains(storage))
+            assertTrue(observed.contains(finishError))
+            assertEquals(listOf(storage, finishError), original.suppressed.toList())
+        }
+    }
+
+    @Test fun defaultFailureStatusIsStickyAndThrowingErrorReporterCannotBreakAResponse() {
+        val response = answer()
+        val decorated = UsageRecordingProvider(provider { emit ->
+            emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 13)))
+            response
+        }, reportFailure = { error("reporter unavailable") }) { throw java.io.IOException("storage") }
+        val before = io.github.mangi.eta.data.repository.UsageStatsRepository.accountingFailure.value?.sequence ?: 0L
+        assertSame(response, decorated.complete(request, AgentRunController()) {})
+        val status = io.github.mangi.eta.data.repository.UsageStatsRepository.accountingFailure.value!!
+        assertTrue(status.sequence > before)
+        assertEquals("IOException", status.exceptionType)
+    }
+
+    @Test fun defaultAccountingCommitsReceivedUsageEvenOnInterruptedProviderThread() = kotlinx.coroutines.runBlocking {
+        val store = io.github.mangi.eta.data.datastore.FaultPreferencesStore()
+        io.github.mangi.eta.data.datastore.withSettingsStore(store) {
+            val decorated = UsageRecordingProvider(provider { emit ->
+                Thread.currentThread().interrupt()
+                emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 29)))
+                answer()
+            })
+            try {
+                assertEquals("done", decorated.complete(request, AgentRunController()) {}.assistantMessage.getString("content"))
+                assertTrue(Thread.currentThread().isInterrupted)
+            } finally { Thread.interrupted() }
+            assertEquals(29L, decodeModelUsageSnapshot(store.committed.value[io.github.mangi.eta.data.datastore.MODEL_USAGE_JSON]).totalInputTokens)
+        }
     }
 
     @Test fun accountingUsesConversationOwnerNotNetworkSession() {
