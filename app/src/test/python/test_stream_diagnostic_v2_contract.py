@@ -51,9 +51,10 @@ class StreamDiagnosticV2Contract(unittest.TestCase):
         self.assertIn('var dropped = 0L', budget)
         self.assertIn('require(limit > 0)', budget)
         self.assertRegex(budget, r'@Synchronized\s+fun reserve\(\): Int\?\s*\{\s*if \(accepted >= limit\) \{ dropped\+\+; return null \}\s*return \+\+accepted\s*\}')
-        window_start = source.index('AppFileLogger.diagnosticInfo("$prefix v=2 type=window')
-        window_end = source.index('val runtimeStats =', window_start)
+        window_start = source.index('val windowLine =')
+        window_end = source.index('snapshot.openIdsAtStop.forEach', window_start)
         window = source[window_start:window_end]
+        self.assertIn('output.write(windowLine)', window)
         for field in ('noteBudgetDropped=${snapshot.noteDropped}',
                       'admission=${if (final) "closed" else "open"}',
                       'openSpansAtCutoff=${snapshot.openSpans}',

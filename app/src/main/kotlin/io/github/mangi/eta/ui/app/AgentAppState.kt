@@ -13,6 +13,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.PowerManager
+import android.view.Choreographer
 import android.provider.Settings
 import android.text.format.DateFormat
 import android.widget.Toast
@@ -233,6 +234,9 @@ internal class AgentAppState(
     private val runEventCoalescer = AgentRunEventCoalescer()
     private val conversationSummaryCache = ConversationSummaryCache()
     private val runEventFlushJobs = mutableMapOf<String, Job>()
+    private val runEventBudgets = mutableMapOf<String, AgentRunEventBudget<AgentEvent>>()
+    private val runEventBudgetCallbacks = mutableMapOf<String, Choreographer.FrameCallback>()
+    private val drainingRunEventBudgets = mutableSetOf<String>()
     private val runJobs = androidx.compose.runtime.mutableStateMapOf<String, Job>()
     private val imageGenerationRunIds = mutableSetOf<String>()
     private val directMediaRuns = DirectMediaRunControl()
@@ -4101,7 +4105,9 @@ internal class AgentAppState(
         // Immediate UI feedback, without cancelling the result subscriber or losing history.
         setConversationStreaming(runId, false)
         if (imageGen) {
+            discardQueuedRunEvents(runId)
             runMessageProjector.clearRun(runId)
+            runMessageProjector.seal(runId)
             runGeneratedAtMillis.remove(runId)
             branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
@@ -4174,7 +4180,9 @@ internal class AgentAppState(
             scope.launch(Dispatchers.IO) {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId)
             }
+            discardQueuedRunEvents(runId)
             runMessageProjector.clearRun(runId)
+            runMessageProjector.seal(runId)
             runGeneratedAtMillis.remove(runId)
             branchRequestBoundaries.remove(runId); runConversationIds.remove(runId); runUsageOwners.remove(runId); runUsageRoutes.remove(runId); runRequestRounds.remove(runId); runUsageResumeRounds.remove(runId)
             runOverheadTokens.remove(runId); runContextWindows.remove(runId)
@@ -4626,24 +4634,69 @@ internal class AgentAppState(
 
     private fun enqueueRunEvent(runId: String, event: AgentEvent) {
         if (!StreamPerformanceDiagnostics.enabled) {
-            enqueueRunEventNow(runId, event)
+            enqueueRunEventBudgeted(runId, event)
             return
         }
         val conversationId = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) runConversationIds[runId] else null
         StreamUiEventDiagnostics.withEvent(runId, conversationId,
             conversationId?.let { it == selectedConversationId }, event) {
-            StreamPerformanceDiagnostics.measure("ui.enqueue") { enqueueRunEventNow(runId, event) }
+            StreamPerformanceDiagnostics.measure("ui.enqueue") { enqueueRunEventBudgeted(runId, event) }
         }
     }
 
-    private fun enqueueRunEventNow(runId: String, event: AgentEvent) {
-        // Runtime delivers events on the run's IO job. Publishing from that thread races
-        // with selecting another conversation on the main thread: the title can already be
-        // the new conversation while homeState is still overwritten with this run's text.
+    private fun enqueueRunEventBudgeted(runId: String, event: AgentEvent) {
+        // Runtime delivers events on an IO job. Keep the existing main-thread
+        // ownership, but do not let a burst monopolize one dispatcher turn.
         if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
             scope.launch(Dispatchers.Main.immediate) { enqueueRunEvent(runId, event) }
             return
         }
+        if (runMessageProjector.isSealed(runId) && !event.allowedAfterSeal()) return
+        runEventBudgets.getOrPut(runId) { AgentRunEventBudget(STREAM_EVENT_FRAME_BUDGET_NS) }
+            .offer(event)
+        if (runId !in runEventBudgetCallbacks) {
+            drainRunEventBudget(runId, force = false)
+        }
+    }
+
+    private fun drainRunEventBudget(runId: String, force: Boolean) {
+        val queue = runEventBudgets[runId] ?: return
+        if (!drainingRunEventBudgets.add(runId)) return
+        try {
+            queue.drain(force) { event -> enqueueRunEventNow(runId, event) }
+        } finally {
+            drainingRunEventBudgets.remove(runId)
+        }
+        if (queue.isEmpty) {
+            runEventBudgets.remove(runId)
+            cancelRunEventBudgetCallback(runId)
+        } else {
+            scheduleRunEventBudgetDrain(runId)
+        }
+    }
+
+    private fun scheduleRunEventBudgetDrain(runId: String) {
+        if (runEventBudgetCallbacks.containsKey(runId)) return
+        val callback = Choreographer.FrameCallback {
+            runEventBudgetCallbacks.remove(runId)
+            drainRunEventBudget(runId, force = false)
+        }
+        runEventBudgetCallbacks[runId] = callback
+        Choreographer.getInstance().postFrameCallback(callback)
+    }
+
+    private fun cancelRunEventBudgetCallback(runId: String) {
+        runEventBudgetCallbacks.remove(runId)?.let { Choreographer.getInstance().removeFrameCallback(it) }
+    }
+
+    private fun discardQueuedRunEvents(runId: String) {
+        runEventFlushJobs.remove(runId)?.cancel()
+        cancelRunEventBudgetCallback(runId)
+        runEventBudgets.remove(runId)
+        runEventCoalescer.flush(runId)
+    }
+
+    private fun enqueueRunEventNow(runId: String, event: AgentEvent) {
         if (event is AgentEvent.AssistantBlockDelta) {
             StreamPerformanceDiagnostics.record("ui.delta.received", value = event.delta.length.toLong())
         }
@@ -4750,13 +4803,24 @@ internal class AgentAppState(
             runEventFlushJobs.remove(runId)
             StreamPerformanceDiagnostics.withAttribution(diagnosticAttribution) {
                 StreamPerformanceDiagnostics.measure("ui.flush") {
-                    flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer")
+                    flushPendingRunDelta(
+                        runId,
+                        diagnosticStage = "ui.flush.timer",
+                        drainQueuedEvents = false,
+                    )
                 }
             }
         }
     }
 
-    private fun flushPendingRunDelta(runId: String, diagnosticStage: String? = null) {
+    private fun flushPendingRunDelta(
+        runId: String,
+        diagnosticStage: String? = null,
+        drainQueuedEvents: Boolean = true,
+    ) {
+        if (drainQueuedEvents && runId !in drainingRunEventBudgets) {
+            drainRunEventBudget(runId, force = true)
+        }
         runEventFlushJobs.remove(runId)?.cancel()
         runEventCoalescer.flush(runId)?.let { event ->
             // Only count a reason when a pending delta is actually applied. Other
@@ -6404,6 +6468,8 @@ internal class AgentAppState(
         // 数据状态以较粗粒度发布，文字显现由独立的帧时钟连续推进。
         // 这与 Kimi 将流式数据和视觉动画分层的做法一致。
         const val STREAM_UI_UPDATE_INTERVAL_MS = 150L
+        // A 120 Hz frame is 8.33 ms; reserve most of it for Compose/layout/draw.
+        const val STREAM_EVENT_FRAME_BUDGET_NS = 2_000_000L
 
         fun emptyChatState(thinkingEnabled: Boolean): AgentChatHomeUiState =
             AgentChatHomeUiState(

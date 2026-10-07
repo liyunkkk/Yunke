@@ -90,7 +90,7 @@ internal class AgentTimelineRowsCache(
         if (previous != null && mapping != null && previous.size == entries.size &&
             expanded == expandedOverrides && streaming == isStreaming && retained == retainedSteps
         ) {
-            var changed = false
+            val changedIndices = ArrayList<Int>(1)
             var compatible = true
             for (index in entries.indices) {
                 val old = previous[index]
@@ -102,15 +102,13 @@ internal class AgentTimelineRowsCache(
                     compatible = false
                     break
                 }
-                changed = true
+                changedIndices += index
             }
             if (compatible) {
-                if (!changed) return rows
+                if (changedIndices.isEmpty()) return rows
                 val updated = rows.toMutableList()
-                for (index in entries.indices) {
-                    if (previous[index] !== entries[index]) {
-                        updated[mapping[index]] = AgentTimelineRow.Message((entries[index] as AgentTimelineEntry.Message).message)
-                    }
+                changedIndices.forEach { index ->
+                    updated[mapping[index]] = AgentTimelineRow.Message((entries[index] as AgentTimelineEntry.Message).message)
                 }
                 source = entries.toList()
                 rows = updated

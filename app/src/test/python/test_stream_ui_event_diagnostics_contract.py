@@ -152,6 +152,13 @@ class StreamUiEventDiagnosticsContractTest(unittest.TestCase):
         self.assertIn('normalizeTerminalOrder = false', delta)
         self.assertIn('recomputeWaitingQuestion = false', delta)
 
+    def test_run_event_budget_waits_for_next_frame_once_a_drain_is_scheduled(self):
+        enqueue = function(self.app, 'enqueueRunEventBudgeted')
+        ordered(self, enqueue, '.offer(event)', 'if (runId !in runEventBudgetCallbacks)',
+                'drainRunEventBudget(runId, force = false)')
+        self.assertIn('Choreographer.getInstance().postFrameCallback(callback)',
+                      function(self.app, 'scheduleRunEventBudgetDrain'))
+
     def test_pending_flush_reasons_do_not_reorder_or_duplicate_applications(self):
         enqueue = function(self.app, 'enqueueRunEventNow')
         ordered(self, enqueue, 'runEventCoalescer.append(runId, event)', '"ui.flush.blockSwitch"',
@@ -162,8 +169,9 @@ class StreamUiEventDiagnosticsContractTest(unittest.TestCase):
         self.assertEqual(enqueue.count('applyRunEvent(runId, ready)'), 1)
         self.assertEqual(enqueue.count('applyRunEvent(runId, event)'), 1)
         flush = function(self.app, 'flushPendingRunDelta')
-        self.assertRegex(self.app, r'fun flushPendingRunDelta\(runId: String, diagnosticStage: String\? = null\)')
-        ordered(self, flush, 'runEventFlushJobs.remove(runId)?.cancel()',
+        self.assertRegex(self.app, r'fun flushPendingRunDelta\(\s*runId: String,\s*diagnosticStage: String\? = null,\s*drainQueuedEvents: Boolean = true,?\s*\)')
+        ordered(self, flush, 'drainRunEventBudget(runId, force = true)',
+                'runEventFlushJobs.remove(runId)?.cancel()',
                 'runEventCoalescer.flush(runId)?.let', 'StreamUiEventDiagnostics.measure(diagnosticStage)',
                 'applyRunEvent(runId, event)')
         self.assertEqual(flush.count('runEventCoalescer.flush('), 1)
@@ -182,7 +190,7 @@ class StreamUiEventDiagnosticsContractTest(unittest.TestCase):
         ordered(self, timer, 'if (runEventFlushJobs[runId]?.isActive == true) return',
                 'runEventFlushJobs[runId] = scope.launch', 'delay(STREAM_UI_UPDATE_INTERVAL_MS)',
                 'runEventFlushJobs.remove(runId)', '"ui.flush"',
-                'flushPendingRunDelta(runId, diagnosticStage = "ui.flush.timer")')
+                'flushPendingRunDelta(', 'diagnosticStage = "ui.flush.timer",', 'drainQueuedEvents = false')
         self.assertEqual(timer.count('delay('), 1)
 
     def test_conversation_substages_keep_the_existing_scan_and_projection_order(self):

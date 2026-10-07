@@ -22,7 +22,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.github.mangi.eta.core.AppFileLogger
 import java.util.UUID
+import java.util.ArrayDeque
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import io.github.mangi.eta.BuildConfig
 
 /** Fixed-size aggregate; values are counts/lengths only, never message text or IDs. */
@@ -61,8 +64,129 @@ internal class StreamTimingStats {
         "b16_32_50_100_over=${buckets.joinToString(",")} b8p33_16p67_33p33_50_100_over=${fineBuckets.joinToString(",")} valueSum=$valueSum valueMax=$valueMax"
 }
 
+/** Bounded, allocation-light output queue used only by the optional diagnostic sink. */
+internal class BoundedDiagnosticOutputQueue(
+    private val capacity: Int = DIAGNOSTIC_OUTPUT_CAPACITY,
+) {
+    private val pending = ArrayDeque<String>(capacity)
+
+    @Volatile
+    var dropped: Long = 0
+        private set
+
+    @Synchronized
+    fun offer(line: String): Boolean {
+        if (pending.size >= capacity) {
+            dropped++
+            return false
+        }
+        pending.addLast(line)
+        return true
+    }
+
+    @Synchronized
+    fun drain(limit: Int): List<String> {
+        val result = ArrayList<String>(minOf(limit, pending.size))
+        repeat(minOf(limit, pending.size)) { result += pending.removeFirst() }
+        return result
+    }
+
+    @Synchronized
+    fun drainAll(): List<String> {
+        val result = ArrayList<String>(pending.size)
+        while (pending.isNotEmpty()) result += pending.removeFirst()
+        return result
+    }
+
+    @Synchronized
+    fun isEmpty(): Boolean = pending.isEmpty()
+}
+
 /**
- * 诊断会话期间主线程上较慢的非帧消息。帧回调本身由 FrameMetrics 逐帧记录，这里只计数。
+ * Diagnostic output is intentionally decoupled from frame callbacks and the
+ * diagnostic aggregation worker. The queue is bounded; only diagnostic lines
+ * can be dropped when a logger is slower than the producer, never UI events.
+ */
+internal class AsyncDiagnosticOutput(
+    private val enabled: () -> Boolean = { true },
+    private val sink: (String) -> Unit = AppFileLogger::diagnosticInfo,
+) {
+    private val queue = BoundedDiagnosticOutputQueue()
+    private val thread = HandlerThread("Eta-StreamDiagOutput").apply { start() }
+    private val handler = Handler(thread.looper)
+    private val writeLock = Any()
+    private var drainScheduled = false
+    @Volatile private var closed = false
+    private var asyncMode = enabled()
+    private var closeResult: Boolean? = null
+    private val failedLines = java.util.concurrent.atomic.AtomicLong()
+
+    val dropped: Long get() = queue.dropped
+    val failed: Long get() = failedLines.get()
+
+    private fun writeLine(line: String) {
+        try {
+            sink(line)
+        } catch (_: Exception) {
+            failedLines.incrementAndGet()
+        }
+    }
+
+    fun write(line: String) {
+        synchronized(writeLock) {
+            if (closed) return
+            val useAsync = enabled()
+            if (asyncMode && !useAsync && !flush()) {
+                enqueue(line)
+                return
+            }
+            asyncMode = useAsync
+            if (asyncMode) enqueue(line) else writeLine(line)
+        }
+    }
+
+    private fun enqueue(line: String) {
+        synchronized(this) {
+            if (closed || !queue.offer(line)) return
+            if (!drainScheduled) {
+                drainScheduled = true
+                handler.postDelayed(::drainBatch, DIAGNOSTIC_OUTPUT_BATCH_DELAY_MS)
+            }
+        }
+    }
+
+    private fun drainBatch() {
+        queue.drain(DIAGNOSTIC_OUTPUT_BATCH_SIZE).forEach(::writeLine)
+        synchronized(this) {
+            if (queue.isEmpty()) {
+                drainScheduled = false
+            } else {
+                handler.postDelayed(::drainBatch, DIAGNOSTIC_OUTPUT_BATCH_DELAY_MS)
+            }
+        }
+    }
+
+    fun flush(timeoutMs: Long = DIAGNOSTIC_OUTPUT_FLUSH_TIMEOUT_MS): Boolean {
+        val latch = CountDownLatch(1)
+        handler.post {
+            queue.drainAll().forEach(::writeLine)
+            synchronized(this) { drainScheduled = false }
+            latch.countDown()
+        }
+        return runCatching { latch.await(timeoutMs, TimeUnit.MILLISECONDS) }.getOrDefault(false)
+    }
+
+    fun close(): Boolean = synchronized(writeLock) {
+        closeResult?.let { return it }
+        closed = true
+        val flushed = flush()
+        thread.quitSafely()
+        (flushed && queue.isEmpty() && failedLines.get() == 0L).also { closeResult = it }
+    }
+}
+
+/**
+ * 诊断会话期间主线程上较慢的非帧消息.帧回调本身由 FrameMetrics 逐帧记录，这里只计数。
  * printer 只在主线程被调用；读取在诊断线程，存取环形缓冲时加锁。
  * 只保留 Handler/回调类名和耗时，不保留消息正文或 ID。
  */
@@ -298,6 +422,10 @@ internal const val TOGGLE_PROBE_MAX_EVENTS = 1_200
 internal const val TOGGLE_PROBE_MAX_MESSAGES = 60
 internal const val SLOW_MAIN_MESSAGE_NS = 4_000_000L
 internal const val MAIN_LOG_CAPACITY = 256
+internal const val DIAGNOSTIC_OUTPUT_CAPACITY = 2048
+internal const val DIAGNOSTIC_OUTPUT_BATCH_SIZE = 64
+internal const val DIAGNOSTIC_OUTPUT_BATCH_DELAY_MS = 20L
+internal const val DIAGNOSTIC_OUTPUT_FLUSH_TIMEOUT_MS = 500L
 private const val CHOREOGRAPHER_FRAME_RECEIVER = "Choreographer\$FrameDisplayEventReceiver"
 // 点击前一帧也收进来，看点击之前主线程是否已经在忙。
 private const val FRAME_PROBE_LEAD_NS = 17_000_000L
@@ -711,6 +839,7 @@ internal object StreamPerformanceDiagnostics {
         val loggerFailedStart = AppFileLogger.diagnosticFailed.get()
         val thread = HandlerThread("Eta-StreamDiag").apply { start() }
         val handler = Handler(thread.looper)
+        val output = AsyncDiagnosticOutput(enabled = { StreamDiagnosticControl.asyncOutputEnabled })
         // 上一个会话留下的窗口先收掉。
         probe?.let { previous -> probeReporter?.let { finishProbe(previous, it) } }
         // 整个诊断会话都记主线程慢消息：点击窗口和窗口外的尖峰都要能对上当时主线程在干什么。
@@ -734,7 +863,7 @@ internal object StreamPerformanceDiagnostics {
                 runCatching {
                     val lead = target.startNs - FRAME_PROBE_LEAD_NS
                     val messages = log.between(lead, System.nanoTime(), target.startNs, TOGGLE_PROBE_MAX_MESSAGES)
-                    target.report(session.id, messages).forEach(AppFileLogger::diagnosticInfo)
+                    target.report(session.id, messages).forEach(output::write)
                 }
             }
         }
@@ -746,7 +875,7 @@ internal object StreamPerformanceDiagnostics {
             val line = "$tag ${detail()}"
             handler.post {
                 runCatching {
-                    AppFileLogger.diagnosticInfo("StreamDiag id=${session.id} gen=$sessionGeneration note=$reserved $line")
+                    output.write("StreamDiag id=${session.id} gen=$sessionGeneration note=$reserved $line")
                 }
             }
         }
@@ -786,7 +915,7 @@ internal object StreamPerformanceDiagnostics {
                 Trace.endSection()
                 val prefix = "StreamDiag id=${session.id} windowStartNs=${detail.fromNs} windowEndNs=${detail.toNs} " +
                     "boundary=admissionSnapshot final=$final"
-                AppFileLogger.diagnosticInfo("$prefix v=2 type=window anchorNanoNs=$now uptimeMs=$anchorUptimeMs " +
+                val windowLine = "$prefix v=2 type=window anchorNanoNs=$now uptimeMs=$anchorUptimeMs " +
                     "elapsedRealtimeNs=$anchorBootNs anchorUncertaintyNs=$anchorUncertaintyNs " +
                     "osPid=${android.os.Process.myPid()} javaThreadId=${Thread.currentThread().id} osTid=${cachedOsTid.get()} $packageIdentity " +
                     "duration=inclusive heap=proxyNotAllocationStack gcTime=runtimeCounterNotPause " +
@@ -802,13 +931,14 @@ internal object StreamPerformanceDiagnostics {
                     "closedRejectedRecords=${snapshot.closedRejectedRecords} lateSpans=${snapshot.lateSpans} " +
                     "callbackRejected=${snapshot.callbackRejected} openAtStop=${snapshot.openAtStop} openIdDropped=${snapshot.openIdDropped} " +
                     "stopCutoffNs=${snapshot.cutoffNs ?: -1} partial=${snapshot.openAtStop > 0 || snapshot.openSpans > 0} " +
-                    "lateAfterFinal=notTracked completeCpu=notClaimed")
+                    "lateAfterFinal=notTracked completeCpu=notClaimed"
+                output.write(windowLine)
                 snapshot.openIdsAtStop.forEach { spanId ->
-                    AppFileLogger.diagnosticInfo("$prefix v=2 type=openSpan span=$spanId partial=true atCutoff=true " +
+                    output.write("$prefix v=2 type=openSpan span=$spanId partial=true atCutoff=true " +
                         "stillOpenAtFinal=${spanId in snapshot.openSpanIds} cpuNs=unknown")
                 }
                 session.observerCosts.summary().forEach {
-                    AppFileLogger.diagnosticInfo("$prefix v=2 type=observerCost $it")
+                    output.write("$prefix v=2 type=observerCost $it")
                 }
                 val runtimeStats = runCatching { Debug.getRuntimeStats() }.getOrNull()
                 val gcKeys = listOf("art.gc.gc-count", "art.gc.gc-time", "art.gc.bytes-allocated", "art.gc.bytes-freed",
@@ -816,19 +946,19 @@ internal object StreamPerformanceDiagnostics {
                 val currentGc = linkedMapOf<String, Long>()
                 for (key in gcKeys) {
                     val value = runtimeStats?.get(key)?.toLongOrNull()
-                    if (value == null) AppFileLogger.diagnosticInfo("$prefix v=2 type=runtime runtimeCounter=$key supported=false")
+                    if (value == null) output.write("$prefix v=2 type=runtime runtimeCounter=$key supported=false")
                     else {
                         currentGc[key] = value
                         val previous = previousGc[key]
                         val delta = if (previous != null && value >= previous) (value - previous).toString() else "unknown"
-                        AppFileLogger.diagnosticInfo("$prefix v=2 type=runtime runtimeCounter=$key supported=true cumulative=$value delta=$delta")
+                        output.write("$prefix v=2 type=runtime runtimeCounter=$key supported=true cumulative=$value delta=$delta")
                     }
                 }
                 previousGc = currentGc
-                snapshot.report(session.id, session.started, final).forEach(AppFileLogger::diagnosticInfo)
+                snapshot.report(session.id, session.started, final).forEach(output::write)
                 detail.spans.forEach { span ->
                     val a = span.attribution
-                    AppFileLogger.diagnosticInfo("$prefix v=2 type=span span=${span.span} parent=${span.parent} stage=${span.stage} " +
+                    output.write("$prefix v=2 type=span span=${span.span} parent=${span.parent} stage=${span.stage} " +
                         "beginNs=${span.beginNs} endNs=${span.endNs} thread=${span.thread} javaThreadId=${span.thread} " +
                         "osTid=${session.threadIds.osTid(span.thread)} osTidUnknown=-1 main=${span.main} " +
                         "partialAtCutoff=${snapshot.cutoffNs?.let { span.endNs > it } == true} " +
@@ -839,7 +969,7 @@ internal object StreamPerformanceDiagnostics {
                         "${diagnosticRenderFields(a)}")
                 }
                 log.timingsBetween(detail.fromNs, detail.toNs).forEach { message ->
-                    AppFileLogger.diagnosticInfo("$prefix v=2 type=mainMessage beginNs=${message.beginNs} endNs=${message.endNs} " +
+                    output.write("$prefix v=2 type=mainMessage beginNs=${message.beginNs} endNs=${message.endNs} " +
                         "frameDispatch=${message.frameDispatch} partial=${message.partial} coveredNs=${message.coveredNs} revealNs=${message.revealNs} " +
                         "uninstrumentedNs=${message.uninstrumentedNs} nonRevealNs=${message.nonRevealNs} " +
                         "cpuNs=${message.cpuNs} wallMinusCpuNs=${if (message.cpuNs >= 0) (message.endNs - message.beginNs - message.cpuNs).coerceAtLeast(0) else -1} " +
@@ -847,7 +977,7 @@ internal object StreamPerformanceDiagnostics {
                 }
                 detail.frames.forEachIndexed { index, frame ->
                     val page = FramePageAttribution(FrameDiagnosticPage.entries[frame.page], FrameDiagnosticPage.entries[frame.pageEnd], frame.changed)
-                    AppFileLogger.diagnosticInfo("$prefix v=2 type=frame abnormalFrame=$index ${page.fields()} intendedVsyncNs=${frame.intendedNs} " +
+                    output.write("$prefix v=2 type=frame abnormalFrame=$index ${page.fields()} intendedVsyncNs=${frame.intendedNs} " +
                         "vsyncNs=${frame.vsyncNs} totalNs=${frame.totalNs} deadlineNs=${frame.deadlineNs} deadlineMiss=${frame.missed} " +
                         "firstDraw=${frame.firstDraw} partialAtCutoff=${snapshot.cutoffNs?.let { frame.intendedNs + frame.totalNs > it } == true} pageSegment=${frame.pageSegment} metricsDropped=${frame.metricsDropped} unknownNs=${frame.unknownNs} inputNs=${frame.inputNs} animationNs=${frame.animationNs} " +
                         "layoutNs=${frame.layoutNs} drawNs=${frame.drawNs} syncNs=${frame.syncNs} commandNs=${frame.commandNs} " +
@@ -855,10 +985,10 @@ internal object StreamPerformanceDiagnostics {
                         "overlapNs=${frame.overlapNs} vsyncLateNs=${frame.vsyncLateNs} " +
                         "accounting=frameMetricsResidualNotAdditive")
                     val messages = log.between(frame.intendedNs - SPIKE_LOOKBACK_NS, frame.intendedNs + frame.totalNs, frame.intendedNs, 12)
-                    messages.forEach { AppFileLogger.diagnosticInfo("$prefix abnormalFrame=$index main $it") }
+                    messages.forEach { output.write("$prefix abnormalFrame=$index main $it") }
                     frame.mainMessages.take(24).forEach { message ->
                         val overlap = diagnosticOverlapNs(message.beginNs, message.endNs, frame.intendedNs, frame.intendedNs + frame.totalNs)
-                        AppFileLogger.diagnosticInfo("$prefix v=2 type=frameMainMessage abnormalFrame=$index " +
+                        output.write("$prefix v=2 type=frameMainMessage abnormalFrame=$index " +
                             "beginNs=${message.beginNs} endNs=${message.endNs} overlapNs=$overlap " +
                             "relation=${if (overlap > 0) "overlap" else "preceding"} frameDispatch=${message.frameDispatch} " +
                             "coveredNs=${message.coveredNs} uninstrumentedNs=${message.uninstrumentedNs} " +
@@ -868,7 +998,7 @@ internal object StreamPerformanceDiagnostics {
                     }
                     val correlation = correlateDiagnosticFrame(frame, detail.spans)
                     val incomplete = diagnosticFrameEvidenceIncomplete(frame, detail, snapshot.openSpans)
-                    AppFileLogger.diagnosticInfo("$prefix v=2 type=frameCorrelation abnormalFrame=$index " +
+                    output.write("$prefix v=2 type=frameCorrelation abnormalFrame=$index " +
                         "intendedVsyncNs=${frame.intendedNs} frameTotalNs=${frame.totalNs} " +
                         "matched=${correlation.totalOverlaps} emitted=${correlation.overlaps.size} omitted=${correlation.omitted} " +
                         "lookbackMatched=${correlation.totalPreceding} lookbackEmitted=${correlation.preceding.size} lookbackOmitted=${correlation.precedingOmitted} " +
@@ -877,7 +1007,7 @@ internal object StreamPerformanceDiagnostics {
                         "evidenceIncomplete=$incomplete coverage=instrumentedCompletedSpansOnly evidenceComplete=notClaimed zeroMatch=notProofOfNoMainWork " +
                         "capture=anomalyCallbackAndAdmissionSnapshot rule=mainSpanOverlapNotCausality accounting=wallUnionNotCpuOrFrameParts")
                     correlation.overlaps.forEach { span ->
-                        AppFileLogger.diagnosticInfo("$prefix v=2 type=spanOverlap abnormalFrame=$index span=${span.span} parent=${span.parent} " +
+                        output.write("$prefix v=2 type=spanOverlap abnormalFrame=$index span=${span.span} parent=${span.parent} " +
                             "stage=${span.stage} beginNs=${span.beginNs} endNs=${span.endNs} " +
                             "overlapNs=${diagnosticOverlapNs(span.beginNs, span.endNs, frame.intendedNs, frame.intendedNs + frame.totalNs)} " +
                             "durationNs=${span.endNs - span.beginNs} selfUpperBoundNs=${diagnosticSelfUpperBoundNs(span, detail.spans)} " +
@@ -886,23 +1016,23 @@ internal object StreamPerformanceDiagnostics {
                             "conversationToken=${span.attribution?.conversation ?: 0} ${diagnosticRenderFields(span.attribution)}")
                     }
                     correlation.preceding.forEach { span ->
-                        AppFileLogger.diagnosticInfo("$prefix v=2 type=frameLookback abnormalFrame=$index span=${span.span} parent=${span.parent} " +
+                        output.write("$prefix v=2 type=frameLookback abnormalFrame=$index span=${span.span} parent=${span.parent} " +
                             "stage=${span.stage} beginNs=${span.beginNs} endNs=${span.endNs} durationNs=${span.endNs - span.beginNs} " +
                             "lookbackNs=$FRAME_CORRELATION_LOOKBACK_NS relation=precedingNotFrameOverlap ${diagnosticRenderFields(span.attribution)}")
                     }
                     frame.listSnapshot?.let { sample ->
                         val age = frame.intendedNs + frame.totalNs - sample.atNs
-                        AppFileLogger.diagnosticInfo("$prefix v=2 type=frameList abnormalFrame=$index listToken=${sample.list} " +
+                        output.write("$prefix v=2 type=frameList abnormalFrame=$index listToken=${sample.list} " +
                             "sampleNs=${sample.atNs} ageAtFrameEndNs=$age sourcePage=${FrameDiagnosticPage.entries[sample.page].name} sourceSegment=${sample.segment} " +
                             "relation=sourceMatchedObservedPostLayoutNotExactFrame visibility=layoutSlotsNotClippedPixels " +
                             "messageCount=${sample.messageCount} totalRows=${sample.totalCount} firstIndex=${sample.firstIndex} " +
                             "firstOffset=${sample.firstOffset} viewportStart=${sample.viewportStart} viewportEnd=${sample.viewportEnd} " +
                             "visibleCount=${sample.visibleCount} emittedRows=${sample.rows.size} omittedRows=${sample.visibleCount - sample.rows.size}")
                         sample.rows.forEach { row ->
-                            AppFileLogger.diagnosticInfo("$prefix v=2 type=frameListRow abnormalFrame=$index listToken=${sample.list} " +
+                            output.write("$prefix v=2 type=frameListRow abnormalFrame=$index listToken=${sample.list} " +
                                 "sampleNs=${sample.atNs} rowToken=${row.token} index=${row.index} offset=${row.offset} size=${row.size}")
                         }
-                    } ?: AppFileLogger.diagnosticInfo("$prefix v=2 type=frameList abnormalFrame=$index available=false")
+                    } ?: output.write("$prefix v=2 type=frameList abnormalFrame=$index available=false")
                 }
                 true
             }.getOrDefault(false)
@@ -1004,7 +1134,7 @@ internal object StreamPerformanceDiagnostics {
         }
         window.addOnFrameMetricsAvailableListener(listener, handler)
         handler.post {
-            AppFileLogger.diagnosticInfo(
+            output.write(
                 "StreamDiag id=${session.id} start=1 gen=$sessionGeneration intervalMs=5000 " +
                     "frameValue=deadlineMiss histogramMs=16,32,50,100 " +
                     "probeFrames=$TOGGLE_PROBE_FRAMES probeMaxMs=${TOGGLE_PROBE_MAX_NS / 1_000_000} " +
@@ -1039,18 +1169,24 @@ internal object StreamPerformanceDiagnostics {
                         if (System.nanoTime() < drainUntil) { handler.postDelayed(this, 10); return }
                         val emitted = emit(true)
                         session.observerCosts.summary().forEach {
-                            AppFileLogger.diagnosticInfo("StreamDiag id=${session.id} v=2 type=observerCost final=true " +
+                            output.write("StreamDiag id=${session.id} v=2 type=observerCost final=true " +
                                 "windowStartNs=$cutoff windowEndNs=$cutoff boundary=admissionSnapshot $it")
                         }
+                        val outputFlushed = output.close()
+                        val outputDropped = output.dropped
+                        val outputFailed = output.failed
                         val rejected = AppFileLogger.diagnosticRejected.get() - loggerRejectedStart
                         val failed = AppFileLogger.diagnosticFailed.get() - loggerFailedStart
                         val finalAppendFlushed = AppFileLogger.diagnosticCompletion(
                             "StreamDiag id=${session.id} v=2 type=finalCompletion final=true windowStartNs=$cutoff " +
                                 "windowEndNs=$cutoff boundary=admissionSnapshot cutoffNs=$cutoff " +
-                                "loggerRejected=$rejected loggerFailed=$failed drainGraceMs=250 " +
+                                "loggerRejected=$rejected loggerFailed=$failed outputDroppedLines=$outputDropped " +
+                                "outputFailedLines=$outputFailed " +
+                                "outputFlushed=$outputFlushed drainGraceMs=250 " +
                                 "completion=appendAndFlush privacyGate=honored evidenceComplete=notClaimed")
                         // A successful footer alone must not hide any earlier rejected/failed output.
-                        val flushed = emitted && rejected == 0L && failed == 0L && finalAppendFlushed
+                        val flushed = emitted && outputFlushed && outputDropped == 0L &&
+                            outputFailed == 0L && rejected == 0L && failed == 0L && finalAppendFlushed
                         completion.complete(StopResult(session.serial, flushed,
                             if (flushed) "finalAppendFlushedNotFsync" else "loggerClosedOrOutputFailed"))
                         thread.quitSafely()

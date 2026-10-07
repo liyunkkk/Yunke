@@ -27,7 +27,7 @@ internal class AgentTimelineProjectionCache(
         val previous = source
         val mapping = sourceToEntry
         if (previous != null && mapping != null && previous.size == messages.size) {
-            var changed = false
+            val changedIndices = ArrayList<Int>(1)
             var compatible = true
             for (index in messages.indices) {
                 val old = previous[index]
@@ -39,15 +39,13 @@ internal class AgentTimelineProjectionCache(
                     compatible = false
                     break
                 }
-                changed = true
+                changedIndices += index
             }
             if (compatible) {
-                if (!changed) return entries
+                if (changedIndices.isEmpty()) return entries
                 val updated = entries.toMutableList()
-                for (index in messages.indices) {
-                    if (previous[index] !== messages[index]) {
-                        updated[mapping[index]] = AgentTimelineEntry.Message(messages[index])
-                    }
+                changedIndices.forEach { index ->
+                    updated[mapping[index]] = AgentTimelineEntry.Message(messages[index])
                 }
                 // Neither the old input snapshot nor any previously returned list
                 // is mutated. Also tolerate a caller reusing its list container.

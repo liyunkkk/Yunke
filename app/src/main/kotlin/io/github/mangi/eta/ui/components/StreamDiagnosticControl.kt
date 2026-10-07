@@ -14,18 +14,25 @@ import androidx.compose.ui.platform.LocalContext
  */
 internal object StreamDiagnosticControl {
     const val KEY = "eta_stream_diagnostics_off"
+    const val ASYNC_OUTPUT_KEY = "eta_stream_diagnostics_async_output"
     // Fail closed until startup reads the override, before any tracer is installed.
     @Volatile var allowed = false
         private set
+    @Volatile var asyncOutputEnabled = true
+        private set
     val changes = mutableIntStateOf(0)
     internal fun initialize(context: Context) {
-        update(runCatching {
-            Settings.Global.getString(context.applicationContext.contentResolver, KEY)
-        }.getOrDefault("1"))
+        val resolver = context.applicationContext.contentResolver
+        update(runCatching { Settings.Global.getString(resolver, KEY) }.getOrDefault("1"))
+        updateAsyncOutput(runCatching { Settings.Global.getString(resolver, ASYNC_OUTPUT_KEY) }.getOrNull())
     }
     internal fun update(value: String?) {
         val next = value == null || value == "0"
         if (next != allowed) { allowed = next; changes.intValue++ }
+    }
+    internal fun updateAsyncOutput(value: String?) {
+        val next = value != "0"
+        if (next != asyncOutputEnabled) { asyncOutputEnabled = next; changes.intValue++ }
     }
 }
 
@@ -33,13 +40,19 @@ internal object StreamDiagnosticControl {
 internal fun ObserveStreamDiagnosticControl(): Boolean {
     val resolver = LocalContext.current.applicationContext.contentResolver
     DisposableEffect(resolver) {
-        fun refresh() = StreamDiagnosticControl.update(runCatching {
-            Settings.Global.getString(resolver, StreamDiagnosticControl.KEY)
-        }.getOrDefault("1"))
+        fun refresh() {
+            StreamDiagnosticControl.update(runCatching {
+                Settings.Global.getString(resolver, StreamDiagnosticControl.KEY)
+            }.getOrDefault("1"))
+            StreamDiagnosticControl.updateAsyncOutput(runCatching {
+                Settings.Global.getString(resolver, StreamDiagnosticControl.ASYNC_OUTPUT_KEY)
+            }.getOrNull())
+        }
         val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) { refresh() }
         }
         resolver.registerContentObserver(Settings.Global.getUriFor(StreamDiagnosticControl.KEY), false, observer)
+        resolver.registerContentObserver(Settings.Global.getUriFor(StreamDiagnosticControl.ASYNC_OUTPUT_KEY), false, observer)
         refresh()
         onDispose { resolver.unregisterContentObserver(observer) }
     }
