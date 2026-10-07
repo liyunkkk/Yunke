@@ -150,13 +150,6 @@ internal object SettingsDataStore {
     suspend fun selectedTranslationModelIdForProvider(providerId: String): String? {
         ensureInitialized()
         return dataStore.data
-            .catch { cause ->
-                if (cause is IOException) {
-                    emit(emptyPreferences())
-                } else {
-                    throw cause
-                }
-            }
             .map { prefs -> prefs[selectedTranslationModelByProviderKey(providerId)] }
             .first()
     }
