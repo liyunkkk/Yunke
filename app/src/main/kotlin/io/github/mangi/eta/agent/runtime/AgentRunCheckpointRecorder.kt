@@ -3,7 +3,9 @@ package io.github.mangi.eta.agent.runtime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 import android.content.Context
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
@@ -86,13 +88,19 @@ internal class AgentRunCheckpointRecorder private constructor(
         if (sealed) return
         sealed = true
         flushPendingDelta("runtime.checkpoint.flush.seal")
+        awaitCheckpointWrites()
     }
 
     @Synchronized fun discard() {
         sealed = true
         pendingDelta = null
         clearPendingObservations()
+        awaitCheckpointWrites()
         AgentRunCheckpointStore.remove(appContext, runId)
+    }
+
+    private fun awaitCheckpointWrites() {
+        runBlocking { checkpointWrites.coroutineContext[Job]?.children?.forEach { it.join() } }
     }
 
     // These timings are inside the existing recorder monitor, not monitor-wait measurements.

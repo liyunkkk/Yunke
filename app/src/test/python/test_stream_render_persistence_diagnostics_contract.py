@@ -294,6 +294,8 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         self.assertIn("checkpointWrites.launch", recorder_append)
         self.assertLess(recorder_append.index("checkpointWrites.launch"), recorder_append.index("AgentRunCheckpointStore.append"))
         self.assertNotIn("runBlocking", recorder_append)
+        self.assertNotIn("awaitCheckpointWrites", recorder_append)
+        self.assertIn("awaitCheckpointWrites()", between(recorder, "fun seal()", "fun discard()"))
 
 
 if __name__ == "__main__":
