@@ -1331,12 +1331,16 @@ internal class AgentAppState(
                 val payload = AgentUiHandoffPayload.from(completedRun.handoff.payload)
                 val conversationId = payload.conversationId
                 val state = conversationState(conversationId) ?: return@forEach
-                recoveryPlan.checkpoint?.let { checkpoint ->
-                    stateChanged = restoreCheckpointTrace(
-                        checkpoint = checkpoint,
-                        interrupted = false,
-                    ) || stateChanged
-                }
+                // A degraded checkpoint may omit an event boundary; apply the authoritative
+                // result but do not replay an incomplete trace into conversation history.
+                recoveryPlan.checkpoint
+                    ?.takeUnless { it.recoveryIncomplete }
+                    ?.let { checkpoint ->
+                        stateChanged = restoreCheckpointTrace(
+                            checkpoint = checkpoint,
+                            interrupted = false,
+                        ) || stateChanged
+                    }
                 val result = completedRun.result
                 val beforeRecovery = conversationState(conversationId) ?: state
                 val recovery = AgentPendingResultRecovery.apply(
@@ -1371,10 +1375,14 @@ internal class AgentAppState(
 
             plan.interrupted.forEach { checkpoint ->
                 removeAfterSave += checkpoint.runId
-                stateChanged = restoreCheckpointTrace(
-                    checkpoint = checkpoint,
-                    interrupted = true,
-                ) || stateChanged
+                // An interrupted run with an incomplete checkpoint is intentionally
+                // abandoned rather than replayed from an unsafe partial boundary.
+                if (!checkpoint.recoveryIncomplete) {
+                    stateChanged = restoreCheckpointTrace(
+                        checkpoint = checkpoint,
+                        interrupted = true,
+                    ) || stateChanged
+                }
             }
             if (stateChanged) refreshConversationSummaries()
             stateChanged || acknowledgeAfterSave.isNotEmpty() || removeAfterSave.isNotEmpty()

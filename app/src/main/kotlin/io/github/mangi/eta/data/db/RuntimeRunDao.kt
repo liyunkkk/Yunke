@@ -36,9 +36,21 @@ internal interface RuntimeRunDao {
         removedRunIds.forEach { runId -> deleteInFlightRun(runId) }
     }
 
-    @Transaction
     @Query("SELECT * FROM runtime_archive_runs ORDER BY created_at ASC")
-    suspend fun archivedRuns(): List<RuntimeArchiveRunWithEvents>
+    suspend fun archivedRunHeaders(): List<RuntimeArchiveRunEntity>
+
+    @Query(
+        "SELECT id, archive_run_id, sort_index, " +
+            "CASE WHEN length(CAST(event_json AS BLOB)) <= 65536 " +
+            "THEN event_json ELSE '{\"__eta_checkpoint_skipped\":true}' END AS event_json " +
+            "FROM runtime_archive_events WHERE archive_run_id = :archiveRunId " +
+            "ORDER BY sort_index ASC LIMIT :limit OFFSET :offset"
+    )
+    suspend fun archivedEvents(
+        archiveRunId: String,
+        limit: Int,
+        offset: Int,
+    ): List<RuntimeArchiveEventEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertArchivedRun(run: RuntimeArchiveRunEntity)
@@ -55,12 +67,6 @@ internal interface RuntimeRunDao {
     @Query("DELETE FROM runtime_archive_runs WHERE run_id = :runId OR handoff_id = :runId")
     suspend fun deleteArchivedRun(runId: String)
 
-    @Query("DELETE FROM runtime_archive_events")
-    suspend fun deleteAllArchivedEvents()
-
-    @Query("DELETE FROM runtime_archive_runs")
-    suspend fun deleteAllArchivedRuns()
-
     @Transaction
     suspend fun replaceArchivedRun(
         run: RuntimeArchiveRunEntity,
@@ -73,21 +79,18 @@ internal interface RuntimeRunDao {
         }
     }
 
-    @Transaction
-    suspend fun replaceArchivedRuns(runs: List<RuntimeArchiveRunWithEventsSeed>) {
-        deleteAllArchivedEvents()
-        deleteAllArchivedRuns()
-        runs.forEach { seed ->
-            upsertArchivedRun(seed.run)
-            if (seed.events.isNotEmpty()) {
-                insertArchivedEvents(seed.events)
-            }
-        }
-    }
-
-    @Transaction
     @Query("SELECT * FROM runtime_inflight_runs ORDER BY created_at ASC")
-    suspend fun inFlightRuns(): List<RuntimeInFlightRunWithEvents>
+    suspend fun inFlightRunHeaders(): List<RuntimeInFlightRunEntity>
+
+    @Query(
+        "SELECT * FROM runtime_inflight_events " +
+            "WHERE run_id = :runId ORDER BY sort_index ASC LIMIT :limit OFFSET :offset"
+    )
+    suspend fun inFlightEvents(
+        runId: String,
+        limit: Int,
+        offset: Int,
+    ): List<RuntimeInFlightEventEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertInFlightRun(run: RuntimeInFlightRunEntity)
@@ -104,6 +107,9 @@ internal interface RuntimeRunDao {
     @Query("DELETE FROM runtime_inflight_runs WHERE run_id = :runId")
     suspend fun deleteInFlightRun(runId: String)
 
+    @Query("UPDATE runtime_inflight_runs SET recovery_incomplete = 1 WHERE run_id = :runId")
+    suspend fun markInFlightRecoveryIncomplete(runId: String)
+
     @Transaction
     suspend fun acknowledgeRuntimeResult(runId: String) {
         deleteRuntimeResult(runId)
@@ -117,13 +123,13 @@ internal interface RuntimeRunDao {
     }
 
     @Transaction
-    suspend fun appendInFlightEvent(event: RuntimeInFlightEventEntity, updatedAt: Long) {
+    suspend fun appendInFlightEvent(
+        event: RuntimeInFlightEventEntity,
+        updatedAt: Long,
+        recoveryIncomplete: Boolean = false,
+    ) {
         insertInFlightEvent(event)
         touchInFlightRun(event.runId, updatedAt)
+        if (recoveryIncomplete) markInFlightRecoveryIncomplete(event.runId)
     }
 }
-
-internal data class RuntimeArchiveRunWithEventsSeed(
-    val run: RuntimeArchiveRunEntity,
-    val events: List<RuntimeArchiveEventEntity>,
-)
