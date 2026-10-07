@@ -584,8 +584,14 @@ private fun UserMessageBubble(
             copied = false
         }
     }
+    val diagnosticRow = LocalStreamDiagnosticRow.current
+    SideEffect {
+        StreamPerformanceDiagnostics.record("render.userBubble.compose")
+    }
     val visiblePrompt = remember(message.content) {
-        AgentFileReferencePromptCodec.parse(message.content)
+        StreamPerformanceDiagnostics.measure("render.userPrompt.parse") {
+            AgentFileReferencePromptCodec.parse(message.content)
+        }
     }
     val visibleFiles = remember(visiblePrompt.references, message.images, message.imageSources) {
         message.visibleFileReferences(visiblePrompt.references)
@@ -597,6 +603,8 @@ private fun UserMessageBubble(
 
     Column(
         modifier = modifier
+            .streamDiagnosticMeasure("render.userBubble.measure", diagnosticRow)
+            .streamDiagnosticDraw("render.userBubble.draw", diagnosticRow)
             .fillMaxWidth()
             .padding(horizontal = 20.dp, vertical = 7.dp),
         horizontalAlignment = Alignment.End,
@@ -699,6 +707,9 @@ private fun UserMessageBubble(
                 HapticSelectionContainer {
                     Text(
                         text = visiblePrompt.request,
+                        modifier = Modifier
+                            .streamDiagnosticMeasure("render.userText.measure", diagnosticRow)
+                            .streamDiagnosticDraw("render.userText.draw", diagnosticRow),
                         style = MiuixTheme.textStyles.body1,
                         color = MiuixTheme.colorScheme.onSurface,
                     )

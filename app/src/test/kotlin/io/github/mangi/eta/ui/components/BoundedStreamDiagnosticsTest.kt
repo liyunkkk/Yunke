@@ -170,6 +170,19 @@ class BoundedStreamDiagnosticsTest {
         }
     }
 
+    @Test fun retestBoundariesAreFixedLabelsWithoutUserOrServiceIdentity() {
+        for (label in listOf(
+            "settings.prefs.initial", "settings.prefs.refresh", "settings.prefs.capture",
+            "settings.prefs.reconcile", "settings.service.subscribe",
+            "render.userPrompt.parse", "render.userBubble.compose", "render.userBubble.measure",
+            "render.userBubble.draw", "render.userText.measure", "render.userText.draw",
+        )) {
+            assertTrue(StreamDiagnosticLabels.stage(label))
+            assertEquals(label, StreamDiagnosticLabels.canonicalStage(label))
+        }
+        assertEquals("render.unknown", StreamDiagnosticLabels.canonicalStage("render.private-prompt"))
+    }
+
     @Test fun labelsNeverRetainUnknownSuffixOrPayload() {
         assertEquals("markdown.parse", StreamDiagnosticLabels.canonicalStage("markdown.parse"))
         assertEquals("settings.unknown", StreamDiagnosticLabels.canonicalStage("settings.private-user-id"))

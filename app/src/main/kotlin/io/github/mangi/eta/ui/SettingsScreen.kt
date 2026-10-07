@@ -261,7 +261,14 @@ internal fun SettingsScreen(
 
     // prefs 绑定到 XposedService：service 到达时切换到 RemotePreferences（跨进程提交到
     // LSPosed 数据库）；未就绪时保持 null，UI 禁止修改。
-    var prefs by remember { mutableStateOf(Prefs.remotePreferencesForUi(EtaApp.serviceInstance)) }
+    val initialPreferences = remember {
+        val service = EtaApp.serviceInstance
+        val initialPrefs = StreamPerformanceDiagnostics.measure("settings.prefs.initial") {
+            Prefs.remotePreferencesForUi(service)
+        }
+        InitialServicePreferenceSnapshot(service, initialPrefs)
+    }
+    var prefs by remember { mutableStateOf(initialPreferences.initialValueForUi()) }
     val agentPrefs = remember { Prefs.localAgentPreferences() }
     var powerAssistantTarget by remember(prefs) {
         mutableStateOf(prefs?.let(Prefs::powerAssistantTarget) ?: enhancementHistory.powerTarget())
@@ -279,20 +286,32 @@ internal fun SettingsScreen(
         onDispose { targetPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
     DisposableEffect(Unit) {
+        // Only the immediate notification may reuse the successful initial read.
+        // A failed initial read retries, and every subsequent service event refreshes.
         val listener = object : EtaApp.ServiceStateListener {
             override fun onServiceStateChanged(service: io.github.libxposed.service.XposedService?) {
-                prefs = Prefs.remotePreferencesForUi(service)
+                prefs = initialPreferences.resolve(service) { currentService ->
+                    StreamPerformanceDiagnostics.measure("settings.prefs.refresh") {
+                        Prefs.remotePreferencesForUi(currentService)
+                    }
+                }
                 prefs?.let { connected ->
-                    enhancementHistory.captureConnected(connected)
+                    StreamPerformanceDiagnostics.measure("settings.prefs.capture") {
+                        enhancementHistory.captureConnected(connected)
+                    }
                     hasConnectedFramework = true
                 }
-                Prefs.reconcileAgentPreferences(service)
+                StreamPerformanceDiagnostics.measure("settings.prefs.reconcile") {
+                    Prefs.reconcileAgentPreferences(service)
+                }
                 coroutineScope.launch {
                     RuntimeConfigRepository.ensureDefaults(service)
                 }
             }
         }
-        EtaApp.addServiceStateListener(listener, notifyImmediately = true)
+        StreamPerformanceDiagnostics.measure("settings.service.subscribe") {
+            EtaApp.addServiceStateListener(listener, notifyImmediately = true)
+        }
         onDispose { EtaApp.removeServiceStateListener(listener) }
     }
     val powerAssistantTargets = PowerAssistantTarget.entries
