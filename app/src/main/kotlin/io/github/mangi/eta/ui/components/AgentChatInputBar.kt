@@ -68,6 +68,7 @@ import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -207,6 +208,8 @@ internal fun AgentChatInputBar(
     onCycleGptSpeedMode: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // Commit count only: no snapshot writes, no callbacks retained, no CPU-time claim.
+    SideEffect { StreamPerformanceDiagnostics.record("chat.input.compose") }
     val focusRequester = remember { FocusRequester() }
     val textFieldState = draftField ?: rememberTextFieldState(initialText = input)
     var wasEditingMessage by remember { mutableStateOf(isEditingMessage) }

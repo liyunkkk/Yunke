@@ -433,7 +433,7 @@ internal fun AgentChatBody(
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun AgentChatScaffold(
+internal fun AgentChatScaffold(
     visibleMessages: List<AgentChatMessageUi>,
     timelineEntries: List<AgentTimelineEntry>,
     hasMessages: Boolean,
@@ -526,7 +526,9 @@ private fun AgentChatScaffold(
                 input = input,
                 draftField = draftField,
                 modelPickerState = modelPickerState,
-                history = history,
+                history = historyForContextSendBudget(
+                    history, measuredContextTokens, autoCompressEnabled,
+                ),
                 billedContextTokens = billedContextTokens,
                 projectedContextTokens = projectedContextTokens,
                 billedHistoryTokens = billedHistoryTokens,

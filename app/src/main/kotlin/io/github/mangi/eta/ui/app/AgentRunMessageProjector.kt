@@ -5,6 +5,7 @@ import java.lang.ref.WeakReference
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.incrementalSnapshot
+import io.github.mangi.eta.ui.model.mapPreservingSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
 import io.github.mangi.eta.ui.model.ErrorReconnectStatus
@@ -426,7 +427,7 @@ internal class AgentRunMessageProjector(
 
     fun finalizeThinking(runId: String, messages: List<AgentChatMessageUi>): List<AgentChatMessageUi> {
         finishPendingThinking(runId)
-        return messages.map { message ->
+        return messages.mapPreservingSnapshot { message ->
             if (message is ThinkingMessageUi && message.id.startsWith("$runId-thinking-")) {
                 message.finished()
             } else {
@@ -499,7 +500,7 @@ internal class AgentRunMessageProjector(
         runId: String,
         messages: List<AgentChatMessageUi>,
     ): List<AgentChatMessageUi> =
-        messages.map { message ->
+        messages.mapPreservingSnapshot { message ->
             if (message is AgentMessageUi && isAssistantMessageForRun(message.id, runId)) {
                 message.copy(
                     content = message.content.trimEnd(),
