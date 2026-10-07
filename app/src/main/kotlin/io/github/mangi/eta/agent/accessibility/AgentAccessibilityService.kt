@@ -179,6 +179,29 @@ open class AgentAccessibilityService : AccessibilityService() {
     fun currentPackageName(): String? =
         rootInActiveWindow?.packageName?.toString()
 
+    /** Default-display focus only; a visible Eta window or global focus on a virtual display
+     * is not authority to operate another application on the main screen. Unknown fails closed.
+     */
+    internal fun currentMainDisplayPackageName(): String? = runOnMainSync {
+        val mainWindows = windowsOnAllDisplays.get(android.view.Display.DEFAULT_DISPLAY).orEmpty()
+        val focused = mainWindows.filter {
+            it.displayId == android.view.Display.DEFAULT_DISPLAY &&
+                it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused
+        }
+        if (focused.size != 1) return@runOnMainSync null
+        val active = mainWindows.filter { it.isActive }
+        if (active.size != 1 || (active.single().id != focused.single().id &&
+                active.single().type != AccessibilityWindowInfo.TYPE_INPUT_METHOD)) return@runOnMainSync null
+        // Existing node tools use rootInActiveWindow. Do not authorize them using a different
+        // display's root even when Eta is focused on display 0.
+        val root = rootInActiveWindow ?: return@runOnMainSync null
+        if (root.window?.displayId != android.view.Display.DEFAULT_DISPLAY ||
+            root.windowId != focused.single().id) return@runOnMainSync null
+        val focusedPackage = focused.single().root?.packageName?.toString()?.takeIf { it.isNotBlank() }
+            ?: return@runOnMainSync null
+        focusedPackage.takeIf { root.packageName?.toString() == it }
+    }
+
     fun displaySize(): Pair<Int, Int>? = runCatching {
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val point = Point()

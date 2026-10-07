@@ -251,6 +251,21 @@ class AgentTaskSurfaceModeTest {
     }
 
     @Test
+    fun selfAppPromptIsScopedInEveryModeWithoutSelectingOrdinaryForeground() {
+        AgentTaskSurfaceMode.entries.forEach { mode ->
+            listOf(true, false).forEach { installed ->
+                val text = AgentTaskSurface.handoffPromptClause(installed, mode)
+                assertTrue(text.contains("io.github.mangi.eta"))
+                assertTrue(text.contains("不因ASK询问"))
+                assertTrue(text.contains("不把整轮改成前台"))
+                assertTrue(text.contains("task_surface_scope=self_app"))
+                assertTrue(text.contains("已有副屏仍按原后台生命周期收尾"))
+                assertFalse(text.contains("表示之后都在主屏直接操作"))
+            }
+        }
+    }
+
+    @Test
     fun backgroundPromptRequiresVerifiedExplicitFinish() {
         assertTrue(AgentTaskSurface.useVirtualDisplay(AgentTaskSurfaceMode.BACKGROUND))
         val text=AgentTaskSurface.handoffPromptClause(true,AgentTaskSurfaceMode.BACKGROUND)

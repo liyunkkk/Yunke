@@ -182,7 +182,7 @@ internal fun AgentTaskPreferenceScreen(
     }
 }
 
-/** 每项的执行说明。ASK 在第一次操作手机前弹窗，由用户为本次回复选前台或后台。 */
+/** 每项的执行说明。ASK 首次为其它应用确定位置时弹窗；代鱼自身直接前台，不改普通应用选择。 */
 private val AgentTaskSurfaceMode.hintRes: Int
     get() = when (this) {
         AgentTaskSurfaceMode.ASK -> R.string.agent_task_preference_mode_hint_ask
