@@ -18,15 +18,21 @@ internal class StreamingGfmParserSession {
     private val parser = MarkdownParser(flavour)
     private val referenceLinkHandler = ReferenceLinkHandlerImpl()
     private var acceptedSource = ""
+    private val preparedSession = PreparedMarkdownSession()
+    private var previousComplete: Boolean? = null
 
-    fun parse(source: String, isComplete: Boolean): StreamingGfmSnapshot {
+    fun parse(source: String, isComplete: Boolean, renderSpec: PreparedMarkdownSpec? = null): StreamingGfmSnapshot {
         val source = NumericCitationMarkup.strip(source)
         if (!source.startsWith(acceptedSource)) {
             // 会话恢复或上游修正消息时重新建立基线；解析器本身没有可泄漏到新文档
             // 的语法状态，后续快照仍保持追加式处理。
             acceptedSource = ""
+            preparedSession.clear()
         }
         acceptedSource = source
+        // A terminal parse must rebuild reference-dependent inputs, even for unchanged text.
+        if (previousComplete != isComplete) preparedSession.clear()
+        previousComplete = isComplete
 
         val renderedSource = StreamingGfmProjection.project(
             source = source,
@@ -37,6 +43,8 @@ internal class StreamingGfmParserSession {
             originalSource = source,
             renderedSource = renderedSource,
             isComplete = isComplete,
+            renderSpec = renderSpec,
+            preparedBlocks = preparedSession.prepare(root, renderedSource, renderSpec),
             state = State.Success(
                 node = root,
                 content = renderedSource,
@@ -52,6 +60,8 @@ internal data class StreamingGfmSnapshot(
     val renderedSource: String,
     val isComplete: Boolean,
     val state: State.Success,
+    val preparedBlocks: List<PreparedMarkdownBlock> = emptyList(),
+    val renderSpec: PreparedMarkdownSpec? = null,
 )
 
 /** Returns a snapshot to publish, or null when the visible AST would not change. */
@@ -65,8 +75,10 @@ internal fun nextStreamingSnapshot(
     ) {
         return parsed
     }
+    if (current.renderSpec != parsed.renderSpec) return parsed
     if (current.isComplete != parsed.isComplete) {
-        return current.copy(isComplete = parsed.isComplete)
+        return if (parsed.renderSpec != null) parsed
+            else current.copy(isComplete = parsed.isComplete)
     }
     return null
 }

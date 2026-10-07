@@ -1,5 +1,8 @@
 package io.github.mangi.eta.ui.components
 
+import io.github.mangi.eta.ui.markdown.LocalPreparedMarkdownBlock
+import io.github.mangi.eta.ui.markdown.PreparedMarkdownBlock
+import io.github.mangi.eta.ui.markdown.PreparedMarkdownSpec
 import io.github.mangi.eta.ui.markdown.ChatSelectableText
 import android.graphics.BitmapFactory
 import android.util.Base64
@@ -64,6 +67,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.LaunchedEffect
@@ -83,6 +87,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -108,6 +113,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
@@ -141,6 +148,7 @@ import com.mikepenz.markdown.compose.elements.listDepth
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
+import com.mikepenz.markdown.model.markdownAnnotator
 import com.mikepenz.markdown.model.MarkdownState
 import com.mikepenz.markdown.model.State
 import com.mikepenz.markdown.model.markdownAnimations
@@ -1015,6 +1023,22 @@ private fun StreamingMarkdown(
     tone: ChatMarkdownTone = ChatMarkdownTone.Answer,
 ) {
     val parserSession = state.parserSession
+    val typography = chatMarkdownTypography(tone)
+    val inlineCode = typography.inlineCode.copy(
+        background = MiuixTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
+    ).toSpanStyle()
+    val uriHandler = LocalUriHandler.current
+    val preparedListener = remember(uriHandler) {
+        LinkInteractionListener { link ->
+            (link as? LinkAnnotation.Url)?.url?.let { url ->
+                try { uriHandler.openUri(url) } catch (_: Throwable) { /* Same non-fatal link boundary. */ }
+            }
+        }
+    }
+    val preparedAnnotator = remember { markdownAnnotator() }
+    val renderSpec = remember(typography, inlineCode, preparedListener, preparedAnnotator) {
+        PreparedMarkdownSpec(typography, inlineCode, typography.textLink, preparedListener, preparedAnnotator)
+    }
     val revealCoordinator = state.revealCoordinator
     val components = remember(revealCoordinator) {
         chatMarkdownComponents(
@@ -1085,7 +1109,7 @@ private fun StreamingMarkdown(
         }
     }
 
-    LaunchedEffect(content, parseAsStreaming) {
+    LaunchedEffect(content, parseAsStreaming, renderSpec) {
         val previousContent = acceptedContent[0]
         if (!content.startsWith(previousContent)) {
             // 会话恢复或上游纠正内容时，让解析会话重新建立文档基线。
@@ -1097,6 +1121,7 @@ private fun StreamingMarkdown(
             StreamingMarkdownTarget(
                 content = content,
                 isStreaming = parseAsStreaming,
+                renderSpec = renderSpec,
             )
         )
         if (parseAsStreaming) {
@@ -1121,6 +1146,7 @@ private fun StreamingMarkdown(
                         parserSession.parse(
                             source = target.content,
                             isComplete = !target.isStreaming,
+                            renderSpec = target.renderSpec,
                         )
                     }
                 }
@@ -1183,6 +1209,7 @@ private fun StreamingMarkdown(
         val imageTransformer = rememberStreamingMarkdownImageTransformer(parsed.state.content)
         Markdown(
             state = parsed.state,
+            annotator = preparedAnnotator,
             colors = chatMarkdownColors(tone),
             typography = chatMarkdownTypography(tone),
             padding = chatMarkdownPadding(),
@@ -1207,6 +1234,7 @@ private fun StreamingMarkdown(
             success = { state, successComponents, successModifier ->
                 StreamingGfmSuccess(
                     state = state,
+                    preparedBlocks = parsed.preparedBlocks.takeIf { parsed.renderSpec == renderSpec },
                     components = successComponents,
                     revealCoordinator = revealCoordinator,
                     modifier = successModifier,
@@ -1223,6 +1251,7 @@ private fun StreamingMarkdown(
 @Composable
 private fun StreamingGfmSuccess(
     state: State.Success,
+    preparedBlocks: List<PreparedMarkdownBlock>? = null,
     components: MarkdownComponents,
     revealCoordinator: SmoothTextRevealCoordinator,
     modifier: Modifier = Modifier,
@@ -1237,6 +1266,7 @@ private fun StreamingGfmSuccess(
     ChatMarkdownDocument(
         root = state.node,
         content = state.content,
+        preparedBlocks = preparedBlocks,
         components = components,
         revealCoordinator = revealCoordinator,
         modifier = modifier,
@@ -1255,11 +1285,14 @@ private fun ChatMarkdownDocument(
     modifier: Modifier = Modifier,
     revealCoordinator: SmoothTextRevealCoordinator? = null,
     progressive: Boolean = false,
+    preparedBlocks: List<PreparedMarkdownBlock>? = null,
 ) {
     val bodyTraceMount = remember { nextChatBodyTraceMount() }
     val diagnosticRow = LocalStreamDiagnosticRow.current
     SideEffect { traceChatBodyRun("md.doc", bodyTraceMount) }
-    val blocks = remember(root) { topLevelMarkdownBlocks(root) }
+    val blocks = remember(root, preparedBlocks) {
+        preparedBlocks?.map { it.node } ?: topLevelMarkdownBlocks(root)
+    }
     // 用户点击展开长文档时，把整篇的组合与文字测量分摊到连续几帧，避免首帧一次性
     // 构建全部 AnnotatedString 并测量全文。只在进入组合时决定一次，历史滚入可视区
     // 的已展开内容仍一次到位，不会在滚动途中改变高度。
@@ -1330,19 +1363,25 @@ private fun ChatMarkdownDocument(
             if (gap > 0.dp) Spacer(Modifier.height(gap))
             previousVisibleType = node.type
             key(node.startOffset, node.type.name) {
+                val preparedBlock = preparedBlocks?.getOrNull(index)
+                val content = preparedBlock?.source ?: content
                 val freeze = revealCoordinator != null &&
-                    shouldFreezeStreamingMarkdownBlock(node.startOffset, lastVisibleStartOffset)
+                    shouldFreezeStreamingMarkdownBlock(node.startOffset, lastVisibleStartOffset) &&
+                    (preparedBlock == null || preparedBlock.cacheKey.referenceSource == null)
                 // Pin only what the existing frozen branch already renders. Keep the
                 // renderer at one call site so freeze changes do not remount its Box.
-                val renderNode = rememberFrozenMarkdownInput(node, freeze)
-                val renderContent = rememberFrozenMarkdownInput(content, freeze)
+                val renderNode = if (preparedBlock != null) node else rememberFrozenMarkdownInput(node, freeze)
+                val renderContent = if (preparedBlock != null) content else rememberFrozenMarkdownInput(content, freeze)
                 FrozenMarkdownElement(
                     node = renderNode,
                     components = components,
                     content = renderContent,
                     freeze = freeze,
-                    diagnosticAttribution = StreamPerformanceDiagnostics.blockAttribution(
-                        diagnosticRow, index, node.type.name, node.endOffset - node.startOffset),
+                    preparedBlock = preparedBlock,
+                    diagnosticAttribution = remember(diagnosticRow, index, node) {
+                        StreamPerformanceDiagnostics.blockAttribution(
+                            diagnosticRow, index, node.type.name, node.endOffset - node.startOffset)
+                    },
                 )
             }
         }
@@ -1357,6 +1396,7 @@ private fun FrozenMarkdownElement(
     content: String,
     freeze: Boolean,
     diagnosticAttribution: StreamDiagnosticAttribution? = null,
+    preparedBlock: PreparedMarkdownBlock? = null,
 ) {
     // Keep completed blocks in independent RenderNode display lists. Tail draw
     // invalidation must not re-record every paragraph in a tall message.
@@ -1376,21 +1416,27 @@ private fun FrozenMarkdownElement(
             }
         }) {
         if (freeze) {
-            val frozenNode = remember { node }
-            val frozenContent = remember { content }
-            MarkdownElement(
-                node = frozenNode,
-                components = components,
-                content = frozenContent,
-                includeSpacer = false,
-            )
+            val frozenNode = remember(preparedBlock) { node }
+            val frozenContent = remember(preparedBlock) { content }
+            CompositionLocalProvider(LocalPreparedMarkdownBlock provides preparedBlock?.takeIf {
+                it.node === frozenNode && it.source === frozenContent
+            }) {
+                MarkdownElement(
+                    node = frozenNode,
+                    components = components,
+                    content = frozenContent,
+                    includeSpacer = false,
+                )
+            }
         } else {
-            MarkdownElement(
-                node = node,
-                components = components,
-                content = content,
-                includeSpacer = false,
-            )
+            CompositionLocalProvider(LocalPreparedMarkdownBlock provides preparedBlock) {
+                MarkdownElement(
+                    node = node,
+                    components = components,
+                    content = content,
+                    includeSpacer = false,
+                )
+            }
         }
     }
 }
@@ -1495,6 +1541,7 @@ private fun IElementType.isMarkdownStructuredBlock(): Boolean = when (this) {
 internal data class StreamingMarkdownTarget(
     val content: String,
     val isStreaming: Boolean,
+    val renderSpec: PreparedMarkdownSpec? = null,
     val queuedAtNs: Long = System.nanoTime(),
     // Captured at enqueue; null stays unknown when no reliable run mapping exists.
     val diagnosticAttribution: StreamDiagnosticAttribution? = StreamPerformanceDiagnostics.captureAttribution(),
@@ -1950,7 +1997,8 @@ private fun ChatRevealRawText(
     model: MarkdownComponentModel,
     revealCoordinator: SmoothTextRevealCoordinator,
 ) {
-    val text = remember(markdownRenderCacheKey(model.content, model.node)) {
+    val prepared = LocalPreparedMarkdownBlock.current?.text(model.node, null)
+    val text = prepared ?: remember(markdownRenderCacheKey(model.content, model.node)) {
         StreamPerformanceDiagnostics.measure("markdown.annotated.raw", (model.node.endOffset - model.node.startOffset).toLong()) {
             AnnotatedString(model.node.getUnescapedTextInNode(model.content))
         }
@@ -1976,7 +2024,8 @@ private fun ChatRevealMarkdownText(
     val contentNode = remember(model.node, contentChildType) {
         contentChildType?.let(model.node::findChildOfType) ?: model.node
     }
-    val text = remember(markdownRenderCacheKey(model.content, contentNode), style, annotatorSettings) {
+    val prepared = LocalPreparedMarkdownBlock.current?.text(contentNode, style.toSpanStyle())
+    val text = prepared ?: remember(markdownRenderCacheKey(model.content, contentNode), style, annotatorSettings) {
         StreamPerformanceDiagnostics.measure("markdown.annotated.build", (contentNode.endOffset - contentNode.startOffset).toLong()) {
             buildAnnotatedString {
                 pushStyle(style.toSpanStyle())
@@ -2287,7 +2336,8 @@ private fun ChatMarkdownTableCell(
     }
 
     val annotatorSettings = annotatorSettings()
-    val text = remember(markdownRenderCacheKey(content, cell), style, annotatorSettings) {
+    val prepared = LocalPreparedMarkdownBlock.current?.text(cell, style.toSpanStyle())
+    val text = prepared ?: remember(markdownRenderCacheKey(content, cell), style, annotatorSettings) {
         StreamPerformanceDiagnostics.measure("markdown.annotated.cell", (cell.endOffset - cell.startOffset).toLong()) {
             buildAnnotatedString {
                 pushStyle(style.toSpanStyle())

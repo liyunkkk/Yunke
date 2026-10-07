@@ -28,7 +28,7 @@ internal object StreamDiagnosticLabels {
         "frame.metricsDropped", "frame.deadline", "frame.firstDraw", "frame.steady", "diagnostic.clockSync",
         "persistence.write", "persistence.read", "persistence.serialize", "persistence.queueWait",
         "render.measure", "render.draw", "render.compose",
-        "markdown.annotated.build", "markdown.annotated.cell", "markdown.annotated.raw", "markdown.citation.strip",
+        "markdown.prepared.annotated", "markdown.prepared.raw", "markdown.annotated.build", "markdown.annotated.cell", "markdown.annotated.raw", "markdown.citation.strip",
         "markdown.hidden.childHeight", "markdown.hidden.measure", "markdown.hidden.reportHeight",
         "markdown.stable.draw", "markdown.stable.measure", "markdown.tail.draw", "markdown.tail.measure",
         "reveal.drawContent", "reveal.graphemes.append", "reveal.graphemes.cacheHit", "reveal.graphemes.rebuild",
