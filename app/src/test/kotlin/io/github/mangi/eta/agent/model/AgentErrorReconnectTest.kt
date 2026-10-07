@@ -263,7 +263,10 @@ class AgentErrorReconnectTest {
                 emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "Hello world"))
                 throw IOException()
             }
-            assertEquals("Hello world", request.messages.getJSONObject(0).getString("content"))
+            assertTrue(AgentRecoveryContext.isActive(request.messages))
+            val draft = (0 until request.messages.length()).map { request.messages.getJSONObject(it) }
+                .single { it.optString("role") == "assistant" }
+            assertEquals("Hello world", draft.getString("content"))
             assertFalse(request.messages.toString().contains("tool_calls"))
             emit(ProviderEvent.RequestStarted)
             emit(ProviderEvent.BlockDelta(AssistantBlockKind.TEXT, 0, "world"))

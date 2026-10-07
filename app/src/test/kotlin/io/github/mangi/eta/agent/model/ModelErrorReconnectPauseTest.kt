@@ -32,6 +32,45 @@ class ModelErrorReconnectPauseTest {
             AgentModelFailure("HTTP_500", false, "offline"), emptyList())
     private fun List<AgentEvent>.changes() = filterIsInstance<AgentEvent.ErrorReconnectChanged>()
 
+    @Test fun pendingPostToolDeadlineCancelsNextModelTransportAndRejectsLateBody() {
+        val clock = Clock()
+        val control = AgentRunController()
+        val events = mutableListOf<AgentEvent>()
+        val reconnect = state(clock, events)
+        val binding = reconnect.bind(control)
+        reconnect.start()
+        var transportStops = 0
+        val provider = object : AgentProviderClient {
+            override val id = "pending-recovery-test"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS,
+                true, true, false, false, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController,
+                onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                val registration = control.register(interruptible = true) { transportStops++ }
+                try {
+                    clock.advance(30_000)
+                    assertEquals(1, transportStops)
+                    assertFalse(control.isCancelled)
+                    return ProviderResponse(org.json.JSONObject().put("role", "assistant")
+                        .put("content", "late body").put("finish_reason", "stop"))
+                } finally { registration.close() }
+            }
+        }
+        try {
+            val failure = assertThrows(AgentModelFailure::class.java) {
+                AgentModelRetry { _, _ -> fail("deadline must not retry") }.complete(1,
+                    ProviderRequest(AgentModelClient.ModelConfig(baseUrl = "https://example.invalid",
+                        apiKey = "test", model = "test", systemPrompt = "",
+                        errorReconnectPolicy = "window_30s"), org.json.JSONArray(), org.json.JSONArray()),
+                    provider, control, events::add, { _, _ -> }, {}, requestReconnect = reconnect)
+            }
+            assertEquals("ERROR_RECONNECT_DEADLINE", failure.code)
+            assertEquals(1, transportStops)
+            assertFalse(control.isCancelled)
+            reconnect.finish("failed")
+        } finally { binding.close() }
+    }
+
     @Test fun pauseFreezesTimerAndRemainingBudgetAndResumeUsesANewSegment() {
         val clock = Clock()
         val control = AgentRunController()

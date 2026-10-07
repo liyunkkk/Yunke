@@ -151,14 +151,21 @@ internal class AgentLoop(
     private var postToolReconnect: ModelErrorReconnect? = null
     private var postToolReconnectBinding: AutoCloseable? = null
     private var postToolRetryCount = 0
+    private var localOnlyRecovery = AgentRecoveryContext.isActive(messages)
+    private val toolReplayGuard = AgentToolReplayGuard(messages)
 
     private fun finishPostToolReconnect(status: String) {
         val current = postToolReconnect ?: return
-        current.finish(status)
-        postToolReconnectBinding?.close()
-        postToolReconnectBinding = null
-        postToolReconnect = null
-        postToolRetryCount = 0
+        try {
+            current.finish(status)
+        } finally {
+            try { postToolReconnectBinding?.close() }
+            finally {
+                postToolReconnectBinding = null
+                postToolReconnect = null
+                postToolRetryCount = 0
+            }
+        }
     }
 
     private fun retryPostToolFailure(round: Int, code: String, message: String) {
@@ -273,6 +280,7 @@ internal class AgentLoop(
             val requestFixedTokens = AgentRequestTokenEstimate.fixed(messages, systemCount, roundTools)
             // Finish the raw metadata pass before retaining the hydrated copy (lower peak memory).
             // Reuse exactly one hydrated/filtered snapshot for projection and transport.
+            if (localOnlyRecovery) AgentRecoveryContext.append(messages)
             val filteredMessages = AgentRequestMediaPolicy.filter(messages, config.supportsVision, config.supportsVideo)
             val publishLocalEstimate = requestBudget.consumeLocalBoundary()
             // Display estimates arrive from the SAME final body serialized by the provider.
@@ -285,7 +293,8 @@ internal class AgentLoop(
                 modelRetry.complete(
                     initialRound = round,
                     request = ProviderRequest(requestConfigForRound(),
-                        filteredMessages, roundTools, sessionId, toolDiagnostics = toolDiagnostics),
+                        filteredMessages, roundTools, sessionId, toolDiagnostics = toolDiagnostics,
+                        reconnectLocalToolsOnly = localOnlyRecovery),
                     provider = provider,
                     controller = runController,
                     onEvent = onEvent,
@@ -357,6 +366,12 @@ internal class AgentLoop(
                         }
                     },
                     discardAttemptReasoning = { accumulatedReasoning.setLength(reasoningLengthBeforeRound) },
+                    validateResponse = toolReplayGuard::validate,
+                    requestReconnect = postToolReconnect,
+                    onRecoveryActivated = {
+                        localOnlyRecovery = true
+                        AgentRecoveryContext.append(messages)
+                    },
                     onCancelledResponse = { response ->
                         val calls = AgentConversationCodec.parseToolCalls(response.assistantMessage)
                         val sensitiveCalls = calls.filter { AgentSensitiveToolPolicy.isSensitive(it.name) }
@@ -377,6 +392,8 @@ internal class AgentLoop(
                 compactionFailure = "提供方确认上下文超限。只在缩减成功后有限重试；否则保持暂停，不删除受保护历史。"
                 continue
             }
+            localOnlyRecovery = localOnlyRecovery || completedRound.reconnectLocalToolsOnly
+            if (localOnlyRecovery) AgentRecoveryContext.append(messages)
             // Failed/overflowed requests keep their image observation until a successful request.
             discardPendingToolImageMessage()
             overflowRecoveryAttempts = 0
@@ -385,6 +402,7 @@ internal class AgentLoop(
             if (completedRound.round != round) interruptedTextPrefix.setLength(0)
             round = completedRound.round
             val providerResponse = completedRound.response
+            toolReplayGuard.remember(providerResponse.assistantMessage)
             toolDiagnosticAttempt = completedRound.toolDiagnosticAttempt
             // One bounded record per successful request round. Local estimates stay labeled as
             // estimates and sit next to the same round's cloud receipt so the gap is attributable.
@@ -620,6 +638,12 @@ internal class AgentLoop(
                 sensitiveToolCallIds = sensitiveToolCallIds.toSet(),
             )
         }
+        } catch (failure: Throwable) {
+            try { finishPostToolReconnect(if (runController.isCancelled) "stopped" else "failed") }
+            catch (cleanupFailure: Throwable) {
+                if (cleanupFailure !== failure) failure.addSuppressed(cleanupFailure)
+            }
+            throw failure
         } finally {
             finishPostToolReconnect(if (runController.isCancelled) "stopped" else "failed")
         }
@@ -1078,9 +1102,11 @@ internal class AgentLoop(
     }
 
     private fun requestConfigForRound(): AgentModelClient.ModelConfig {
-        if (!suppressThinkingForNextRequest) return config
-        suppressThinkingForNextRequest = false
-        return AgentRuntimePolicy.withoutOptionalThinking(config)
+        val next = if (suppressThinkingForNextRequest) {
+            suppressThinkingForNextRequest = false
+            AgentRuntimePolicy.withoutOptionalThinking(config)
+        } else config
+        return if (localOnlyRecovery) next.copy(hostedWebSearchEnabled = false) else next
     }
 
     private fun compressorLabel(config: AgentModelClient.ModelConfig): String {
@@ -1152,6 +1178,10 @@ internal class AgentLoop(
         toolIndex: Int,
     ): ToolOutcome {
         runController.throwIfCancelled()
+        if (!toolReplayGuard.claimDispatch(toolCall.id)) {
+            return rejectedToolOutcome(round, toolCall, AgentToolReplayGuard.CODE,
+                "此调用标识已派发，本次未执行；请保留原结果，不重复操作。")
+        }
         if (toolCall.name == AgentDelegationArgumentRepair.TOOL && delegationArgumentRepair.disabled) {
             // Exhaustion was already reported. Complete protocol pairing without another failed card.
             return ToolOutcome(toolCall, delegationArgumentRepair.reject("本轮委派已停用", round))

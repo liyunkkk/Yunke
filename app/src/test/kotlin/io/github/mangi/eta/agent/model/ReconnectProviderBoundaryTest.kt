@@ -119,6 +119,42 @@ class ReconnectProviderBoundaryTest {
         }
     }
 
+    @Test fun learnedSingleCallRestrictionSurvivesFinalRecoveryPayloadFiltering() {
+        val provider = providers.single { it.capabilities.endpoint == EndpointKind.RESPONSES }
+        withResponse(partial(provider) + terminal(provider)) { url, captured ->
+            val base = request(url, provider, ErrorReconnectPolicy.WINDOW_30S)
+            val tools = JSONArray().put(JSONObject().put("type", "function").put("function", JSONObject()
+                .put("name", "read_file").put("parameters", JSONObject().put("type", "object"))))
+            val recovery = base.copy(tools = tools, reconnectLocalToolsOnly = true)
+            assertFalse(recovery.singleToolCall)
+            ResponsesToolEnvelopeRecovery.rememberRestriction(recovery)
+            provider.complete(recovery, AgentRunController(), {})
+            val body = JSONObject(captured.get())
+            assertFalse(body.getBoolean("parallel_tool_calls"))
+            assertEquals(1, body.getJSONArray("tools").length())
+        }
+    }
+
+    @Test fun localResponsesRecoveryDropsOpaqueHostedAndReasoningState() {
+        val config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test",
+            model = "test", systemPrompt = "")
+        val assistant = JSONObject().put("role", "assistant").put("content", "committed text")
+        ResponsesEphemeralState.attachOutputItems(assistant, JSONArray()
+            .put(JSONObject().put("type", "web_search_call").put("id", "unknown-hosted"))
+            .put(JSONObject().put("type", "reasoning").put("id", "opaque-reasoning")
+                .put("encrypted_content", "opaque")))
+        ResponsesReasoningState.capture(assistant, config)
+        val messages = JSONArray().put(assistant).put(JSONObject().put("role", "user").put("content", "continue"))
+        val normal = ResponsesRequestBuilder.build(config, messages, JSONArray()).getJSONArray("input").toString()
+        assertTrue(normal.contains("unknown-hosted"))
+        val recovered = ResponsesRequestBuilder.build(config, messages, JSONArray(), localOnlyRecovery = true)
+            .getJSONArray("input").toString()
+        assertFalse(recovered.contains("unknown-hosted"))
+        assertFalse(recovered.contains("opaque-reasoning"))
+        assertFalse(recovered.contains("encrypted_content"))
+        assertTrue(recovered.contains("committed text"))
+    }
+
     @Test fun responsesDoneAndAnthropicBlockStopCannotReplaceResponseTerminal() {
         for (provider in listOf(OpenAiResponsesProvider, AnthropicMessagesProvider)) {
             val middle = if (provider == OpenAiResponsesProvider) "data: [DONE]\n\n"

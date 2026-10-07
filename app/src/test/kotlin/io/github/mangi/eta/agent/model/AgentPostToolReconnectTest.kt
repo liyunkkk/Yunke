@@ -47,7 +47,8 @@ class AgentPostToolReconnectTest {
         val executed: List<String>, val failure: AgentModelFailure?, val completion: AgentLoop.Result?)
 
     private fun run(policy: ErrorReconnectPolicy, clock: Clock, repairAfter: Int? = null,
-        duringWait: ((AgentRunController, Long, List<AgentEvent>, Int) -> Unit)? = null): Run {
+        duringWait: ((AgentRunController, Long, List<AgentEvent>, Int) -> Unit)? = null,
+        terminalFailure: Throwable? = null): Run {
         val history = JSONArray().put(AgentConversationCodec.userTextMessage("finish task"))
         val events = mutableListOf<AgentEvent>()
         val executed = mutableListOf<String>()
@@ -86,7 +87,11 @@ class AgentPostToolReconnectTest {
                     AgentModelClient.ToolResult("{\"ok\":true}")
                 },
                 runController = AgentRunController(), traceFormatter = AgentTraceFormatter(),
-                onEvent = events::add, reconnectTiming = clock,
+                onEvent = { event ->
+                    events += event
+                    if (event is AgentEvent.ErrorReconnectChanged && event.status == "failed" && terminalFailure != null)
+                        throw terminalFailure
+                }, reconnectTiming = clock,
                 waitForReconnect = { control, delay ->
                     if (duringWait != null) duringWait(control, delay, events, requests.get())
                     else clock.advance(delay)
@@ -96,6 +101,22 @@ class AgentPostToolReconnectTest {
             failure = error
         }
         return Run(history, events, requests.get(), executed, failure, completion)
+    }
+
+    @Test fun terminalObserverFailureDoesNotReplacePrimaryFailureOrLeakPauseBinding() {
+        val clock = Clock()
+        val primary = IllegalStateException("primary wait failure")
+        val cleanup = IllegalStateException("terminal observer failure")
+        var control: AgentRunController? = null
+        val thrown = assertThrows(IllegalStateException::class.java) {
+            run(ErrorReconnectPolicy.WINDOW_30S, clock,
+                duringWait = { current, _, _, _ -> control = current; throw primary },
+                terminalFailure = cleanup)
+        }
+        assertSame(primary, thrown)
+        assertTrue(thrown.suppressed.any { it === cleanup })
+        val observers = AgentRunController::class.java.getDeclaredField("pauseObservers").apply { isAccessible = true }
+        assertEquals(0, (observers.get(requireNotNull(control)) as Collection<*>).size)
     }
 
     @Test fun exhaustedArgumentsKeepTaskAliveAndRunOnlyNewValidatedCall() {

@@ -80,6 +80,55 @@ class AgentReconnectLocalToolLoopIntegrationTest {
         assertEquals(1, events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().count { it.status == "succeeded" })
     }
 
+    @Test fun historicalIdIsReplannedWithoutReexecutionAndLaterRoundsStayLocalOnly() {
+        val history = JSONArray().put(AgentConversationCodec.userTextMessage("finish remaining work"))
+        val executed = mutableListOf<String>()
+        val events = mutableListOf<AgentEvent>()
+        var requests = 0
+        val provider = object : AgentProviderClient {
+            override val id = "historical-replay-loop-test"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS,
+                true, true, false, false, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController,
+                onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                return when (++requests) {
+                    1 -> toolResponse("old", "read_file", "{}")
+                    2 -> toolResponse("old", "read_file", "{}")
+                    3 -> {
+                        assertEquals(listOf("old"), executed)
+                        assertTrue(request.reconnectLocalToolsOnly)
+                        assertFalse(request.config.hostedWebSearchEnabled)
+                        assertTrue(AgentRecoveryContext.isActive(request.messages))
+                        toolResponse("fresh", "read_file", "{}")
+                    }
+                    4 -> {
+                        assertEquals(listOf("old", "fresh"), executed)
+                        assertTrue(request.reconnectLocalToolsOnly)
+                        assertFalse(request.config.hostedWebSearchEnabled)
+                        assertTrue(AgentRecoveryContext.isActive(request.messages))
+                        ProviderResponse(JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop"))
+                    }
+                    else -> error("unexpected request")
+                }
+            }
+        }
+        val result = AgentLoop(
+            config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test",
+                model = "test", systemPrompt = "", contextWindow = 1_000_000,
+                hostedWebSearchEnabled = true, errorReconnectPolicy = "continuous"),
+            messages = history, tools = JSONArray().put(tool("read_file")), provider = provider,
+            toolExecutor = AgentModelClient.ToolExecutor { call ->
+                executed += call.id; AgentModelClient.ToolResult("committed")
+            }, runController = AgentRunController(), traceFormatter = AgentTraceFormatter(), onEvent = events::add,
+            modelRetry = AgentModelRetry { _, _ -> },
+        ).run()
+        assertEquals("done", result.content)
+        assertEquals(4, requests)
+        assertEquals(listOf("old", "fresh"), executed)
+        assertTrue(AgentRecoveryContext.isActive(history))
+        assertEquals(1, events.filterIsInstance<AgentEvent.ModelRetryScheduled>().size)
+    }
+
     private fun tool(name: String) = JSONObject().put("type", "function").put("function", JSONObject()
         .put("name", name).put("parameters", JSONObject().put("type", "object")))
     private fun toolResponse(id: String, name: String, arguments: String) = ProviderResponse(JSONObject()

@@ -35,7 +35,8 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             "当前 Provider 未配置为 Responses API"
         }
         val prepared = ResponsesToolEnvelopeRecovery.prepare(request)
-        val requestJson = request.restrictReconnectPayload(buildRequestJson(config, prepared.messages, prepared.tools, prepared.sessionId, prepared.singleToolCall), capabilities.endpoint)
+        val requestJson = prepared.restrictReconnectPayload(buildRequestJson(config, prepared.messages, prepared.tools, prepared.sessionId, prepared.singleToolCall,
+            request.reconnectLocalToolsOnly || request.reconnectTextOnly), capabilities.endpoint)
         val serializedBody = requestJson.toString()
         val body = serializedBody
             .toRequestBody(JSON_MEDIA_TYPE)
@@ -94,7 +95,8 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         tools: JSONArray,
         sessionId: String = "",
         singleToolCall: Boolean = false,
-    ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools, sessionId, singleToolCall)
+        localOnlyRecovery: Boolean = false,
+    ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools, sessionId, singleToolCall, localOnlyRecovery)
 
     private fun readStreamingResponse(
         request: Request,

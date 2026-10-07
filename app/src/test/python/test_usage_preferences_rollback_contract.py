@@ -18,7 +18,9 @@ def section(text, begin, end):
 class UsagePreferencesRollbackContractTest(unittest.TestCase):
     def test_migration_is_a_datastore_gate_not_a_second_lazy_store(self):
         settings = source("data/datastore/SettingsDataStore.kt")
-        self.assertIn("produceMigrations = { context -> listOf(UsageLedgerRollbackMigration(", settings)
+        self.assertRegex(settings,
+            r"produceMigrations\s*=\s*\{\s*context\s*->\s*listOf\(\s*"
+            r"ErrorReconnectPolicyMigration\(\),\s*UsageLedgerRollbackMigration\(")
         self.assertIn('File(context.filesDir, "datastore/eta_usage_ledger.json")', settings)
         self.assertIn("PreferencesUsageLedger(preferencesStore)", settings)
         self.assertFalse((MAIN / "data/datastore/UsageLedgerStore.kt").exists())

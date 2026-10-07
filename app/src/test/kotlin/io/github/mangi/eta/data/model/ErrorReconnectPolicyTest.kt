@@ -33,11 +33,24 @@ class ErrorReconnectPolicyTest {
 
     @Test
     fun oldSettingsAndUnknownSerializedPolicyUseSafeDefault() {
-        assertEquals(ErrorReconnectPolicy.NONE, Json.decodeFromString<Settings>("{}").errorReconnectPolicy)
+        assertEquals(ErrorReconnectPolicy.CONTINUOUS, Json.decodeFromString<Settings>("{}").errorReconnectPolicy)
         assertEquals(
             ErrorReconnectPolicy.NONE,
             Json.decodeFromString<Settings>("""{"errorReconnectPolicy":"future_policy"}""").errorReconnectPolicy,
         )
+    }
+
+    @Test
+    fun legacyDefaultsUpgradeOnceWithoutChangingSelectedWindows() {
+        assertEquals(ErrorReconnectPolicy.CONTINUOUS, ErrorReconnectPolicy.fromStoredSettings(null, null))
+        assertEquals(ErrorReconnectPolicy.CONTINUOUS, ErrorReconnectPolicy.fromStoredSettings("none", null))
+        assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings("none", 1))
+        assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings("future_policy", null))
+        assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings(null, 2))
+        ErrorReconnectPolicy.entries.filterNot { it == ErrorReconnectPolicy.NONE }.forEach { policy ->
+            assertEquals(policy, ErrorReconnectPolicy.fromStoredSettings(policy.persistedValue, null))
+            assertEquals(policy, ErrorReconnectPolicy.fromStoredSettings(policy.persistedValue, 1))
+        }
     }
 
     @Test

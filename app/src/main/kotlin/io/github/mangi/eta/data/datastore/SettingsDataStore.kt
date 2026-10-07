@@ -36,7 +36,6 @@ internal object SettingsDataStore {
     private val SELECTED_MODEL_ID = stringPreferencesKey("selected_model_id")
     private val MEMORY_ENABLED = booleanPreferencesKey("memory_enabled")
     private val FILE_LOGGING_ENABLED = booleanPreferencesKey("file_logging_enabled")
-    private val ERROR_RECONNECT_POLICY = stringPreferencesKey("error_reconnect_policy")
     private val LINUX_DISTRIBUTION = stringPreferencesKey("linux_distribution")
     private val APPEARANCE_THEME_MODE = stringPreferencesKey("appearance_theme_mode")
     private val APPEARANCE_MONET_ENABLED = booleanPreferencesKey("appearance_monet_enabled")
@@ -73,7 +72,7 @@ internal object SettingsDataStore {
 
     private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
         name = STORE_NAME,
-        produceMigrations = { context -> listOf(UsageLedgerRollbackMigration(
+        produceMigrations = { context -> listOf(ErrorReconnectPolicyMigration(), UsageLedgerRollbackMigration(
             File(context.filesDir, "datastore/eta_usage_ledger.json"),
         )) },
     )
@@ -115,7 +114,11 @@ internal object SettingsDataStore {
             prefs.putOrRemove(SELECTED_MODEL_ID, updated.selectedModelId)
             prefs[MEMORY_ENABLED] = updated.memoryEnabled
             prefs[FILE_LOGGING_ENABLED] = updated.fileLoggingEnabled
-            prefs[ERROR_RECONNECT_POLICY] = updated.errorReconnectPolicy.persistedValue
+            // Unrelated settings edits must not downgrade an unknown/future choice.
+            if (updated.errorReconnectPolicy != current.errorReconnectPolicy) {
+                prefs[ERROR_RECONNECT_POLICY] = updated.errorReconnectPolicy.persistedValue
+                prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
+            }
             prefs.putAppearance(updated.appearance.normalized())
         }
     }
@@ -147,7 +150,12 @@ internal object SettingsDataStore {
         settingsFlow().map { it.errorReconnectPolicy }.distinctUntilChanged()
 
     suspend fun setErrorReconnectPolicy(policy: ErrorReconnectPolicy) {
-        updateSettings { it.copy(errorReconnectPolicy = policy) }
+        ensureInitialized()
+        dataStore.edit { prefs ->
+            // An explicit choice, including NONE, owns its schema version.
+            prefs[ERROR_RECONNECT_POLICY] = policy.persistedValue
+            prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
+        }
     }
 
     fun linuxDistributionFlow(): Flow<String?> {
@@ -224,7 +232,8 @@ internal object SettingsDataStore {
             selectedModelId = settings.selectedModelId,
             memoryEnabled = settings.memoryEnabled,
             fileLoggingEnabled = settings.fileLoggingEnabled,
-            errorReconnectPolicy = settings.errorReconnectPolicy.persistedValue,
+            errorReconnectPolicy = prefs[ERROR_RECONNECT_POLICY],
+            errorReconnectPolicyVersion = prefs[ERROR_RECONNECT_POLICY_VERSION],
             linuxDistribution = prefs[LINUX_DISTRIBUTION],
             linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
             selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
@@ -240,6 +249,10 @@ internal object SettingsDataStore {
     }
 
     suspend fun restoreBackup(snapshot: EtaSettingsBackup) {
+        require(snapshot.errorReconnectPolicyVersion == null ||
+            snapshot.errorReconnectPolicyVersion in 0..ErrorReconnectPolicy.STORAGE_VERSION) {
+            "Unsupported error reconnect settings version; existing settings were not changed."
+        }
         ensureInitialized()
         // Keep the outer EtaBackupRepository journal intact. This function commits metadata
         // and ledger together, or neither; no file replacement can precede this Preferences edit.
@@ -255,7 +268,10 @@ internal object SettingsDataStore {
             prefs[MEMORY_ENABLED] = snapshot.memoryEnabled
             prefs[FILE_LOGGING_ENABLED] = snapshot.fileLoggingEnabled
             prefs[ERROR_RECONNECT_POLICY] =
-                ErrorReconnectPolicy.fromPersistedValue(snapshot.errorReconnectPolicy).persistedValue
+                ErrorReconnectPolicy.fromStoredSettings(
+                    snapshot.errorReconnectPolicy, snapshot.errorReconnectPolicyVersion,
+                ).persistedValue
+            prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
             prefs.putOrRemove(LINUX_DISTRIBUTION, snapshot.linuxDistribution)
             prefs.putAppearance(snapshot.appearance.normalized())
             snapshot.linuxBackends.forEach { (distribution, backend) ->
@@ -542,7 +558,9 @@ internal object SettingsDataStore {
         selectedModelId = this[SELECTED_MODEL_ID],
         memoryEnabled = this[MEMORY_ENABLED] ?: true,
         fileLoggingEnabled = this[FILE_LOGGING_ENABLED] ?: true,
-        errorReconnectPolicy = ErrorReconnectPolicy.fromPersistedValue(this[ERROR_RECONNECT_POLICY]),
+        errorReconnectPolicy = ErrorReconnectPolicy.fromStoredSettings(
+            this[ERROR_RECONNECT_POLICY], this[ERROR_RECONNECT_POLICY_VERSION],
+        ),
         appearance = AppearanceSettings(
             themeMode = AppearanceThemeMode.fromPersistedValue(this[APPEARANCE_THEME_MODE]),
             monetEnabled = true,
@@ -604,8 +622,9 @@ internal data class EtaSettingsBackup(
     val retiredConversations: Int? = null,
     val retiredMessages: Int? = null,
     val retiredHeatmapJson: String? = null,
-    // Use a nullable string so older, null and future backup values restore safely to NONE.
-    val errorReconnectPolicy: String? = ErrorReconnectPolicy.NONE.persistedValue,
+    // An old backup has no choice version; only its legacy off/missing default is upgraded.
+    val errorReconnectPolicy: String? = null,
+    val errorReconnectPolicyVersion: Int? = null,
 )
 
 internal data class RetiredUsage(

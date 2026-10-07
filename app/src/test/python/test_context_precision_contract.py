@@ -21,7 +21,11 @@ class ContextPrecisionContractTest(unittest.TestCase):
         self.assertRegex(code,
             r'ProviderRequest\(requestConfigForRound\(\),\s*'
             r'filteredMessages,\s*roundTools,\s*sessionId'
-            r'(?:,\s*toolDiagnostics\s*=\s*toolDiagnostics)?\)')
+            r',\s*toolDiagnostics\s*=\s*toolDiagnostics,\s*'
+            r'reconnectLocalToolsOnly\s*=\s*localOnlyRecovery\)')
+        self.assertRegex(code,
+            r'if \(localOnlyRecovery\) AgentRecoveryContext\.append\(messages\)\s*'
+            r'val filteredMessages = AgentRequestMediaPolicy\.filter\(')
         self.assertIn('var preparedRequestTokens: Int? = null', code)
         self.assertIn('preparedRequestTokens = providerEvent.tokens', code)
         self.assertIn('if (publishLocalEstimate && !hasDisplayCloudReceipt && providerEvent.tokens > 0)', code)

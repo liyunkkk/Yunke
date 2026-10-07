@@ -21,6 +21,19 @@ enum class ErrorReconnectPolicy(
     CONTINUOUS("continuous", null);
 
     companion object {
+        /** Applied at the settings boundary, never as a model catch-path override. */
+        val DEFAULT: ErrorReconnectPolicy = CONTINUOUS
+        const val STORAGE_VERSION = 1
+
+        /** Old auto-written "none" is indistinguishable from an explicit selection. */
+        fun fromStoredSettings(value: String?, version: Int?): ErrorReconnectPolicy {
+            if (version != null && version > STORAGE_VERSION) return NONE
+            if ((version ?: 0) < STORAGE_VERSION && (value == null || value == NONE.persistedValue)) {
+                return DEFAULT
+            }
+            return if (value == null) DEFAULT else fromPersistedValue(value)
+        }
+
         /** Missing or unrecognized values must never silently enable retries. */
         fun fromPersistedValue(value: String?): ErrorReconnectPolicy =
             entries.firstOrNull { it.persistedValue == value } ?: NONE
