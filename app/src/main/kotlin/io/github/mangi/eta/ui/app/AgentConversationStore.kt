@@ -310,20 +310,28 @@ internal object AgentConversationStore {
         } else {
             StableIdentityMigration(rawMessages, emptyList())
         }
-        if (withContent) {
-            val rowIds = storedRows.mapTo(mutableSetOf()) { it.id }
-            identityMigration.renames.forEach { (oldId, newId) ->
-                if (oldId == newId || oldId !in rowIds || newId in rowIds) return@forEach
-                dao.renameMessageId(conversation.id, oldId, newId)
-                rowIds.remove(oldId)
-                rowIds.add(newId)
-            }
-            if (history.isNotEmpty() && history != sourceHistory) {
-                writeConversationHistory(context, conversation.id, history)
-            }
+        // Both full-load entry points hold a Room transaction. Validate every target
+        // against the whole table before the first UPDATE, then publish the UI IDs only
+        // after the entire batch succeeds. A conflicting conversation remains readable.
+        val identityMessages = if (withContent) {
+            ConversationMessageIdMigration.apply(
+                original = rawMessages,
+                migrated = identityMigration.messages,
+                storedRowIds = storedRows.mapTo(mutableSetOf()) { it.id },
+                renames = identityMigration.renames,
+                targetExists = { dao.messageIdExists(it) },
+                rename = { oldId, newId -> dao.renameMessageId(conversation.id, oldId, newId) },
+            )
+        } else rawMessages
+        if (identityMigration.renames.isNotEmpty() && identityMessages === rawMessages) {
+            // Do not log message IDs, conversation IDs, or contents.
+            AndroidAgentLogger.warn("Message identity migration skipped: occupied target or invalid batch; original messages retained")
+        }
+        if (withContent && history.isNotEmpty() && history != sourceHistory) {
+            writeConversationHistory(context, conversation.id, history)
         }
         val messages = attachUserImageSources(
-            messages = identityMigration.messages,
+            messages = identityMessages,
             history = history,
         )
         // Invalid receipts must not resurrect bills from a different history/model.
