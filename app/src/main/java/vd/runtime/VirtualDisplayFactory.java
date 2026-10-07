@@ -35,7 +35,24 @@ final class VirtualDisplayFactory {
     /** uid 0 owns this package, which satisfies the display service's package-vs-uid check. */
     static final String OWNER_PACKAGE = "android";
 
-    static final int DEFAULT_FLAGS = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC;
+    /**
+     * The display must be trusted to host the focusable window of a task that was launched onto
+     * it; without {@code FLAG_TRUSTED} the platform folds the window back onto the default
+     * display and injected input has no window to land on. {@code FLAG_OWN_FOCUS} (Android 14+)
+     * keeps that focus while the main display stays interactive, and {@code FLAG_SUPPORTS_TOUCH}
+     * advertises the injected touch stream. The three flags are @hide constants, so they are
+     * spelled out here; the values were read back from the running framework.
+     */
+    private static final int VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH = 1 << 6;
+
+    private static final int VIRTUAL_DISPLAY_FLAG_TRUSTED = 1 << 10;
+
+    private static final int VIRTUAL_DISPLAY_FLAG_OWN_FOCUS = 1 << 14;
+
+    static final int DEFAULT_FLAGS = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC
+            | VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
+            | VIRTUAL_DISPLAY_FLAG_TRUSTED
+            | VIRTUAL_DISPLAY_FLAG_OWN_FOCUS;
 
     private static final String ACTIVITY_THREAD_CLASS = "android.app.ActivityThread";
     private static final String DISPLAY_MANAGER_GLOBAL_CLASS =
