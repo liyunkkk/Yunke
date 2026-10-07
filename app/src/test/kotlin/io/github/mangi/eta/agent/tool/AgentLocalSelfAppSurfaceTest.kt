@@ -130,6 +130,83 @@ class AgentLocalSelfAppSurfaceTest {
         } finally { tools.close() }
     }
 
+    @Test(timeout = 10000) fun anotherRunRejectsGuiWithoutSideEffectsAndDoesNotStealOwner() {
+        var observed = 0
+        var asked = 0
+        val tools = tools(mode = AgentTaskSurfaceMode.FOREGROUND,
+            choose = { asked++; error("Already foreground") },
+            observe = { observed++; observation() })
+        assertEquals(ForegroundExclusiveGate.Admission.ACQUIRED, ForegroundExclusiveGate.acquire("other-owner"))
+        try {
+            shadowOf(app).clearNextStartedActivities()
+            for (name in listOf("launch_app", "observe_screen", "tap", "wait_for_text", "wait_for_package", "set_alarm", "set_timer")) {
+                val args = if (name == "launch_app") JSONObject().put("package_name", external) else JSONObject()
+                val rejected = call(tools, name, args)
+                assertEquals(name, "FOREGROUND_BUSY", rejected.getString("code"))
+                assertFalse(rejected.getBoolean("ok"))
+                assertFalse(rejected.getBoolean("executed"))
+                assertFalse(rejected.getBoolean("queued"))
+                assertFalse(rejected.getBoolean("retryable"))
+                assertTrue(rejected.getString("message").contains("另一个会话"))
+            }
+            assertEquals("FOREGROUND_BUSY", call(tools, "launch_app", JSONObject().put("package_name", app.packageName)).getString("code"))
+            assertEquals(0, observed)
+            assertEquals(0, asked)
+            assertNull(shadowOf(app).nextStartedActivity)
+            assertTrue(call(tools, "search_apps", JSONObject().put("query", external)).getBoolean("ok"))
+            tools.close()
+            assertEquals("other-owner", ForegroundExclusiveGate.ownerForTests())
+        } finally {
+            tools.close()
+            ForegroundExclusiveGate.release("other-owner")
+        }
+    }
+
+    @Test fun occupiedMainScreenDoesNotBlockBackgroundRoute() {
+        val tools = tools(mode = AgentTaskSurfaceMode.BACKGROUND, choose = { error("Must not ask") })
+        assertEquals(ForegroundExclusiveGate.Admission.ACQUIRED, ForegroundExclusiveGate.acquire("other-owner"))
+        try {
+            // Rootless fixture reaches virtual admission, not the foreground busy error.
+            assertEquals("ROOT_REQUIRED", call(tools, "launch_app", JSONObject().put("package_name", external)).getString("code"))
+            assertEquals("other-owner", ForegroundExclusiveGate.ownerForTests())
+        } finally {
+            tools.close()
+            ForegroundExclusiveGate.release("other-owner")
+        }
+    }
+
+    @Test fun occupiedAskRejectsBeforePromptAndCanAskAfterOwnerRelease() {
+        var asked = 0
+        val tools = tools(choose = { asked++; AgentTaskSurfaceMode.BACKGROUND })
+        assertEquals(ForegroundExclusiveGate.Admission.ACQUIRED, ForegroundExclusiveGate.acquire("other-owner"))
+        try {
+            shadowOf(app).clearNextStartedActivities()
+            repeat(2) {
+                assertEquals("FOREGROUND_BUSY", call(tools, "launch_app", JSONObject().put("package_name", external)).getString("code"))
+            }
+            assertEquals(0, asked)
+            assertEquals(AgentTaskSurfaceMode.ASK, tools.runSurface)
+            assertNull(shadowOf(app).nextStartedActivity)
+            ForegroundExclusiveGate.release("other-owner")
+            assertEquals("ROOT_REQUIRED", call(tools, "launch_app", JSONObject().put("package_name", external)).getString("code"))
+            assertEquals(1, asked)
+            assertEquals(AgentTaskSurfaceMode.BACKGROUND, tools.runSurface)
+        } finally { tools.close(); ForegroundExclusiveGate.release("other-owner") }
+    }
+
+    @Test fun ownerAppearingDuringAskIsRecheckedBeforeActualLaunch() {
+        val tools = tools(choose = {
+            assertEquals(ForegroundExclusiveGate.Admission.ACQUIRED, ForegroundExclusiveGate.acquire("other-owner"))
+            AgentTaskSurfaceMode.FOREGROUND
+        })
+        try {
+            shadowOf(app).clearNextStartedActivities()
+            assertEquals("FOREGROUND_BUSY", call(tools, "launch_app", JSONObject().put("package_name", external)).getString("code"))
+            assertNull(shadowOf(app).nextStartedActivity)
+            assertEquals("other-owner", ForegroundExclusiveGate.ownerForTests())
+        } finally { tools.close(); ForegroundExclusiveGate.release("other-owner") }
+    }
+
     private fun launcher(pkg: String, label: String) {
         val pm = shadowOf(app.packageManager)
         val component = ComponentName(pkg, "$pkg.SelfSurfaceFixtureActivity")

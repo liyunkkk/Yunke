@@ -110,6 +110,8 @@ internal object AgentPromptBuilder {
                     "成功的点击、输入或打开应用后，不要例行调用 observe_screen、wait、wait_for_text 或 wait_for_package；" +
                     "只有任务需要读取或汇总屏幕信息、后续目标或界面状态未知、工具报告节点过期或结果不确定，" +
                     "以及任务结束前确实需要确认最终结果时，才观察屏幕；仅当后续操作依赖特定文本或应用出现时使用 wait_for_text/wait_for_package。" +
+                    "若工具返回 FOREGROUND_BUSY，表示另一个会话尚未结束屏幕控制，本次操作被直接拒绝且未执行；" +
+                    "立即向用户说明原因，不要自动等待、重试、抢占或改用 Shell 绕过，待另一会话结束后由用户重新发起；非屏幕任务仍可继续。" +
                     "屏幕观察与 GUI 操作前会确认 Eta 无障碍服务；只有系统保护后端可用时才会请求有限重绑。" +
                     "若工具返回 ACCESSIBILITY_UNAVAILABLE、ACCESSIBILITY_PROTECTION_UNAVAILABLE 或 ACCESSIBILITY_REPAIR_TIMEOUT，说明动作未执行，" +
                     "不要改用坐标或 Shell 重放 GUI 动作。" +

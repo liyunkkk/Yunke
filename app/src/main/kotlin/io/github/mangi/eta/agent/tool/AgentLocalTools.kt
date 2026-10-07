@@ -69,7 +69,7 @@ import org.json.JSONObject
 internal class AgentLocalTools(
     private val context: Context,
     private val logger: AgentLogger,
-    private val browserRunId: String = "",
+    private val browserRunId: String = java.util.UUID.randomUUID().toString(),
     private val browserConversationId: String = "",
     private val browserToolsEnabled: () -> Boolean = {
         Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS)
@@ -271,6 +271,9 @@ internal class AgentLocalTools(
                 runSurface == io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK &&
                 io.github.mangi.eta.agent.device.AgentTaskSurface.needsSurfaceChoice(toolCall.name)
             ) {
+                // Reject occupied main-screen access before opening a potentially blocking ASK UI.
+                foregroundAdmissionError(ForegroundExclusiveGate.checkAvailability(browserRunId) { closed.get() })
+                    ?.let { return it }
                 val outcome = resolveAskedSurface(toolCall.name)
                 if (outcome == null) {
                     return textResult(
@@ -358,13 +361,26 @@ internal class AgentLocalTools(
         if (virtualRouted(toolCall.name, route) || !ForegroundExclusiveGate.shouldSerialize(toolCall.name)) {
             return executeInternal(toolCall, route, prepared)
         }
-        if (!ForegroundExclusiveGate.acquire(browserRunId) { closed.get() }) {
-            return textResult(
-                errorResult("FOREGROUND_BUSY", "其他会话正在操作屏幕，当前任务已停止等待"),
-            )
-        }
+        foregroundAdmissionError(ForegroundExclusiveGate.acquire(browserRunId) { closed.get() })
+            ?.let { return it }
         return executeInternal(toolCall, route, prepared)
     }
+
+    private fun foregroundAdmissionError(admission: ForegroundExclusiveGate.Admission): AgentModelClient.ToolResult? =
+        when (admission) {
+            ForegroundExclusiveGate.Admission.CLOSED ->
+                textResult(errorResult("RUN_CLOSED", "任务已关闭或屏幕控制身份无效，本次未执行"))
+            ForegroundExclusiveGate.Admission.BUSY -> textResult(
+                JSONObject(errorResult("FOREGROUND_BUSY",
+                    "另一个会话尚未结束屏幕控制，本次操作已拒绝且未执行；不会排队或抢占。" +
+                        "请直接向用户说明原因，不要自动等待、重试或改用 Shell 绕过；待该会话结束后由用户重新发起。"))
+                    .put("executed", false)
+                    .put("retryable", false)
+                    .put("queued", false)
+                    .toString(),
+            )
+            ForegroundExclusiveGate.Admission.ACQUIRED -> null
+        }
 
     private fun executeInternal(
         toolCall: AgentModelClient.ToolCall,
