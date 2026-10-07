@@ -1368,6 +1368,13 @@ private fun ChatMarkdownDocument(
                 val freeze = revealCoordinator != null &&
                     shouldFreezeStreamingMarkdownBlock(node.startOffset, lastVisibleStartOffset) &&
                     (preparedBlock == null || preparedBlock.cacheKey.referenceSource == null)
+                // Freeze used to remount MarkdownElement and complete in-block reveal
+                // via onDetach. Keep that catch-up without discarding the renderer.
+                remember(freeze) {
+                    if (freeze) {
+                        revealCoordinator?.completeAttachedRecordsIn(node.startOffset, node.endOffset)
+                    }
+                }
                 // Pin only what the existing frozen branch already renders. Keep the
                 // renderer at one call site so freeze changes do not remount its Box.
                 val renderNode = if (preparedBlock != null) node else rememberFrozenMarkdownInput(node, freeze)
@@ -1415,28 +1422,23 @@ private fun FrozenMarkdownElement(
                 }
             }
         }) {
-        if (freeze) {
-            val frozenNode = remember(preparedBlock) { node }
-            val frozenContent = remember(preparedBlock) { content }
-            CompositionLocalProvider(LocalPreparedMarkdownBlock provides preparedBlock?.takeIf {
-                it.node === frozenNode && it.source === frozenContent
-            }) {
-                MarkdownElement(
-                    node = frozenNode,
-                    components = components,
-                    content = frozenContent,
-                    includeSpacer = false,
-                )
-            }
+        // Keep one MarkdownElement call site. Freeze still pins the same node/content
+        // the old branch remembered, so completed blocks do not remount (onForgotten)
+        // while tail, typography and theme continue to follow live inputs.
+        val frozenNode = if (freeze) remember(preparedBlock) { node } else node
+        val frozenContent = if (freeze) remember(preparedBlock) { content } else content
+        val providedBlock = if (freeze) {
+            preparedBlock?.takeIf { it.node === frozenNode && it.source === frozenContent }
         } else {
-            CompositionLocalProvider(LocalPreparedMarkdownBlock provides preparedBlock) {
-                MarkdownElement(
-                    node = node,
-                    components = components,
-                    content = content,
-                    includeSpacer = false,
-                )
-            }
+            preparedBlock
+        }
+        CompositionLocalProvider(LocalPreparedMarkdownBlock provides providedBlock) {
+            MarkdownElement(
+                node = frozenNode,
+                components = components,
+                content = frozenContent,
+                includeSpacer = false,
+            )
         }
     }
 }

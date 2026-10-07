@@ -138,6 +138,25 @@ internal class SmoothTextRevealCoordinator {
         wakeups.trySend(Unit)
     }
 
+    /**
+     * Keep the attached layout graph, but finish every in-range reveal the same way
+     * a freeze remount used to finish them through [detach]. Later blocks stay pending.
+     */
+    fun completeAttachedRecordsIn(startOffset: Int, endOffset: Int) {
+        var completed = false
+        records.values.forEach { record ->
+            val offset = record.key.sourceOffset
+            if (offset >= startOffset && offset < endOffset && record.progress < record.targetCount) {
+                completeRecord(record)
+                completed = true
+            }
+        }
+        if (completed) {
+            updateDrainedState()
+            wakeups.trySend(Unit)
+        }
+    }
+
     fun updateLayout(
         key: RevealBlockKey,
         node: SmoothTextRevealNode?,

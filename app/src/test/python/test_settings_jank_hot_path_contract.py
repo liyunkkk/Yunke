@@ -31,3 +31,11 @@ class SettingsJankHotPathContract(unittest.TestCase):
         chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
         lazy = scaffold.split('LazyColumn(', 1)[1]
         self.assertEqual(sorted(lazy.index(item) for item in chain), [lazy.index(item) for item in chain])
+
+    def test_settings_collects_remembered_store_flows(self):
+        settings = (ROOT / 'SettingsScreen.kt').read_text()
+        self.assertIn('remember { SettingsDataStore.settingsFlow() }', settings)
+        self.assertIn('remember { ProviderRepository.providersFlow() }', settings)
+        self.assertIn('remember { RuntimeConfigRepository.selectedProviderIdFlow() }', settings)
+        self.assertIn('remember { RuntimeConfigRepository.selectedModelIdFlow() }', settings)
+        self.assertNotIn('val appSettings by SettingsDataStore.settingsFlow().collectAsState', settings)
