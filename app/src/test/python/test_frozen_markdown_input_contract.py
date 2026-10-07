@@ -52,7 +52,7 @@ class FrozenMarkdownInputContract(unittest.TestCase):
         body = text[start:end]
         renderer = body[body.index('val pinned'):]
         self.assertEqual(1, renderer.count('MarkdownElement('))
-        self.assertIn('if (freeze) remember { Triple(node, content, preparedBlock) } else null', renderer)
+        self.assertIn('if (freeze) remember(content) { Triple(node, content, preparedBlock) } else null', renderer)
         self.assertNotIn('remember(preparedBlock)', body)
         self.assertIn('pinned?.third?.takeIf { it.node === frozenNode && it.source === frozenContent }', renderer)
         self.assertEqual(1, renderer.count('CompositionLocalProvider(LocalPreparedMarkdownBlock provides providedBlock)'))
