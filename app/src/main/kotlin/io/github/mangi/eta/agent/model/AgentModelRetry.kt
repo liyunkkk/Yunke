@@ -171,7 +171,7 @@ internal class AgentModelRetry(
                         }
                         throw cancelled
                     }
-                    if (reconnect != null && scope.isExpired && controller.hasPausedInterrupt) {
+                    if (reconnect != null && scope.isExpired) {
                         // The cancelled attempt may return after a fast resume. Never accept
                         // its body/tools as a fresh recovery response or reset the budget.
                         throw AgentModelFailure("MODEL_RECONNECT_PAUSED", false,
@@ -197,7 +197,7 @@ internal class AgentModelRetry(
                     callbackFailure?.let { throw it }
                     reconnect?.check()
                     controller.throwIfCancelled()
-                    val pausedRecovery = reconnect != null && controller.hasPausedInterrupt &&
+                    val pausedRecovery = reconnect != null && scope.isExpired && reconnect?.expired != true &&
                         !controller.hasPendingImmediateSteering && !controller.isCancelled
                     if (pausedRecovery) controller.consumePausedInterrupt()
                     if (failure is AgentRunCancelledException || failure is InterruptedException ||

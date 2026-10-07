@@ -490,6 +490,33 @@ class AgentErrorReconnectTest {
         assertEquals(2, changes.map { it.reconnectId }.distinct().size)
     }
 
+    @Test fun pausedAttemptWithoutRegisteredHttpResourceCannotReturnLateToolCalls() {
+        val clock = Clock()
+        val events = mutableListOf<AgentEvent>()
+        var calls = 0
+        val result = run(clock, ErrorReconnectPolicy.WINDOW_30S, provider { _, control, _ ->
+            when (++calls) {
+                1 -> throw IOException()
+                2 -> {
+                    // A provider may release its HTTP resource before returning its parsed response.
+                    control.pause()
+                    assertFalse(control.hasPausedInterrupt)
+                    clock.advance(120_000)
+                    control.resume()
+                    ProviderResponse(JSONObject().put("role", "assistant").put("content", "late")
+                        .put("finish_reason", "tool_calls").put("tool_calls", JSONArray().put(JSONObject()
+                            .put("id", "late-call").put("type", "function").put("function", JSONObject()
+                                .put("name", "supervise_task").put("arguments", "{}")))))
+                }
+                else -> ok("fresh")
+            }
+        }, events, tools = localTools())
+        assertEquals(3, calls)
+        assertEquals("fresh", result.response.assistantMessage.getString("content"))
+        assertEquals(0, result.response.assistantMessage.optJSONArray("tool_calls")?.length() ?: 0)
+        assertEquals(6_000L, events.filterIsInstance<AgentEvent.ErrorReconnectChanged>().last().elapsedMs)
+    }
+
     @Test fun ordinaryPauseDuringRetryKeepsRemainingWindowInsteadOfStartingOver() {
         val clock = Clock()
         val events = mutableListOf<AgentEvent>()
