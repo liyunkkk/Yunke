@@ -50,11 +50,11 @@ class FrozenMarkdownInputContract(unittest.TestCase):
         start = text.index('private fun FrozenMarkdownElement')
         end = text.index('internal fun shouldFreezeStreamingMarkdownBlock', start)
         body = text[start:end]
-        renderer = body[body.index('val frozenNode'):]
+        renderer = body[body.index('val pinned'):]
         self.assertEqual(1, renderer.count('MarkdownElement('))
-        self.assertIn('if (freeze) remember(preparedBlock) { node } else node', renderer)
-        self.assertIn('if (freeze) remember(preparedBlock) { content } else content', renderer)
-        self.assertIn('preparedBlock?.takeIf { it.node === frozenNode && it.source === frozenContent }', renderer)
+        self.assertIn('if (freeze) remember { Triple(node, content, preparedBlock) } else null', renderer)
+        self.assertNotIn('remember(preparedBlock)', body)
+        self.assertIn('pinned?.third?.takeIf { it.node === frozenNode && it.source === frozenContent }', renderer)
         self.assertEqual(1, renderer.count('CompositionLocalProvider(LocalPreparedMarkdownBlock provides providedBlock)'))
         self.assertNotIn('if (freeze) {\n            val frozenNode', text)
 

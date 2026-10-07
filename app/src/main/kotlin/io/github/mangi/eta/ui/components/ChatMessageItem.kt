@@ -1425,10 +1425,13 @@ private fun FrozenMarkdownElement(
         // Keep one MarkdownElement call site. Freeze still pins the same node/content
         // the old branch remembered, so completed blocks do not remount (onForgotten)
         // while tail, typography and theme continue to follow live inputs.
-        val frozenNode = if (freeze) remember(preparedBlock) { node } else node
-        val frozenContent = if (freeze) remember(preparedBlock) { content } else content
+        // preparedBlock is a new instance on every parse, so it must not be the
+        // remember key or completed blocks recapture and recompose with the tail.
+        val pinned = if (freeze) remember { Triple(node, content, preparedBlock) } else null
+        val frozenNode = pinned?.first ?: node
+        val frozenContent = pinned?.second ?: content
         val providedBlock = if (freeze) {
-            preparedBlock?.takeIf { it.node === frozenNode && it.source === frozenContent }
+            pinned?.third?.takeIf { it.node === frozenNode && it.source === frozenContent }
         } else {
             preparedBlock
         }
