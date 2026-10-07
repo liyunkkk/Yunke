@@ -107,6 +107,7 @@ import io.github.mangi.eta.ui.model.AgentOwnerContextState
 import io.github.mangi.eta.ui.model.normalizeTerminalRunMessages
 import io.github.mangi.eta.ui.model.withTerminalBodiesInOrder
 import io.github.mangi.eta.ui.model.AgentMemoryUiState
+import io.github.mangi.eta.ui.model.incrementalSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
@@ -5794,13 +5795,9 @@ internal class AgentAppState(
                     usage = usage,
                 )
             } else {
-                messages.mapIndexed { index, message ->
-                    if (index == targetIndex && message is AgentMessageUi) {
-                        message.copy(usage = usage)
-                    } else {
-                        message
-                    }
-                }
+                // Preserve every previous snapshot; only the target chunk changes.
+                val target = messages[targetIndex] as AgentMessageUi
+                messages.incrementalSnapshot().replacing(targetIndex, target.copy(usage = usage))
             }
         }
         billedOverheadConversationId = conversationId

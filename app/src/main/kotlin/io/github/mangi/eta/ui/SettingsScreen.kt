@@ -307,6 +307,8 @@ internal fun SettingsScreen(
         modifier = Modifier
             .streamDiagnosticMeasure("settings.root.measure")
             .streamDiagnosticDraw("settings.root.draw"),
+        topBarModifier = Modifier.streamDiagnosticMeasure("settings.topbar.measure"),
+        listModifier = Modifier.streamDiagnosticMeasure("settings.lazy.measure"),
     ) {
             // ── LLM 提供商 ──────────────────────────────────────────────
             item(key = "section_agent") {

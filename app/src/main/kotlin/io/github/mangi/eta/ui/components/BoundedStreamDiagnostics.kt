@@ -37,6 +37,7 @@ internal object StreamDiagnosticLabels {
         "runtime.checkpoint.buffer.chars", "runtime.checkpoint.buffer.events", "runtime.checkpoint.buffer.residency",
         "runtime.checkpoint.encode", "runtime.checkpoint.lockWait", "runtime.checkpoint.merge", "runtime.checkpoint.write",
         "settings.commitTail", "settings.composition", "settings.editEntryWait", "settings.root.draw", "settings.root.measure", "settings.transform",
+        "settings.topbar.measure", "settings.lazy.measure",
         "usage.commitTail", "usage.editEntryWait", "usage.ledger.encodeEvents", "usage.ledger.serialize", "usage.ledger.update",
         "usage.load.dao.conversations", "usage.load.dao.liveIds", "usage.load.dao.messages", "usage.load.dao.perDay",
         "usage.load.decode", "usage.lockWait", "usage.transform",

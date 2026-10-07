@@ -163,6 +163,13 @@ class BoundedStreamDiagnosticsTest {
         for (label in labels) assertEquals(label, StreamDiagnosticLabels.canonicalStage(label))
     }
 
+    @Test fun settingsMeasurementBoundariesKeepTheirFixedLabels() {
+        for (label in listOf("settings.topbar.measure", "settings.lazy.measure")) {
+            assertTrue(StreamDiagnosticLabels.stage(label))
+            assertEquals(label, StreamDiagnosticLabels.canonicalStage(label))
+        }
+    }
+
     @Test fun labelsNeverRetainUnknownSuffixOrPayload() {
         assertEquals("markdown.parse", StreamDiagnosticLabels.canonicalStage("markdown.parse"))
         assertEquals("settings.unknown", StreamDiagnosticLabels.canonicalStage("settings.private-user-id"))

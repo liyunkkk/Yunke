@@ -20,6 +20,35 @@ class AgentTerminalMessageOrderScaleTest {
     }
 
     @Test
+    fun activeRunWithHistoricNoticesSkipsBodyOwnershipPassAndRetainsIdentity() {
+        val runId = "active-with-history"
+        val messages = CountingList(terminalOrderLargeHistory() + listOf(
+            UserMessageUi("user-$runId", "active"),
+            AgentMessageUi("assistant-$runId-1-0", "streaming", isStreaming = true),
+            SystemNoticeMessageUi("assistant-$runId-1-usage", SystemNoticeCode.ModelRetry),
+        ))
+        assertSame(messages, normalizeTerminalRunMessages(runId, messages))
+        // Initial notice detection reads at most one pass, then anchors and notices.
+        // A body-owner map before the empty-run return would require a fourth pass.
+        assertTrue("No full body-owner pass for a live run: ${messages.reads}", messages.reads <= 3 * messages.size)
+    }
+
+    @Test
+    fun lateTerminalNoticeStillReordersActiveBodyAfterTheEarlyReturn() {
+        val runId = "active-with-history"
+        val history = terminalOrderLargeHistory()
+        val user = UserMessageUi("user-$runId", "active")
+        val body = AgentMessageUi("assistant-$runId-1-0", "streaming", isStreaming = true)
+        val open = history + listOf(user, body)
+        assertSame(open, normalizeTerminalRunMessages(runId, open))
+        val notice = SystemNoticeMessageUi("interrupted-$runId", SystemNoticeCode.Stopped)
+        val late = body.copy(id = "assistant-$runId-1-1", content = "late", isStreaming = false)
+        val closed = open + listOf(notice, late)
+        assertEquals(LegacyTerminalMessageOrderReference.normalize(runId, closed), normalizeTerminalRunMessages(runId, closed))
+        assertEquals(history + listOf(user, body, late, notice), normalizeTerminalRunMessages(runId, closed))
+    }
+
+    @Test
     fun largeHistoryRetainsLatestPayloadFirstSlotAndMovesOnlyLateBody() {
         val original = terminalOrderLargeHistory()
         val runId = terminalOrderHistoryRunId(0)
