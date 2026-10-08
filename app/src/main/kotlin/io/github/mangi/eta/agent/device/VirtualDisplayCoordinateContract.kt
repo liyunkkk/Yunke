@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.device
 
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import org.json.JSONObject
 
 /** 越界或非法坐标系导致的坐标拒绝；携带稳定的错误码，供工具层如实上报。 */
@@ -121,33 +122,32 @@ internal class VirtualDisplayObservation {
 
     fun invalidate() {
         contract = null
-        nodes = emptyList()
-        nodesObservationId = null
-        nodesPackage = ""
+        published = null
+        publishedSnapshot = null
     }
 
-    /** 最近一次副屏观察发布的节点：节点动作只认这一份，避免跨观察复用旧索引。 */
-    private var nodes: List<RootShellDeviceController.UiNode> = emptyList()
-    private var nodesObservationId: String? = null
-    private var nodesPackage: String = ""
+    /**
+     * 最近一次副屏观察发布的节点：节点动作只认这一份，避免跨观察复用旧索引。
+     * 同时保留原始无障碍快照，供副屏 replace_text / clear_text 按 index 写入文本。
+     */
+    private var published: RootShellDeviceController.ElementObservation? = null
+    private var publishedSnapshot: AgentAccessibilityService.NodeSnapshot? = null
 
     fun recordNodes(
-        observationId: String?,
-        packageName: String,
-        next: List<RootShellDeviceController.UiNode>,
+        observation: RootShellDeviceController.ElementObservation?,
+        snapshot: AgentAccessibilityService.NodeSnapshot? = null,
     ) {
-        nodes = next
-        nodesObservationId = observationId
-        nodesPackage = packageName
+        published = observation
+        publishedSnapshot = snapshot
     }
 
-    fun node(index: Int): RootShellDeviceController.UiNode? = nodes.firstOrNull { it.index == index }
+    fun publishedNodes(): List<RootShellDeviceController.UiNode> = published?.nodes.orEmpty()
 
-    fun nodeCount(): Int = nodes.size
+    fun publishedObservation(): RootShellDeviceController.ElementObservation? = published
 
-    fun nodesObservationId(): String? = nodesObservationId
+    fun nodesSnapshot(): AgentAccessibilityService.NodeSnapshot? = publishedSnapshot
 
-    fun nodesPackageName(): String = nodesPackage
+    fun node(index: Int): RootShellDeviceController.UiNode? = publishedNodes().firstOrNull { it.index == index }
 
     fun validateFrame(width: Int, height: Int) {
         val previous = require()

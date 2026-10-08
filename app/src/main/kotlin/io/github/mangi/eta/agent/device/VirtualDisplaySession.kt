@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.tool.AgentAfterActionSummary
 import io.github.mangi.eta.core.AndroidAgentLogger
 import org.json.JSONArray
 import org.json.JSONObject
@@ -15,6 +16,12 @@ internal object VirtualDisplaySession {
     const val NOT_READY = "VIRTUAL_DISPLAY_HANDOFF_NOT_READY"
     /** 副屏一次观察附带的最大节点数：只为节点动作服务，取一半控制开销。 */
     private const val NODE_LIMIT = 40
+    /** 动作后回读的节点上限：只取节点、不取截图，控制每步附带观察的开销。 */
+    private const val AFTER_ACTION_NODE_LIMIT = 40
+    /** 动作后回读前的稳定等待：给副屏一次渲染机会，避免读到动作前的旧树。 */
+    private const val AFTER_ACTION_SETTLE_MS = 350L
+    /** 副屏 replace_text / clear_text 的文本上限，与主屏一致。 */
+    private const val MAX_TEXT_CHARS = 4_000
     private class Session(var client: VirtualDisplayOwnerClient? = null, var phase: String = "starting") {
         val kept = linkedSetOf<Int>()
         val packages = linkedMapOf<String, Set<Int>>()
@@ -770,7 +777,7 @@ internal object VirtualDisplaySession {
     }
     @Synchronized fun executeGui(context: Context,runId: String,tool: String,args: JSONObject, excludedPackages: Set<String> = emptySet()): AgentModelClient.ToolResult {
         fun text(obj: JSONObject)=AgentModelClient.ToolResult(obj.put("tool",tool).put("display","virtual").toString())
-        if(tool !in setOf("observe_screen","launch_app","wait","tap","tap_area","swipe","long_press","press_key","paste_text","input_text","tap_element","long_press_element","scroll","scroll_element"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
+        if(tool !in setOf("observe_screen","launch_app","wait","tap","tap_area","swipe","long_press","press_key","paste_text","input_text","replace_text","clear_text","wait_for_text","wait_for_package","tap_element","long_press_element","scroll","scroll_element"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="press_key" && args.optString("button") !in setOf("BACK","ENTER","PASTE"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="input_text" && args.optString("mode","append")!="append")return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="launch_app" && (args.optString("package_name").isBlank() || args.optString("package_name") in excludedPackages))return text(reply(false,"PACKAGE_NOT_ALLOWED"))
@@ -799,12 +806,14 @@ internal object VirtualDisplaySession {
                 }
                 s.observation.record(capture.contract)
                 // 副屏节点来自 App 自身的无障碍服务（按 display 取树）；取不到时保持纯截图模式，坐标契约不变。
+                var vdNodeSnapshot: AgentAccessibilityService.NodeSnapshot? = null
                 val elementObservation = runCatching {
                     val accessibility = AgentAccessibilityService.current()
                     if (accessibility == null) {
                         null
                     } else {
                         accessibility.captureNodeSnapshot(NODE_LIMIT, c.displayId)?.let { snapshot ->
+                            vdNodeSnapshot = snapshot
                             RootShellDeviceController.ElementObservation(
                                 id = snapshot.id,
                                 source = RootShellDeviceController.ElementSource.ACCESSIBILITY,
@@ -820,13 +829,9 @@ internal object VirtualDisplaySession {
                 s.uiTreeAvailability.updateScope(runId, c.displayId, elementObservation?.packageName.orEmpty())
                 val nodesUnavailable = s.uiTreeAvailability.record(elementObservation?.nodes.orEmpty().isNotEmpty())
                 if (nodesUnavailable) {
-                    s.observation.recordNodes(null, "", emptyList())
+                    s.observation.recordNodes(null, null)
                 } else {
-                    s.observation.recordNodes(
-                        elementObservation?.id,
-                        elementObservation?.packageName.orEmpty(),
-                        elementObservation?.nodes.orEmpty(),
-                    )
+                    s.observation.recordNodes(elementObservation, vdNodeSnapshot)
                 }
                 data.remove("data");data.remove("width");data.remove("height");data.remove("bytes");data.remove("format")
                 return AgentModelClient.ToolResult(
@@ -865,6 +870,13 @@ internal object VirtualDisplaySession {
                 val prior=(0 until previous.length()).map { previous.getInt(it) }.toSet()
                 s.observation.invalidate()
                 val launched=c.launch(component)
+                if(!launched.ok) {
+                    // 主屏同应用占用：不硬拒绝，改为三选项交给用户决定；本次未执行、未停止任何应用。
+                    val conflictCode=launched.errorCode.ifBlank { body(launched).optString("error") }
+                    if(conflictCode in VirtualDisplayLaunchConflict.codes) {
+                        return text(VirtualDisplayLaunchConflict.payload(pkg,conflictCode,body(launched).optString("message")))
+                    }
+                }
                 if(launched.ok) {
                     val payload=body(launched)
                     // reused=true switches back to this session's existing task. current-prior is
@@ -880,6 +892,37 @@ internal object VirtualDisplaySession {
                 return text(body(launched))
             }
             if(tool=="wait") {Thread.sleep(args.optLong("duration_ms",1000).coerceIn(100,30000));return text(reply(true))}
+            if (tool == "replace_text" || tool == "clear_text") {
+                val value = if (tool == "clear_text") "" else args.optString("text")
+                if (value.length > MAX_TEXT_CHARS) return text(reply(false,"TEXT_TOO_LONG","最多支持 $MAX_TEXT_CHARS 个字符"))
+                val nodes = s.observation.publishedNodes()
+                if (nodes.isEmpty()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","副屏本次观察没有节点，请先 observe_screen 取节点"))
+                val explicit = if (args.has("index")) args.optInt("index",-1).takeIf { it >= 0 } else null
+                val target = (if (explicit != null) nodes.firstOrNull { it.index == explicit } else VirtualDisplayTextTarget.pick(nodes))
+                    ?: return text(reply(false,"VIRTUAL_TEXT_TARGET_UNKNOWN","无法在副屏节点里唯一确定可编辑输入框；请显式传 index，或先 observe_screen"))
+                if (explicit != null && !target.editable) return text(reply(false,"NOT_EDITABLE","指定节点不可编辑"))
+                val snapshot = s.observation.nodesSnapshot()
+                    ?: return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","缺少本次副屏观察快照，请先 observe_screen"))
+                val service = AgentAccessibilityService.current()
+                    ?: return text(reply(false,"ACCESSIBILITY_UNAVAILABLE","副屏文本输入需要 YUNKe 无障碍服务"))
+                val beforeText = s.observation.publishedObservation()
+                val outcome = service.setTextNode(snapshot, target.index, value)
+                if (!outcome.ok) return text(reply(false,outcome.code.ifBlank { "TEXT_SET_FAILED" },outcome.message))
+                Thread.sleep(AFTER_ACTION_SETTLE_MS)
+                val payload = JSONObject()
+                    .put("ok",true)
+                    .put("executor","accessibility")
+                    .put("index",target.index)
+                    .put("package_name",target.packageName)
+                    .put("text_length",value.length)
+                outcome.method.takeIf { it.isNotBlank() }?.let { payload.put("method",it) }
+                outcome.verified?.let { payload.put("verified",it) }
+                afterActionSummary(s, c.displayId, beforeText)?.let { payload.put("after_action",it) }
+                return text(payload)
+            }
+            if (tool == "wait_for_text" || tool == "wait_for_package") {
+                return text(waitOnVirtualDisplay(c, tool, args))
+            }
             if (tool in setOf("tap", "tap_area", "swipe", "long_press", "tap_element", "long_press_element", "scroll", "scroll_element")) {
                 s.observation.require()
                 val live = c.status()
@@ -961,12 +1004,104 @@ internal object VirtualDisplaySession {
                 }
                 else -> return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY","不会回退到主屏操作"))
             }
+            // 动作后回读：先留一份动作前节点，成功动作才附带新界面（只取节点，不取截图）。
+            val beforeAction = s.observation.publishedObservation()
             val input = c.input(fields)
             if (input.errorCode in setOf("VIRTUAL_FRAME_CHANGED", "VIRTUAL_FRAME_UNKNOWN")) s.observation.invalidate()
-            return text(body(input))
+            val result = body(input)
+            if (input.ok) {
+                Thread.sleep(AFTER_ACTION_SETTLE_MS)
+                afterActionSummary(s, c.displayId, beforeAction)?.let { result.put("after_action", it) }
+            }
+            return text(result)
         }catch(e:VirtualDisplayCoordinateRejection){return text(reply(false,e.code,e.message.orEmpty()))}
         catch(e:Exception){return text(reply(false,"VIRTUAL_OPERATION_FAILED",e.javaClass.simpleName))}
     }
+    /**
+     * 动作后回读：只取节点，不取截图；取不到就返回 null，绝不改变动作本身的结果。
+     * 同时把新节点发布给本次会话，模型可直接用新索引继续，不必再 observe_screen。
+     */
+    private fun afterActionSummary(
+        s: Session,
+        displayId: Int,
+        before: RootShellDeviceController.ElementObservation?,
+    ): JSONObject? {
+        if (s.uiTreeAvailability.unavailable()) return null
+        val snapshot = runCatching {
+            AgentAccessibilityService.current()?.captureNodeSnapshot(AFTER_ACTION_NODE_LIMIT, displayId)
+        }.getOrNull() ?: return null
+        val after = RootShellDeviceController.ElementObservation(
+            id = snapshot.id,
+            source = RootShellDeviceController.ElementSource.ACCESSIBILITY,
+            packageName = snapshot.packageName,
+            windowId = snapshot.windowId,
+            nodes = DeviceNodeProjection.project(snapshot.nodes),
+            maxNodes = AFTER_ACTION_NODE_LIMIT,
+            truncated = snapshot.truncated,
+        )
+        val summary = runCatching { AgentAfterActionSummary.build(before, after) }.getOrNull() ?: return null
+        summary.put("coordinate_space_hint","ui_nodes 的 center 是副屏像素坐标；坐标操作请显式传 coordinate_space=screen")
+        if (after.nodes.isNotEmpty()) s.observation.recordNodes(after, snapshot)
+        return summary
+    }
+
+    /**
+     * 副屏等待类工具：只在副屏取树轮询，绝不回退主屏。
+     * 语义与主屏 wait_for_text / wait_for_package 对齐（匹配模式、attempts、超时错误码）。
+     */
+    private fun waitOnVirtualDisplay(
+        c: VirtualDisplayOwnerClient,
+        tool: String,
+        args: JSONObject,
+    ): JSONObject {
+        val timeout = args.optInt("timeout_ms",10_000).coerceIn(500,60_000)
+        val deadline = System.currentTimeMillis() + timeout
+        var attempts = 0
+        fun snapshot(): AgentAccessibilityService.NodeSnapshot? = runCatching {
+            AgentAccessibilityService.current()?.captureNodeSnapshot(NODE_LIMIT, c.displayId)
+        }.getOrNull()
+        if (tool == "wait_for_package") {
+            val target = args.optString("package_name").trim()
+            if (target.isBlank()) return reply(false,"INVALID_ARGUMENT","package_name 不能为空")
+            var lastPackage = ""
+            while (System.currentTimeMillis() <= deadline) {
+                attempts++
+                lastPackage = snapshot()?.packageName.orEmpty()
+                if (lastPackage == target) {
+                    return JSONObject().put("ok",true).put("package_name",target).put("attempts",attempts)
+                }
+                Thread.sleep(350)
+            }
+            return reply(false,"TIMEOUT","等待应用超时：$target")
+                .put("attempts",attempts)
+                .put("last_package",lastPackage)
+        }
+        val needle = args.optString("text").trim()
+        if (needle.isBlank()) return reply(false,"INVALID_ARGUMENT","text 不能为空")
+        val includeDesc = args.optBoolean("include_desc",true)
+        val matchMode = args.optString("match","contains")
+        while (System.currentTimeMillis() <= deadline) {
+            attempts++
+            val nodes = DeviceNodeProjection.project(snapshot()?.nodes.orEmpty())
+            val match = nodes.firstOrNull { node ->
+                val haystacks = if (includeDesc) listOf(node.text,node.desc) else listOf(node.text)
+                haystacks.any { AgentTextMatcher.matches(it,needle,matchMode) }
+            }
+            if (match != null) {
+                val matched = DeviceNodeProjection.nodeJson(match)
+                matched.remove("index")
+                matched.put("actionable",false)
+                return JSONObject()
+                    .put("ok",true)
+                    .put("attempts",attempts)
+                    .put("matched_node",matched)
+                    .put("note","等待查询不会发布元素快照；如需节点动作，请重新调用 observe_screen")
+            }
+            Thread.sleep(350)
+        }
+        return reply(false,"TIMEOUT","等待文本超时：$needle").put("attempts",attempts)
+    }
+
     fun onRunStarted(): Nothing = throw VirtualDisplayHandoffNotReadyException()
     fun onRunFinished(): Nothing = throw VirtualDisplayHandoffNotReadyException()
     fun engage(): Nothing = throw VirtualDisplayHandoffNotReadyException()

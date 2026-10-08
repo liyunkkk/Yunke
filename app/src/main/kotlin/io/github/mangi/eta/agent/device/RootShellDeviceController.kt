@@ -1278,12 +1278,7 @@ internal class RootShellDeviceController(
             .toString()
 
     private fun matches(value: String, needle: String, matchMode: String): Boolean =
-        when (matchMode.lowercase()) {
-            "exact" -> value == needle
-            "prefix" -> value.startsWith(needle)
-            "regex" -> runCatching { Regex(needle).containsMatchIn(value) }.getOrDefault(false)
-            else -> value.contains(needle, ignoreCase = true)
-        }
+        AgentTextMatcher.matches(value, needle, matchMode)
 
     private fun AgentAccessibilityService.UiNode.toUiNode(): UiNode =
         DeviceNodeProjection.projectOne(this)

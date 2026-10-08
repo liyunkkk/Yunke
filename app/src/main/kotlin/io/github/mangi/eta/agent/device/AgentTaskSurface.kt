@@ -73,10 +73,17 @@ internal object AgentTaskSurface {
         "set_timer",
     )
 
+    /**
+     * 副屏入口门控。
+     *
+     * 运行时只依赖 root（app_process + APK classpath），入口令牌模块只是可选加速，
+     * 所以 root 已授权时同样解锁，不再强制刷模块；两者都没有才隐藏入口。
+     */
     fun moduleInstalled(): Boolean {
         val binary = File("/system/bin/vd")
         if (binary.isFile && binary.canExecute()) return true
-        return File("/data/adb/modules/agent_mobile_use/module.prop").isFile
+        if (File("/data/adb/modules/agent_mobile_use/module.prop").isFile) return true
+        return runCatching { RootAccess.isGranted }.getOrDefault(false)
     }
 
     fun stored(): AgentTaskSurfaceMode =
@@ -166,7 +173,15 @@ internal object AgentTaskSurface {
             "普通URI、系统面板、HOME/RECENTS、闹钟/计时器不继承自身例外；已有副屏仍按原后台生命周期收尾，自身不是副屏交付任务。"
 
     private const val BACKGROUND_CLAUSE =
-            "本次普通应用选择实验性后台副屏。除上述代鱼自身片段外，其它应用GUI 不得回退主屏；先 launch_app 精确包名、observe_screen 截图再坐标操作。节点、系统面板及不支持的工具会明确拒绝。要切回本次副屏已打开的应用，直接对同一包名再次 launch_app（返回 reused=true），不要强制停止应用。任务完成前用 keep_virtual_result 标记交付任务，再 finish_virtual_session，只有返回 handedOff=true 且 released=true 才可声称交付完成。没有可交付结果时也要调用 finish_virtual_session，它会清理本次中间任务并关闭副屏（handedOff=false）。收尾失败保留副屏，禁止杀进程或用终端绕过关闭。提示用户期间不要从桌面启动或清理正在操作的应用。"
+            "本次普通应用选择实验性后台副屏。除上述代鱼自身片段外，其它应用GUI 不得回退主屏；先 launch_app 精确包名、observe_screen 截图再坐标操作。节点、系统面板及不支持的工具会明确拒绝。要切回本次副屏已打开的应用，直接对同一包名再次 launch_app（返回 reused=true），不要强制停止应用。任务完成前用 keep_virtual_result 标记交付任务，再 finish_virtual_session，只有返回 handedOff=true 且 released=true 才可声称交付完成。没有可交付结果时也要调用 finish_virtual_session，它会清理本次中间任务并关闭副屏（handedOff=false）。收尾失败保留副屏，禁止杀进程或用终端绕过关闭。提示用户期间不要从桌面启动或清理正在操作的应用。" +
+            "副屏的 observe_screen 会带 ui_nodes，可直接用 tap_element / long_press_element / scroll_element；" +
+            "成功的 GUI 动作结果已附带 after_action（含新 ui_nodes 与 screen_changed），据此继续，不要每步都重新观察；" +
+            "副屏文本用 replace_text（传 index 或先把光标放进输入框）与 paste_text，clear_text 清空；" +
+            "副屏 wait_for_text / wait_for_package 同样作用于副屏，不会去等主屏；" +
+            "副屏 launch_app 返回 TARGET_TASK_ACTIVE 或 TARGET_TASK_RECENT，表示主屏正在使用同一应用，本次未执行、也没有停止任何应用：" +
+            "必须先用 ask_user 让用户在 conflict.options 的三项里选择（停止主屏那个实例后继续 / 这次操作改到主屏做 / 取消）；" +
+            "只有用户选了 stop_main_and_retry，才可 app_state_control(action=force_stop) 后重试 launch_app；" +
+            "用户选 cancel 就跳过该应用；禁止未经用户同意自行停止、冻结或清理任何应用。"
 
     fun useVirtualDisplay(): Boolean = useVirtualDisplay(stored())
 
