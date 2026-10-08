@@ -1713,6 +1713,9 @@ open class AgentAccessibilityService : AccessibilityService() {
             val editable = node.isEditable
             val password = node.isPassword
             val enabled = node.isEnabled
+            val checked = if (node.isCheckable) node.isChecked else null
+            val selected = node.isSelected
+            val hint = node.hintText?.toString().orEmpty().take(120)
             val clickTarget = if (clickable && enabled) {
                 NodeActionTarget.capture(node)
             } else {
@@ -1755,6 +1758,9 @@ open class AgentAccessibilityService : AccessibilityService() {
                     editable = editable,
                     password = password,
                     enabled = enabled,
+                    checked = checked,
+                    selected = selected,
+                    hint = hint,
                     clickTarget = clickTarget,
                     longClickTarget = longClickTarget,
                     scrollTarget = scrollTarget,
@@ -2137,7 +2143,10 @@ open class AgentAccessibilityService : AccessibilityService() {
         val focused: Boolean,
         val editable: Boolean,
         val password: Boolean,
-        val enabled: Boolean
+        val enabled: Boolean,
+        val checked: Boolean? = null,
+        val selected: Boolean = false,
+        val hint: String = "",
     )
 
     internal data class IndexedNode(
@@ -2158,6 +2167,9 @@ open class AgentAccessibilityService : AccessibilityService() {
         val editable: Boolean,
         val password: Boolean,
         val enabled: Boolean,
+        val checked: Boolean?,
+        val selected: Boolean,
+        val hint: String,
         val clickTarget: NodeActionTarget?,
         val longClickTarget: NodeActionTarget?,
         val scrollTarget: NodeActionTarget?,
@@ -2213,7 +2225,10 @@ open class AgentAccessibilityService : AccessibilityService() {
                 focused = focused,
                 editable = editable,
                 password = password,
-                enabled = enabled
+                enabled = enabled,
+                checked = checked,
+                selected = selected,
+                hint = hint,
             )
     }
 

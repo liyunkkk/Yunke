@@ -109,7 +109,8 @@ internal object AgentPromptBuilder {
                     "任何工具返回 ACTION_OUTCOME_UNKNOWN 或 DIRECTION_MISMATCH 时，必须先重新观察，禁止直接重放动作；" +
                     "输入精确文本优先用 replace_text 或 paste_text，长文本/中文/特殊字符优先用 paste_text；" +
                     "用户明确要求发送消息时，直接使用通用 GUI 工具完成输入和点击发送，不让用户手动完成，也不追加二次确认；" +
-                    "成功的点击、输入或打开应用后，不要例行调用 observe_screen、wait、wait_for_text 或 wait_for_package；" +
+                    "成功的 GUI 动作（点击、输入、滚动等）结果已附带动作后的新界面 after_action（含 screen_changed 结论），据此判断是否生效，不要例行调用 observe_screen；" +
+                    "wait、wait_for_text 或 wait_for_package 仍按需用于等待条件；" +
                     "只有任务需要读取或汇总屏幕信息、后续目标或界面状态未知、工具报告节点过期或结果不确定，" +
                     "以及任务结束前确实需要确认最终结果时，才观察屏幕；仅当后续操作依赖特定文本或应用出现时使用 wait_for_text/wait_for_package。" +
                     "若工具返回 FOREGROUND_BUSY，表示另一个会话尚未结束屏幕控制，本次操作被直接拒绝且未执行；" +

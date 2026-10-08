@@ -88,6 +88,9 @@ internal class RootShellDeviceController(
         val editable: Boolean,
         val password: Boolean,
         val enabled: Boolean
+        val checked: Boolean? = null,
+        val selected: Boolean = false,
+        val hint: String = "",
     ) {
         val centerX: Int get() = bounds.centerX()
         val centerY: Int get() = bounds.centerY()
@@ -852,6 +855,12 @@ internal class RootShellDeviceController(
                     val scrollable = parser.attr("scrollable").toBoolean()
                     val focused = parser.attr("focused").toBoolean()
                     val enabled = parser.attr("enabled") != "false"
+                    val checked = if (parser.attr("checkable").toBoolean()) {
+                        parser.attr("checked").toBoolean()
+                    } else {
+                        null
+                    }
+                    val selected = parser.attr("selected").toBoolean()
                     if (text.isNotBlank() || desc.isNotBlank() || clickable || scrollable || focused) {
                         nodes += UiNode(
                             index = nodes.size,
@@ -868,6 +877,9 @@ internal class RootShellDeviceController(
                             editable = parser.attr("class").contains("EditText", ignoreCase = true),
                             password = parser.attr("password").toBoolean(),
                             enabled = enabled
+                            checked = checked,
+                            selected = selected,
+                            hint = "",
                         )
                     }
                 }
@@ -1122,6 +1134,9 @@ internal class RootShellDeviceController(
                 if (editable) json.put("editable", true)
                 if (password) json.put("password", true)
                 if (!enabled) json.put("enabled", false)
+                checked?.let { json.put("checked", it) }
+                if (selected) json.put("selected", true)
+                hint.takeIf { it.isNotEmpty() }?.let { json.put("hint", it) }
             }
 
     private fun XmlPullParser.attr(name: String): String =
@@ -1309,6 +1324,9 @@ internal class RootShellDeviceController(
             editable = editable,
             password = password,
             enabled = enabled
+            checked = checked,
+            selected = selected,
+            hint = hint,
         )
 
     private data class ShellTextResult(val exitCode: Int, val output: String)
