@@ -337,18 +337,6 @@ internal class ChatMessageActions {
 internal val LocalExpansionHoldsBottom = staticCompositionLocalOf<() -> Boolean> { { false } }
 
 
-/** 完成且不再逐帧变化的内容复用一张离屏纹理。层始终挂着，只切换合成策略，避免插入时重挂。 */
-@Composable
-private fun completedContentDrawLayer(enabled: Boolean): Modifier {
-    var heightPx by remember { mutableIntStateOf(0) }
-    val retain = enabled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
-    return Modifier
-        .onSizeChanged { heightPx = it.height }
-        .graphicsLayer(
-            compositingStrategy = if (retain) CompositingStrategy.Offscreen else CompositingStrategy.Auto,
-        )
-}
-
 @Composable
 internal fun ChatMessageItem(
     message: AgentChatMessageUi,
