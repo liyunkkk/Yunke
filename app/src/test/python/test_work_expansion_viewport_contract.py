@@ -45,7 +45,7 @@ class WorkExpansionViewportContractTest(unittest.TestCase):
         self.assertIn('"work-step:${it.id}"', window)
         self.assertIn('canOwnWorkExpansionViewport()', window)
         self.assertIn('scrollState.isConversationAtBottom()', window)
-        self.assertIn('viewportRecovery.cancelWorkExpansion(entry.key)', window)
+        self.assertIn('entry.key, entry.group.messages.map { "work-step:${it.id}" }', window)
 
     def test_failed_capture_replaces_stale_owner_before_returning(self):
         capture = function_body(RECOVERY, 'beginWorkExpansion')

@@ -18,7 +18,7 @@ class ChatTailRecoveryContractTest(unittest.TestCase):
         code = self.controller
         self.assertEqual(1, code.count('resolveBottomFollowViewportStep('))
         anchors = ['withFrameNanos', 'val layout = scrollState.layoutInfo',
-                   'resolveBottomFollowViewportStep(', 'scrollState.scroll {', 'scrollBy(step)']
+                   'resolveBottomFollowViewportStep(', 'scrollState.scroll {', 'scrollBy(currentStep)']
         positions = [code.index(anchor) for anchor in anchors]
         self.assertEqual(sorted(positions), positions)
         self.assertIn('measuredOverflowPx = layout.measuredTailOverflow()', code)
@@ -32,7 +32,7 @@ class ChatTailRecoveryContractTest(unittest.TestCase):
         scroll = code.split('scrollState.scroll {', 1)[1]
         self.assertLess(scroll.index(
             'if (!isUserScrolling && messageNavigationJob == null && shouldFollowBottom)'),
-            scroll.index('scrollBy(step)'))
+            scroll.index('scrollBy(currentStep)'))
 
     def test_drawing_stays_capped_but_recovery_measurement_does_not(self):
         drawing = self.body.split('private fun LazyListState.followTailOverflow(): Int? {', 1)[1]
@@ -57,7 +57,7 @@ class ChatTailRecoveryContractTest(unittest.TestCase):
         call = code.index('snapFollowScrollStep(')
         inner = code.index('resolveBottomFollowViewportStep(', call)
         self.assertLess(call, inner)
-        self.assertLess(inner, code.index('scrollBy(step)', inner))
+        self.assertLess(inner, code.index('scrollBy(currentStep)', inner))
         reveal = (COMPONENTS / 'SmoothTextReveal.kt').read_text()
         draw = reveal.split('override fun ContentDrawScope.draw() {', 1)[1].split('private fun ContentDrawScope.drawInsideMeasuredHeight', 1)[0]
         self.assertIn('clipRect(left = 0f, top = 0f, right = size.width, bottom = size.height)', draw)
