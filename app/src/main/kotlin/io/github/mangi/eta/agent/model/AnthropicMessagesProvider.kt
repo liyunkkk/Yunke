@@ -231,6 +231,8 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         var sawMessageStop = false
         var finishReason: String? = null
         var usage: AgentTokenUsage? = null
+        var openingUsage: AgentTokenUsage? = null
+        var publishedMeasurement = false
 
         fun dispatch(event: String, payload: String) {
             val result = processEvent(
@@ -243,9 +245,21 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
             )
             if (result.messageStop && (!requireTerminal || payload != "[DONE]")) sawMessageStop = true
             result.finishReason?.let { finishReason = it }
-            result.usage?.let {
-                usage = it
-                onEvent(ProviderEvent.Usage(it))
+            result.usage?.let { incoming ->
+                val opening = AgentInitialUsageReceipt.isOpening(incoming)
+                // The opening receipt of a stream is a pre-cache estimate, not the request's
+                // measurement; it is merged and published when the stream ends instead of
+                // dropping the ring to it and moving it back one event later.
+                if (opening) {
+                    openingUsage = openingUsage?.let { AgentInitialUsageReceipt.merge(it, incoming) } ?: incoming
+                } else {
+                    val merged = openingUsage?.let { AgentInitialUsageReceipt.merge(it, incoming) }
+                        ?: incoming
+                    openingUsage = null
+                    publishedMeasurement = true
+                    usage = merged
+                    onEvent(ProviderEvent.Usage(merged))
+                }
             }
         }
 
@@ -298,6 +312,13 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                     (content.isNotBlank() || reasoning.isNotBlank() || hasToolCalls))
             },
         )
+
+        // The request ended without a later receipt, so the deferred opening value is its only
+        // bill; publish it unchanged instead of leaving the previous request's value on screen.
+        if (!publishedMeasurement) openingUsage?.let { deferred ->
+            usage = deferred
+            onEvent(ProviderEvent.Usage(deferred))
+        }
 
         if (!sawMessageStop && (runController.hasPendingSteering || runController.hasPausedInterrupt)) {
             return interruptedAssistantMessage(content.toString(), reasoning.toString())
