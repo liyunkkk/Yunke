@@ -579,7 +579,7 @@ class AgentContextPendingRegressionTest {
             val values = if (method.parameterCount == args.size) args else {
                 val extra = method.parameterTypes.drop(args.size)
                 require(extra.all { it == Boolean::class.javaPrimitiveType })
-                args + Array(extra.size) { false }
+                Array(method.parameterCount) { index -> if (index < args.size) args[index] else false }
             }
             return method.apply { isAccessible = true }.invoke(target, *values)
         }
