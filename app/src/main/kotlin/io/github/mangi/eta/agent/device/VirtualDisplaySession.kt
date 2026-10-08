@@ -19,6 +19,7 @@ internal object VirtualDisplaySession {
         val kept = linkedSetOf<Int>()
         val packages = linkedMapOf<String, Set<Int>>()
         val observation = VirtualDisplayObservation()
+        val uiTreeAvailability = VirtualDisplayUiTreeAvailability()
         val previewExcludedPackages = linkedSetOf<String>()
         var closedRun = false
         var cleanupOnly = false
@@ -769,7 +770,7 @@ internal object VirtualDisplaySession {
     }
     @Synchronized fun executeGui(context: Context,runId: String,tool: String,args: JSONObject, excludedPackages: Set<String> = emptySet()): AgentModelClient.ToolResult {
         fun text(obj: JSONObject)=AgentModelClient.ToolResult(obj.put("tool",tool).put("display","virtual").toString())
-        if(tool !in setOf("observe_screen","launch_app","wait","tap","tap_area","swipe","long_press","press_key","paste_text","input_text"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
+        if(tool !in setOf("observe_screen","launch_app","wait","tap","tap_area","swipe","long_press","press_key","paste_text","input_text","tap_element","long_press_element","scroll","scroll_element"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="press_key" && args.optString("button") !in setOf("BACK","ENTER","PASTE"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="input_text" && args.optString("mode","append")!="append")return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="launch_app" && (args.optString("package_name").isBlank() || args.optString("package_name") in excludedPackages))return text(reply(false,"PACKAGE_NOT_ALLOWED"))
@@ -816,6 +817,17 @@ internal object VirtualDisplaySession {
                         }
                     }
                 }.getOrNull()
+                s.uiTreeAvailability.updateScope(runId, c.displayId, elementObservation?.packageName.orEmpty())
+                val nodesUnavailable = s.uiTreeAvailability.record(elementObservation?.nodes.orEmpty().isNotEmpty())
+                if (nodesUnavailable) {
+                    s.observation.recordNodes(null, "", emptyList())
+                } else {
+                    s.observation.recordNodes(
+                        elementObservation?.id,
+                        elementObservation?.packageName.orEmpty(),
+                        elementObservation?.nodes.orEmpty(),
+                    )
+                }
                 data.remove("data");data.remove("width");data.remove("height");data.remove("bytes");data.remove("format")
                 return AgentModelClient.ToolResult(
                     data.put("tool",tool)
@@ -828,6 +840,7 @@ internal object VirtualDisplaySession {
                         .put("observation_id", elementObservation?.id ?: JSONObject.NULL)
                         .put("observation_source", elementObservation?.source?.wireName ?: JSONObject.NULL)
                         .put("node_limit", NODE_LIMIT)
+                        .put("ui_tree_unavailable", nodesUnavailable)
                         .put("ui_tree_truncated", elementObservation?.truncated ?: false)
                         .put("ui_nodes", elementObservation?.let { DeviceNodeProjection.json(it.nodes) } ?: JSONArray())
                         .put(
@@ -867,7 +880,7 @@ internal object VirtualDisplaySession {
                 return text(body(launched))
             }
             if(tool=="wait") {Thread.sleep(args.optLong("duration_ms",1000).coerceIn(100,30000));return text(reply(true))}
-            if (tool in setOf("tap", "tap_area", "swipe", "long_press")) {
+            if (tool in setOf("tap", "tap_area", "swipe", "long_press", "tap_element", "long_press_element", "scroll", "scroll_element")) {
                 s.observation.require()
                 val live = c.status()
                 if (!live.ok) {
@@ -905,6 +918,46 @@ internal object VirtualDisplaySession {
                     val value=args.getString("text");require(value.length<=20000)
                     (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("",value))
                     fields.putAll(mapOf("kind" to "key","keyCode" to 279))
+                }
+                "tap_element","long_press_element" -> {
+                    if (s.uiTreeAvailability.unavailable()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","该应用窗口暂无可访问节点，请用截图+坐标操作"))
+                    val index=args.getInt("index")
+                    val node=s.observation.node(index)
+                        ?: return text(reply(false,"VIRTUAL_NODE_INDEX_UNKNOWN","先 observe_screen 取当前节点索引"))
+                    val point=s.observation.resolve("screen",node.centerX,node.centerY)
+                    if(tool=="tap_element") {
+                        fields.putAll(mapOf("kind" to "tap","x" to point.x,"y" to point.y))
+                    } else {
+                        fields.putAll(mapOf("kind" to "swipe","x1" to point.x,"y1" to point.y,"x2" to point.x,"y2" to point.y,
+                            "durationMs" to args.optInt("duration_ms",800).coerceIn(300,3000)))
+                    }
+                }
+                "scroll","scroll_element" -> {
+                    if (s.uiTreeAvailability.unavailable()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","该应用窗口暂无可访问节点，请用截图+坐标操作"))
+                    val direction=args.optString("direction")
+                    if(direction !in setOf("up","down","left","right"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY","direction 必须是 up/down/left/right"))
+                    val node=if(tool=="scroll_element") {
+                        s.observation.node(args.getInt("index"))
+                            ?: return text(reply(false,"VIRTUAL_NODE_INDEX_UNKNOWN","先 observe_screen 取当前节点索引"))
+                    } else {
+                        null
+                    }
+                    val contract=s.observation.require()
+                    val area=node?.bounds ?: android.graphics.Rect(0,0,contract.screenWidth,contract.screenHeight)
+                    val cx=area.centerX();val cy=area.centerY()
+                    val horizontal=direction=="left"||direction=="right"
+                    val span=((if(horizontal) area.width() else area.height())*0.6f).toInt().coerceAtLeast(60)
+                    val half=span/2
+                    val (sx,sy,ex,ey) = when(direction) {
+                        "down" -> listOf(cx,cy+half,cx,cy-half)
+                        "up" -> listOf(cx,cy-half,cx,cy+half)
+                        "right" -> listOf(cx-half,cy,cx+half,cy)
+                        else -> listOf(cx+half,cy,cx-half,cy)
+                    }
+                    val first=s.observation.resolve("screen",sx,sy)
+                    val second=s.observation.resolve("screen",ex,ey)
+                    fields.putAll(mapOf("kind" to "swipe","x1" to first.x,"y1" to first.y,"x2" to second.x,"y2" to second.y,
+                        "durationMs" to args.optInt("duration_ms",400).coerceIn(100,3000)))
                 }
                 else -> return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY","不会回退到主屏操作"))
             }

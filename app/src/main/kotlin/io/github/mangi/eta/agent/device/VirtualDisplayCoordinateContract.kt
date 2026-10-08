@@ -121,7 +121,33 @@ internal class VirtualDisplayObservation {
 
     fun invalidate() {
         contract = null
+        nodes = emptyList()
+        nodesObservationId = null
+        nodesPackage = ""
     }
+
+    /** 最近一次副屏观察发布的节点：节点动作只认这一份，避免跨观察复用旧索引。 */
+    private var nodes: List<RootShellDeviceController.UiNode> = emptyList()
+    private var nodesObservationId: String? = null
+    private var nodesPackage: String = ""
+
+    fun recordNodes(
+        observationId: String?,
+        packageName: String,
+        next: List<RootShellDeviceController.UiNode>,
+    ) {
+        nodes = next
+        nodesObservationId = observationId
+        nodesPackage = packageName
+    }
+
+    fun node(index: Int): RootShellDeviceController.UiNode? = nodes.firstOrNull { it.index == index }
+
+    fun nodeCount(): Int = nodes.size
+
+    fun nodesObservationId(): String? = nodesObservationId
+
+    fun nodesPackageName(): String = nodesPackage
 
     fun validateFrame(width: Int, height: Int) {
         val previous = require()
