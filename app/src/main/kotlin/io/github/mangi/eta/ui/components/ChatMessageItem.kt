@@ -337,6 +337,18 @@ internal class ChatMessageActions {
 internal val LocalExpansionHoldsBottom = staticCompositionLocalOf<() -> Boolean> { { false } }
 
 
+/** 完成且不再逐帧变化的内容复用一张离屏纹理。层始终挂着，只切换合成策略，避免插入时重挂。 */
+@Composable
+private fun completedContentDrawLayer(enabled: Boolean): Modifier {
+    var heightPx by remember { mutableIntStateOf(0) }
+    val retain = enabled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    return Modifier
+        .onSizeChanged { heightPx = it.height }
+        .graphicsLayer(
+            compositingStrategy = if (retain) CompositingStrategy.Offscreen else CompositingStrategy.Auto,
+        )
+}
+
 @Composable
 internal fun ChatMessageItem(
     message: AgentChatMessageUi,
@@ -819,18 +831,6 @@ private fun UserMessageBubble(
     }
 }
 
-/** 完成且不再逐帧变化的内容复用一张离屏纹理。层始终挂着，只切换合成策略，避免插入时重挂。 */
-@Composable
-private fun retainCompletedDrawLayer(enabled: Boolean): Modifier {
-    var heightPx by remember { mutableIntStateOf(0) }
-    val retain = enabled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
-    return Modifier
-        .onSizeChanged { heightPx = it.height }
-        .graphicsLayer(
-            compositingStrategy = if (retain) CompositingStrategy.Offscreen else CompositingStrategy.Auto,
-        )
-}
-
 // ── Agent 结果 ───────────────────────────────────────────────────────
 
 @Composable
@@ -908,7 +908,7 @@ private fun AgentMessageBlock(
                     message.renderMarkdown -> {
                         StableMarkdown(
                             content = displayContent,
-                            modifier = Modifier.fillMaxWidth().retainCompletedDrawLayer(true),
+                            modifier = Modifier.fillMaxWidth().completedContentDrawLayer(true),
                         )
                     }
                     message.content.isNotBlank() -> {
@@ -916,7 +916,7 @@ private fun AgentMessageBlock(
                             text = message.content,
                             style = MiuixTheme.textStyles.body1,
                             color = MiuixTheme.colorScheme.onSurface,
-                            modifier = Modifier.retainCompletedDrawLayer(true),
+                            modifier = Modifier.completedContentDrawLayer(true),
                         )
                     }
                 }
@@ -2337,7 +2337,7 @@ private fun ChatMarkdownTable(
                         .height(0.5.dp)
                         .background(borderColor.copy(alpha = 0.6f)),
                 )
-                Row(modifier = Modifier.fillMaxWidth().retainCompletedDrawLayer(rowSettled)) {
+                Row(modifier = Modifier.fillMaxWidth().completedContentDrawLayer(rowSettled)) {
                     rowCells.forEach { cell ->
                         Box(
                             modifier = Modifier
@@ -2703,7 +2703,7 @@ private fun ThinkingRow(
         ) {
             HapticSelectionContainer(
                 modifier = retainDrawLayerWhenIdle()
-                    .retainCompletedDrawLayer(streamingState == null)
+                    .completedContentDrawLayer(streamingState == null)
                     .toggleProbe(toggleProbeRef, "content"),
             ) {
                 Column {
@@ -2864,7 +2864,7 @@ private fun ToolActivityInline(
     val toolRowSettled = message.status != ToolActivityStatusUi.Running
     Column(
         modifier = modifier
-            .retainCompletedDrawLayer(toolRowSettled)
+            .completedContentDrawLayer(toolRowSettled)
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .then(
