@@ -115,6 +115,15 @@ class AgentWorkExpansionViewportRegressionTest {
         assertEquals(0f, consumed, 0f)
     }
 
+    @Test fun instantUnconnectedThinkingExpansionIsAFirstDrawNegativeControl() {
+        setup(0, recoveryEnabled = false, thinkingHeight = 1400, instantThinking = true)
+        captureExpansion()
+        assertTrue(probes.values.any { it.answerTop == null || abs(it.answerTop - ANSWER_TOP) > 2 })
+        assertTrue(images.values.any { markerPixels(it) == 0 })
+        assertTrue(sawMissingThinkingAnchor)
+        assertEquals(0f, consumed, 0f)
+    }
+
     @Test fun thinkingRejectedSecondCaptureDiscardsTheOldAnchor() {
         setup(0, thinkingHeight = 1400)
         assertTrue(begin())
@@ -448,6 +457,18 @@ class AgentWorkExpansionViewportRegressionTest {
             compose.waitForIdle()
             // Pump a real host draw with clock still frozen; discard its eventual image.
             compose.onNodeWithTag(ROOT).captureToImage()
+            // A frozen frame may still show the pre-toggle lazy composition. Keep the
+            // same sampling revision armed while delivering the non-animated growth.
+            // Never advance again after its actual measurement or first probe exists.
+            if (frame == 0 && instantThinkingGrowth) {
+                repeat(3) {
+                    if (!measuredInstantThinkingGrowth && probes[revision] == null) {
+                        compose.mainClock.advanceTimeByFrame()
+                        compose.waitForIdle()
+                        compose.onNodeWithTag(ROOT).captureToImage()
+                    }
+                }
+            }
             val rev = revision
             try {
                 compose.waitUntil(5_000) {
