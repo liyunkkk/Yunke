@@ -25,8 +25,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SkillRegistryEntity::class,
         McpServerEntity::class,
         SubAgentRunEntity::class,
+        ConversationTodoEntity::class,
     ],
-    version = 34,
+    version = 35,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -36,6 +37,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
     abstract fun skillDao(): SkillDao
     abstract fun mcpServerDao(): McpServerDao
     abstract fun subAgentRunDao(): SubAgentRunDao
+    abstract fun conversationTodoDao(): ConversationTodoDao
 
     companion object {
         @Volatile
@@ -77,6 +79,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_31_32,
                         MIGRATION_32_33,
                         MIGRATION_33_34,
+                        MIGRATION_34_35,
                     )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -232,6 +235,25 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         "WHERE length(CAST(event_json AS BLOB)) > 65536"
                 )
             }
+        }
+
+        /** 会话 Todo 清单：新增表与索引；会话删除时随外键 CASCADE 清理。 */
+        internal val MIGRATION_34_35 = Migration(34, 35) { database ->
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS conversation_todos (" +
+                    "conversation_id TEXT NOT NULL, " +
+                    "position INTEGER NOT NULL, " +
+                    "content TEXT NOT NULL, " +
+                    "status TEXT NOT NULL, " +
+                    "priority TEXT NOT NULL, " +
+                    "PRIMARY KEY(conversation_id, position), " +
+                    "FOREIGN KEY(conversation_id) REFERENCES conversations(id) " +
+                    "ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_conversation_todos_conversation_id " +
+                    "ON conversation_todos (conversation_id)"
+            )
         }
 
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->

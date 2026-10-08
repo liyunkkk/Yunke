@@ -71,6 +71,7 @@ class EtaDatabaseMigrationTest {
                 EtaDatabase.MIGRATION_31_32,
                 EtaDatabase.MIGRATION_32_33,
                 EtaDatabase.MIGRATION_33_34,
+                EtaDatabase.MIGRATION_34_35,
             )
             .build()
         } catch (error: Throwable) {
@@ -98,7 +99,11 @@ class EtaDatabaseMigrationTest {
                 database.conversationDao().contextCheckpoint("conv-1")
             }
             assertEquals("", retainedCheckpoint?.cloudUsageJson)
-            assertEquals(34, database.openHelper.readableDatabase.version)
+            assertEquals(35, database.openHelper.readableDatabase.version)
+            val todoTableCount = database.openHelper.readableDatabase
+                .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'conversation_todos'")
+                .use { cursor -> cursor.count }
+            assertEquals(1, todoTableCount)
             assertTrue(conversations.none { it.hasCompletionMarker })
             val oversizedCheckpoint = runBlocking(Dispatchers.IO) {
                 database.conversationDao().contextCheckpoint("conv-oversized")
@@ -399,10 +404,11 @@ class EtaDatabaseMigrationTest {
                 .openHelperFactory(FrameworkSQLiteOpenHelperFactory())
                 .addMigrations(EtaDatabase.MIGRATION_28_29, EtaDatabase.MIGRATION_29_30,
                     EtaDatabase.MIGRATION_30_31, EtaDatabase.MIGRATION_31_32,
-                    EtaDatabase.MIGRATION_32_33, EtaDatabase.MIGRATION_33_34)
+                    EtaDatabase.MIGRATION_32_33, EtaDatabase.MIGRATION_33_34,
+                    EtaDatabase.MIGRATION_34_35)
                 .build()
             try {
-                assertEquals(34, database.openHelper.writableDatabase.version)
+                assertEquals(35, database.openHelper.writableDatabase.version)
                 runBlocking(Dispatchers.IO) {
                     val result = database.runtimeRunDao().runtimeResults().single()
                     val archive = database.runtimeRunDao().archivedRunHeaders().single()

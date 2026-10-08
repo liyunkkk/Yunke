@@ -1526,4 +1526,6 @@
   <string name="reconnect_stopped">已停止重連</string>
   <string name="reconnect_error_title">錯誤詳情</string>
   <string name="reconnect_elapsed_format">已用時 %1$s</string>
+    <string name="chat_todo_step_progress">第 %1$d / %2$d 步</string>
+    <string name="chat_todo_toggle_desc">Todo 清單</string>
 </resources>

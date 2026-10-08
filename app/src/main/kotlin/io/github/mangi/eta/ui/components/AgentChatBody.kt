@@ -1920,6 +1920,7 @@ private fun AgentChatBottomBar(
                 .navigationBarsPadding()
                 .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
         ) {
+            AgentChatTodoDock(conversationId = collaborationConversationId)
             AgentChatInputBar(
                 collaborationConversationId = collaborationConversationId,
                 input = input,

@@ -54,16 +54,22 @@ import io.github.mangi.eta.agent.voice.tts.AGENT_SPEECH_START_TIMEOUT_MS
 import io.github.mangi.eta.core.AgentLogger
 import io.github.mangi.eta.core.HookSupport
 import io.github.mangi.eta.data.model.AssistantPrompt
+import io.github.mangi.eta.data.db.ConversationTodo
+import io.github.mangi.eta.data.db.ConversationTodoPriority
+import io.github.mangi.eta.data.db.ConversationTodoStatus
 import io.github.mangi.eta.data.repository.AgentMemoryException
 import io.github.mangi.eta.data.repository.AgentMemoryMutation
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
+import io.github.mangi.eta.data.repository.ConversationTodoRepository
 import io.github.mangi.eta.data.repository.AgentMemoryWriteResult
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -494,6 +500,7 @@ internal class AgentLocalTools(
                 "read_file" -> textResult(terminalTool { readFile(args) })
                 "write_file" -> textResult(terminalTool { writeFile(args) })
                 "list_directory" -> textResult(terminalTool { listDirectory(args) })
+                "todowrite" -> textResult(todoWrite(args))
                 "memory_get" -> textResult(memoryGet(args))
                 "memory_write" -> textResult(memoryWrite(args))
                 "skills_list" -> textResult(skillsList(args))
@@ -1681,6 +1688,57 @@ internal class AgentLocalTools(
         if (main.isCurrentThread) return AgentSpeechStatus.Pending.toJson().toString()
         // Cloud synthesis can take seconds; report what actually happened instead of assuming playback.
         return report.await(AGENT_SPEECH_START_TIMEOUT_MS).toJson().toString()
+    }
+
+    /**
+     * 用完整快照替换当前会话的 Todo 清单。
+     *
+     * 宿主管理、用户只读：模型只写清单，不提供编辑入口；校验与持久化都在仓库层完成
+     * （内容非空、最多一项 in_progress）。失败时返回明确错误码，不静默丢弃。
+     */
+    private fun todoWrite(args: JSONObject): String {
+        val raw = args.optString("todos")
+        if (raw.isBlank()) return errorResult("TODO_MISSING_TODOS", "缺少必要参数：todos")
+        val todos = runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                repeat(array.length()) { index ->
+                    val item = array.getJSONObject(index)
+                    add(
+                        ConversationTodo(
+                            content = item.optString("content").trim(),
+                            status = ConversationTodoStatus.fromWire(item.optString("status"))
+                                ?: ConversationTodoStatus.PENDING,
+                            priority = ConversationTodoPriority.fromWire(item.optString("priority"))
+                                ?: ConversationTodoPriority.MEDIUM,
+                        )
+                    )
+                }
+            }
+        }.getOrNull() ?: return errorResult(
+            "TODO_INVALID_LIST",
+            "Todo 列表无效：todos 必须为 JSON 数组，每项包含非空 content、status 与 priority；" +
+                "最多一项为 in_progress。",
+        )
+        if (conversationId.isBlank()) {
+            return errorResult("TODO_NO_CONVERSATION", "更新 Todo 需要一个当前会话")
+        }
+        return runCatching {
+            runBlocking(Dispatchers.IO) {
+                ConversationTodoRepository.getInstance(context).replace(conversationId, todos)
+            }
+        }.fold(
+            onSuccess = {
+                JSONObject()
+                    .put("ok", true)
+                    .put("count", todos.size)
+                    .put("message", "Todo 列表已更新（${todos.size} 项）")
+                    .toString()
+            },
+            onFailure = { error ->
+                errorResult("TODO_SAVE_FAILED", "保存 Todo 列表失败：${error.message.orEmpty()}")
+            },
+        )
     }
 
     private fun errorResult(code: String, message: String): String =

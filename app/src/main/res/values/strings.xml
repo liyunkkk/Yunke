@@ -1559,4 +1559,6 @@
   <string name="reconnect_stopped">Reconnecting stopped</string>
   <string name="reconnect_error_title">Error details</string>
   <string name="reconnect_elapsed_format">%1$s elapsed</string>
+    <string name="chat_todo_step_progress">Step %1$d of %2$d</string>
+    <string name="chat_todo_toggle_desc">Todo list</string>
 </resources>
