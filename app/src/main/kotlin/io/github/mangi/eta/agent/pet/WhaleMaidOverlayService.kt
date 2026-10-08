@@ -175,6 +175,7 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
                         dragging = false
                         WhaleMaidController.setPosition(this, petParams?.x ?: 0, petParams?.y ?: 0)
                     },
+                    moveWithoutRedraw = true,
                     onTap = { openCabinet() },
                     onDismissSpeech = { WhaleMaidController.dismissSpeech(this) },
                     onPoseFinished = { mood -> WhaleMaidController.finishPose(this, mood) },
@@ -432,6 +433,7 @@ internal fun WhaleMaidInAppHost() {
                 originX = (originX + dx).coerceIn(minX, maxX)
                 originY = (originY + dy).coerceIn(minY, maxY)
             },
+            moveWithoutRedraw = true,
             onDragEnd = { WhaleMaidController.setPosition(context, originX, originY) },
             onTap = { if (!snapshot.thinking) cabinetOpen = true },
             onDismissSpeech = { WhaleMaidController.dismissSpeech(context) },
@@ -487,8 +489,11 @@ private fun WhaleMaidPet(
     onDismissSpeech: () -> Unit,
     onPoseFinished: (String) -> Unit,
     onMeasured: (Int, Int) -> Unit,
+    moveWithoutRedraw: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val dragX = remember { Animatable(0f) }
+    val dragY = remember { Animatable(0f) }
     val pet = 128.dp * snapshot.scale
     val bubbleAlpha = androidx.compose.runtime.remember { Animatable(1f) }
     LaunchedEffect(snapshot.speechVisible, snapshot.speech) {
@@ -509,7 +514,12 @@ private fun WhaleMaidPet(
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.onSizeChanged { onMeasured(it.width, it.height) },
+        modifier = modifier
+            .onSizeChanged { onMeasured(it.width, it.height) }
+            .graphicsLayer {
+                translationX = dragX.value
+                translationY = dragY.value
+            },
     ) {
         if (snapshot.speechVisible && snapshot.speech.isNotBlank()) {
             Text(
@@ -535,6 +545,8 @@ private fun WhaleMaidPet(
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         var moved = 0f
+                        var pendingX = 0f
+                        var pendingY = 0f
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
@@ -542,11 +554,27 @@ private fun WhaleMaidPet(
                             val delta = change.positionChange()
                             moved += delta.getDistance()
                             if (moved >= 12f) {
-                                onDrag(delta.x.roundToInt(), delta.y.roundToInt())
+                                if (moveWithoutRedraw) {
+                                    pendingX += delta.x
+                                    pendingY += delta.y
+                                    dragX.snapTo(pendingX)
+                                    dragY.snapTo(pendingY)
+                                } else {
+                                    onDrag(delta.x.roundToInt(), delta.y.roundToInt())
+                                }
                             }
                             change.consume()
                         }
-                        if (moved < 12f) onTap() else onDragEnd()
+                        if (moved < 12f) {
+                            onTap()
+                        } else if (moveWithoutRedraw) {
+                            onDrag(pendingX.roundToInt(), pendingY.roundToInt())
+                            dragX.snapTo(0f)
+                            dragY.snapTo(0f)
+                            onDragEnd()
+                        } else {
+                            onDragEnd()
+                        }
                     }
                 },
         )
