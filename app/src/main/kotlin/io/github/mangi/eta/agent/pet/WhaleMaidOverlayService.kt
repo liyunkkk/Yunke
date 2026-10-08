@@ -395,6 +395,7 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
     }
 }
 
+@Composable
 internal fun WhaleMaidInAppHost() {
     val context = androidx.compose.ui.platform.LocalContext.current
     var snapshot by remember { mutableStateOf(WhaleMaidStore.snapshot(context)) }
