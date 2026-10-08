@@ -189,6 +189,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             serviceToken = serviceToken,
             packageName = root.packageName?.toString().orEmpty(),
             windowId = root.windowId,
+            displayId = displayId,
             contentGeneration = windowContentGeneration(root.windowId),
             capturedAtElapsedMs = startedAt,
             truncated = traversal.truncated,
@@ -1636,10 +1637,15 @@ open class AgentAccessibilityService : AccessibilityService() {
             ?: return NodeValidation.Invalid(
                 NodeActionResult.failure("INVALID_NODE_INDEX", "观察快照中不存在节点 index=$index"),
             )
-        val activeRoot = rootInActiveWindow
-            ?: return NodeValidation.Invalid(
-                NodeActionResult.failure("STALE_WINDOW", "当前活动窗口不可访问，请重新观察屏幕"),
-            )
+        // 默认屏沿用 rootInActiveWindow；副屏等非默认屏必须用该 display 自己的根，
+        // 否则副屏快照永远对不上默认屏的活动窗口，文本动作会被误判成 STALE_WINDOW。
+        val activeRoot = if (NodeValidationDisplay.usesDisplayScopedRoot(snapshot.displayId)) {
+            rootForDisplay(snapshot.displayId)
+        } else {
+            rootInActiveWindow
+        } ?: return NodeValidation.Invalid(
+            NodeActionResult.failure("STALE_WINDOW", "当前活动窗口不可访问，请重新观察屏幕"),
+        )
         val activePackage = activeRoot.packageName?.toString().orEmpty()
         if (activeRoot.windowId != snapshot.windowId || activePackage != snapshot.packageName) {
             return NodeValidation.Invalid(
@@ -2124,6 +2130,8 @@ open class AgentAccessibilityService : AccessibilityService() {
         internal val serviceToken: Long,
         val packageName: String,
         val windowId: Int,
+        /** 该快照取自哪个 display：默认屏（0）沿用 rootInActiveWindow 校验，其余屏用该 display 自己的根。 */
+        val displayId: Int = android.view.Display.DEFAULT_DISPLAY,
         internal val contentGeneration: Long,
         val capturedAtElapsedMs: Long,
         val truncated: Boolean,

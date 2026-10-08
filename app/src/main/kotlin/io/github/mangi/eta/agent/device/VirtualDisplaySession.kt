@@ -907,7 +907,11 @@ internal object VirtualDisplaySession {
                     ?: return text(reply(false,"ACCESSIBILITY_UNAVAILABLE","副屏文本输入需要 YUNKe 无障碍服务"))
                 val beforeText = s.observation.publishedObservation()
                 val outcome = service.setTextNode(snapshot, target.index, value)
-                if (!outcome.ok) return text(reply(false,outcome.code.ifBlank { "TEXT_SET_FAILED" },outcome.message))
+                if (!outcome.ok) {
+                    // 副屏仍可退化为：先 tap_element 聚焦输入框，再用 paste_text / input_text 写入。
+                    return text(reply(false,outcome.code.ifBlank { "TEXT_SET_FAILED" },
+                        outcome.message + "；副屏可改用 tap_element 聚焦后 paste_text"))
+                }
                 Thread.sleep(AFTER_ACTION_SETTLE_MS)
                 val payload = JSONObject()
                     .put("ok",true)
