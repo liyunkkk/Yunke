@@ -28,13 +28,13 @@ class SettingsJankHotPathContract(unittest.TestCase):
             self.assertIn(f'"{stage}"', labels)
         self.assertIn('modifier = topBarModifier', scaffold)
         self.assertIn('modifier = listModifier', scaffold)
-        chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop, listState)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
+        chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
         lazy = scaffold.split('LazyColumn(', 1)[1]
         self.assertEqual(sorted(lazy.index(item) for item in chain), [lazy.index(item) for item in chain])
         backdrop = (ROOT / 'components/TopBarBackdrop.kt').read_text()
         capture = backdrop.split('internal fun Modifier.captureForTopBar(', 1)[1].split('@Composable', 1)[0]
-        self.assertIn('scrollState?.isScrollInProgress == true', capture)
-        self.assertLess(capture.index('scrollState?.isScrollInProgress == true'), capture.index('layerBackdrop(backdrop)'))
+        self.assertNotIn('isScrollInProgress', capture)
+        self.assertIn('layerBackdrop(backdrop)', capture)
 
 
     def test_settings_collects_remembered_store_flows(self):

@@ -34,6 +34,12 @@ internal class StreamingMarkdownRestoreState {
         foreground = false
     }
 
+    /** 仍露在屏幕上，只是被上一页盖住。保持打字机，不建立恢复基线。 */
+    fun holdCovered() {
+        baseline = null
+        foreground = true
+    }
+
     fun completeLayout(generation: Int, renderedContent: String, currentContent: String): Boolean {
         val pending = baseline ?: return false
         if (generation != this.generation) return false

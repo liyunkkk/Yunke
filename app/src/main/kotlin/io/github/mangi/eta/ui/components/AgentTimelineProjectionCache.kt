@@ -40,6 +40,17 @@ internal class AgentTimelineProjectionCache(
                     return entries
                 }
             }
+            if (changed == null && previous.size + 1 == messages.size &&
+                messages.last() is AgentMessageUi &&
+                previous.indices.all { previous[it] === messages[it] }
+            ) {
+                val input = messages.incrementalSnapshot()
+                val projected = (entries + AgentTimelineEntry.Message(messages.last())).incrementalSnapshot()
+                source = input
+                entries = projected
+                sourceToEntry = mapAssistantSlots(input, projected)
+                return projected
+            }
             if (changed == null) {
                 val changedIndices = ArrayList<Int>(1)
                 var compatible = true

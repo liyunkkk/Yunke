@@ -1059,6 +1059,7 @@ private fun StreamingMarkdown(
     val currentPaused by rememberUpdatedState(isPaused)
     val restoreGeneration = state.restoreState.generation
     val view = LocalView.current
+    val routeCoveredNow = rememberUpdatedState(LocalChatRouteCovered.current)
 
     LifecycleResumeEffect(state) {
         val animateExisting = animateInitialContent && !currentPaused && currentContent.isNotEmpty()
@@ -1076,12 +1077,18 @@ private fun StreamingMarkdown(
             revealCoordinator.restoreHistoryThrough(currentContent.length)
         }
         onPauseOrDispose {
-            state.restoreState.pause()
-            revealCoordinator.pauseAnimationsAndCatchUp()
+            // 回调不在组合里，读进入回调前记住的最新值。半遮住时导航把聊天降到
+            // STARTED，页面还在组合里，继续逐字打。真正离开前台才追平，避免回来补播。
+            if (routeCoveredNow.value) {
+                state.restoreState.holdCovered()
+            } else {
+                state.restoreState.pause()
+                revealCoordinator.pauseAnimationsAndCatchUp()
+            }
         }
     }
 
-    val animationsAllowed = state.restoreState.animationsAllowed(isPaused)
+    val animationsAllowed = state.restoreState.animationsAllowed(isPaused) || routeCoveredNow.value
     // Content is deliberately not a key. A streaming delta must not re-run the gate decision:
     // while the restore baseline is still pending, animationsAllowed is false, and every delta
     // would catch the reveal up to the newest text. That drains the pending records, the frame
