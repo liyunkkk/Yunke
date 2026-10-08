@@ -224,7 +224,6 @@ internal fun AgentChatBody(
 ) {
     val chatComposeStartedNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else 0L
     val chatUiActive = LocalChatUiActive.current
-    val chatRouteCovered = LocalChatRouteCovered.current
     // 还露在屏幕上时继续用实时消息。冻结会把字停在入栈那一帧。
     val frozenChatSnapshot = remember(chatUiActive) {
         if (chatUiActive) null else Triple(messages, isStreaming, isPaused)
@@ -938,6 +937,8 @@ internal fun AgentConversationMessages(
     // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
     // 上提照常，标签随动画一帧一帧往上让开。
     val shouldLiftTail = shouldFollowBottom
+    // 被盖住但仍露在屏幕上时不走整列离屏裁剪。完全打开时仍按原来的条件。
+    val routeCovered = LocalChatRouteCovered.current
     val shouldClipTail = shouldClipChatTail(
         isStreaming = isStreaming,
         isBottomSettling = isBottomSettling,
@@ -945,7 +946,7 @@ internal fun AgentConversationMessages(
         isUserScrolling = isUserScrolling,
         isUserDragging = isUserDragging,
         navigationActive = messageNavigationJob != null || scrollToMessageId != null,
-        routeCovered = chatRouteCovered,
+        routeCovered = routeCovered,
     )
     // 附件、输入框换行和 IME 改的是实际尾部留白，不是新消息增长。
     // 静态时没有跟底控制器接手；只在仍锚定且视口静止线确实变化时重新停靠。
