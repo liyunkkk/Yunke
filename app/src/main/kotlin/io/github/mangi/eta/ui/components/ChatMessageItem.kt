@@ -896,7 +896,7 @@ private fun AgentMessageBlock(
                     message.renderMarkdown -> {
                         StableMarkdown(
                             content = displayContent,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().retainCompletedDrawLayer(true),
                         )
                     }
                     message.content.isNotBlank() -> {
@@ -904,6 +904,7 @@ private fun AgentMessageBlock(
                             text = message.content,
                             style = MiuixTheme.textStyles.body1,
                             color = MiuixTheme.colorScheme.onSurface,
+                            modifier = Modifier.retainCompletedDrawLayer(true),
                         )
                     }
                 }
@@ -2313,14 +2314,18 @@ private fun ChatMarkdownTable(
                     }
                 }
             }
+            val tableTail = if (revealCoordinator == null) null else bodyRows.asReversed().firstOrNull { row ->
+                row.any { cell -> !cell.containsMarkdownImage() }
+            }
             bodyRows.forEach { rowCells ->
+                val rowSettled = revealCoordinator == null || rowCells !== tableTail
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(0.5.dp)
                         .background(borderColor.copy(alpha = 0.6f)),
                 )
-                Row(modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.fillMaxWidth().retainCompletedDrawLayer(rowSettled)) {
                     rowCells.forEach { cell ->
                         Box(
                             modifier = Modifier
@@ -2686,6 +2691,7 @@ private fun ThinkingRow(
         ) {
             HapticSelectionContainer(
                 modifier = retainDrawLayerWhenIdle()
+                    .retainCompletedDrawLayer(streamingState == null)
                     .toggleProbe(toggleProbeRef, "content"),
             ) {
                 Column {
@@ -2734,6 +2740,19 @@ private fun ThinkingRow(
 }
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
+
+
+/** 完成且不再逐帧变化的内容复用一张离屏纹理。层始终挂着，只切换合成策略，避免插入时重挂。 */
+@Composable
+private fun retainCompletedDrawLayer(enabled: Boolean): Modifier {
+    var heightPx by remember { mutableIntStateOf(0) }
+    val retain = enabled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    return Modifier
+        .onSizeChanged { heightPx = it.height }
+        .graphicsLayer(
+            compositingStrategy = if (retain) CompositingStrategy.Offscreen else CompositingStrategy.Auto,
+        )
+}
 
 /**
  * 展开和收起的时长、缓动不变，只换生长方向：下沿被钉住时从下沿长出，
@@ -2842,8 +2861,10 @@ private fun ToolActivityInline(
         null
     }
 
+    val toolRowSettled = message.status != ToolActivityStatusUi.Running
     Column(
         modifier = modifier
+            .retainCompletedDrawLayer(toolRowSettled)
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .then(
