@@ -198,42 +198,58 @@ internal object StreamDiagnosticGapLabels {
 }
 
 /** Main-thread schedstat. First field is on-CPU, second is run-queue wait. */
-internal class MainThreadSchedstat {
+internal class MainThreadSchedstat(
+    private val path: () -> String = { "/proc/self/task/${android.os.Process.myTid()}/schedstat" },
+) : AutoCloseable {
     private var file: java.io.RandomAccessFile? = null
     private var failed = false
+    // Three unsigned decimal counters fit in 63 bytes. Reuse a bounded buffer: readLine()
+    // performs a separate native read for every byte on Android, twice per Looper dispatch.
+    private val buffer = ByteArray(128)
 
     fun sample(): LongArray? {
         if (failed) return null
         return try {
-            val opened = file ?: java.io.RandomAccessFile(
-                "/proc/self/task/${android.os.Process.myTid()}/schedstat",
-                "r",
-            ).also { file = it }
+            val opened = file ?: java.io.RandomAccessFile(path(), "r").also { file = it }
             opened.seek(0)
-            val text = opened.readLine() ?: return null
-            var first = -1L
-            var second = -1L
-            var index = 0
-            var start = 0
-            var i = 0
-            while (i <= text.length && index < 2) {
-                if (i == text.length || text[i] == ' ') {
-                    if (i > start) {
-                        val value = text.substring(start, i).toLong()
-                        if (index == 0) first = value else second = value
-                        index++
-                    }
-                    start = i + 1
-                }
-                i++
-            }
-            if (first < 0 || second < 0) null else longArrayOf(first, second)
+            parseMainThreadSchedstat(buffer, opened.read(buffer))
         } catch (_: Exception) {
-            failed = true
-            file = null
+            close()
             null
         }
     }
+
+    override fun close() {
+        failed = true
+        val opened = file
+        file = null
+        runCatching { opened?.close() }
+    }
+}
+
+/** Only accept two complete nonnegative counters; a short/malformed read stays unknown. */
+internal fun parseMainThreadSchedstat(bytes: ByteArray, length: Int): LongArray? {
+    if (length <= 0 || length > bytes.size) return null
+    var offset = 0
+    var first = 0L
+    var second = 0L
+    repeat(2) { field ->
+        while (offset < length && bytes[offset].toInt() in 9..32) offset++
+        val start = offset
+        var value = 0L
+        while (offset < length) {
+            val digit = bytes[offset].toInt() - '0'.code
+            if (digit !in 0..9) break
+            if (value > (Long.MAX_VALUE - digit) / 10) return null
+            value = value * 10 + digit
+            offset++
+        }
+        // schedstat separates the second counter from a third one. Without a delimiter
+        // we cannot distinguish a complete value from a short read, so never invent it.
+        if (offset == start || offset == length || bytes[offset].toInt() !in 9..32) return null
+        if (field == 0) first = value else second = value
+    }
+    return longArrayOf(first, second)
 }
 
 internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACITY,
@@ -1245,6 +1261,7 @@ internal object StreamPerformanceDiagnostics {
                     Looper.getMainLooper().setMessageLogging(null)
                     mainLog = null
                 }
+                mainThreadSchedstat.close()
                 handler.removeCallbacks(periodic)
                 lastStop = completion
                 // Drain queued pre-cutoff callbacks on their ORIGINAL worker/session. This is a
