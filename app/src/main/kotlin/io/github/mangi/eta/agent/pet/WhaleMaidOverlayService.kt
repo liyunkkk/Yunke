@@ -27,8 +27,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -175,7 +173,6 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
                     onTap = { openCabinet() },
                     onDismissSpeech = { WhaleMaidController.dismissSpeech(this) },
                     onPoseFinished = { mood -> WhaleMaidController.finishPose(this, mood) },
-                    onMeasured = { width, height -> applyMeasuredSize(width, height) },
                 )
             }
         }
@@ -189,16 +186,28 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
         syncPetWindow()
     }
 
-    private fun horizontalRange(width: Int): IntRange {
-        val screenW = resources.displayMetrics.widthPixels
-        val pet = (128f * snapshot.scale * resources.displayMetrics.density).roundToInt().coerceAtLeast(1)
-        val slack = ((width - pet) / 2).coerceAtLeast(0)
-        return -slack..(screenW - width + slack).coerceAtLeast(-slack)
+    private fun petPixels(): Int =
+        (128f * snapshot.scale * resources.displayMetrics.density).roundToInt().coerceAtLeast(1)
+
+    private fun bubblePixels(): Int = if (snapshot.speechVisible) {
+        (82f * snapshot.scale * resources.displayMetrics.density).roundToInt()
+    } else {
+        0
     }
 
-    private fun verticalRange(height: Int): IntRange {
+    private fun horizontalRange(): IntRange {
+        val screenW = resources.displayMetrics.widthPixels
+        val pet = petPixels()
+        val window = petParams?.width?.takeIf { it > 0 } ?: pet
+        val inset = ((window - pet) / 2).coerceAtLeast(0)
+        return -inset..(screenW - pet - inset).coerceAtLeast(-inset)
+    }
+
+    private fun verticalRange(): IntRange {
         val screenH = resources.displayMetrics.heightPixels
-        return 0..(screenH - height).coerceAtLeast(0)
+        val pet = petPixels()
+        val bubble = bubblePixels()
+        return -bubble..(screenH - pet - bubble).coerceAtLeast(-bubble)
     }
 
     private fun syncPetWindow() {
@@ -207,25 +216,21 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
         val params = petParams ?: return
         if (dragging) return
         val density = resources.displayMetrics.density
-        val screenW = resources.displayMetrics.widthPixels
         val screenH = resources.displayMetrics.heightPixels
+        val xRange = horizontalRange()
+        val yRange = verticalRange()
         if (params.width <= 0 || params.height <= 0) {
-            val pet = (128f * snapshot.scale * density).roundToInt().coerceAtLeast(1)
             if (snapshot.x < 0 || snapshot.y < 0) {
-                params.x = (screenW - pet - (16 * density).roundToInt()).coerceAtLeast(0)
-                params.y = (screenH * 0.62f).roundToInt().coerceIn(0, (screenH - pet).coerceAtLeast(0))
+                params.x = (xRange.last - (16 * density).roundToInt()).coerceIn(xRange.first, xRange.last)
+                params.y = (screenH * 0.62f).roundToInt().coerceIn(yRange.first, yRange.last)
                 WhaleMaidController.setPosition(this, params.x, params.y)
             } else {
-                // A fresh window is still WRAP_CONTENT here. Restoring the saved point
-                // keeps it from flashing at the top-left until the first measurement.
-                params.x = snapshot.x.coerceIn(0, (screenW - pet).coerceAtLeast(0))
-                params.y = snapshot.y.coerceIn(0, (screenH - pet).coerceAtLeast(0))
+                params.x = snapshot.x.coerceIn(xRange.first, xRange.last)
+                params.y = snapshot.y.coerceIn(yRange.first, yRange.last)
             }
             runCatching { wm.updateViewLayout(view, params) }
             return
         }
-        val xRange = horizontalRange(params.width)
-        val yRange = verticalRange(params.height)
         if (snapshot.x < 0 || snapshot.y < 0) {
             params.x = (xRange.last - (16 * density).roundToInt()).coerceIn(xRange.first, xRange.last)
             params.y = (screenH * 0.62f).roundToInt().coerceIn(yRange.first, yRange.last)
@@ -237,30 +242,13 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
         runCatching { wm.updateViewLayout(view, params) }
     }
 
-    private fun applyMeasuredSize(width: Int, height: Int) {
-        val wm = windowManager ?: return
-        val view = petView ?: return
-        val params = petParams ?: return
-        if (width <= 0 || height <= 0 || dragging) return
-        if (params.width == width && params.height == height) return
-        val grew = params.height in 1 until height
-        if (grew) params.y = (params.y - (height - params.height)).coerceAtLeast(0)
-        params.width = width
-        params.height = height
-        val xRange = horizontalRange(width)
-        val yRange = verticalRange(height)
-        params.x = params.x.coerceIn(xRange.first, xRange.last)
-        params.y = params.y.coerceIn(yRange.first, yRange.last)
-        runCatching { wm.updateViewLayout(view, params) }
-    }
-
     private fun moveBy(dx: Int, dy: Int) {
         val wm = windowManager ?: return
         val view = petView ?: return
         val params = petParams ?: return
         dragging = true
-        val xRange = horizontalRange(params.width)
-        val yRange = verticalRange(params.height)
+        val xRange = horizontalRange()
+        val yRange = verticalRange()
         params.x = (params.x + dx).coerceIn(xRange.first, xRange.last)
         params.y = (params.y + dy).coerceIn(yRange.first, yRange.last)
         runCatching { wm.updateViewLayout(view, params) }
@@ -401,7 +389,6 @@ private fun WhaleMaidPet(
     onTap: () -> Unit,
     onDismissSpeech: () -> Unit,
     onPoseFinished: (String) -> Unit,
-    onMeasured: (Int, Int) -> Unit,
 ) {
     val pet = 128.dp * snapshot.scale
     val bubbleAlpha = androidx.compose.runtime.remember { Animatable(1f) }
@@ -421,10 +408,7 @@ private fun WhaleMaidPet(
         delay(1500)
         onPoseFinished(mood)
     }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.onSizeChanged { onMeasured(it.width, it.height) },
-    ) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
         if (snapshot.speechVisible && snapshot.speech.isNotBlank()) {
             Text(
                 text = snapshot.speech,
@@ -444,7 +428,7 @@ private fun WhaleMaidPet(
         WhaleMaidSprite(
             mood = snapshot.mood,
             modifier = Modifier
-                .requiredSize(pet)
+                .size(pet)
                 .pointerInput(snapshot.mood) {
                     awaitEachGesture {
                         val down = awaitFirstDown()
