@@ -1414,9 +1414,22 @@ private fun FrozenMarkdownElement(
     diagnosticAttribution: StreamDiagnosticAttribution? = null,
     preparedBlock: PreparedMarkdownBlock? = null,
 ) {
-    // Keep completed blocks in independent RenderNode display lists. Tail draw
-    // invalidation must not re-record every paragraph in a tall message.
-    Box(Modifier.graphicsLayer()
+    // A plain graphics layer still redraws when its parent records. Completed
+    // blocks keep one layer and switch to an offscreen texture once they stop
+    // changing, so the tail does not re-issue their text commands. The layer
+    // stays mounted: inserting it only after freeze would remount the block.
+    // Content above the retained-texture limit stays a plain layer; clipping
+    // it would change the visible text. The tail is never cached.
+    var retainedHeightPx by remember { mutableIntStateOf(0) }
+    val retainTexture = freeze && retainedHeightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    Box(Modifier.graphicsLayer(
+            compositingStrategy = if (retainTexture) {
+                CompositingStrategy.Offscreen
+            } else {
+                CompositingStrategy.Auto
+            },
+        )
+        .onSizeChanged { retainedHeightPx = it.height }
         .streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure", diagnosticAttribution)
         .drawWithContent {
             StreamPerformanceDiagnostics.withRenderAttribution(diagnosticAttribution) {
