@@ -87,7 +87,7 @@ internal class RootShellDeviceController(
         val focused: Boolean,
         val editable: Boolean,
         val password: Boolean,
-        val enabled: Boolean
+        val enabled: Boolean,
         val checked: Boolean? = null,
         val selected: Boolean = false,
         val hint: String = "",
@@ -876,7 +876,7 @@ internal class RootShellDeviceController(
                             focused = focused,
                             editable = parser.attr("class").contains("EditText", ignoreCase = true),
                             password = parser.attr("password").toBoolean(),
-                            enabled = enabled
+                            enabled = enabled,
                             checked = checked,
                             selected = selected,
                             hint = "",
@@ -1323,7 +1323,7 @@ internal class RootShellDeviceController(
             focused = focused,
             editable = editable,
             password = password,
-            enabled = enabled
+            enabled = enabled,
             checked = checked,
             selected = selected,
             hint = hint,
