@@ -77,6 +77,10 @@ internal object WhaleMaidController {
         WhaleMaidStore.dismissSpeech(context.applicationContext)
     }
 
+    fun finishEating(context: Context) {
+        WhaleMaidStore.finishEating(context.applicationContext)
+    }
+
     fun setScale(context: Context, scale: Float) {
         WhaleMaidStore.setScale(context.applicationContext, scale)
     }

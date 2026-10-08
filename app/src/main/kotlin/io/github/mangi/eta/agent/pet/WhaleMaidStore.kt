@@ -143,6 +143,14 @@ internal object WhaleMaidStore {
         publish(context)
     }
 
+    fun finishEating(context: Context) {
+        val preferences = prefs(context)
+        if (preferences.getBoolean(KEY_THINKING, false)) return
+        if (preferences.getString(KEY_MOOD, "idle") != "eating") return
+        preferences.edit().putString(KEY_MOOD, "idle").apply()
+        publish(context)
+    }
+
     fun dismissSpeech(context: Context) {
         prefs(context).edit()
             .putBoolean(KEY_SPEECH_VISIBLE, false)

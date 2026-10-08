@@ -11,7 +11,10 @@ import android.view.View
 import android.view.WindowManager
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -167,6 +170,7 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
                     },
                     onTap = { openCabinet() },
                     onDismissSpeech = { WhaleMaidController.dismissSpeech(this) },
+                    onEatingFinished = { WhaleMaidController.finishEating(this) },
                 )
             }
         }
@@ -353,8 +357,25 @@ private fun WhaleMaidPet(
     onDragEnd: () -> Unit,
     onTap: () -> Unit,
     onDismissSpeech: () -> Unit,
+    onEatingFinished: () -> Unit,
 ) {
     val pet = 128.dp * snapshot.scale
+    val bubbleAlpha = androidx.compose.runtime.remember { Animatable(1f) }
+    LaunchedEffect(snapshot.speechVisible, snapshot.speech) {
+        if (!snapshot.speechVisible || snapshot.speech.isBlank()) {
+            bubbleAlpha.snapTo(1f)
+            return@LaunchedEffect
+        }
+        bubbleAlpha.snapTo(1f)
+        delay(2600)
+        bubbleAlpha.animateTo(0f, tween(durationMillis = 500))
+        onDismissSpeech()
+    }
+    LaunchedEffect(snapshot.mood, snapshot.thinking) {
+        if (snapshot.thinking || snapshot.mood != "eating") return@LaunchedEffect
+        delay(1500)
+        onEatingFinished()
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxSize()) {
         if (snapshot.speechVisible && snapshot.speech.isNotBlank()) {
             Text(
@@ -363,6 +384,7 @@ private fun WhaleMaidPet(
                 fontSize = (13f * snapshot.scale).sp,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier
+                    .graphicsLayer { alpha = bubbleAlpha.value }
                     .padding(bottom = 6.dp)
                     .width(220.dp * snapshot.scale)
                     .background(Color.White, RoundedCornerShape(12.dp))
