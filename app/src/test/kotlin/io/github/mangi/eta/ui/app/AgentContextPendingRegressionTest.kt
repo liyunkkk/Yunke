@@ -574,8 +574,14 @@ class AgentContextPendingRegressionTest {
     }
 
     companion object {
-        private fun call(target: Any, name: String, vararg args: Any?): Any? =
-            target.javaClass.declaredMethods.single { it.name == name && it.parameterCount == args.size }
-                .apply { isAccessible = true }.invoke(target, *args)
+        private fun call(target: Any, name: String, vararg args: Any?): Any? {
+            val method = target.javaClass.declaredMethods.single { it.name == name && it.parameterCount >= args.size }
+            val values = if (method.parameterCount == args.size) args else {
+                val extra = method.parameterTypes.drop(args.size)
+                require(extra.all { it == Boolean::class.javaPrimitiveType })
+                args + Array(extra.size) { false }
+            }
+            return method.apply { isAccessible = true }.invoke(target, *values)
+        }
     }
 }
