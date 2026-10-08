@@ -13,6 +13,7 @@ import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Computer
@@ -118,6 +119,7 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "search_contacts" -> Icons.Rounded.Contacts
     "search_call_history" -> Icons.Rounded.Phone
     "ask_user", "search_messages" -> Icons.Rounded.ChatBubble
+    "todowrite" -> Icons.Rounded.Checklist
     "search_media", "search_qq_chat_images", "search_wechat_chat_images" ->
         Icons.Rounded.Image
     "search_audio" -> Icons.Rounded.MusicNote
