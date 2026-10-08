@@ -896,7 +896,7 @@ private fun AgentMessageBlock(
                     message.renderMarkdown -> {
                         StableMarkdown(
                             content = displayContent,
-                            modifier = Modifier.fillMaxWidth().completedContentDrawLayer(true),
+                            modifier = completedContentDrawLayer(Modifier.fillMaxWidth(), true),
                         )
                     }
                     message.content.isNotBlank() -> {
@@ -904,7 +904,7 @@ private fun AgentMessageBlock(
                             text = message.content,
                             style = MiuixTheme.textStyles.body1,
                             color = MiuixTheme.colorScheme.onSurface,
-                            modifier = Modifier.completedContentDrawLayer(true),
+                            modifier = completedContentDrawLayer(Modifier, true),
                         )
                     }
                 }
@@ -2325,7 +2325,7 @@ private fun ChatMarkdownTable(
                         .height(0.5.dp)
                         .background(borderColor.copy(alpha = 0.6f)),
                 )
-                Row(modifier = Modifier.fillMaxWidth().completedContentDrawLayer(rowSettled)) {
+                Row(modifier = completedContentDrawLayer(Modifier.fillMaxWidth(), rowSettled)) {
                     rowCells.forEach { cell ->
                         Box(
                             modifier = Modifier
@@ -2690,8 +2690,7 @@ private fun ThinkingRow(
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             HapticSelectionContainer(
-                modifier = retainDrawLayerWhenIdle()
-                    .completedContentDrawLayer(streamingState == null)
+                modifier = completedContentDrawLayer(retainDrawLayerWhenIdle(), streamingState == null)
                     .toggleProbe(toggleProbeRef, "content"),
             ) {
                 Column {
@@ -2852,7 +2851,8 @@ private fun ToolActivityInline(
     val toolRowSettled = message.status != ToolActivityStatusUi.Running
     Column(
         modifier = modifier
-            .completedContentDrawLayer(toolRowSettled)
+            
+            .let { completedContentDrawLayer(it, toolRowSettled) }
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .then(
