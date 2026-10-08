@@ -23,7 +23,7 @@ val LocalChatUiActive = staticCompositionLocalOf { true }
 @Composable
 internal fun completedContentDrawLayer(enabled: Boolean): Modifier {
     var heightPx by remember { mutableIntStateOf(0) }
-    val retain = enabled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    val retain = enabled && heightPx in 1..8192
     return Modifier
         .onSizeChanged { heightPx = it.height }
         .graphicsLayer(
