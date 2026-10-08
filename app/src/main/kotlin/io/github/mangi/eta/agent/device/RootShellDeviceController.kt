@@ -1112,32 +1112,9 @@ internal class RootShellDeviceController(
         }
     }
 
-    private fun List<UiNode>.toJsonArray(): JSONArray =
-        JSONArray().also { array ->
-            forEach { node -> array.put(node.toJson()) }
-        }
+    private fun List<UiNode>.toJsonArray(): JSONArray = DeviceNodeProjection.json(this)
 
-    private fun UiNode.toJson(): JSONObject =
-        JSONObject()
-            .put("index", index)
-            .put("bounds", bounds.toShortString())
-            .put("center", JSONObject().put("x", centerX).put("y", centerY))
-            .also { json ->
-                text.takeIf { it.isNotEmpty() }?.let { json.put("text", it) }
-                desc.takeIf { it.isNotEmpty() }?.let { json.put("desc", it) }
-                className.takeIf { it.isNotEmpty() }?.let { json.put("class", it.substringAfterLast('.')) }
-                viewId.takeIf { it.isNotEmpty() }?.let { json.put("view_id", it) }
-                if (clickable) json.put("clickable", true)
-                if (longClickable) json.put("long_clickable", true)
-                if (scrollable) json.put("scrollable", true)
-                if (focused) json.put("focused", true)
-                if (editable) json.put("editable", true)
-                if (password) json.put("password", true)
-                if (!enabled) json.put("enabled", false)
-                checked?.let { json.put("checked", it) }
-                if (selected) json.put("selected", true)
-                hint.takeIf { it.isNotEmpty() }?.let { json.put("hint", it) }
-            }
+    private fun UiNode.toJson(): JSONObject = DeviceNodeProjection.nodeJson(this)
 
     private fun XmlPullParser.attr(name: String): String =
         getAttributeValue(null, name).orEmpty()
@@ -1309,25 +1286,7 @@ internal class RootShellDeviceController(
         }
 
     private fun AgentAccessibilityService.UiNode.toUiNode(): UiNode =
-        UiNode(
-            index = index,
-            text = text,
-            desc = desc,
-            className = className,
-            packageName = packageName,
-            viewId = viewId,
-            bounds = bounds,
-            clickable = clickable,
-            longClickable = longClickable,
-            scrollable = scrollable,
-            focused = focused,
-            editable = editable,
-            password = password,
-            enabled = enabled,
-            checked = checked,
-            selected = selected,
-            hint = hint,
-        )
+        DeviceNodeProjection.projectOne(this)
 
     private data class ShellTextResult(val exitCode: Int, val output: String)
     private data class ShellBytesResult(val exitCode: Int, val output: ByteArray, val stderr: String)

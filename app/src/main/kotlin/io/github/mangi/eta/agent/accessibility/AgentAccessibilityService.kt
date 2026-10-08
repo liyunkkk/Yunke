@@ -150,9 +150,27 @@ open class AgentAccessibilityService : AccessibilityService() {
      * 一次观察与其节点句柄组成不可变快照。调用方必须把同一实例传回节点动作，
      * 避免其他运行或 wait_for_text 的临时观察改写 index 含义。
      */
-    fun captureNodeSnapshot(maxNodes: Int): NodeSnapshot? = runOnMainSync {
+    /**
+     * 默认 display 用 rootInActiveWindow；其它 display（例如后台副屏）取该 display 上聚焦或活跃窗口的根。
+     * 取不到就返回 null，由调用方回退到截图路径，绝不回退主屏。
+     */
+    private fun rootForDisplay(displayId: Int): AccessibilityNodeInfo? {
+        if (displayId == android.view.Display.DEFAULT_DISPLAY) return rootInActiveWindow
+        val windows = windowsOnAllDisplays.get(displayId).orEmpty()
+        val applicationWindows = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        val window = applicationWindows.firstOrNull { it.isFocused }
+            ?: windows.firstOrNull { it.isActive }
+            ?: applicationWindows.firstOrNull()
+            ?: return null
+        return runCatching { window.root }.getOrNull()
+    }
+
+    fun captureNodeSnapshot(
+        maxNodes: Int,
+        displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+    ): NodeSnapshot? = runOnMainSync {
         val startedAt = SystemClock.elapsedRealtime()
-        val root = rootInActiveWindow ?: return@runOnMainSync null
+        val root = rootForDisplay(displayId) ?: return@runOnMainSync null
         val nodeLimit = maxNodes.coerceIn(1, 120)
         val indexedNodes = mutableListOf<IndexedNode>()
         val traversal = NodeTraversalState(
@@ -179,7 +197,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             AndroidAgentLogger.debug {
                 "Agent accessibility action=observe_tree observation=${snapshot.id} " +
                     "nodes=${snapshot.nodes.size} visited=${traversal.visitedNodes} " +
-                    "truncated=${traversal.truncated} " +
+                    "truncated=${traversal.truncated} display=$displayId " +
                     "elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
             }
         }

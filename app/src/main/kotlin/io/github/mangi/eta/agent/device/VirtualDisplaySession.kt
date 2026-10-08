@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.ClipData
 import android.content.ClipboardManager
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.core.AndroidAgentLogger
 import org.json.JSONArray
@@ -12,6 +13,8 @@ import org.json.JSONObject
 /** Single-device owner. Recovery errors never authorize a second display. */
 internal object VirtualDisplaySession {
     const val NOT_READY = "VIRTUAL_DISPLAY_HANDOFF_NOT_READY"
+    /** 副屏一次观察附带的最大节点数：只为节点动作服务，取一半控制开销。 */
+    private const val NODE_LIMIT = 40
     private class Session(var client: VirtualDisplayOwnerClient? = null, var phase: String = "starting") {
         val kept = linkedSetOf<Int>()
         val packages = linkedMapOf<String, Set<Int>>()
@@ -794,6 +797,25 @@ internal object VirtualDisplaySession {
                     return text(reply(false,"FRAME_ENCODE_FAILED",e.javaClass.simpleName))
                 }
                 s.observation.record(capture.contract)
+                // 副屏节点来自 App 自身的无障碍服务（按 display 取树）；取不到时保持纯截图模式，坐标契约不变。
+                val elementObservation = runCatching {
+                    val accessibility = AgentAccessibilityService.current()
+                    if (accessibility == null) {
+                        null
+                    } else {
+                        accessibility.captureNodeSnapshot(NODE_LIMIT, c.displayId)?.let { snapshot ->
+                            RootShellDeviceController.ElementObservation(
+                                id = snapshot.id,
+                                source = RootShellDeviceController.ElementSource.ACCESSIBILITY,
+                                packageName = snapshot.packageName,
+                                windowId = snapshot.windowId,
+                                nodes = DeviceNodeProjection.project(snapshot.nodes),
+                                maxNodes = NODE_LIMIT,
+                                truncated = snapshot.truncated,
+                            )
+                        }
+                    }
+                }.getOrNull()
                 data.remove("data");data.remove("width");data.remove("height");data.remove("bytes");data.remove("format")
                 return AgentModelClient.ToolResult(
                     data.put("tool",tool)
@@ -803,8 +825,19 @@ internal object VirtualDisplaySession {
                             .put("mime_type",capture.image.mimeType)
                             .put("bytes",capture.image.bytes))
                         .put("coordinate_contract",capture.contract.toContractJson())
-                        .put("ui_nodes",JSONArray())
-                        .put("note","虚拟屏截图坐标默认按 screenshot 空间映射到副屏像素；screen 空间显式直通；仅截图模式，不支持节点操作")
+                        .put("observation_id", elementObservation?.id ?: JSONObject.NULL)
+                        .put("observation_source", elementObservation?.source?.wireName ?: JSONObject.NULL)
+                        .put("node_limit", NODE_LIMIT)
+                        .put("ui_tree_truncated", elementObservation?.truncated ?: false)
+                        .put("ui_nodes", elementObservation?.let { DeviceNodeProjection.json(it.nodes) } ?: JSONArray())
+                        .put(
+                            "note",
+                            if (elementObservation != null && elementObservation.nodes.isNotEmpty()) {
+                                "虚拟屏节点来自无障碍服务（display ${c.displayId}）；坐标为截图空间映射到副屏像素，screen 空间显式直通"
+                            } else {
+                                "本次未取到副屏节点（应用窗口可能未就绪或无可访问子树）；仍可用截图+坐标操作，坐标为截图空间映射到副屏像素"
+                            }
+                        )
                         .toString(),
                     listOf(capture.image))
             }
