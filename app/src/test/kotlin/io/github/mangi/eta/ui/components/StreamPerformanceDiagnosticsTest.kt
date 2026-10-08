@@ -360,16 +360,18 @@ class StreamPerformanceDiagnosticsTest {
         val log = MainThreadMessageLog(capacity = 2, onMessage = { _, _, frame, _, _, before, after ->
             if (frame) callback = listOf(before, after)
         })
-        log.onLine(">>>>> Dispatching to Handler (android.view.Choreographer\$FrameHandler) {1} x", 1_000_000)
+        val frame = ">>>>> Dispatching to Handler (android.view.Choreographer\$FrameHandler) {1} " +
+            "android.view.Choreographer\$FrameDisplayEventReceiver@2: 0"
+        log.onLine(frame, 1_000_000)
         log.addCovered("list.measure", 4_000_000, 6_000_000, 2_000_000)
         log.addCovered("render.measure", 7_000_000, 9_000_000, 2_000_000)
-        log.onLine("<<<<< Finished", 12_000_000)
+        log.onLine("<<<<< Finished to Handler (android.view.Choreographer\$FrameHandler) {1} x", 12_000_000)
         val sample = log.timingsBetween(0, 20_000_000).single()
         assertEquals(3_000_000L, sample.beforeFirstNs)
         assertEquals(3_000_000L, sample.afterLastNs)
         assertEquals(listOf(3_000_000L, 3_000_000L), callback)
-        log.onLine(">>>>> Dispatching to Handler (android.view.Choreographer\$FrameHandler) {1} x", 20_000_000)
-        log.onLine("<<<<< Finished", 28_000_000)
+        log.onLine(frame, 20_000_000)
+        log.onLine("<<<<< Finished to Handler (android.view.Choreographer\$FrameHandler) {1} x", 28_000_000)
         val untouched = log.timingsBetween(20_000_000, 30_000_000).single()
         assertEquals(-1L, untouched.beforeFirstNs)
         assertEquals(-1L, untouched.afterLastNs)
