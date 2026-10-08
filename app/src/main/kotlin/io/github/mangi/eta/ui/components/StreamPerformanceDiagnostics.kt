@@ -193,7 +193,7 @@ internal class AsyncDiagnosticOutput(
 /** New stages are registered here, never inferred from callback names or payloads. */
 internal object StreamDiagnosticGapLabels {
     val stages: Set<String> = setOf(
-        "main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw",
+        "main.uninstrumented", "main.nonReveal", "main.beforeFirst", "main.afterLast", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw",
     )
 }
 
@@ -237,7 +237,7 @@ internal class MainThreadSchedstat {
 }
 
 internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACITY,
-    private val onMessage: ((Long, Long, Boolean, Long, Long) -> Unit)? = null,
+    private val onMessage: ((Long, Long, Boolean, Long, Long, Long, Long) -> Unit)? = null,
     private val cpuClock: (() -> Long)? = null,
     private val schedstat: (() -> LongArray?)? = null) {
     @Volatile var overwritten = 0L
@@ -274,11 +274,16 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
     private var openRevealNs = 0L
     private var openTopStage: String? = null
     private var openTopNs = 0L
+    private var openFirstBeginNs = 0L
+    private var openLastEndNs = 0L
+    private var openMeasured = false
     private val covered = LongArray(capacity)
     private val reveals = LongArray(capacity)
     private val isFrames = BooleanArray(capacity)
     private val tops = arrayOfNulls<String>(capacity)
     private val topStages = arrayOfNulls<String>(capacity)
+    private val beforeFirst = LongArray(capacity) { -1L }
+    private val afterLast = LongArray(capacity) { -1L }
     @Volatile var frameMessages = 0L
         private set
     @Volatile var otherMessages = 0L
@@ -299,6 +304,9 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             openRevealNs = 0L
             openTopStage = null
             openTopNs = 0L
+            openFirstBeginNs = 0L
+            openLastEndNs = 0L
+            openMeasured = false
             return
         }
         if (!line.startsWith("<<<<<")) return
@@ -323,7 +331,9 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
         val duration = (now - started).coerceAtLeast(0)
         val coveredNs = openCoveredNs.coerceIn(0, duration)
         val revealNs = openRevealNs.coerceIn(0, coveredNs)
-        onMessage?.invoke(started, now, isFrame, coveredNs, revealNs)
+        val beforeFirstNs = if (openMeasured) (openFirstBeginNs - started).coerceAtLeast(0) else -1L
+        val afterLastNs = if (openMeasured) (now - openLastEndNs).coerceAtLeast(0) else -1L
+        onMessage?.invoke(started, now, isFrame, coveredNs, revealNs, beforeFirstNs, afterLastNs)
         if (duration < SLOW_MAIN_MESSAGE_NS) return
         synchronized(this) {
             starts[next] = started
@@ -337,14 +347,19 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             isFrames[next] = isFrame
             tops[next] = openTopStage?.let { "$it:${openTopNs / 1000}" }
             topStages[next] = openTopStage
+            beforeFirst[next] = if (openMeasured) (openFirstBeginNs - started).coerceAtLeast(0) else -1L
+            afterLast[next] = if (openMeasured) (now - openLastEndNs).coerceAtLeast(0) else -1L
             next = (next + 1) % capacity
             if (size < capacity) size++ else overwritten++
         }
     }
 
     /** 主线程上最外层 measure 结束时调用，计入当前这条消息。 */
-    internal fun addCovered(stage: String, ns: Long) {
+    internal fun addCovered(stage: String, beginNs: Long, endNs: Long, ns: Long) {
         if (!messageOpen) return
+        if (!openMeasured || beginNs < openFirstBeginNs) openFirstBeginNs = beginNs
+        if (!openMeasured || endNs > openLastEndNs) openLastEndNs = endNs
+        openMeasured = true
         openCoveredNs += ns
         if (ns > openTopNs) {
             openTopNs = ns
@@ -367,7 +382,8 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             out += DiagnosticMainMessageRecord(starts[slot], ends[slot], isFrames[slot],
                 covered[slot], reveals[slot], cpus[slot],
                 schedRunNs = schedRuns[slot], schedRunnableNs = schedRunnables[slot],
-                topStage = topStages[slot])
+                topStage = topStages[slot],
+                beforeFirstNs = beforeFirst[slot], afterLastNs = afterLast[slot])
         }
         partialMessage?.takeIf { it.endNs >= fromNs && it.beginNs <= toNs }?.let { out += it }
         return out
@@ -885,7 +901,7 @@ internal object StreamPerformanceDiagnostics {
             }
             if (onMain && enabledSession() === session) {
                 // Only synchronous outermost scopes count; nested inclusive spans are not added twice.
-                if (previous?.insideMeasure != true) mainLog?.addCovered(label, elapsed)
+                if (previous?.insideMeasure != true) mainLog?.addCovered(label, started, ended, elapsed)
                 if (revealScope && previous?.insideReveal != true) mainLog?.addReveal(elapsed)
             }
         }
@@ -905,12 +921,16 @@ internal object StreamPerformanceDiagnostics {
         // 整个诊断会话都记主线程慢消息：点击窗口和窗口外的尖峰都要能对上当时主线程在干什么。
         // 这是项目里唯一设置 Looper 日志的地方；会话结束时恢复为 null。
         val mainThreadSchedstat = MainThreadSchedstat()
-        val log = MainThreadMessageLog(onMessage = { begin, end, frame, covered, reveal ->
+        val log = MainThreadMessageLog(onMessage = { begin, end, frame, covered, reveal, before, after ->
             if (!session.closed && AppFileLogger.isEnabled()) {
                 session.record(if (frame) "main.doFrame" else "main.message", end - begin, 0)
                 // These are subsets of dispatch wall time, not extra frame components or CPU time.
                 session.record("main.uninstrumented", (end - begin - covered).coerceAtLeast(0), 0)
                 session.record("main.nonReveal", (end - begin - reveal).coerceAtLeast(0), 0)
+                if (frame && before >= 0 && after >= 0) {
+                    session.record("main.beforeFirst", before, 0)
+                    session.record("main.afterLast", after, 0)
+                }
             }
         }, cpuClock = { Debug.threadCpuTimeNanos() }, schedstat = { mainThreadSchedstat.sample() })
         mainLog = log
@@ -1033,6 +1053,7 @@ internal object StreamPerformanceDiagnostics {
                     output.write("$prefix v=2 type=mainMessage beginNs=${message.beginNs} endNs=${message.endNs} " +
                         "frameDispatch=${message.frameDispatch} partial=${message.partial} coveredNs=${message.coveredNs} revealNs=${message.revealNs} " +
                         "uninstrumentedNs=${message.uninstrumentedNs} nonRevealNs=${message.nonRevealNs} " +
+                        "beforeFirstNs=${message.beforeFirstNs} afterLastNs=${message.afterLastNs} " +
                         "cpuNs=${message.cpuNs} wallMinusCpuNs=${if (message.cpuNs >= 0) (message.endNs - message.beginNs - message.cpuNs).coerceAtLeast(0) else -1} " +
                         "${message.schedstatFields()} " +
                         "cpuAccounting=threadCpuCounterNotBlockedDiagnosis accounting=dispatchSubsetsNotAdditive")
@@ -1055,6 +1076,7 @@ internal object StreamPerformanceDiagnostics {
                             "relation=${if (overlap > 0) "overlap" else "preceding"} frameDispatch=${message.frameDispatch} " +
                             "coveredNs=${message.coveredNs} uninstrumentedNs=${message.uninstrumentedNs} " +
                             "topStage=${message.topStage ?: "none"} " +
+                            "beforeFirstNs=${message.beforeFirstNs} afterLastNs=${message.afterLastNs} " +
                             "cpuNs=${message.cpuNs} wallMinusCpuNs=${if (message.cpuNs >= 0) (message.endNs - message.beginNs - message.cpuNs).coerceAtLeast(0) else -1} " +
                             "${message.schedstatFields()} " +
                             "accounting=dispatchWallNotFrameParts cpuAccounting=threadCpuCounterNotBlockedDiagnosis " +

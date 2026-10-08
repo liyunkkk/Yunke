@@ -154,6 +154,7 @@ internal data class DiagnosticMainMessageRecord(
     val coveredNs: Long, val revealNs: Long, val cpuNs: Long = -1, val partial: Boolean = false,
     val schedRunNs: Long = -1, val schedRunnableNs: Long = -1,
     val topStage: String? = null,
+    val beforeFirstNs: Long = -1, val afterLastNs: Long = -1,
 ) {
     val uninstrumentedNs: Long get() = endNs - beginNs - coveredNs
     val nonRevealNs: Long get() = endNs - beginNs - revealNs

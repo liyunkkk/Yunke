@@ -17,7 +17,7 @@ class StreamGapDiagnosticsContract(unittest.TestCase):
 
     def test_new_labels_are_registered_only_as_central_literals(self):
         registry = self.stream.split("internal object StreamDiagnosticGapLabels {", 1)[1].split("\n}", 1)[0]
-        expected = {"main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"}
+        expected = {"main.uninstrumented", "main.nonReveal", "main.beforeFirst", "main.afterLast", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"}
         self.assertEqual(set(re.findall(r'"([a-zA-Z.]+)"', registry)), expected)
         self.assertNotIn("$", registry)
         self.assertIn("label in StreamDiagnosticGapLabels.stages", self.bounded)

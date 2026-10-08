@@ -438,7 +438,7 @@ class FrameSpanCorrelationTest {
     @Test fun openDispatchAtStopIsPartialAndNeverHasFabricatedCpu() {
         val log = MainThreadMessageLog(cpuClock = { 42L })
         log.onLine(">>>>> Dispatching to Handler (test.Handler) {1} test.Callback@1: 0", 0)
-        log.addCovered("row.measure", 10)
+        log.addCovered("row.measure", 0, 10, 10)
         log.closeOpen(100)
         val partial = log.timingsBetween(0, 100).single()
         assertTrue(partial.partial); assertEquals(-1L, partial.cpuNs)
