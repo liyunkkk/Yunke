@@ -100,6 +100,7 @@ internal fun whaleMaidPrompt(
         3. 若是投喂事件，请必须对主人投喂的具体食物进行针对性评价，表达品尝感受、感谢或傲娇吐槽，mood 优先选 eating 或 happy。
         4. 全程绝对禁止出现任何 emoji 表情符号，绝对禁止任何 markdown 代码块！
         5. mood 只能从 idle, hungry, happy, angry, eating, scared, sad, thinking 八个词中选取一个。
+        6. 不要复述会话标题、文件名或任务原句，只说一句评价或感受。
     """.trimIndent()
 }
 
@@ -122,15 +123,36 @@ internal fun parseWhaleMaidReaction(
     val fallbackSpeech = if (eventType == "feed") {
         "品尝了${foodName.ifBlank { "米饭" }}，谢谢主人。"
     } else {
-        "《${sessionTitle.ifBlank { "任务" }}》顺利搞定了。"
+        whaleMaidWorkFallback(satiety)
     }
     val mood = parsed?.first?.takeIf { it in WHALE_MAID_MOODS } ?: fallbackMood
-    val speech = stripWhaleMaidEmoji(parsed?.second.orEmpty())
+    val spoken = stripWhaleMaidEmoji(parsed?.second.orEmpty())
         .replace('\n', ' ')
         .trim()
         .take(25)
-        .ifBlank { fallbackSpeech.take(25) }
+    val speech = if (spoken.isBlank() || echoesSessionTitle(spoken, sessionTitle)) {
+        fallbackSpeech.take(25)
+    } else {
+        spoken
+    }
     return WhaleMaidReaction(mood, speech)
+}
+
+private fun whaleMaidWorkFallback(satiety: Int): String = when (whaleMaidSatietyBand(satiety)) {
+    WhaleMaidSatietyBand.STARVING -> "搞定了，可是本鲸快饿扁了。"
+    WhaleMaidSatietyBand.HUNGRY -> "做完了，主人该投喂了。"
+    WhaleMaidSatietyBand.PECKISH -> "顺利收工，还能再吃点。"
+    WhaleMaidSatietyBand.FULL -> "搞定了，主人真能干。"
+    WhaleMaidSatietyBand.STUFFED -> "做完啦，别再喂我了。"
+}
+
+private fun echoesSessionTitle(speech: String, title: String): Boolean {
+    val bare = title.trim()
+    if (bare.length < 4) return false
+    val normalized = speech.trim().trim('《', '》', '“', '”', '"', '「', '」', '。')
+    if (normalized == bare || speech.trim() == "《$bare》") return true
+    // A 25-character clip of a long title still looks like the title itself.
+    return normalized.startsWith(bare) || (bare.startsWith(normalized) && normalized.length >= 8)
 }
 
 private fun extractReactionJson(raw: String): Pair<String, String>? {
