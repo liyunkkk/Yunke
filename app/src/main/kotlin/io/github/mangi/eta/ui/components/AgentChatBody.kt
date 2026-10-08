@@ -227,8 +227,15 @@ internal fun AgentChatBody(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val chatUiActive = LocalChatUiActive.current
+    val frozenChatSnapshot = remember(chatUiActive) {
+        if (chatUiActive) null else Triple(messages, isStreaming, isPaused)
+    }
+    val uiMessages = frozenChatSnapshot?.first ?: messages
+    val uiStreaming = frozenChatSnapshot?.second ?: isStreaming
+    val uiPaused = frozenChatSnapshot?.third ?: isPaused
     io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
-        enabled = !isPaused,
+        enabled = chatUiActive && !isPaused,
         conversationId = collaborationConversationId,
     )
     SideEffect { StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong()) }
@@ -248,11 +255,11 @@ internal fun AgentChatBody(
             .distinctUntilChanged()
     }.collectAsState(initial = Triple(false, null, null))
     val visibleMessagesCache = remember { AgentVisibleMessagesCache() }
-    val visibleMessages = remember(messages, messageEdit?.targetMessageId) {
-        visibleMessagesCache.project(messages, messageEdit?.targetMessageId)
+    val visibleMessages = remember(uiMessages, messageEdit?.targetMessageId) {
+        visibleMessagesCache.project(uiMessages, messageEdit?.targetMessageId)
     }
-    LaunchedEffect(visibleMessages, isStreaming) {
-        val last = visibleMessages.filterIsInstance<AgentMessageUi>().lastOrNull()
+    LaunchedEffect(messages, isStreaming) {
+        val last = messages.filterIsInstance<AgentMessageUi>().lastOrNull()
         val speechText = last?.content.orEmpty()
         voiceController.updateChat(
             VoiceChatSnapshot(
@@ -332,7 +339,7 @@ internal fun AgentChatBody(
             livePromptTokens.takeUnless { livePromptIsProjected }
         }
     }
-    val projectedContextTokens = livePromptTokens.takeIf { livePromptIsProjected && messageEdit == null && isStreaming }
+    val projectedContextTokens = livePromptTokens.takeIf { livePromptIsProjected && messageEdit == null && uiStreaming }
     val imageSourceCache = remember { ChatImageSourceCache() }
     val previewGallery by produceState<List<String>>(emptyList(), visibleMessages, pendingImages) {
         // This used to parse EVERY historical reply synchronously on each text delta.
@@ -368,8 +375,8 @@ internal fun AgentChatBody(
                 billedOverheadTokens = billedOverheadTokens,
                 activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
-                isStreaming = isStreaming,
-                isPaused = isPaused,
+                isStreaming = uiStreaming,
+                isPaused = uiPaused,
                 isCompressingContext = isCompressingContext,
                 isWaitingForCompression = isWaitingForCompression,
                 reasoningEffort = reasoningEffort,

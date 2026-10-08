@@ -42,6 +42,8 @@ import kotlinx.coroutines.isActive
 @Stable
 internal class SmoothTextRevealCoordinator {
     private val records = sortedMapOf<RevealBlockKey, RevealRecord>()
+    /** First record that may still be revealing. Completed prefixes stay in the map. */
+    private var pendingCursor: RevealBlockKey? = null
     private val wakeups = Channel<Unit>(capacity = Channel.CONFLATED)
     private val drainedState = MutableStateFlow(true)
     private val startedState = MutableStateFlow<Set<RevealBlockKey>>(emptySet())
@@ -100,6 +102,7 @@ internal class SmoothTextRevealCoordinator {
             val (_, record) = iterator.next()
             if (record.key !in activeBlocks) {
                 removedPendingBlock = removedPendingBlock || record.progress < record.targetCount
+                if (pendingCursor == record.key) pendingCursor = null
                 iterator.remove()
             }
         }
@@ -120,6 +123,7 @@ internal class SmoothTextRevealCoordinator {
         layoutResult: TextLayoutResult?,
     ) {
         val record = records.getOrPut(key) { RevealRecord(key) }
+        notePending(key)
         record.node = node
         if (text != null && layoutResult != null) {
             updateRecord(record, text, layoutResult)
@@ -138,6 +142,25 @@ internal class SmoothTextRevealCoordinator {
         wakeups.trySend(Unit)
     }
 
+    /**
+     * Keep the attached layout graph, but finish every in-range reveal the same way
+     * a freeze remount used to finish them through [detach]. Later blocks stay pending.
+     */
+    fun completeAttachedRecordsIn(startOffset: Int, endOffset: Int) {
+        var completed = false
+        records.values.forEach { record ->
+            val offset = record.key.sourceOffset
+            if (offset >= startOffset && offset < endOffset && record.progress < record.targetCount) {
+                completeRecord(record)
+                completed = true
+            }
+        }
+        if (completed) {
+            updateDrainedState()
+            wakeups.trySend(Unit)
+        }
+    }
+
     fun updateLayout(
         key: RevealBlockKey,
         node: SmoothTextRevealNode?,
@@ -146,6 +169,7 @@ internal class SmoothTextRevealCoordinator {
     ) {
         StreamPerformanceDiagnostics.measure("reveal.layout.update", text.length.toLong()) {
             val record = records.getOrPut(key) { RevealRecord(key) }
+            notePending(key)
             if (node != null) record.node = node
             updateRecord(record, text, layoutResult)
             wakeups.trySend(Unit)
@@ -243,8 +267,19 @@ internal class SmoothTextRevealCoordinator {
         record.node?.onRevealDataChanged()
     }
 
-    private fun firstPendingRecord(): RevealRecord? = records.values.firstOrNull { record ->
-        record.progress < record.targetCount && record.node != null && record.layoutResult != null
+    private fun firstPendingRecord(): RevealRecord? {
+        val cursor = pendingCursor
+        val tail = if (cursor == null) records.values else records.tailMap(cursor).values
+        val found = tail.firstOrNull { record ->
+            record.progress < record.targetCount && record.node != null && record.layoutResult != null
+        }
+        pendingCursor = found?.key
+        return found
+    }
+
+    private fun notePending(key: RevealBlockKey) {
+        val cursor = pendingCursor
+        if (cursor == null || key < cursor) pendingCursor = key
     }
 
     private fun updateDrainedState() {

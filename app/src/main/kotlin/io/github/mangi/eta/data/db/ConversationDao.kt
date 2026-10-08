@@ -72,8 +72,14 @@ internal interface ConversationDao {
     @Query("SELECT * FROM conversation_messages WHERE conversation_id = :conversationId ORDER BY sort_index ASC LIMIT :limit OFFSET :offset")
     suspend fun messagesPage(conversationId: String, limit: Int, offset: Int): List<ConversationMessageEntity>
 
-    @Query("UPDATE conversation_messages SET id = :newId WHERE conversation_id = :conversationId AND id = :oldId")
-    suspend fun renameMessageId(conversationId: String, oldId: String, newId: String)
+    // Message IDs are primary keys for the whole table, not just one conversation.
+    @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE id = :id)")
+    suspend fun messageIdExists(id: String): Boolean
+
+    @Query("UPDATE conversation_messages SET id = :newId " +
+        "WHERE conversation_id = :conversationId AND id = :oldId AND id <> :newId " +
+        "AND NOT EXISTS(SELECT 1 FROM conversation_messages WHERE id = :newId)")
+    suspend fun renameMessageId(conversationId: String, oldId: String, newId: String): Int
 
     @Query("SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = :conversationId")
     suspend fun messageCount(conversationId: String): Int

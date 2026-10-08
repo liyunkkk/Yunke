@@ -66,13 +66,14 @@ class AgentPreferenceReconcilerTest {
         bridge.reconcile(owner, local, remote) // migrated b now needs its first confirmation
         bridge.reconcile(owner, local, remote)
         assertEquals(2, remote.commits)
-        bridge.reconcile(Any(), local, remote) // new service, same remote object
+        val replacementOwner = Any()
+        bridge.reconcile(replacementOwner, local, remote) // new service, same remote object
         assertEquals(3, remote.commits)
         val replacement = FakePrefs(remote.map)
-        bridge.reconcile(owner, local, replacement)
+        bridge.reconcile(replacementOwner, local, replacement)
         assertEquals(1, replacement.commits)
         replacement.map.remove("a")
-        bridge.reconcile(owner, local, replacement)
+        bridge.reconcile(replacementOwner, local, replacement)
         assertEquals(2, replacement.commits)
         assertEquals(mapOf("a" to true), replacement.written.last())
     }

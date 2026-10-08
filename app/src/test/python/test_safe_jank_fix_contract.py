@@ -44,3 +44,12 @@ class SafeJankFixContract(unittest.TestCase):
         self.assertIn('old.isStreaming && current.isStreaming', cache)
         for filename in ('AgentChatInputBar.kt', 'BoundedStreamDiagnostics.kt'):
             self.assertIn('"chat.input.compose"', (MAIN/'ui/components'/filename).read_text())
+
+    def test_reveal_clock_resumes_from_the_pending_block(self):
+        reveal = (MAIN/'ui/components/SmoothTextReveal.kt').read_text()
+        finder = reveal.split('private fun firstPendingRecord', 1)[1].split('private fun notePending', 1)[0]
+        self.assertIn('records.tailMap(cursor)', finder)
+        self.assertNotIn('records.values.firstOrNull', finder)
+        clock = reveal.split('suspend fun runFrameClock', 1)[1].split('private fun updateRecord', 1)[0]
+        self.assertIn('advanceSmoothReveal(', clock)
+        self.assertEqual(clock.count('firstPendingRecord()'), 2)

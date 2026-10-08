@@ -70,6 +70,7 @@ class AgentRunCheckpointStoreTest {
             )
         )
 
+        recorder.seal()
         val restored = AgentRunCheckpointStore.list(context).single()
         val delta = restored.events.filterIsInstance<AgentEvent.AssistantBlockDelta>().single()
         assertEquals("你好", delta.delta)

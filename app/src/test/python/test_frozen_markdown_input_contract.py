@@ -44,3 +44,27 @@ class FrozenMarkdownInputContract(unittest.TestCase):
             self.assertIn(token, helper)
         for token in ('ReferenceLinkHandlerImpl', 'parseMarkdown(', 'LocalMarkdown', 'LaunchedEffect', 'mutableStateOf'):
             self.assertNotIn(token, helper)
+
+    def test_frozen_renderer_keeps_a_single_markdown_element_call_site(self):
+        text = (ROOT / 'ui/components/ChatMessageItem.kt').read_text()
+        start = text.index('private fun FrozenMarkdownElement')
+        end = text.index('internal fun shouldFreezeStreamingMarkdownBlock', start)
+        body = text[start:end]
+        renderer = body[body.index('val pinned'):]
+        self.assertEqual(1, renderer.count('MarkdownElement('))
+        self.assertIn('if (freeze) remember(blockSource, preparedBlock?.spec) { Triple(node, content, preparedBlock) } else null', renderer)
+        self.assertNotIn('remember(preparedBlock)', body)
+        self.assertIn('pinned?.third?.takeIf { it.node === frozenNode && it.source === frozenContent }', renderer)
+        self.assertEqual(1, renderer.count('CompositionLocalProvider(LocalPreparedMarkdownBlock provides providedBlock)'))
+        self.assertNotIn('if (freeze) {\n            val frozenNode', text)
+
+    def test_freeze_entry_completes_in_block_reveal_without_a_second_renderer(self):
+        text = (ROOT / 'ui/components/ChatMessageItem.kt').read_text()
+        start = text.index('key(node.startOffset, node.type.name) {')
+        opening = text.index('{', start)
+        from test_agent_chat_viewport_contract import balanced_end
+        end = balanced_end(text, opening, '{', '}')
+        body = text[opening:end]
+        self.assertIn('remember(freeze)', body)
+        self.assertIn('revealCoordinator?.completeAttachedRecordsIn(node.startOffset, node.endOffset)', body)
+        self.assertEqual(1, body.count('FrozenMarkdownElement('))

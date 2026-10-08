@@ -1,15 +1,24 @@
 package io.github.mangi.eta.agent.runtime
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+
 import android.content.Context
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 
-/** 将高频文本增量合并后写入 checkpoint，结构化边界则同步落盘。 */
+/** 将高频文本增量合并后写入 checkpoint。落盘在单线程 IO 上按序执行，调用方不等待。 */
 internal class AgentRunCheckpointRecorder private constructor(
     context: Context,
     private val runId: String,
     private val nanoTime: () -> Long,
 ) {
     private val appContext = context.applicationContext
+    private val checkpointWrites = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+
     private var nextSortIndex = 0
     private var pendingDelta: AgentEvent.AssistantBlockDelta? = null
     private var sealed = false
@@ -79,17 +88,23 @@ internal class AgentRunCheckpointRecorder private constructor(
         if (sealed) return
         sealed = true
         flushPendingDelta("runtime.checkpoint.flush.seal")
+        awaitCheckpointWrites()
     }
 
     @Synchronized fun discard() {
         sealed = true
         pendingDelta = null
         clearPendingObservations()
+        awaitCheckpointWrites()
         AgentRunCheckpointStore.remove(appContext, runId)
     }
 
+    private fun awaitCheckpointWrites() {
+        runBlocking { checkpointWrites.coroutineContext[Job]?.children?.forEach { it.join() } }
+    }
+
     // These timings are inside the existing recorder monitor, not monitor-wait measurements.
-    // Flush includes append; append is caller wall time, including the store's existing blocking IO.
+    // Flush queues append. accept is caller time; append is the IO worker, including blocking Room.
     private fun flushPendingDelta(stage: String) {
         val event = pendingDelta ?: return
         measureRuntimeStreamStage(stage) {
@@ -120,13 +135,20 @@ internal class AgentRunCheckpointRecorder private constructor(
     }
 
     private fun append(event: AgentEvent) {
-        measureRuntimeStreamStage("runtime.checkpoint.append") {
-            AgentRunCheckpointStore.append(
-                context = appContext,
-                runId = runId,
-                sortIndex = nextSortIndex++,
-                event = event,
-            )
+        val sortIndex = nextSortIndex++
+        // Room persistence stays ordered on one IO worker. The caller returns
+        // after enqueue; the store still performs its own IO.
+        measureRuntimeStreamStage("runtime.checkpoint.accept") {
+            checkpointWrites.launch {
+                measureRuntimeStreamStage("runtime.checkpoint.append") {
+                    AgentRunCheckpointStore.append(
+                        context = appContext,
+                        runId = runId,
+                        sortIndex = sortIndex,
+                        event = event,
+                    )
+                }
+            }
         }
     }
 

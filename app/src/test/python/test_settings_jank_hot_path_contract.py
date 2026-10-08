@@ -31,3 +31,30 @@ class SettingsJankHotPathContract(unittest.TestCase):
         chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
         lazy = scaffold.split('LazyColumn(', 1)[1]
         self.assertEqual(sorted(lazy.index(item) for item in chain), [lazy.index(item) for item in chain])
+
+    def test_settings_collects_remembered_store_flows(self):
+        settings = (ROOT / 'SettingsScreen.kt').read_text()
+        self.assertIn('remember { SettingsDataStore.settingsFlow() }', settings)
+        self.assertIn('remember { ProviderRepository.providersFlow() }', settings)
+        self.assertIn('remember { RuntimeConfigRepository.selectedProviderIdFlow() }', settings)
+        self.assertIn('remember { RuntimeConfigRepository.selectedModelIdFlow() }', settings)
+        self.assertNotIn('val appSettings by SettingsDataStore.settingsFlow().collectAsState', settings)
+
+    def test_inactive_chat_route_freezes_message_snapshot(self):
+        helper = (ROOT / 'components/ChatUiActive.kt').read_text()
+        self.assertIn('staticCompositionLocalOf { true }', helper)
+        self.assertIn('val LocalChatUiActive', helper)
+        root = (ROOT / 'app/AgentAppRoot.kt').read_text()
+        self.assertIn('LocalChatUiActive provides (backStack.lastOrNull() == route)', root)
+        self.assertNotIn('if (isCurrentRoute) {\n                    AgentHomeScreen', root)
+        body = (ROOT / 'components/AgentChatBody.kt').read_text()
+        start = body.index('internal fun AgentChatBody(')
+        end = body.index('internal fun AgentChatScaffold(')
+        host = body[start:end]
+        self.assertIn('val chatUiActive = LocalChatUiActive.current', host)
+        self.assertIn('remember(chatUiActive)', host)
+        self.assertIn('visibleMessagesCache.project(uiMessages', host)
+        self.assertIn('isStreaming = uiStreaming', host)
+        self.assertIn('isPaused = uiPaused', host)
+        self.assertIn('LaunchedEffect(messages, isStreaming)', host)
+        self.assertIn('enabled = chatUiActive && !isPaused', host)

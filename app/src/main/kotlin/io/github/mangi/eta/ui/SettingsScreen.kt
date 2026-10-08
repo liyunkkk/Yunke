@@ -154,7 +154,7 @@ internal fun SettingsScreen(
     val currentVersion = remember { AppUpdateRepository.currentVersionName(context) }
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateOffer by remember { mutableStateOf<AppUpdateOffer?>(null) }
-    val appSettings by SettingsDataStore.settingsFlow().collectAsState(
+    val appSettings by remember { SettingsDataStore.settingsFlow() }.collectAsState(
         initial = io.github.mangi.eta.data.model.Settings(),
     )
     var exportingLogs by remember { mutableStateOf(false) }
@@ -229,10 +229,10 @@ internal fun SettingsScreen(
     }
 
     // Provider / Model 选中状态展示
-    val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
-    val storedProviderId by RuntimeConfigRepository.selectedProviderIdFlow()
+    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
+    val storedProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }
         .collectAsState(initial = null)
-    val storedModelId by RuntimeConfigRepository.selectedModelIdFlow()
+    val storedModelId by remember { RuntimeConfigRepository.selectedModelIdFlow() }
         .collectAsState(initial = null)
     val selectedProviderId = currentProviderId?.takeIf { it.isNotBlank() } ?: storedProviderId
     val selectedModelId = currentModelId?.takeIf { it.isNotBlank() } ?: storedModelId

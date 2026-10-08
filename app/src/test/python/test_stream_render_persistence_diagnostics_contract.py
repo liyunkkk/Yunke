@@ -290,6 +290,12 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         self.assertIn("finally", store)
         self.assertNotIn(".measure(\"runtime.checkpoint.write", store)
         self.assertNotIn("delay(", code(store + recorder))
+        recorder_append = between(recorder, "private fun append", "private fun AgentEvent")
+        self.assertIn("checkpointWrites.launch", recorder_append)
+        self.assertLess(recorder_append.index("checkpointWrites.launch"), recorder_append.index("AgentRunCheckpointStore.append"))
+        self.assertNotIn("runBlocking", recorder_append)
+        self.assertNotIn("awaitCheckpointWrites", recorder_append)
+        self.assertIn("awaitCheckpointWrites()", between(recorder, "fun seal()", "fun discard()"))
 
 
 if __name__ == "__main__":

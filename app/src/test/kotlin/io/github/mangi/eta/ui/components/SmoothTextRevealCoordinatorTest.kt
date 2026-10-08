@@ -217,6 +217,39 @@ class SmoothTextRevealCoordinatorTest {
         assertTrue(coordinator.drained.value)
     }
 
+    @Test
+    fun freezeCompletesAttachedRecordsWithoutReleasingLayoutOrLaterBlocks() = runBlocking {
+        val coordinator = SmoothTextRevealCoordinator()
+        val earlierKey = RevealBlockKey(0)
+        val nestedKey = RevealBlockKey(4)
+        val laterKey = RevealBlockKey(100)
+        attach(coordinator, earlierKey, "早先的思考正文")
+        attach(coordinator, nestedKey, "块内列表项")
+        attach(coordinator, laterKey, "随后到达的工具输出内容")
+        assertEquals(0f, coordinator.drawSnapshot(earlierKey)!!.progress, 0f)
+        coordinator.completeAttachedRecordsIn(0, 100)
+        assertEquals(7f, coordinator.drawSnapshot(earlierKey)!!.progress, 0f)
+        assertEquals(5f, coordinator.drawSnapshot(nestedKey)!!.progress, 0f)
+        assertEquals(0f, coordinator.drawSnapshot(laterKey)!!.progress, 0f)
+        assertTrue(earlierKey in coordinator.started.value)
+        assertTrue(nestedKey in coordinator.started.value)
+        assertFalse(laterKey in coordinator.started.value)
+        assertFalse(coordinator.drained.value)
+        val clock = TestFrameClock()
+        val frameJob = launch(clock, start = CoroutineStart.UNDISPATCHED) {
+            coordinator.runFrameClock()
+        }
+        try {
+            clock.send(0L)
+            clock.send(50_000_000L)
+            yield()
+            assertEquals(7f, coordinator.drawSnapshot(earlierKey)!!.progress, 0f)
+            assertTrue(coordinator.drawSnapshot(laterKey)!!.progress > 0f)
+        } finally {
+            frameJob.cancelAndJoin()
+        }
+    }
+
     @Test fun restoredLateLayoutDoesNotReplayButSubsequentNetworkTextStillAnimates() {
         val coordinator = SmoothTextRevealCoordinator()
         coordinator.restoreHistoryThrough(100)

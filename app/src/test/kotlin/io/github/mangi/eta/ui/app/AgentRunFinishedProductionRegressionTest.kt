@@ -5,6 +5,8 @@ import android.content.Context
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.ui.components.*
 import io.github.mangi.eta.ui.model.*
 import kotlinx.coroutines.*
@@ -25,12 +27,17 @@ class AgentRunFinishedProductionRegressionTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         try {
             val app = AgentAppState(context, scope)
+            call(app, "updateSelectionProviders", listOf(
+                OpenAiCompatibleProviderSetting("p", "Test", "https://example.org/v1",
+                    models = listOf(Model("m", "model", "Model"))),
+            ))
             val originalMessages = (List<AgentChatMessageUi>(4096) {
                 UserMessageUi("old-$it", "old-$it")
             } + AgentMessageUi("assistant-live-1-0", "hello🙂\n", true, renderMarkdown = false))
                 .incrementalSnapshot()
             call(app, "updateConversation", "c", AgentChatHomeUiState(
                 messages = originalMessages, input = "", isStreaming = true, thinkingEnabled = false,
+                providerId = "p", modelId = "m",
             ), false)
             call(app, "bindUsageRun", "live", "c")
             fun send(event: AgentEvent) { call(app, "applyRunEvent", "live", event, false, true) }
@@ -40,7 +47,9 @@ class AgentRunFinishedProductionRegressionTest {
             val hash = before.hashCode()
             val originalEntries = before.toTimelineEntries()
             val originalRows = originalEntries.toLazyTimelineRows(emptyMap(), true)
-            val usage = (before.last() as AgentMessageUi).usage
+            val usage = requireNotNull((before.last() as AgentMessageUi).usage)
+            assertEquals(5000, usage.inputTokens)
+            assertEquals(22, usage.outputTokens)
             send(AgentEvent.RunFinished(1, 8, generatedAtMillis = 12345L))
             val after = current().messages
             val oracle = before.map { if (it is AgentMessageUi && it.id.startsWith("assistant-live-"))

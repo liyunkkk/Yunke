@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.app
 import androidx.compose.runtime.CompositionLocalProvider
 import io.github.mangi.eta.ui.components.StreamingMarkdownCache
 import io.github.mangi.eta.ui.components.LocalStreamingMarkdownStates
+import io.github.mangi.eta.ui.components.LocalChatUiActive
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -412,6 +413,9 @@ fun AgentAppRoot(
         route: AppRoute,
         content: @Composable () -> Unit,
     ) {
+        CompositionLocalProvider(
+            LocalChatUiActive provides (backStack.lastOrNull() == route),
+        ) {
         AgentAppShell(
             currentRoute = route,
             isCurrentRoute = backStack.lastOrNull() == route,
@@ -535,6 +539,7 @@ fun AgentAppRoot(
                     content()
                 }
             }
+        }
         }
     }
 

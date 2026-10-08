@@ -166,7 +166,8 @@ class RuntimeStreamStageDiagnosticsContract(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(self.recorder.count("sortIndex = nextSortIndex++"), 1)
         self.assertIn('sealed = true\n        flushPendingDelta("runtime.checkpoint.flush.seal")', self.recorder)
-        self.assertIn("@Synchronized fun discard() {\n        sealed = true\n        pendingDelta = null\n        clearPendingObservations()\n        AgentRunCheckpointStore.remove(appContext, runId)\n    }", self.recorder)
+        self.assertIn("@Synchronized fun discard() {\n        sealed = true\n        pendingDelta = null\n        clearPendingObservations()\n        awaitCheckpointWrites()\n        AgentRunCheckpointStore.remove(appContext, runId)\n    }", self.recorder)
+        self.assertLess(self.recorder.index("awaitCheckpointWrites()"), self.recorder.index("AgentRunCheckpointStore.remove(appContext, runId)"))
 
 
 if __name__ == "__main__":
