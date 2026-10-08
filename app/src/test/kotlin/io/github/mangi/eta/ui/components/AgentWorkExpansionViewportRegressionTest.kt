@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
@@ -71,6 +72,7 @@ class AgentWorkExpansionViewportRegressionTest {
     private var thinkingGrowth = 0
     private var instantThinkingGrowth = false
     private var sawMissingThinkingAnchor = false
+    private var measuredInstantThinkingGrowth = false
     private val upperKey: String get() = if (thinkingGrowth > 0) THINKING else UPPER
     private var enableRecovery = true
     private var streaming = false
@@ -262,8 +264,7 @@ class AgentWorkExpansionViewportRegressionTest {
                 Box(Modifier.size(WIDTH.dp, HEIGHT.dp).testTag(ROOT).drawWithContent {
                     val rev = revision
                     if (rev > 0 && probes[rev] == null && state.layoutInfo.totalItemsCount == expectedCount &&
-                        (!instantThinkingGrowth || state.layoutInfo.visibleItemsInfo
-                            .firstOrNull { it.key == THINKING }?.size == 36 + thinkingGrowth)
+                        (!instantThinkingGrowth || measuredInstantThinkingGrowth)
                     ) {
                         val layer = snapshots[rev]
                         layer.record {
@@ -319,7 +320,13 @@ class AgentWorkExpansionViewportRegressionTest {
                                 Box(Modifier.fillMaxWidth().height(40.dp).background(Color.Gray))
                             }
                             item(key = upperKey) {
-                                Column {
+                                Column(Modifier.onSizeChanged { size ->
+                                    // Keep the actual growth measurement even if synchronous
+                                    // recovery subsequently virtualizes this row before draw.
+                                    if (instantThinkingGrowth && expanded.value &&
+                                        size.height == 36 + thinkingGrowth
+                                    ) measuredInstantThinkingGrowth = true
+                                }) {
                                     Box(Modifier.fillMaxWidth().height(36.dp).background(Color.DarkGray))
                                     if (instantThinkingGrowth && expanded.value) {
                                         Box(Modifier.fillMaxWidth().height(thinkingGrowth.dp).background(Color.LightGray))
@@ -413,6 +420,7 @@ class AgentWorkExpansionViewportRegressionTest {
     private fun captureExpansion(captureOwner: Boolean = true) {
         if (captureOwner && enableRecovery) assertTrue("pre-click stable row capture", begin())
         compose.runOnIdle {
+            measuredInstantThinkingGrowth = false
             expectedCount = BASE_COUNT + stepCount
             // Production entry point for this explicit toggle: one bounded entrance cohort.
             workAnimation.value = newWorkGroupAnimation(
