@@ -16,7 +16,7 @@ internal object StreamDiagnosticLabels {
         "ipc.attach.callback.live", "ipc.attach.callback.replay", "ipc.attach.callback.replayBatch",
         "runtime.checkpoint.accept", "runtime.checkpoint.append", "runtime.checkpoint.flush.size", "runtime.checkpoint.flush.timer",
         "runtime.checkpoint.flush.boundary", "runtime.checkpoint.flush.seal",
-        "chat.compose", "chat.input.compose", "timeline.project", "timeline.prefaces", "gallery.scan", "gallery.parse", "gallery.hit", "gallery.skip",
+        "chat.compose", "chat.compose.elapsed", "chat.input.compose", "timeline.project", "timeline.prefaces", "gallery.scan", "gallery.parse", "gallery.hit", "gallery.skip",
         "markdown.target", "markdown.coalesced", "markdown.queueWait", "markdown.parse", "markdown.superseded",
         "markdown.publishBlock", "markdown.targetToPublish", "markdown.publish", "markdown.layout", "markdown.blockDraw",
         "reveal.frameGap", "reveal.step", "reveal.backlog", "reveal.remeasure",

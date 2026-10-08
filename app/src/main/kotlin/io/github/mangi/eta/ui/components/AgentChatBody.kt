@@ -222,6 +222,7 @@ internal fun AgentChatBody(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val chatComposeStartedNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else 0L
     val chatUiActive = LocalChatUiActive.current
     val frozenChatSnapshot = remember(chatUiActive) {
         if (chatUiActive) null else Triple(messages, isStreaming, isPaused)
@@ -233,7 +234,15 @@ internal fun AgentChatBody(
         enabled = chatUiActive && !isPaused,
         conversationId = collaborationConversationId,
     )
-    SideEffect { StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong()) }
+    SideEffect {
+        StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong())
+        if (chatComposeStartedNs != 0L) {
+            StreamPerformanceDiagnostics.record(
+                "chat.compose.elapsed",
+                System.nanoTime() - chatComposeStartedNs,
+            )
+        }
+    }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val view = LocalView.current
