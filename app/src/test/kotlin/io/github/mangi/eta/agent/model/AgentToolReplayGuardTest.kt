@@ -87,7 +87,7 @@ class AgentToolReplayGuardTest {
             }
         }
         val failure = assertThrows(AgentModelFailure::class.java) {
-            AgentModelRetry(clock) { _, delay -> now += delay }.complete(1, ProviderRequest(
+            AgentModelRetry(timing = clock, waitBeforeRetry = { _, delay -> now += delay }).complete(1, ProviderRequest(
                 AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "test",
                     model = "test", systemPrompt = "", errorReconnectPolicy = "window_30s"),
                 history, JSONArray()), provider, AgentRunController(), events::add, { _, _ -> }, {},

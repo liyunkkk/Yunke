@@ -812,13 +812,14 @@ class AgentRuntimeWireTest {
             compressorLabel = "测试压缩器",
         )
 
-        val encoded = AgentEventJsonCodec.encode(event)
-        val encodedBytes = encoded.toByteArray(Charsets.UTF_8).size
+        val encoding = AgentEventJsonCodec.encodeForCheckpoint(event)
+        val encodedBytes = encoding.json.toByteArray(Charsets.UTF_8).size
         assertTrue(
             "encoded event must stay under the cursor window budget: $encodedBytes",
-            encodedBytes <= AgentEventJsonCodec.MAX_PERSISTED_EVENT_BYTES,
+            encodedBytes <= AgentEventJsonCodec.MAX_CHECKPOINT_EVENT_BYTES,
         )
-        val decoded = AgentEventJsonCodec.decode(encoded)
+        assertTrue("oversized event must be marked degraded", encoding.degraded)
+        val decoded = AgentEventJsonCodec.decode(encoding.json)
         assertTrue(decoded is AgentEvent.ContextCompacted)
         val compacted = decoded as AgentEvent.ContextCompacted
         assertEquals(true, compacted.applied)
