@@ -26,7 +26,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         McpServerEntity::class,
         SubAgentRunEntity::class,
     ],
-    version = 33,
+    version = 34,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -76,6 +76,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_30_31,
                         MIGRATION_31_32,
                         MIGRATION_32_33,
+                        MIGRATION_33_34,
                     )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -200,31 +201,37 @@ internal abstract class EtaDatabase : RoomDatabase() {
         }
 
         /**
-         * Bound legacy runtime event rows before any Room relation can read them.
-         * SQLite measures TEXT as characters unless it is explicitly cast to BLOB;
-         * the byte check therefore matches the checkpoint codec's UTF-8 limit.
+         * 上游 v5.3.8：收敛历史超限事件行并标记不完整恢复。
+         * 我方 v33 已被「会话完成标记」占用，故上游这段顺延为 33→34。
+         * SQLite 未显式 CAST 时按字符计长，故统一 CAST AS BLOB 与 checkpoint 的 UTF-8 字节上限对齐。
          */
-        internal val MIGRATION_32_33 = Migration(32, 33) { database ->
-            database.execSQL(
-                "ALTER TABLE runtime_inflight_runs ADD COLUMN " +
-                    "recovery_incomplete INTEGER NOT NULL DEFAULT 0"
-            )
-            database.execSQL(
-                "UPDATE runtime_inflight_runs SET recovery_incomplete = 1 " +
-                    "WHERE run_id IN (" +
-                    "SELECT run_id FROM runtime_inflight_events " +
-                    "WHERE length(CAST(event_json AS BLOB)) > 65536)"
-            )
-            database.execSQL(
-                "UPDATE runtime_inflight_events SET event_json = " +
-                    "'{\"__eta_checkpoint_skipped\":true}' " +
-                    "WHERE length(CAST(event_json AS BLOB)) > 65536"
-            )
-            database.execSQL(
-                "UPDATE runtime_archive_events SET event_json = " +
-                    "'{\"__eta_checkpoint_skipped\":true}' " +
-                    "WHERE length(CAST(event_json AS BLOB)) > 65536"
-            )
+        internal val MIGRATION_33_34 = Migration(33, 34) { database ->
+            if (!tableHasColumn(database, "runtime_inflight_runs", "recovery_incomplete")) {
+                database.execSQL(
+                    "ALTER TABLE runtime_inflight_runs ADD COLUMN " +
+                        "recovery_incomplete INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+            if (tableHasColumn(database, "runtime_inflight_events", "event_json")) {
+                database.execSQL(
+                    "UPDATE runtime_inflight_runs SET recovery_incomplete = 1 " +
+                        "WHERE run_id IN (" +
+                        "SELECT run_id FROM runtime_inflight_events " +
+                        "WHERE length(CAST(event_json AS BLOB)) > 65536)"
+                )
+                database.execSQL(
+                    "UPDATE runtime_inflight_events SET event_json = " +
+                        "'{\"__eta_checkpoint_skipped\":true}' " +
+                        "WHERE length(CAST(event_json AS BLOB)) > 65536"
+                )
+            }
+            if (tableHasColumn(database, "runtime_archive_events", "event_json")) {
+                database.execSQL(
+                    "UPDATE runtime_archive_events SET event_json = " +
+                        "'{\"__eta_checkpoint_skipped\":true}' " +
+                        "WHERE length(CAST(event_json AS BLOB)) > 65536"
+                )
+            }
         }
 
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->
