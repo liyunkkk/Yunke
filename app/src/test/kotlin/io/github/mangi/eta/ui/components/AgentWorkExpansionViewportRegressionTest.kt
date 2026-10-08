@@ -72,7 +72,7 @@ class AgentWorkExpansionViewportRegressionTest {
     private var thinkingGrowth = 0
     private var instantThinkingGrowth = false
     private var sawMissingThinkingAnchor = false
-    private var measuredInstantThinkingGrowth = false
+    private var measuredInstantThinkingGrowth by mutableStateOf(false)
     private val upperKey: String get() = if (thinkingGrowth > 0) THINKING else UPPER
     private var enableRecovery = true
     private var streaming = false
@@ -82,6 +82,9 @@ class AgentWorkExpansionViewportRegressionTest {
     private lateinit var recovery: BottomFollowViewportRecovery
     private val probes = mutableMapOf<Int, Probe>()
     private val images = mutableMapOf<Int, Bitmap>()
+    private val imageFailures = mutableMapOf<Int, Throwable>()
+    private val drawAttempts = mutableMapOf<Int, Int>()
+    private var lastThinkingHeight = 0
     private data class Probe(val answerTop: Int?, val markerBottom: Int?, val consumed: Float)
 
     @Test fun eighteenInsertedStepsKeepLowerContentOnEveryFirstDraw() = checkExpansion(18, false)
@@ -263,6 +266,7 @@ class AgentWorkExpansionViewportRegressionTest {
                 }
                 Box(Modifier.size(WIDTH.dp, HEIGHT.dp).testTag(ROOT).drawWithContent {
                     val rev = revision
+                    if (rev > 0) drawAttempts[rev] = (drawAttempts[rev] ?: 0) + 1
                     if (rev > 0 && probes[rev] == null && state.layoutInfo.totalItemsCount == expectedCount &&
                         (!instantThinkingGrowth || measuredInstantThinkingGrowth)
                     ) {
@@ -280,8 +284,12 @@ class AgentWorkExpansionViewportRegressionTest {
                             consumed,
                         )
                         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                            images[rev] = layer.toImageBitmap().asAndroidBitmap()
-                                .copy(Bitmap.Config.ARGB_8888, false)
+                            try {
+                                images[rev] = layer.toImageBitmap().asAndroidBitmap()
+                                    .copy(Bitmap.Config.ARGB_8888, false)
+                            } catch (failure: Throwable) {
+                                imageFailures[rev] = failure
+                            }
                         }
                     } else {
                         drawRect(BG)
@@ -321,6 +329,7 @@ class AgentWorkExpansionViewportRegressionTest {
                             }
                             item(key = upperKey) {
                                 Column(Modifier.onSizeChanged { size ->
+                                    lastThinkingHeight = size.height
                                     // Keep the actual growth measurement even if synchronous
                                     // recovery subsequently virtualizes this row before draw.
                                     if (instantThinkingGrowth && expanded.value &&
@@ -440,7 +449,21 @@ class AgentWorkExpansionViewportRegressionTest {
             // Pump a real host draw with clock still frozen; discard its eventual image.
             compose.onNodeWithTag(ROOT).captureToImage()
             val rev = revision
-            compose.waitUntil(5_000) { probes.containsKey(rev) && images.containsKey(rev) }
+            try {
+                compose.waitUntil(5_000) {
+                    imageFailures.containsKey(rev) || (probes.containsKey(rev) && images.containsKey(rev))
+                }
+            } catch (timeout: androidx.compose.ui.test.ComposeTimeoutException) {
+                throw AssertionError(
+                    "first draw missing: frame=$frame revision=$rev draws=${drawAttempts[rev]} " +
+                        "measured=$measuredInstantThinkingGrowth height=$lastThinkingHeight " +
+                        "count=${state.layoutInfo.totalItemsCount}/$expectedCount " +
+                        "probe=${probes[rev]} image=${images.containsKey(rev)} consumed=$consumed " +
+                        "items=${state.layoutInfo.visibleItemsInfo.map { Triple(it.key, it.offset, it.size) }}",
+                    timeout,
+                )
+            }
+            imageFailures[rev]?.let { throw AssertionError("first-draw image failed revision=$rev", it) }
         }
     }
 
