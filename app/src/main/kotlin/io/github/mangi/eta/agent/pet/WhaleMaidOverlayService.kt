@@ -210,11 +210,16 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
         val screenW = resources.displayMetrics.widthPixels
         val screenH = resources.displayMetrics.heightPixels
         if (params.width <= 0 || params.height <= 0) {
+            val pet = (128f * snapshot.scale * density).roundToInt().coerceAtLeast(1)
             if (snapshot.x < 0 || snapshot.y < 0) {
-                val pet = (128f * snapshot.scale * density).roundToInt().coerceAtLeast(1)
                 params.x = (screenW - pet - (16 * density).roundToInt()).coerceAtLeast(0)
                 params.y = (screenH * 0.62f).roundToInt().coerceIn(0, (screenH - pet).coerceAtLeast(0))
                 WhaleMaidController.setPosition(this, params.x, params.y)
+            } else {
+                // A fresh window is still WRAP_CONTENT here. Restoring the saved point
+                // keeps it from flashing at the top-left until the first measurement.
+                params.x = snapshot.x.coerceIn(0, (screenW - pet).coerceAtLeast(0))
+                params.y = snapshot.y.coerceIn(0, (screenH - pet).coerceAtLeast(0))
             }
             runCatching { wm.updateViewLayout(view, params) }
             return
