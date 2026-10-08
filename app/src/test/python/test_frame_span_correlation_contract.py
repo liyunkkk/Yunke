@@ -142,6 +142,8 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         self.assertIn('threadCpuCounterNotBlockedDiagnosis', self.stream)
         self.assertIn('schedstat = { mainThreadSchedstat.sample() }', self.stream)
         self.assertIn('message.schedstatFields()', self.stream)
+        self.assertIn('topStage=${message.topStage ?: "none"}', self.stream)
+        self.assertIn('topStage = topStages[slot]', self.stream)
         bounded = (UI / 'components/BoundedStreamDiagnostics.kt').read_text()
         self.assertIn('schedstat=runQueueSeparateFromBlocked', bounded)
         self.assertIn('fun schedstatFields()', bounded)

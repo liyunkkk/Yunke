@@ -278,6 +278,7 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
     private val reveals = LongArray(capacity)
     private val isFrames = BooleanArray(capacity)
     private val tops = arrayOfNulls<String>(capacity)
+    private val topStages = arrayOfNulls<String>(capacity)
     @Volatile var frameMessages = 0L
         private set
     @Volatile var otherMessages = 0L
@@ -335,6 +336,7 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             reveals[next] = revealNs
             isFrames[next] = isFrame
             tops[next] = openTopStage?.let { "$it:${openTopNs / 1000}" }
+            topStages[next] = openTopStage
             next = (next + 1) % capacity
             if (size < capacity) size++ else overwritten++
         }
@@ -364,7 +366,8 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             if (ends[slot] <= fromNs || starts[slot] >= toNs) continue
             out += DiagnosticMainMessageRecord(starts[slot], ends[slot], isFrames[slot],
                 covered[slot], reveals[slot], cpus[slot],
-                schedRunNs = schedRuns[slot], schedRunnableNs = schedRunnables[slot])
+                schedRunNs = schedRuns[slot], schedRunnableNs = schedRunnables[slot],
+                topStage = topStages[slot])
         }
         partialMessage?.takeIf { it.endNs >= fromNs && it.beginNs <= toNs }?.let { out += it }
         return out
@@ -1051,6 +1054,7 @@ internal object StreamPerformanceDiagnostics {
                             "beginNs=${message.beginNs} endNs=${message.endNs} overlapNs=$overlap " +
                             "relation=${if (overlap > 0) "overlap" else "preceding"} frameDispatch=${message.frameDispatch} " +
                             "coveredNs=${message.coveredNs} uninstrumentedNs=${message.uninstrumentedNs} " +
+                            "topStage=${message.topStage ?: "none"} " +
                             "cpuNs=${message.cpuNs} wallMinusCpuNs=${if (message.cpuNs >= 0) (message.endNs - message.beginNs - message.cpuNs).coerceAtLeast(0) else -1} " +
                             "${message.schedstatFields()} " +
                             "accounting=dispatchWallNotFrameParts cpuAccounting=threadCpuCounterNotBlockedDiagnosis " +
