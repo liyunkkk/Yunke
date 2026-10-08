@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -88,6 +89,8 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
     private var petParams: WindowManager.LayoutParams? = null
     private var cabinetView: ComposeView? = null
     private var cabinetParams: WindowManager.LayoutParams? = null
+    private var laidOutWidth = 0
+    private var laidOutHeight = 0
     private var backDispatcher: OnBackInvokedDispatcher? = null
     private var backCallback: OnBackInvokedCallback? = null
     private var snapshot by mutableStateOf(WhaleMaidSnapshot(
@@ -173,6 +176,7 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
                     onTap = { openCabinet() },
                     onDismissSpeech = { WhaleMaidController.dismissSpeech(this) },
                     onPoseFinished = { mood -> WhaleMaidController.finishPose(this, mood) },
+                    onMeasured = { width, height -> holdPetWhileContentChanges(width, height) },
                 )
             }
         }
@@ -189,16 +193,10 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
     private fun petPixels(): Int =
         (128f * snapshot.scale * resources.displayMetrics.density).roundToInt().coerceAtLeast(1)
 
-    private fun bubblePixels(): Int = if (snapshot.speechVisible) {
-        (82f * snapshot.scale * resources.displayMetrics.density).roundToInt()
-    } else {
-        0
-    }
-
     private fun horizontalRange(): IntRange {
         val screenW = resources.displayMetrics.widthPixels
         val pet = petPixels()
-        val window = petParams?.width?.takeIf { it > 0 } ?: pet
+        val window = laidOutWidth.takeIf { it > 0 } ?: pet
         val inset = ((window - pet) / 2).coerceAtLeast(0)
         return -inset..(screenW - pet - inset).coerceAtLeast(-inset)
     }
@@ -206,8 +204,33 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
     private fun verticalRange(): IntRange {
         val screenH = resources.displayMetrics.heightPixels
         val pet = petPixels()
-        val bubble = bubblePixels()
-        return -bubble..(screenH - pet - bubble).coerceAtLeast(-bubble)
+        val extra = (laidOutHeight - pet).coerceAtLeast(0)
+        return -extra..(screenH - pet - extra).coerceAtLeast(-extra)
+    }
+
+    private fun holdPetWhileContentChanges(width: Int, height: Int) {
+        val wm = windowManager ?: return
+        val view = petView ?: return
+        val params = petParams ?: return
+        if (width <= 0 || height <= 0 || dragging) return
+        val previousWidth = laidOutWidth
+        val previousHeight = laidOutHeight
+        if (previousWidth == width && previousHeight == height) return
+        laidOutWidth = width
+        laidOutHeight = height
+        // The first measurement only records the size. Later growth is the bubble
+        // appearing above and around the pet, so the window origin moves to keep
+        // the pet itself on the same pixels.
+        if (previousWidth > 0 && previousHeight > 0) {
+            params.x -= (width - previousWidth) / 2
+            params.y -= height - previousHeight
+        }
+        val xRange = horizontalRange()
+        val yRange = verticalRange()
+        params.x = params.x.coerceIn(xRange.first, xRange.last)
+        params.y = params.y.coerceIn(yRange.first, yRange.last)
+        runCatching { wm.updateViewLayout(view, params) }
+        WhaleMaidController.setPosition(this, params.x, params.y)
     }
 
     private fun syncPetWindow() {
@@ -389,6 +412,7 @@ private fun WhaleMaidPet(
     onTap: () -> Unit,
     onDismissSpeech: () -> Unit,
     onPoseFinished: (String) -> Unit,
+    onMeasured: (Int, Int) -> Unit,
 ) {
     val pet = 128.dp * snapshot.scale
     val bubbleAlpha = androidx.compose.runtime.remember { Animatable(1f) }
@@ -408,7 +432,10 @@ private fun WhaleMaidPet(
         delay(1500)
         onPoseFinished(mood)
     }
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.onSizeChanged { onMeasured(it.width, it.height) },
+    ) {
         if (snapshot.speechVisible && snapshot.speech.isNotBlank()) {
             Text(
                 text = snapshot.speech,
