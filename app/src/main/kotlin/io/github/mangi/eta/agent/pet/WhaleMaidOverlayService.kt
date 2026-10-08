@@ -492,8 +492,8 @@ private fun WhaleMaidPet(
     moveWithoutRedraw: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val dragX = remember { Animatable(0f) }
-    val dragY = remember { Animatable(0f) }
+    var dragX by remember { mutableStateOf(0f) }
+    var dragY by remember { mutableStateOf(0f) }
     val pet = 128.dp * snapshot.scale
     val bubbleAlpha = androidx.compose.runtime.remember { Animatable(1f) }
     LaunchedEffect(snapshot.speechVisible, snapshot.speech) {
@@ -517,8 +517,8 @@ private fun WhaleMaidPet(
         modifier = modifier
             .onSizeChanged { onMeasured(it.width, it.height) }
             .graphicsLayer {
-                translationX = dragX.value
-                translationY = dragY.value
+                translationX = dragX
+                translationY = dragY
             },
     ) {
         if (snapshot.speechVisible && snapshot.speech.isNotBlank()) {
@@ -557,8 +557,8 @@ private fun WhaleMaidPet(
                                 if (moveWithoutRedraw) {
                                     pendingX += delta.x
                                     pendingY += delta.y
-                                    dragX.snapTo(pendingX)
-                                    dragY.snapTo(pendingY)
+                                    dragX = pendingX
+                                    dragY = pendingY
                                 } else {
                                     onDrag(delta.x.roundToInt(), delta.y.roundToInt())
                                 }
@@ -569,8 +569,8 @@ private fun WhaleMaidPet(
                             onTap()
                         } else if (moveWithoutRedraw) {
                             onDrag(pendingX.roundToInt(), pendingY.roundToInt())
-                            dragX.snapTo(0f)
-                            dragY.snapTo(0f)
+                            dragX = 0f
+                            dragY = 0f
                             onDragEnd()
                         } else {
                             onDragEnd()
