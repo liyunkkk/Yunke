@@ -197,9 +197,49 @@ internal object StreamDiagnosticGapLabels {
     )
 }
 
+/** Main-thread schedstat. First field is on-CPU, second is run-queue wait. */
+internal class MainThreadSchedstat {
+    private var file: java.io.RandomAccessFile? = null
+    private var failed = false
+
+    fun sample(): LongArray? {
+        if (failed) return null
+        return try {
+            val opened = file ?: java.io.RandomAccessFile(
+                "/proc/self/task/${android.os.Process.myTid()}/schedstat",
+                "r",
+            ).also { file = it }
+            opened.seek(0)
+            val text = opened.readLine() ?: return null
+            var first = -1L
+            var second = -1L
+            var index = 0
+            var start = 0
+            var i = 0
+            while (i <= text.length && index < 2) {
+                if (i == text.length || text[i] == ' ') {
+                    if (i > start) {
+                        val value = text.substring(start, i).toLong()
+                        if (index == 0) first = value else second = value
+                        index++
+                    }
+                    start = i + 1
+                }
+                i++
+            }
+            if (first < 0 || second < 0) null else longArrayOf(first, second)
+        } catch (_: Exception) {
+            failed = true
+            file = null
+            null
+        }
+    }
+}
+
 internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACITY,
     private val onMessage: ((Long, Long, Boolean, Long, Long) -> Unit)? = null,
-    private val cpuClock: (() -> Long)? = null) {
+    private val cpuClock: (() -> Long)? = null,
+    private val schedstat: (() -> LongArray)? = null) {
     @Volatile var overwritten = 0L
         private set
     @Volatile var outputTruncated = 0L
@@ -208,6 +248,10 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
     private val ends = LongArray(capacity)
     private val cpus = LongArray(capacity)
     private var openCpuNs = -1L
+    private var openSchedRunNs = -1L
+    private var openSchedRunnableNs = -1L
+    private val schedRuns = LongArray(capacity) { -1L }
+    private val schedRunnables = LongArray(capacity) { -1L }
     private val names = arrayOfNulls<String>(capacity)
     private var next = 0
     private var size = 0
@@ -245,6 +289,9 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
         if (line.startsWith(">>>>>")) {
             messageStartNs = now
             openCpuNs = cpuClock?.invoke() ?: -1L
+            val startedSched = schedstat?.invoke()
+            openSchedRunNs = startedSched?.getOrNull(0) ?: -1L
+            openSchedRunnableNs = startedSched?.getOrNull(1) ?: -1L
             messageOpen = true
             messageLine = line
             openCoveredNs = 0L
@@ -263,6 +310,13 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
         if (!open || name == null) return
         val endedCpuNs = cpuClock?.invoke() ?: -1L
         val cpuNs = if (openCpuNs >= 0 && endedCpuNs >= openCpuNs) endedCpuNs - openCpuNs else -1L
+        val endedSched = schedstat?.invoke()
+        val schedRunNs = if (openSchedRunNs >= 0 && endedSched != null && endedSched[0] >= openSchedRunNs) {
+            endedSched[0] - openSchedRunNs
+        } else -1L
+        val schedRunnableNs = if (openSchedRunnableNs >= 0 && endedSched != null && endedSched[1] >= openSchedRunnableNs) {
+            endedSched[1] - openSchedRunnableNs
+        } else -1L
         val isFrame = name.contains(CHOREOGRAPHER_FRAME_RECEIVER)
         if (isFrame) frameMessages++ else otherMessages++
         val duration = (now - started).coerceAtLeast(0)
@@ -274,6 +328,8 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             starts[next] = started
             ends[next] = now
             cpus[next] = cpuNs
+            schedRuns[next] = schedRunNs
+            schedRunnables[next] = schedRunnableNs
             names[next] = name
             covered[next] = coveredNs
             reveals[next] = revealNs
@@ -307,7 +363,8 @@ internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACIT
             val slot = (first + i) % capacity
             if (ends[slot] <= fromNs || starts[slot] >= toNs) continue
             out += DiagnosticMainMessageRecord(starts[slot], ends[slot], isFrames[slot],
-                covered[slot], reveals[slot], cpus[slot])
+                covered[slot], reveals[slot], cpus[slot],
+                schedRunNs = schedRuns[slot], schedRunnableNs = schedRunnables[slot])
         }
         partialMessage?.takeIf { it.endNs >= fromNs && it.beginNs <= toNs }?.let { out += it }
         return out
@@ -844,6 +901,7 @@ internal object StreamPerformanceDiagnostics {
         probe?.let { previous -> probeReporter?.let { finishProbe(previous, it) } }
         // 整个诊断会话都记主线程慢消息：点击窗口和窗口外的尖峰都要能对上当时主线程在干什么。
         // 这是项目里唯一设置 Looper 日志的地方；会话结束时恢复为 null。
+        val mainThreadSchedstat = MainThreadSchedstat()
         val log = MainThreadMessageLog(onMessage = { begin, end, frame, covered, reveal ->
             if (!session.closed && AppFileLogger.isEnabled()) {
                 session.record(if (frame) "main.doFrame" else "main.message", end - begin, 0)
@@ -851,7 +909,7 @@ internal object StreamPerformanceDiagnostics {
                 session.record("main.uninstrumented", (end - begin - covered).coerceAtLeast(0), 0)
                 session.record("main.nonReveal", (end - begin - reveal).coerceAtLeast(0), 0)
             }
-        }, cpuClock = { Debug.threadCpuTimeNanos() })
+        }, cpuClock = { Debug.threadCpuTimeNanos() }, schedstat = { mainThreadSchedstat.sample() })
         mainLog = log
         Looper.getMainLooper().setMessageLogging(Printer { line ->
             if (active === session && enabled) log.onLine(line, System.nanoTime())
@@ -973,6 +1031,7 @@ internal object StreamPerformanceDiagnostics {
                         "frameDispatch=${message.frameDispatch} partial=${message.partial} coveredNs=${message.coveredNs} revealNs=${message.revealNs} " +
                         "uninstrumentedNs=${message.uninstrumentedNs} nonRevealNs=${message.nonRevealNs} " +
                         "cpuNs=${message.cpuNs} wallMinusCpuNs=${if (message.cpuNs >= 0) (message.endNs - message.beginNs - message.cpuNs).coerceAtLeast(0) else -1} " +
+                        "${message.schedstatFields()} " +
                         "cpuAccounting=threadCpuCounterNotBlockedDiagnosis accounting=dispatchSubsetsNotAdditive")
                 }
                 detail.frames.forEachIndexed { index, frame ->
@@ -993,6 +1052,7 @@ internal object StreamPerformanceDiagnostics {
                             "relation=${if (overlap > 0) "overlap" else "preceding"} frameDispatch=${message.frameDispatch} " +
                             "coveredNs=${message.coveredNs} uninstrumentedNs=${message.uninstrumentedNs} " +
                             "cpuNs=${message.cpuNs} wallMinusCpuNs=${if (message.cpuNs >= 0) (message.endNs - message.beginNs - message.cpuNs).coerceAtLeast(0) else -1} " +
+                            "${message.schedstatFields()} " +
                             "accounting=dispatchWallNotFrameParts cpuAccounting=threadCpuCounterNotBlockedDiagnosis " +
                             "omitted=${(frame.mainMessages.size - 24).coerceAtLeast(0)}")
                     }

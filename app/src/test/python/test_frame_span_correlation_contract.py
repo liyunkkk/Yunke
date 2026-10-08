@@ -140,7 +140,13 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         self.assertIn('private val cpuClock: (() -> Long)? = null', self.stream)
         self.assertIn('cpuClock = { Debug.threadCpuTimeNanos() }', self.stream)
         self.assertIn('threadCpuCounterNotBlockedDiagnosis', self.stream)
+        self.assertIn('schedstat = { mainThreadSchedstat.sample() }', self.stream)
+        self.assertIn('message.schedstatFields()', self.stream)
+        bounded = (UI / 'components/BoundedStreamDiagnostics.kt').read_text()
+        self.assertIn('schedstat=runQueueSeparateFromBlocked', bounded)
+        self.assertIn('fun schedstatFields()', bounded)
         self.assertNotIn('Debug.threadCpuTimeNanos()', class_body(code_only(self.stream), 'MainThreadMessageLog'))
+        self.assertNotIn('/proc/self/task', class_body(code_only(self.stream), 'MainThreadMessageLog'))
 
     def test_all_behavioral_tests_are_in_ci_default_test_source_set(self):
         tests = ROOT / 'app/src/test/kotlin/io/github/mangi/eta/ui/components'

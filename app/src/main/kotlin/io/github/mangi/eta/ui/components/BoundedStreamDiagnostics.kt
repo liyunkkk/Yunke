@@ -152,9 +152,17 @@ internal data class DiagnosticSpanRecord(
 internal data class DiagnosticMainMessageRecord(
     val beginNs: Long, val endNs: Long, val frameDispatch: Boolean,
     val coveredNs: Long, val revealNs: Long, val cpuNs: Long = -1, val partial: Boolean = false,
+    val schedRunNs: Long = -1, val schedRunnableNs: Long = -1,
 ) {
     val uninstrumentedNs: Long get() = endNs - beginNs - coveredNs
     val nonRevealNs: Long get() = endNs - beginNs - revealNs
+    /** Run-queue wait is not sleep. blockedNs is wall minus on-CPU minus run-queue. */
+    fun schedstatFields(): String {
+        val wall = (endNs - beginNs).coerceAtLeast(0)
+        val blocked = if (schedRunNs < 0 || schedRunnableNs < 0) -1L
+            else (wall - schedRunNs - schedRunnableNs).coerceAtLeast(0)
+        return "schedRunNs=$schedRunNs schedRunnableNs=$schedRunnableNs blockedNs=$blocked schedstat=runQueueSeparateFromBlocked"
+    }
 }
 
 internal data class DiagnosticFrameRecord(
