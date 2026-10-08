@@ -1345,8 +1345,9 @@ internal fun AgentConversationMessages(
                 .streamDiagnosticPlacement("list.place", diagnosticListAttribution)
                 .fillMaxSize()
                 .graphicsLayer {
-                    val overflow = scrollState.followTailOverflow()
+                    // 不跟底时不读滚动位置。滑动中读取会让这一层每帧失效，子内容的离屏纹理被整列重录。
                     translationY = if (shouldLiftTail) {
+                        val overflow = scrollState.followTailOverflow()
                         // 与滚动步长同一套整像素。这一帧量不到尾部时沿用上一帧，避免底边掉下去再弹回。
                         -nextHeldTailLift(
                             shouldLift = true,
