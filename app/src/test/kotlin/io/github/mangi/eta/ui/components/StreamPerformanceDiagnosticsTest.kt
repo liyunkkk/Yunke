@@ -360,17 +360,17 @@ class StreamPerformanceDiagnosticsTest {
         val log = MainThreadMessageLog(capacity = 2, onMessage = { _, _, frame, _, _, before, after ->
             if (frame) callback = listOf(before, after)
         })
-        log.onLine(">>>>> Dispatching to Handler (android.view.Choreographer${'$'}FrameHandler) {1} x", 1_000)
-        log.addCovered("list.measure", 4_000, 6_000, 2_000)
-        log.addCovered("render.measure", 7_000, 9_000, 2_000)
-        log.onLine("<<<<< Finished", 12_000)
-        val sample = log.timingsBetween(0, 20_000).single()
-        assertEquals(3_000L, sample.beforeFirstNs)
-        assertEquals(3_000L, sample.afterLastNs)
-        assertEquals(listOf(3_000L, 3_000L), callback)
-        log.onLine(">>>>> Dispatching to Handler (android.view.Choreographer${'$'}FrameHandler) {1} x", 20_000)
-        log.onLine("<<<<< Finished", 28_000)
-        val untouched = log.timingsBetween(20_000, 30_000).single()
+        log.onLine(">>>>> Dispatching to Handler (android.view.Choreographer${'$'}FrameHandler) {1} x", 1_000_000)
+        log.addCovered("list.measure", 4_000_000, 6_000_000, 2_000_000)
+        log.addCovered("render.measure", 7_000_000, 9_000_000, 2_000_000)
+        log.onLine("<<<<< Finished", 12_000_000)
+        val sample = log.timingsBetween(0, 20_000_000).single()
+        assertEquals(3_000_000L, sample.beforeFirstNs)
+        assertEquals(3_000_000L, sample.afterLastNs)
+        assertEquals(listOf(3_000_000L, 3_000_000L), callback)
+        log.onLine(">>>>> Dispatching to Handler (android.view.Choreographer${'$'}FrameHandler) {1} x", 20_000_000)
+        log.onLine("<<<<< Finished", 28_000_000)
+        val untouched = log.timingsBetween(20_000_000, 30_000_000).single()
         assertEquals(-1L, untouched.beforeFirstNs)
         assertEquals(-1L, untouched.afterLastNs)
     }
@@ -384,7 +384,7 @@ class StreamPerformanceDiagnosticsTest {
     }
 
     @Test fun supplementalStageRegistryContainsOnlyFixedShortLiterals() {
-        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"),
+        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "main.beforeFirst", "main.afterLast", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"),
             StreamDiagnosticGapLabels.stages)
         for (stage in StreamDiagnosticGapLabels.stages) {
             assertTrue(Regex("[a-z]+(?:\\.[a-zA-Z]+)+").matches(stage))
