@@ -66,7 +66,7 @@ fun MiuixScaffoldPage(
                 modifier = listModifier
                     .fillMaxSize()
                     .horizontalCutoutPadding()
-                    .captureForTopBar(backdrop)
+                    .captureForTopBar(backdrop, listState)
                     .scrollEndHaptic()
                     .overScrollVertical()
                     .nestedScroll(scrollBehavior.nestedScrollConnection),

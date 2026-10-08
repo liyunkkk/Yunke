@@ -139,6 +139,32 @@ class AgentChatScrollPolicyTest {
     }
 
     @Test
+    fun coveredRouteReleasesComposerClipWhileStreaming() {
+        assertFalse(
+            shouldClipChatTail(
+                isStreaming = true,
+                isBottomSettling = false,
+                keepBottomAnchored = true,
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+                routeCovered = true,
+            )
+        )
+        assertTrue(
+            shouldClipChatTail(
+                isStreaming = true,
+                isBottomSettling = false,
+                keepBottomAnchored = true,
+                isUserScrolling = false,
+                isUserDragging = false,
+                navigationActive = false,
+                routeCovered = false,
+            )
+        )
+    }
+
+    @Test
     fun streamingTailGrowthFollowsBottom() {
         assertTrue(
             resolveBottomFollowEnabled(

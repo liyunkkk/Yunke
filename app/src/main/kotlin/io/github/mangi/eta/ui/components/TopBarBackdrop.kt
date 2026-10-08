@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.ScrollableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -67,8 +68,16 @@ internal fun TopBarBackdrop(
     Box(modifier = modifier) { content() }
 }
 
-internal fun Modifier.captureForTopBar(backdrop: LayerBackdrop?): Modifier =
-    if (backdrop == null) this else layerBackdrop(backdrop)
+internal fun Modifier.captureForTopBar(
+    backdrop: LayerBackdrop?,
+    scrollState: ScrollableState? = null,
+): Modifier = when {
+    backdrop == null -> this
+    // 只在滚动进行中读取。静止时不订这个状态，避免列表每帧失效。
+    // 滚动时不重录整列，顶栏模糊继续用上一帧已录好的内容，半径和样式不变。
+    scrollState?.isScrollInProgress == true -> this
+    else -> layerBackdrop(backdrop)
+}
 
 @Composable
 internal fun topBarContainerColor(backdrop: LayerBackdrop?): Color =

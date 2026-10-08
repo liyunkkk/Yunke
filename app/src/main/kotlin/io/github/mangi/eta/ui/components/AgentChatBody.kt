@@ -224,6 +224,8 @@ internal fun AgentChatBody(
 ) {
     val chatComposeStartedNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else 0L
     val chatUiActive = LocalChatUiActive.current
+    val chatRouteCovered = LocalChatRouteCovered.current
+    // 还露在屏幕上时继续用实时消息。冻结会把字停在入栈那一帧。
     val frozenChatSnapshot = remember(chatUiActive) {
         if (chatUiActive) null else Triple(messages, isStreaming, isPaused)
     }
@@ -943,6 +945,7 @@ internal fun AgentConversationMessages(
         isUserScrolling = isUserScrolling,
         isUserDragging = isUserDragging,
         navigationActive = messageNavigationJob != null || scrollToMessageId != null,
+        routeCovered = chatRouteCovered,
     )
     // 附件、输入框换行和 IME 改的是实际尾部留白，不是新消息增长。
     // 静态时没有跟底控制器接手；只在仍锚定且视口静止线确实变化时重新停靠。
@@ -2076,10 +2079,12 @@ internal fun shouldClipChatTail(
     isUserScrolling: Boolean,
     isUserDragging: Boolean,
     navigationActive: Boolean,
+    routeCovered: Boolean = false,
 ): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored &&
     !isUserScrolling &&
     !isUserDragging &&
-    !navigationActive
+    !navigationActive &&
+    !routeCovered
 
 internal fun shouldRequestInitialBottom(
     isStreaming: Boolean,

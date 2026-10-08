@@ -28,9 +28,14 @@ class SettingsJankHotPathContract(unittest.TestCase):
             self.assertIn(f'"{stage}"', labels)
         self.assertIn('modifier = topBarModifier', scaffold)
         self.assertIn('modifier = listModifier', scaffold)
-        chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
+        chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop, listState)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
         lazy = scaffold.split('LazyColumn(', 1)[1]
         self.assertEqual(sorted(lazy.index(item) for item in chain), [lazy.index(item) for item in chain])
+        backdrop = (ROOT / 'components/TopBarBackdrop.kt').read_text()
+        capture = backdrop.split('internal fun Modifier.captureForTopBar(', 1)[1].split('@Composable', 1)[0]
+        self.assertIn('scrollState?.isScrollInProgress == true', capture)
+        self.assertLess(capture.index('scrollState?.isScrollInProgress == true'), capture.index('layerBackdrop(backdrop)'))
+
 
     def test_settings_collects_remembered_store_flows(self):
         settings = (ROOT / 'SettingsScreen.kt').read_text()
@@ -44,8 +49,11 @@ class SettingsJankHotPathContract(unittest.TestCase):
         helper = (ROOT / 'components/ChatUiActive.kt').read_text()
         self.assertIn('staticCompositionLocalOf { true }', helper)
         self.assertIn('val LocalChatUiActive', helper)
+        self.assertIn('val LocalChatRouteCovered = staticCompositionLocalOf { false }', helper)
         root = (ROOT / 'app/AgentAppRoot.kt').read_text()
-        self.assertIn('LocalChatUiActive provides (backStack.lastOrNull() == route)', root)
+        # 半遮住时聊天还在组合里，继续用实时消息；完全盖住后导航移出组合。
+        self.assertIn('LocalChatUiActive provides true', root)
+        self.assertIn('LocalChatRouteCovered provides (backStack.lastOrNull() != route)', root)
         self.assertNotIn('if (isCurrentRoute) {\n                    AgentHomeScreen', root)
         body = (ROOT / 'components/AgentChatBody.kt').read_text()
         start = body.index('internal fun AgentChatBody(')

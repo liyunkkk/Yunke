@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.app
 import androidx.compose.runtime.CompositionLocalProvider
 import io.github.mangi.eta.ui.components.StreamingMarkdownCache
 import io.github.mangi.eta.ui.components.LocalStreamingMarkdownStates
+import io.github.mangi.eta.ui.components.LocalChatRouteCovered
 import io.github.mangi.eta.ui.components.LocalChatUiActive
 import android.Manifest
 import android.app.Activity
@@ -394,7 +395,10 @@ fun AgentAppRoot(
         content: @Composable () -> Unit,
     ) {
         CompositionLocalProvider(
-            LocalChatUiActive provides (backStack.lastOrNull() == route),
+            // 半遮住时页面还在组合里。保持实时消息，让露出的字继续长；
+            // 完全盖住后导航会把这一页移出组合，不再绘制。
+            LocalChatUiActive provides true,
+            LocalChatRouteCovered provides (backStack.lastOrNull() != route),
         ) {
         AgentAppShell(
             currentRoute = route,
