@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -146,9 +147,28 @@ fun AgentAppRoot(
             .map { usageConversationId to it }
     }.collectAsState(initial = null)
     val recordedUsage = recordedUsageState?.takeIf { it.first == usageConversationId }?.second
+    // 输出中每条增量都会换成新的 homeState。侧边栏只需要压缩状态、子任务和累计用量，
+    // 这些没变时不能跟着消息重组。
+    val shellHomeState by remember {
+        derivedStateOf {
+            val state = agentState.homeState
+            ShellHomeState(
+                selectedContextTaskId = state.selectedContextTaskId,
+                isCompressingContext = state.isCompressingContext,
+                isWaitingForCompression = state.isWaitingForCompression,
+                childContexts = state.childContexts,
+                childStatusRoster = state.childStatusRoster,
+                providerId = state.providerId,
+                modelId = state.modelId,
+                assistantId = state.assistantId,
+                pendingConversationMentions = state.pendingConversationMentions,
+                tokenUsage = conversationTokenUsage(state.messages),
+            )
+        }
+    }
     val cumulativeUsage = recordedUsage?.let {
         io.github.mangi.eta.ui.model.ConversationTokenUsageUi(it.input, it.output, it.cached, it.cacheCreation)
-    } ?: conversationTokenUsage(agentState.homeState.messages)
+    } ?: shellHomeState.tokenUsage
 
     DisposableEffect(backStack.lastOrNull(), agentState.conversationPaneState.selectedConversationId) {
         onDispose { io.github.mangi.eta.agent.voice.tts.SpeechPlayback.stopUiBound("route_change") }
@@ -413,9 +433,9 @@ fun AgentAppRoot(
             onOpenBrowser = { pushRoute(AppRoute.Browser) },
             onOpenWorkspace = { pushRoute(AppRoute.Workspace) },
             autoCompressEnabled = agentState.autoCompressEnabled,
-            isCompressingContext = if (agentState.homeState.selectedContextTaskId == null)
-                agentState.homeState.isCompressingContext || agentState.homeState.isWaitingForCompression
-            else agentState.homeState.childContexts.any { it.taskId == agentState.homeState.selectedContextTaskId &&
+            isCompressingContext = if (shellHomeState.selectedContextTaskId == null)
+                shellHomeState.isCompressingContext || shellHomeState.isWaitingForCompression
+            else shellHomeState.childContexts.any { it.taskId == shellHomeState.selectedContextTaskId &&
                 (it.isCompacting || it.manualCompactionState == "pending") },
             onToggleAutoCompress = { agentState.updateAutoCompressEnabled(it) },
             onCompressConversation = { providerId, modelId, onFinished ->
@@ -433,7 +453,7 @@ fun AgentAppRoot(
                 agentState.openHistorySearchHit(hit)
             },
             tokenUsage = cumulativeUsage,
-            subAgentStatuses = agentState.homeState.childStatusRoster,
+            subAgentStatuses = shellHomeState.childStatusRoster,
             selectedProviderId = agentState.modelPickerState.selectedModel?.providerId,
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
             onConversationRename = { conversation ->
@@ -515,7 +535,7 @@ fun AgentAppRoot(
                         conversationMentions = io.github.mangi.eta.ui.model.ConversationMentionInputUi(
                             conversations = agentState.conversationPaneState.historyConversations,
                             currentConversationId = agentState.conversationPaneState.selectedConversationId,
-                            pending = agentState.homeState.pendingConversationMentions,
+                            pending = shellHomeState.pendingConversationMentions,
                             onAttach = agentState::attachConversationMention,
                             onRemove = agentState::removeConversationMention,
                         ),
@@ -587,7 +607,7 @@ fun AgentAppRoot(
                         conversationMentions = io.github.mangi.eta.ui.model.ConversationMentionInputUi(
                             conversations = agentState.conversationPaneState.historyConversations,
                             currentConversationId = agentState.conversationPaneState.selectedConversationId,
-                            pending = agentState.homeState.pendingConversationMentions,
+                            pending = shellHomeState.pendingConversationMentions,
                             onAttach = agentState::attachConversationMention,
                             onRemove = agentState::removeConversationMention,
                         ),
@@ -860,8 +880,8 @@ fun AgentAppRoot(
                     context = context,
                     onNavigate = { route -> pushRoute(route) },
                     onBack = ::popRoute,
-                    currentProviderId = agentState.homeState.providerId,
-                    currentModelId = agentState.homeState.modelId,
+                    currentProviderId = shellHomeState.providerId,
+                    currentModelId = shellHomeState.modelId,
                 )
             }
             entry<AppRoute.AuxiliaryVision>(swipeDismiss = swipeDismiss) {
@@ -954,7 +974,7 @@ fun AgentAppRoot(
                 ModelProviderListScreen(
                     onNavigate = { route -> pushRoute(route) },
                     onBack = ::popRoute,
-                    currentProviderId = agentState.homeState.providerId,
+                    currentProviderId = shellHomeState.providerId,
                 )
             }
             entry<AppRoute.McpServers>(swipeDismiss = swipeDismiss) {
@@ -973,7 +993,7 @@ fun AgentAppRoot(
                 ModelProviderDetailScreen(
                     providerId = route.providerId,
                     onBack = ::popRoute,
-                    currentModelId = agentState.homeState.modelId,
+                    currentModelId = shellHomeState.modelId,
                     onSelectCurrentModel = { modelId ->
                         agentState.selectModel(modelId, route.providerId)
                     },
@@ -990,7 +1010,7 @@ fun AgentAppRoot(
                     picker = route.picker,
                     onNavigate = { destination -> pushRoute(destination) },
                     onBack = ::popRoute,
-                    selectedAssistantId = agentState.homeState.assistantId.ifBlank { null },
+                    selectedAssistantId = shellHomeState.assistantId.ifBlank { null },
                     onSelectAssistant = agentState::selectAssistant,
                 )
             }
@@ -1205,4 +1225,17 @@ fun AgentAppRoot(
 private data class MessageMutationTarget(
     val messageId: String,
     val laterTurnCount: Int,
+)
+
+private data class ShellHomeState(
+    val selectedContextTaskId: String?,
+    val isCompressingContext: Boolean,
+    val isWaitingForCompression: Boolean,
+    val childContexts: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats>,
+    val childStatusRoster: List<io.github.mangi.eta.agent.delegation.SubAgentContextStats>,
+    val providerId: String,
+    val modelId: String,
+    val assistantId: String,
+    val pendingConversationMentions: List<io.github.mangi.eta.ui.model.PendingConversationMentionUi>,
+    val tokenUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi,
 )
