@@ -15,7 +15,7 @@ internal object WhaleMaidController {
 
     fun restore(context: Context) {
         val app = context.applicationContext
-        if (WhaleMaidStore.isEnabled(app)) show(app)
+        if (WhaleMaidStore.isEnabled(app) && WhaleMaidStore.globalVisible(app)) show(app)
     }
 
     fun setEnabled(context: Context, enabled: Boolean) {
@@ -40,7 +40,7 @@ internal object WhaleMaidController {
 
     private fun syncVisibility(app: Context) {
         if (!WhaleMaidStore.isEnabled(app)) return
-        if (WhaleMaidStore.globalVisible(app) || hostInForeground) show(app) else hide(app)
+        if (WhaleMaidStore.globalVisible(app)) show(app) else hide(app)
     }
 
     fun feed(context: Context, tokens: Int, foodName: String) {
@@ -48,7 +48,7 @@ internal object WhaleMaidController {
         if (!WhaleMaidStore.isEnabled(app) || WhaleMaidStore.snapshot(app).thinking) return
         WhaleMaidStore.addSatiety(app, tokens)
         WhaleMaidStore.beginThinking(app)
-        show(app)
+        if (WhaleMaidStore.globalVisible(app)) show(app)
         executor.execute {
             val snapshot = WhaleMaidStore.snapshot(app)
             val (reaction, used) = WhaleMaidSpeaker.speak(
@@ -78,7 +78,7 @@ internal object WhaleMaidController {
         val app = context.applicationContext
         if (!WhaleMaidStore.isEnabled(app) || !WhaleMaidStore.workSpeechEnabled(app)) return
         pendingWorkTitle = title
-        show(app)
+        if (WhaleMaidStore.globalVisible(app)) show(app)
         executor.execute { deliverWork(app) }
     }
 

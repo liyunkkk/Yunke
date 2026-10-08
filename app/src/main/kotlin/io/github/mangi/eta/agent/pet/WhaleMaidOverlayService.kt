@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -393,6 +395,77 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
     }
 }
 
+internal fun WhaleMaidInAppHost() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var snapshot by remember { mutableStateOf(WhaleMaidStore.snapshot(context)) }
+    DisposableEffect(Unit) {
+        val listener: (WhaleMaidSnapshot) -> Unit = { snapshot = it }
+        WhaleMaidStore.addListener(listener)
+        onDispose { WhaleMaidStore.removeListener(listener) }
+    }
+    if (!snapshot.enabled || snapshot.globalVisible) return
+    var cabinetOpen by remember { mutableStateOf(false) }
+    var originX by remember(snapshot.x) { mutableIntStateOf(snapshot.x) }
+    var originY by remember(snapshot.y) { mutableIntStateOf(snapshot.y) }
+    var laidOutWidth by remember { mutableIntStateOf(0) }
+    var laidOutHeight by remember { mutableIntStateOf(0) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val pet = with(density) { (128f * snapshot.scale).dp.roundToPx() }.coerceAtLeast(1)
+    val screenW = with(density) { configuration.screenWidthDp.dp.roundToPx() }
+    val screenH = with(density) { configuration.screenHeightDp.dp.roundToPx() }
+    val insetX = ((laidOutWidth - pet) / 2).coerceAtLeast(0)
+    val extraY = (laidOutHeight - pet).coerceAtLeast(0)
+    val minX = -insetX
+    val maxX = (screenW - pet - insetX).coerceAtLeast(minX)
+    val minY = -extraY
+    val maxY = (screenH - pet - extraY).coerceAtLeast(minY)
+    if (originX < 0 || originY < 0) {
+        originX = (maxX - with(density) { 16.dp.roundToPx() }).coerceIn(minX, maxX)
+        originY = (screenH * 0.62f).roundToInt().coerceIn(minY, maxY)
+    }
+    Box(Modifier.fillMaxSize()) {
+        WhaleMaidPet(
+            snapshot = snapshot,
+            onDrag = { dx, dy ->
+                originX = (originX + dx).coerceIn(minX, maxX)
+                originY = (originY + dy).coerceIn(minY, maxY)
+            },
+            onDragEnd = { WhaleMaidController.setPosition(context, originX, originY) },
+            onTap = { if (!snapshot.thinking) cabinetOpen = true },
+            onDismissSpeech = { WhaleMaidController.dismissSpeech(context) },
+            onPoseFinished = { mood -> WhaleMaidController.finishPose(context, mood) },
+            onMeasured = { width, height ->
+                if (width <= 0 || height <= 0) return@WhaleMaidPet
+                val previousWidth = laidOutWidth
+                val previousHeight = laidOutHeight
+                laidOutWidth = width
+                laidOutHeight = height
+                if (previousWidth > 0 && previousHeight > 0) {
+                    originX -= (width - previousWidth) / 2
+                    originY -= height - previousHeight
+                    originX = originX.coerceIn(minX, maxX)
+                    originY = originY.coerceIn(minY, maxY)
+                    WhaleMaidController.setPosition(context, originX, originY)
+                }
+            },
+            modifier = Modifier.offset { IntOffset(originX, originY) },
+        )
+        if (cabinetOpen) {
+            WhaleMaidCabinet(
+                snapshot = snapshot,
+                onDismiss = { cabinetOpen = false },
+                onFeed = { tokens, name ->
+                    cabinetOpen = false
+                    WhaleMaidController.feed(context, tokens, name)
+                },
+                onScale = { WhaleMaidController.setScale(context, it) },
+                onClear = { WhaleMaidController.clearMemories(context) },
+            )
+        }
+    }
+}
+
 private val whaleMaidMoodRow = mapOf(
     "idle" to 0,
     "hungry" to 1,
@@ -413,6 +486,7 @@ private fun WhaleMaidPet(
     onDismissSpeech: () -> Unit,
     onPoseFinished: (String) -> Unit,
     onMeasured: (Int, Int) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val pet = 128.dp * snapshot.scale
     val bubbleAlpha = androidx.compose.runtime.remember { Animatable(1f) }
@@ -434,7 +508,7 @@ private fun WhaleMaidPet(
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.onSizeChanged { onMeasured(it.width, it.height) },
+        modifier = modifier.onSizeChanged { onMeasured(it.width, it.height) },
     ) {
         if (snapshot.speechVisible && snapshot.speech.isNotBlank()) {
             Text(

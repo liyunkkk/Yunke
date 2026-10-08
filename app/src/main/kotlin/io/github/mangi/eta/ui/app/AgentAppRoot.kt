@@ -108,6 +108,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import top.yukonga.miuix.kmp.basic.TextField
+import io.github.mangi.eta.agent.pet.WhaleMaidInAppHost
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
 import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
@@ -1020,6 +1021,8 @@ fun AgentAppRoot(
     if (browserSheetVisible) {
         AgentBrowserScreen(onDismiss = { browserSheetVisible = false }, conversationId = agentState.conversationPaneState.selectedConversationId)
     }
+
+    WhaleMaidInAppHost()
 
     conversationRenameTarget?.let { conversation ->
         var renameInput by remember(conversation.id) { mutableStateOf(conversation.title) }
