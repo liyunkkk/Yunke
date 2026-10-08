@@ -170,7 +170,7 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
                     },
                     onTap = { openCabinet() },
                     onDismissSpeech = { WhaleMaidController.dismissSpeech(this) },
-                    onEatingFinished = { WhaleMaidController.finishEating(this) },
+                    onPoseFinished = { mood -> WhaleMaidController.finishPose(this, mood) },
                 )
             }
         }
@@ -357,7 +357,7 @@ private fun WhaleMaidPet(
     onDragEnd: () -> Unit,
     onTap: () -> Unit,
     onDismissSpeech: () -> Unit,
-    onEatingFinished: () -> Unit,
+    onPoseFinished: (String) -> Unit,
 ) {
     val pet = 128.dp * snapshot.scale
     val bubbleAlpha = androidx.compose.runtime.remember { Animatable(1f) }
@@ -372,9 +372,10 @@ private fun WhaleMaidPet(
         onDismissSpeech()
     }
     LaunchedEffect(snapshot.mood, snapshot.thinking) {
-        if (snapshot.thinking || snapshot.mood != "eating") return@LaunchedEffect
+        val mood = snapshot.mood
+        if (snapshot.thinking || mood == "idle") return@LaunchedEffect
         delay(1500)
-        onEatingFinished()
+        onPoseFinished(mood)
     }
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxSize()) {
         if (snapshot.speechVisible && snapshot.speech.isNotBlank()) {

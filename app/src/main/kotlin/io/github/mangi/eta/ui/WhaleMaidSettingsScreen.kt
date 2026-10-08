@@ -8,7 +8,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -38,10 +37,13 @@ import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import kotlin.math.roundToInt
+import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Slider
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun WhaleMaidSettingsScreen(onBack: () -> Unit) {
@@ -67,32 +69,38 @@ internal fun WhaleMaidSettingsScreen(onBack: () -> Unit) {
     MiuixScaffoldPage(title = stringResource(R.string.whale_maid_title), onBack = onBack) {
         item(key = "whale_maid") {
             Card(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                SwitchPreference(
+                BasicComponent(
                     title = stringResource(R.string.whale_maid_title),
-                    checked = enabled,
-                    onCheckedChange = { value ->
-                        if (value && !Settings.canDrawOverlays(context)) {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:${context.packageName}"),
-                                ),
-                            )
-                            return@SwitchPreference
-                        }
-                        enabled = value
-                        WhaleMaidController.setEnabled(context, value)
+                    onClick = {
+                        TouchHaptics.click(view)
+                        expanded = !expanded
                     },
-                    startAction = {
+                    holdDownState = expanded,
+                    endActions = {
                         Icon(
                             imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
                             contentDescription = null,
                             modifier = Modifier
-                                .size(24.dp)
-                                .clickable {
-                                    TouchHaptics.click(view)
-                                    expanded = !expanded
-                                },
+                                .align(Alignment.CenterVertically)
+                                .padding(end = 6.dp)
+                                .size(16.dp),
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantActions,
+                        )
+                        Switch(
+                            checked = enabled,
+                            onCheckedChange = { value ->
+                                if (value && !Settings.canDrawOverlays(context)) {
+                                    context.startActivity(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}"),
+                                        ),
+                                    )
+                                    return@Switch
+                                }
+                                enabled = value
+                                WhaleMaidController.setEnabled(context, value)
+                            },
                         )
                     },
                 )

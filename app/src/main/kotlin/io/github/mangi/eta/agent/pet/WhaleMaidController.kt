@@ -77,8 +77,8 @@ internal object WhaleMaidController {
         WhaleMaidStore.dismissSpeech(context.applicationContext)
     }
 
-    fun finishEating(context: Context) {
-        WhaleMaidStore.finishEating(context.applicationContext)
+    fun finishPose(context: Context, mood: String) {
+        WhaleMaidStore.finishPose(context.applicationContext, mood)
     }
 
     fun setScale(context: Context, scale: Float) {

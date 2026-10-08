@@ -143,10 +143,10 @@ internal object WhaleMaidStore {
         publish(context)
     }
 
-    fun finishEating(context: Context) {
+    fun finishPose(context: Context, mood: String) {
         val preferences = prefs(context)
         if (preferences.getBoolean(KEY_THINKING, false)) return
-        if (preferences.getString(KEY_MOOD, "idle") != "eating") return
+        if (mood == "idle" || preferences.getString(KEY_MOOD, "idle") != mood) return
         preferences.edit().putString(KEY_MOOD, "idle").apply()
         publish(context)
     }
