@@ -187,6 +187,18 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
         syncPetWindow()
     }
 
+    private fun horizontalRange(width: Int): IntRange {
+        val screenW = resources.displayMetrics.widthPixels
+        val pet = (128f * snapshot.scale * resources.displayMetrics.density).roundToInt().coerceAtLeast(1)
+        val slack = ((width - pet) / 2).coerceAtLeast(0)
+        return -slack..(screenW - width + slack).coerceAtLeast(-slack)
+    }
+
+    private fun verticalRange(height: Int): IntRange {
+        val screenH = resources.displayMetrics.heightPixels
+        return 0..(screenH - height).coerceAtLeast(0)
+    }
+
     private fun syncPetWindow() {
         val wm = windowManager ?: return
         val view = petView ?: return
@@ -205,15 +217,15 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
             runCatching { wm.updateViewLayout(view, params) }
             return
         }
-        val maxX = (screenW - params.width).coerceAtLeast(0)
-        val maxY = (screenH - params.height).coerceAtLeast(0)
+        val xRange = horizontalRange(params.width)
+        val yRange = verticalRange(params.height)
         if (snapshot.x < 0 || snapshot.y < 0) {
-            params.x = maxX - (16 * density).roundToInt()
-            params.y = (screenH * 0.62f).roundToInt().coerceIn(0, maxY)
+            params.x = (xRange.last - (16 * density).roundToInt()).coerceIn(xRange.first, xRange.last)
+            params.y = (screenH * 0.62f).roundToInt().coerceIn(yRange.first, yRange.last)
             WhaleMaidController.setPosition(this, params.x, params.y)
         } else {
-            params.x = snapshot.x.coerceIn(0, maxX)
-            params.y = snapshot.y.coerceIn(0, maxY)
+            params.x = snapshot.x.coerceIn(xRange.first, xRange.last)
+            params.y = snapshot.y.coerceIn(yRange.first, yRange.last)
         }
         runCatching { wm.updateViewLayout(view, params) }
     }
@@ -224,16 +236,14 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
         val params = petParams ?: return
         if (width <= 0 || height <= 0 || dragging) return
         if (params.width == width && params.height == height) return
-        val screenW = resources.displayMetrics.widthPixels
-        val screenH = resources.displayMetrics.heightPixels
         val grew = params.height in 1 until height
         if (grew) params.y = (params.y - (height - params.height)).coerceAtLeast(0)
         params.width = width
         params.height = height
-        val maxX = (screenW - width).coerceAtLeast(0)
-        val maxY = (screenH - height).coerceAtLeast(0)
-        params.x = params.x.coerceIn(0, maxX)
-        params.y = params.y.coerceIn(0, maxY)
+        val xRange = horizontalRange(width)
+        val yRange = verticalRange(height)
+        params.x = params.x.coerceIn(xRange.first, xRange.last)
+        params.y = params.y.coerceIn(yRange.first, yRange.last)
         runCatching { wm.updateViewLayout(view, params) }
     }
 
@@ -242,10 +252,10 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
         val view = petView ?: return
         val params = petParams ?: return
         dragging = true
-        val maxX = (resources.displayMetrics.widthPixels - params.width).coerceAtLeast(0)
-        val maxY = (resources.displayMetrics.heightPixels - params.height).coerceAtLeast(0)
-        params.x = (params.x + dx).coerceIn(0, maxX)
-        params.y = (params.y + dy).coerceIn(0, maxY)
+        val xRange = horizontalRange(params.width)
+        val yRange = verticalRange(params.height)
+        params.x = (params.x + dx).coerceIn(xRange.first, xRange.last)
+        params.y = (params.y + dy).coerceIn(yRange.first, yRange.last)
         runCatching { wm.updateViewLayout(view, params) }
     }
 

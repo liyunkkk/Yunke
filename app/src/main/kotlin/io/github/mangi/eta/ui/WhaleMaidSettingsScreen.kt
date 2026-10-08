@@ -16,7 +16,6 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -36,13 +35,10 @@ import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
-import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Switch
-import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -53,7 +49,6 @@ internal fun WhaleMaidSettingsScreen(onBack: () -> Unit) {
     var enabled by remember { mutableStateOf(initial.enabled) }
     var expanded by remember { mutableStateOf(false) }
     var workSpeech by remember { mutableStateOf(initial.workSpeechEnabled) }
-    var scale by remember { mutableFloatStateOf(initial.scale * 100f) }
     var selection by remember { mutableStateOf(WhaleMaidStore.modelSelection(context)) }
     var picker by remember { mutableStateOf(false) }
     val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
@@ -117,20 +112,6 @@ internal fun WhaleMaidSettingsScreen(onBack: () -> Unit) {
                             workSpeech = value
                             WhaleMaidController.setWorkSpeechEnabled(context, value)
                         },
-                    )
-                    Text(
-                        text = "${stringResource(R.string.whale_maid_scale)}  ${scale.roundToInt()}%",
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
-                    Slider(
-                        value = scale.coerceIn(50f, 180f),
-                        onValueChange = { raw ->
-                            val snapped = (raw / 5f).roundToInt() * 5f
-                            scale = snapped.coerceIn(50f, 180f)
-                            WhaleMaidController.setScale(context, scale / 100f)
-                        },
-                        valueRange = 50f..180f,
-                        modifier = Modifier.padding(horizontal = 12.dp),
                     )
                     SwitchPreference(
                         title = stringResource(R.string.whale_maid_custom_model),
