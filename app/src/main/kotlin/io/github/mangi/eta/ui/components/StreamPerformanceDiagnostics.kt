@@ -239,7 +239,7 @@ internal class MainThreadSchedstat {
 internal class MainThreadMessageLog(private val capacity: Int = MAIN_LOG_CAPACITY,
     private val onMessage: ((Long, Long, Boolean, Long, Long) -> Unit)? = null,
     private val cpuClock: (() -> Long)? = null,
-    private val schedstat: (() -> LongArray)? = null) {
+    private val schedstat: (() -> LongArray?)? = null) {
     @Volatile var overwritten = 0L
         private set
     @Volatile var outputTruncated = 0L
