@@ -19,6 +19,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -94,6 +95,7 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
     private var snapshot by mutableStateOf(WhaleMaidSnapshot(
         enabled = true,
         workSpeechEnabled = true,
+        globalVisible = false,
         satiety = 5_000,
         scale = 1f,
         x = -1,
@@ -276,7 +278,6 @@ internal class WhaleMaidOverlayService : Service(), LifecycleOwner, SavedStateRe
                     },
                     onScale = { WhaleMaidController.setScale(this, it) },
                     onClear = { WhaleMaidController.clearMemories(this) },
-                    onSleep = { WhaleMaidController.setEnabled(this, false) },
                 )
             }
         }
@@ -431,7 +432,7 @@ private fun WhaleMaidPet(
                     .width(220.dp * snapshot.scale)
                     .background(Color.White, RoundedCornerShape(12.dp))
                     .border(2.dp, Color(0xFF3B82F6), RoundedCornerShape(12.dp))
-                    .clickable(onClick = onDismissSpeech)
+                    .noRippleClickable(onClick = onDismissSpeech)
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             )
         }
@@ -508,7 +509,6 @@ private fun WhaleMaidCabinet(
     onFeed: (Int, String) -> Unit,
     onScale: (Float) -> Unit,
     onClear: () -> Unit,
-    onSleep: () -> Unit,
 ) {
     val band = whaleMaidSatietyBand(snapshot.satiety)
     val percent = whaleMaidSatietyPercent(snapshot.satiety)
@@ -525,22 +525,19 @@ private fun WhaleMaidCabinet(
         WhaleMaidSatietyBand.STUFFED -> Color(0xFF3B82F6)
         else -> Color(0xFF16A34A)
     }
-    Box(Modifier.fillMaxSize().clickable(onClick = onDismiss), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().noRippleClickable(onClick = onDismiss), contentAlignment = Alignment.Center) {
         Column(
             Modifier
                 .padding(24.dp)
                 .width(320.dp)
                 .heightIn(max = 520.dp)
                 .background(Color(0xFFFFF7ED), RoundedCornerShape(18.dp))
-                .clickable {}
+                .noRippleClickable {}
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.whale_maid_cabinet), fontWeight = FontWeight.Bold, color = Color(0xFF4A2812))
-                Text(stringResource(R.string.whale_maid_sleep), color = Color(0xFF1D4ED8), modifier = Modifier.clickable(onClick = onSleep))
-            }
+            Text(stringResource(R.string.whale_maid_cabinet), fontWeight = FontWeight.Bold, color = Color(0xFF4A2812))
             Text("${snapshot.satiety} / $WHALE_MAID_MAX_SATIETY ($percent%)", color = bar, fontWeight = FontWeight.Medium)
             Box(Modifier.fillMaxWidth().height(8.dp).background(Color(0xFFFED7AA), RoundedCornerShape(4.dp))) {
                 Box(Modifier.fillMaxWidth(percent / 100f).height(8.dp).background(bar, RoundedCornerShape(4.dp)))
@@ -552,7 +549,7 @@ private fun WhaleMaidCabinet(
             whaleMaidFoods.forEach { food ->
                 val name = stringResource(food.name)
                 Row(
-                    Modifier.fillMaxWidth().clickable(enabled = !snapshot.thinking) { onFeed(food.tokens, name) },
+                    Modifier.fillMaxWidth().noRippleClickable(enabled = !snapshot.thinking) { onFeed(food.tokens, name) },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     WhaleMaidAssetImage(food.asset, Modifier.size(48.dp))
@@ -567,7 +564,7 @@ private fun WhaleMaidCabinet(
                 Text(
                     "${(snapshot.scale * 100).roundToInt()}%  ${stringResource(R.string.whale_maid_reset)}",
                     color = Color(0xFF1D4ED8),
-                    modifier = Modifier.clickable { onScale(1f) },
+                    modifier = Modifier.noRippleClickable { onScale(1f) },
                 )
             }
             Slider(
@@ -578,7 +575,7 @@ private fun WhaleMaidCabinet(
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(stringResource(R.string.whale_maid_memories), color = Color(0xFF4A2812))
-                Text(stringResource(R.string.whale_maid_clear), color = Color(0xFF1D4ED8), modifier = Modifier.clickable(onClick = onClear))
+                Text(stringResource(R.string.whale_maid_clear), color = Color(0xFF1D4ED8), modifier = Modifier.noRippleClickable(onClick = onClear))
             }
             if (snapshot.memories.isEmpty()) {
                 Text(stringResource(R.string.whale_maid_empty), color = Color(0xFF78716C), fontSize = 12.sp)
@@ -590,6 +587,17 @@ private fun WhaleMaidCabinet(
         }
     }
 }
+
+
+private fun Modifier.noRippleClickable(
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+): Modifier = clickable(
+    interactionSource = MutableInteractionSource(),
+    indication = null,
+    enabled = enabled,
+    onClick = onClick,
+)
 
 @Composable
 private fun WhaleMaidAssetImage(name: String, modifier: Modifier) {

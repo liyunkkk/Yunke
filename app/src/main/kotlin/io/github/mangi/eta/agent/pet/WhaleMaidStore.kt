@@ -21,6 +21,7 @@ internal data class WhaleMaidTask(
 internal data class WhaleMaidSnapshot(
     val enabled: Boolean,
     val workSpeechEnabled: Boolean,
+    val globalVisible: Boolean,
     val satiety: Int,
     val scale: Float,
     val x: Int,
@@ -37,6 +38,7 @@ internal object WhaleMaidStore {
     private const val PREFS = "whale_maid"
     private const val KEY_ENABLED = "enabled"
     private const val KEY_WORK_SPEECH = "work_speech"
+    private const val KEY_GLOBAL = "global_visible"
     private const val KEY_SATIETY = "satiety"
     private const val KEY_SCALE = "scale"
     private const val KEY_X = "x"
@@ -68,6 +70,8 @@ internal object WhaleMaidStore {
 
     fun workSpeechEnabled(context: Context): Boolean = prefs(context).getBoolean(KEY_WORK_SPEECH, true)
 
+    fun globalVisible(context: Context): Boolean = prefs(context).getBoolean(KEY_GLOBAL, false)
+
     fun setEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply()
         if (!enabled) {
@@ -78,6 +82,11 @@ internal object WhaleMaidStore {
 
     fun setWorkSpeechEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_WORK_SPEECH, enabled).apply()
+        publish(context)
+    }
+
+    fun setGlobalVisible(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_GLOBAL, enabled).apply()
         publish(context)
     }
 
@@ -198,6 +207,7 @@ internal object WhaleMaidStore {
         return WhaleMaidSnapshot(
             enabled = preferences.getBoolean(KEY_ENABLED, false),
             workSpeechEnabled = preferences.getBoolean(KEY_WORK_SPEECH, true),
+            globalVisible = preferences.getBoolean(KEY_GLOBAL, false),
             satiety = preferences.getInt(KEY_SATIETY, 5_000).coerceIn(0, WHALE_MAID_MAX_SATIETY),
             scale = preferences.getFloat(KEY_SCALE, 1f).coerceIn(0.5f, 1.8f),
             x = preferences.getInt(KEY_X, -1),

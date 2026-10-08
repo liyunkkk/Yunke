@@ -1541,6 +1541,7 @@
 
   <string name="whale_maid_title">Whale maid</string>
   <string name="whale_maid_work_speech">Speak after a task</string>
+  <string name="whale_maid_global">Show over other apps</string>
   <string name="whale_maid_scale">Size</string>
   <string name="whale_maid_custom_model">Use a chosen model</string>
   <string name="whale_maid_select_model">Speech model</string>

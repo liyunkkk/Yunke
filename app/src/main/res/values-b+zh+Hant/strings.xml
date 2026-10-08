@@ -1508,6 +1508,7 @@
 
   <string name="whale_maid_title">鯨魚女僕</string>
   <string name="whale_maid_work_speech">任務結束後說話</string>
+  <string name="whale_maid_global">全域顯示</string>
   <string name="whale_maid_scale">體型</string>
   <string name="whale_maid_custom_model">指定說話模型</string>
   <string name="whale_maid_select_model">說話模型</string>

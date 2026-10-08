@@ -11,6 +11,7 @@ internal object WhaleMaidController {
         Thread(runnable, "eta-whale-maid").apply { isDaemon = true }
     }
     @Volatile private var pendingWorkTitle: String? = null
+    @Volatile private var hostInForeground = false
 
     fun restore(context: Context) {
         val app = context.applicationContext
@@ -20,11 +21,26 @@ internal object WhaleMaidController {
     fun setEnabled(context: Context, enabled: Boolean) {
         val app = context.applicationContext
         WhaleMaidStore.setEnabled(app, enabled)
-        if (enabled) show(app) else hide(app)
+        if (enabled) syncVisibility(app) else hide(app)
     }
 
     fun setWorkSpeechEnabled(context: Context, enabled: Boolean) {
         WhaleMaidStore.setWorkSpeechEnabled(context.applicationContext, enabled)
+    }
+
+    fun setGlobalVisible(context: Context, enabled: Boolean) {
+        WhaleMaidStore.setGlobalVisible(context.applicationContext, enabled)
+        syncVisibility(context.applicationContext)
+    }
+
+    fun onHostVisibility(context: Context, visible: Boolean) {
+        hostInForeground = visible
+        syncVisibility(context.applicationContext)
+    }
+
+    private fun syncVisibility(app: Context) {
+        if (!WhaleMaidStore.isEnabled(app)) return
+        if (WhaleMaidStore.globalVisible(app) || hostInForeground) show(app) else hide(app)
     }
 
     fun feed(context: Context, tokens: Int, foodName: String) {

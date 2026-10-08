@@ -1514,6 +1514,7 @@
 
   <string name="whale_maid_title">鲸鱼女仆</string>
   <string name="whale_maid_work_speech">任务结束后说话</string>
+  <string name="whale_maid_global">全局显示</string>
   <string name="whale_maid_scale">体型</string>
   <string name="whale_maid_custom_model">指定说话模型</string>
   <string name="whale_maid_select_model">说话模型</string>

@@ -49,6 +49,7 @@ internal fun WhaleMaidSettingsScreen(onBack: () -> Unit) {
     var enabled by remember { mutableStateOf(initial.enabled) }
     var expanded by remember { mutableStateOf(false) }
     var workSpeech by remember { mutableStateOf(initial.workSpeechEnabled) }
+    var globalVisible by remember { mutableStateOf(initial.globalVisible) }
     var selection by remember { mutableStateOf(WhaleMaidStore.modelSelection(context)) }
     var picker by remember { mutableStateOf(false) }
     val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
@@ -111,6 +112,14 @@ internal fun WhaleMaidSettingsScreen(onBack: () -> Unit) {
                         onCheckedChange = { value ->
                             workSpeech = value
                             WhaleMaidController.setWorkSpeechEnabled(context, value)
+                        },
+                    )
+                    SwitchPreference(
+                        title = stringResource(R.string.whale_maid_global),
+                        checked = globalVisible,
+                        onCheckedChange = { value ->
+                            globalVisible = value
+                            WhaleMaidController.setGlobalVisible(context, value)
                         },
                     )
                     SwitchPreference(
