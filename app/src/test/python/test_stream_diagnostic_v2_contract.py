@@ -21,7 +21,7 @@ class StreamDiagnosticV2Contract(unittest.TestCase):
         self.assertIn('(firstDraw || missed || severe) && session.details.reserveFrame(severe)', source)
         self.assertIn('deadline > 0 && total > deadline', source)
         self.assertNotIn('spikes < SPIKE_MAX_PER_WINDOW', source)
-        self.assertIn('onMessage?.invoke(started, now, isFrame, coveredNs, revealNs)', source)
+        self.assertIn('onMessage?.invoke(started, now, isFrame, coveredNs, revealNs, beforeFirstNs, afterLastNs)', source)
         code = code_only(source)
         self.assertRegex(code, r'@Synchronized\s+fun reserveNote\(\): Int\? = if \(closed\) null else notes\.reserve\(\)')
         self.assertIn('private val notes = DiagnosticNoteBudget(NOTE_MAX_PER_SESSION)', code)
