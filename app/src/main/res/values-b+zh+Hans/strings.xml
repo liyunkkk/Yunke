@@ -1511,4 +1511,26 @@
   <string name="reconnect_stopped">已停止重连</string>
   <string name="reconnect_error_title">错误详情</string>
   <string name="reconnect_elapsed_format">已用时 %1$s</string>
+
+  <string name="whale_maid_title">鲸鱼女仆</string>
+  <string name="whale_maid_work_speech">任务结束后说话</string>
+  <string name="whale_maid_scale">体型</string>
+  <string name="whale_maid_custom_model">指定说话模型</string>
+  <string name="whale_maid_select_model">说话模型</string>
+  <string name="whale_maid_cabinet">女仆储物橱柜</string>
+  <string name="whale_maid_thinking">思考中</string>
+  <string name="whale_maid_reset">重置</string>
+  <string name="whale_maid_memories">发言手账</string>
+  <string name="whale_maid_clear">清空</string>
+  <string name="whale_maid_sleep">休眠收起</string>
+  <string name="whale_maid_empty">还没有发言</string>
+  <string name="whale_maid_food_grain">一粒米饭</string>
+  <string name="whale_maid_food_spoon">一勺米饭</string>
+  <string name="whale_maid_food_bowl">一碗米饭</string>
+  <string name="whale_maid_food_pot">一锅米饭</string>
+  <string name="whale_maid_satiety_starving">快要饿死了</string>
+  <string name="whale_maid_satiety_hungry">很饿</string>
+  <string name="whale_maid_satiety_peckish">不饿，但是不介意吃多点</string>
+  <string name="whale_maid_satiety_full">饱腹满足</string>
+  <string name="whale_maid_satiety_stuffed">吃得有点撑了</string>
 </resources>

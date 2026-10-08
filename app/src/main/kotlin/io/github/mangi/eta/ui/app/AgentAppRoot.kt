@@ -57,6 +57,7 @@ import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.AgentTaskPreferenceScreen
 import io.github.mangi.eta.ui.AgentTaskSurfacePrompt
 import io.github.mangi.eta.ui.AppearanceSettingsScreen
+import io.github.mangi.eta.ui.WhaleMaidSettingsScreen
 import io.github.mangi.eta.ui.HapticsSettingsScreen
 import io.github.mangi.eta.ui.ErrorReconnectSettingsScreen
 import io.github.mangi.eta.ui.ContextCompressionSettingsScreen
@@ -894,6 +895,9 @@ fun AgentAppRoot(
             }
             entry<AppRoute.AppearanceSettings>(swipeDismiss = swipeDismiss) {
                 AppearanceSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.WhaleMaid>(swipeDismiss = swipeDismiss) {
+                WhaleMaidSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.DataBackup>(swipeDismiss = swipeDismiss) {
                 DataBackupScreen(

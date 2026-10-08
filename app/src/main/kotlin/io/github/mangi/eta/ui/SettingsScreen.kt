@@ -49,6 +49,7 @@ import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Pets
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Psychology
 import io.github.mangi.eta.ui.icons.SubAgents
@@ -391,6 +392,12 @@ internal fun SettingsScreen(
             item(key = "section_context_extensions") {
                 SmallTitle(stringResource(R.string.settings_context_extensions))
                 Card(modifier = Modifier.settingsSectionDiagnostics("context_extensions").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    ArrowPreference(
+                        title = stringResource(R.string.whale_maid_title),
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.Pets) },
+                        onClick = { onNavigate(AppRoute.WhaleMaid) },
+                    )
+
                     ArrowPreference(
                         title = stringResource(R.string.settings_assistants),
                         startAction = {
