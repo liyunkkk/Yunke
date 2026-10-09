@@ -74,29 +74,25 @@ class SettingsJankHotPathContract(unittest.TestCase):
         self.assertIn('LaunchedEffect(messages, isStreaming)', host)
         self.assertIn('enabled = chatUiActive && !isPaused', host)
 
-    def test_chat_keeps_live_output_while_navigation_animates(self):
-        helper = (ROOT / 'components/ChatUiActive.kt').read_text()
-        self.assertIn('val LocalChatNavigationInProgress = staticCompositionLocalOf { false }', helper)
+    def test_navigation_does_not_write_root_state_from_a_graphics_layer(self):
         root = (ROOT / 'app/AgentAppRoot.kt').read_text()
-        self.assertIn('LocalChatNavigationInProgress provides navigationInProgress', root)
-        self.assertIn('transition = navigationTransition,', root)
-        transition = (ROOT / 'app/ChatNavigationTransition.kt').read_text()
-        # 手势与回弹、普通入栈出栈都算动画进行中
-        self.assertIn('scope.gesture != null || scope.settle != null', transition)
-        # 视觉与默认预设一致，不新增位移/缩放/透明度
-        self.assertIn('translationX = (if (rtl) 1f else -1f) * coverProgress(d) * width * 0.25f', transition)
-        self.assertIn('alpha = 1f - 0.1f * coverProgress(d)', transition)
-        self.assertIn('navGraphicsTransition(opaqueDepth = 1f)', transition)
-        item = (ROOT / 'components/ChatMessageItem.kt').read_text()
-        self.assertIn('val navigationInProgressNow = rememberUpdatedState(LocalChatNavigationInProgress.current)', item)
-        self.assertIn('if (routeCoveredNow.value || navigationInProgressNow.value) {', item)
-        self.assertIn('val revealClockAllowed = !routeCoveredNow.value && !navigationInProgressNow.value', item)
-        # 门控必须真正参与允许条件，否则被盖住时仍会强制推进
-        self.assertIn('val animationsAllowed = state.restoreState.animationsAllowed(isPaused) && revealClockAllowed', item)
+        helper = (ROOT / 'components/ChatUiActive.kt').read_text()
+        self.assertNotIn('navigationAwareMiuixTransition', root)
+        self.assertNotIn('LocalChatNavigationInProgress', helper)
+        self.assertFalse((ROOT / 'app/ChatNavigationTransition.kt').exists())
 
-    def test_streaming_body_skips_selection_registry(self):
-        container = (ROOT / 'haptics/HapticSelectionContainer.kt').read_text()
-        self.assertIn('selectionEnabled: Boolean = true', container)
-        self.assertIn('if (!selectionEnabled) {', container)
+    def test_covered_route_does_not_disable_reveal_during_swipe(self):
         item = (ROOT / 'components/ChatMessageItem.kt').read_text()
-        self.assertIn('selectionEnabled = !message.isStreaming &&\n                    (!keepStreamingMarkdown || streamingRevealComplete),', item)
+        self.assertNotIn('revealClockAllowed', item)
+        self.assertNotIn('navigationInProgressNow', item)
+        # Stopgap restores covered-hold behavior, not hidden-page optimization.
+        self.assertIn('val animationsAllowed = state.restoreState.animationsAllowed(isPaused) || routeCoveredNow.value', item)
+        self.assertIn('LaunchedEffect(revealCoordinator, animationsAllowed, isPaused)', item)
+        self.assertIn('if (routeCoveredNow.value) {', item)
+
+    def test_selection_completion_does_not_swap_markdown_parent(self):
+        container = (ROOT / 'haptics/HapticSelectionContainer.kt').read_text()
+        item = (ROOT / 'components/ChatMessageItem.kt').read_text()
+        self.assertNotIn('selectionEnabled', container)
+        self.assertNotIn('selectionEnabled = !message.isStreaming', item)
+        self.assertIn('SelectionContainer(', container)

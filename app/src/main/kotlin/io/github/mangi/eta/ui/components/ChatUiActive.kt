@@ -36,10 +36,3 @@ internal fun completedContentDrawLayer(modifier: Modifier, enabled: Boolean): Mo
             compositingStrategy = if (retain) CompositingStrategy.Offscreen else CompositingStrategy.Auto,
         )
 }
-
-/**
- * 导航动画进行中：手指驱动的横滑返回、释放后的回弹、
- * 以及普通入栈与出栈过渡。这些时刻上一页会露出一部分，
- * 必须继续实时输出；只有停稳且完全盖住后才允许停止推进。
- */
-val LocalChatNavigationInProgress = staticCompositionLocalOf { false }

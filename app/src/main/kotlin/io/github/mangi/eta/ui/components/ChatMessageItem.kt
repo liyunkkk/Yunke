@@ -875,12 +875,7 @@ private fun AgentMessageBlock(
                 modifier = Modifier.padding(top = 4.dp)
             )
         } else {
-            // 正文还在变化时不装选区：每帧重排会让可选 Text 反复注册与注销。
-            // 打字机跟完、内容稳定后自动恢复选中与复制。
-            HapticSelectionContainer(
-                selectionEnabled = !message.isStreaming &&
-                    (!keepStreamingMarkdown || streamingRevealComplete),
-            ) {
+            HapticSelectionContainer {
                 when {
                     // 流式会话一旦建立就不要切到 StableMarkdown：暂停继续和生成结束
                     // 都会让 isStreaming 翻转，整棵 Markdown 重挂会闪一帧。
@@ -1065,9 +1060,6 @@ private fun StreamingMarkdown(
     val restoreGeneration = state.restoreState.generation
     val view = LocalView.current
     val routeCoveredNow = rememberUpdatedState(LocalChatRouteCovered.current)
-    // 导航动画期间上一页仍露出一部分，任何时刻都必须保持实时推进。
-    // 同样用 rememberUpdatedState：暂停回调在组合之外运行，普通读会拿到旧值。
-    val navigationInProgressNow = rememberUpdatedState(LocalChatNavigationInProgress.current)
 
     LifecycleResumeEffect(state) {
         val animateExisting = animateInitialContent && !currentPaused && currentContent.isNotEmpty()
@@ -1087,7 +1079,7 @@ private fun StreamingMarkdown(
         onPauseOrDispose {
             // 回调不在组合里，读进入回调前记住的最新值。半遮住时导航把聊天降到
             // STARTED，页面还在组合里，继续逐字打。真正离开前台才追平，避免回来补播。
-            if (routeCoveredNow.value || navigationInProgressNow.value) {
+            if (routeCoveredNow.value) {
                 state.restoreState.holdCovered()
             } else {
                 state.restoreState.pause()
@@ -1096,12 +1088,7 @@ private fun StreamingMarkdown(
         }
     }
 
-    // 完全盖住且没有导航动画时，才允许停止逐帧推进；
-    // 横滑露出一点点、露一半都在动画中，一帧都不省。
-    // 原来被盖住时强制继续推进，现在改由这个可见性门控决定；
-    // 被盖住期间追平不可见，回来时不会重播。
-    val revealClockAllowed = !routeCoveredNow.value && !navigationInProgressNow.value
-    val animationsAllowed = state.restoreState.animationsAllowed(isPaused) && revealClockAllowed
+    val animationsAllowed = state.restoreState.animationsAllowed(isPaused) || routeCoveredNow.value
     // Content is deliberately not a key. A streaming delta must not re-run the gate decision:
     // while the restore baseline is still pending, animationsAllowed is false, and every delta
     // would catch the reveal up to the newest text. That drains the pending records, the frame

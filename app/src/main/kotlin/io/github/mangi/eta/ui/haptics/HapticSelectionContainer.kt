@@ -4,7 +4,6 @@ import android.os.SystemClock
 import android.view.View
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.selection.SelectionState
 import androidx.compose.foundation.text.selection.rememberSelectionState
@@ -29,15 +28,10 @@ import androidx.compose.ui.platform.UriHandler
  * 就会跟着滑。这里吞掉系统选区震动，改由长按超时自己触发一次。
  * 只观察事件，不消费 down/move/up：原生选区需要完整手势来结束拖动并显示复制菜单。
  * 链接防误点在 UriHandler 层处理，不再抢走选区的释放事件。
- *
- * [selectionEnabled] 为 false 时（流式生成中）不安装 [SelectionContainer]：
- * 正文每帧重排，内部可选 Text 会频繁注册与注销，属于纯浪费；
- * 生成结束后自然恢复，选区能力不受影响。
  */
 @Composable
 internal fun HapticSelectionContainer(
     modifier: Modifier = Modifier,
-    selectionEnabled: Boolean = true,
     selectionState: SelectionState = rememberSelectionState(),
     content: @Composable () -> Unit,
 ) {
@@ -57,10 +51,6 @@ internal fun HapticSelectionContainer(
         LocalHapticFeedback provides haptic,
         LocalUriHandler provides guardedUriHandler,
     ) {
-        if (!selectionEnabled) {
-            Box(modifier = modifier) { content() }
-            return@CompositionLocalProvider
-        }
         SelectionContainer(
             state = selectionState,
             modifier = modifier.pointerInput(view, linkGuard) {
