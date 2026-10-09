@@ -183,9 +183,9 @@ internal object AgentTaskSurface {
             "必须先用 ask_user 让用户在 conflict.options 的三项里选择（停止主屏那个实例后继续 / 这次操作改到主屏做 / 取消）；" +
             "只有用户选了 stop_main_and_retry，才可 app_state_control(action=force_stop) 后重试 launch_app；" +
             "用户选 cancel 就跳过该应用；禁止未经用户同意自行停止、冻结或清理任何应用。" +
-            "副屏文本优先用 type_text（mode=replace/append，submit=true 可直接回车提交，适合搜索框），"
-            + "它走无障碍直接写入、不占用系统剪贴板；副屏滚动可用 amount=small/medium/large/page 控制幅度；"
-            + "坐标还支持 normalized（0..999 相对坐标）。设置页「查看虚拟屏」是只读镜像，不接受手动输入。"
+            "副屏文本优先用 type_text（mode=replace/append，submit=true 可直接回车提交，适合搜索框），" +
+            "它走无障碍直接写入、不占用系统剪贴板；副屏滚动可用 amount=small/medium/large/page 控制幅度；" +
+            "坐标还支持 normalized（0..999 相对坐标）。设置页「查看虚拟屏」是只读镜像，不接受手动输入。"
 
     fun useVirtualDisplay(): Boolean = useVirtualDisplay(stored())
 

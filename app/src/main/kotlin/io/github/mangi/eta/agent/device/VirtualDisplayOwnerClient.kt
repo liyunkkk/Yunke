@@ -286,11 +286,16 @@ internal class VirtualDisplayOwnerClient private constructor(
             val socketName = SOCKET_PREFIX + randomHex(16)
             val ownerName = NAME_PREFIX + randomHex(10)
             val allowUid = AndroidProcess.myUid()
-            val script = buildStartupScript(classpath, socketName, allowUid, ownerName,
-            allowScreenOff = runCatching {
-                context.getSharedPreferences(AGENT_PREFERENCES, Context.MODE_PRIVATE)
-                    .getBoolean(ALLOW_SCREEN_OFF_PREF, false)
-            }.getOrDefault(false))
+            val script = buildStartupScript(
+                classpath = classpath,
+                socketName = socketName,
+                allowUid = allowUid,
+                ownerName = ownerName,
+                allowScreenOff = runCatching {
+                    context.getSharedPreferences(AGENT_PREFERENCES, Context.MODE_PRIVATE)
+                        .getBoolean(ALLOW_SCREEN_OFF_PREF, false)
+                }.getOrDefault(false),
+            )
 
             val process = try {
                 RootSu.process(script).redirectErrorStream(false).start()
@@ -720,6 +725,9 @@ private fun buildStartupScript(
         " --name " + shellQuote(ownerName) +
         // 熄屏执行默认关闭：只有用户在设置里显式打开才让副屏在主屏熄屏/锁定时继续渲染。
         (if (allowScreenOff) " --allow-screen-off" else "")
+
+private const val AGENT_PREFERENCES = "eta_agent_preferences"
+private const val ALLOW_SCREEN_OFF_PREF = "agent_virtual_display_allow_screen_off"
 
 private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
