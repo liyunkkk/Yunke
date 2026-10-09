@@ -353,6 +353,10 @@
   <string name="tool_replace_text">取代文字</string>
   <string name="vd_viewer_title">查看虛擬屏</string>
   <string name="vd_viewer_close">關閉</string>
+  <string name="vd_float_title">懸浮小窗</string>
+  <string name="vd_float_summary">在其它應用之上持續顯示虛擬屏畫面（唯讀，不接收輸入）。</string>
+  <string name="vd_float_running">虛擬屏執行中（display %1$d）· 閒置 %2$d 秒</string>
+  <string name="vd_float_denied">無法顯示懸浮小窗：缺少懸浮窗權限</string>
   <string name="vd_viewer_none">目前沒有虛擬屏工作階段</string>
   <string name="vd_viewer_status">虛擬屏執行中（display %1$d）</string>
   <string name="vd_viewer_actions">最近操作</string>

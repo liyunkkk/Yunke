@@ -27,6 +27,7 @@ internal object VirtualDisplaySession {
     private const val IDLE_CHECK_INTERVAL_MS = 30_000L
     private const val DEFAULT_IDLE_TIMEOUT_MINUTES = 20
     private const val IDLE_TIMEOUT_PREF = "agent_virtual_display_idle_timeout_minutes"
+    private const val FLOATING_WINDOW_PREF = "agent_virtual_display_floating_window"
     private const val AGENT_PREFERENCES = "eta_agent_preferences"
     /** 只读镜像页展示的最近操作条数。 */
     private const val TRACE_LIMIT = 100
@@ -240,6 +241,10 @@ internal object VirtualDisplaySession {
         if (!createIfMissing) {
             sessions.remove(runId)
             return reply(false, "NO_VIRTUAL_SESSION")
+        }
+        // 开关打开时随会话自动挂上只读悬浮小窗；会话结束后小窗会自行收掉。
+        if (floatingWindowEnabled(context)) {
+            runCatching { io.github.mangi.eta.agent.overlay.VirtualDisplayFloatingWindow.show(context) }
         }
         return when (val started = VirtualDisplayOwnerClient.start(context, AndroidAgentLogger)) {
             is OwnerStartResult.Failed -> fail(s, started.errorCode)
@@ -1071,6 +1076,12 @@ internal object VirtualDisplaySession {
             runCatching { finish(runId, context) }
         }
     }
+
+    /** 悬浮小窗开关（与设置页共用同一偏好）。 */
+    private fun floatingWindowEnabled(context: Context): Boolean = runCatching {
+        context.getSharedPreferences(AGENT_PREFERENCES, Context.MODE_PRIVATE)
+            .getBoolean(FLOATING_WINDOW_PREF, false)
+    }.getOrDefault(false)
 
     private fun idleTimeoutMs(context: Context): Long {
         val minutes = runCatching {
