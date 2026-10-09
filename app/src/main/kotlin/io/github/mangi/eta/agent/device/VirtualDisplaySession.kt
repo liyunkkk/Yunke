@@ -33,6 +33,8 @@ internal object VirtualDisplaySession {
     private const val DEFAULT_IDLE_TIMEOUT_MINUTES = 20
     private const val IDLE_TIMEOUT_PREF = "agent_virtual_display_idle_timeout_minutes"
     private const val FLOATING_WINDOW_PREF = "agent_virtual_display_floating_window"
+    /** 冲突时是否直接接管（默认关闭：先问用户）。 */
+    private const val CONFLICT_TAKEOVER_PREF = "agent_virtual_display_conflict_takeover"
     private const val AGENT_PREFERENCES = "eta_agent_preferences"
     /** 只读镜像页展示的最近操作条数。 */
     private const val TRACE_LIMIT = 100
@@ -52,6 +54,8 @@ internal object VirtualDisplaySession {
         var lastActivityMs = System.currentTimeMillis()
         /** 只读镜像页用的最近操作轨迹（不含节点内容）。 */
         val recentActions = ArrayDeque<String>()
+        /** 本会话从主屏接管过来的应用（包名 -> taskId）：收尾前必须先搬回主屏。 */
+        val takenOver = linkedMapOf<String, Int>()
         /** 副屏文本走剪贴板回退时的备份：写入前记住原内容，动作后尽量还原。 */
         var clipboardBackup: String? = null
         var clipboardBackupPresent = false
@@ -181,6 +185,46 @@ internal object VirtualDisplaySession {
             field = data::opt,
         )
     }
+    /** 冲突时是否直接接管（用户偏好；默认关闭，先问一次）。 */
+    private fun conflictTakeoverPreferred(context: Context): Boolean = runCatching {
+        context.applicationContext.getSharedPreferences(AGENT_PREFERENCES, Context.MODE_PRIVATE)
+            .getBoolean(CONFLICT_TAKEOVER_PREF, false)
+    }.getOrDefault(false)
+
+    /**
+     * 释放副屏前归还接管过来的 task。
+     *
+     * 返回 null 表示名单已清空、可以继续收尾；非 null 是一份「不释放」的回执：
+     * 只要还有应用没搬回主屏，就绝不销毁副屏——那会把用户正在用的应用一起弄丢。
+     * 归还本身可重试（每次都逐个核对），因此这里不消耗交接预算、也不标 uncertain。
+     */
+    private fun returnTakenOver(c: VirtualDisplayOwnerClient, s: Session): JSONObject? {
+        // App 侧名单可能因为进程重启而丢失；owner 侧还记着就必须照样归还，否则 release 会
+        // 以 SOURCE_NOT_EMPTY 失败，用户的应用会一直留在副屏上。
+        val ownerTaken = runCatching { c.status() }.getOrNull()
+            ?.let { body(it).optJSONArray("takenOverTaskIds") }
+        if (s.takenOver.isEmpty() && (ownerTaken == null || ownerTaken.length() == 0)) return null
+        val response = runCatching { c.takeoverReturn() }.getOrNull()
+        val names = if (s.takenOver.isEmpty()) ownerTaken ?: JSONArray() else JSONArray(s.takenOver.keys.toList())
+        if (response == null || !response.ok) {
+            return reply(false, "TAKEOVER_RETURN_FAILED")
+                .put("released", false)
+                .put("owner_error", response?.errorCode.orEmpty())
+                .put("taken_over", names)
+                .put("note", "接管的应用还没搬回主屏；副屏保持打开，避免把它一起销毁。可重试 finish_virtual_session。")
+        }
+        val failed = body(response).optJSONArray("failedTaskIds")
+        if (failed != null && failed.length() > 0) {
+            return reply(false, "TAKEOVER_RETURN_INCOMPLETE")
+                .put("released", false)
+                .put("failed_task_ids", failed)
+                .put("taken_over", names)
+                .put("note", "还有应用没搬回主屏；副屏保持打开，避免把它一起销毁。可重试 finish_virtual_session。")
+        }
+        s.takenOver.clear()
+        return null
+    }
+
     /** 只读探测结果：state 为 null 表示这次读不出已知状态，response 保留 owner 的原始回报供诊断。 */
     private class HandoffProbe(val state: VirtualDisplayHandoffRetry.OwnerState?, val response: OwnerResponse?)
 
@@ -727,6 +771,8 @@ internal object VirtualDisplaySession {
         val c = s.client ?: return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
         val observed = freshHandoffState(c) ?: return (clearWhenOwnerVerifiedGone(context, s)
             ?: failPreservingPrior(s, "OWNER_STATE_UNKNOWN"))
+        // 释放副屏前必须先把接管过来的 task 搬回主屏：副屏一销毁，它们会跟着消失。
+        returnTakenOver(c, s)?.let { return it }
         val marked = s.kept.toSet()
         val baseline = s.handoffState
         val f = observed.flags
@@ -1037,10 +1083,37 @@ internal object VirtualDisplaySession {
                 s.observation.invalidate()
                 val launched=c.launch(component)
                 if(!launched.ok) {
-                    // 主屏同应用占用：不硬拒绝，改为三选项交给用户决定；本次未执行、未停止任何应用。
+                    // 主屏同应用占用：首选接管（把那个 task 搬过来），否则把选择权交给用户；本次未执行、未停止任何应用。
                     val conflictCode=launched.errorCode.ifBlank { body(launched).optString("error") }
                     if(conflictCode in VirtualDisplayLaunchConflict.codes) {
-                        return text(VirtualDisplayLaunchConflict.payload(pkg,conflictCode,body(launched).optString("message")))
+                        val autoTakeover=conflictTakeoverPreferred(context)
+                        if(args.optBoolean("takeover",false) || autoTakeover) {
+                            val taken=c.takeover(pkg)
+                            if(taken.ok) {
+                                val takenBody=body(taken)
+                                val takenId=takenBody.optInt("taskId",0)
+                                if(takenId>0) s.takenOver[pkg]=takenId
+                                // 画面已换成被接管的那个应用：坐标必须重新观察。
+                                s.observation.invalidate()
+                                s.recordTrace("launch_app","takeover",pkg,true)
+                                return text(JSONObject()
+                                    .put("ok",true)
+                                    .put("launched",true)
+                                    .put("taken_over",true)
+                                    .put("package_name",pkg)
+                                    .put("taskId",takenId)
+                                    .put("displayId",c.displayId)
+                                    .put("note","已把主屏那个实例搬到副屏接管（未杀进程、未重置界面）；" +
+                                        "任务收尾时会自动还回主屏。先用 observe_screen 取新界面。")
+                                    .toString())
+                            }
+                            // 接管失败：如实回报并退回原来的选项，绝不悄悄改成强停。
+                            return text(VirtualDisplayLaunchConflict.payload(pkg,conflictCode,body(launched).optString("message"),autoTakeover)
+                                .put("takeover_error",taken.errorCode)
+                                .put("message","接管失败（${taken.errorCode}），本次未执行；请选择下面的处理方式。")
+                                .toString())
+                        }
+                        return text(VirtualDisplayLaunchConflict.payload(pkg,conflictCode,body(launched).optString("message"),autoTakeover))
                     }
                 }
                 if(launched.ok) {

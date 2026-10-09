@@ -43,6 +43,12 @@ final class OwnerCommandDispatcher implements OwnerIpcServer.Dispatcher {
             if (OwnerProtocol.OP_HANDOFF.equals(request.op)) {
                 return OwnerProtocol.ok(request.op, owner.handoff(request.payload));
             }
+            if (OwnerProtocol.OP_TAKEOVER.equals(request.op)) {
+                return OwnerProtocol.ok(request.op, owner.takeover(request.payload));
+            }
+            if (OwnerProtocol.OP_TAKEOVER_RETURN.equals(request.op)) {
+                return OwnerProtocol.ok(request.op, owner.takeoverReturn(request.payload));
+            }
             if (OwnerProtocol.OP_RELEASE.equals(request.op)) {
                 JSONObject body = owner.release(request.payload);
                 stop = true;

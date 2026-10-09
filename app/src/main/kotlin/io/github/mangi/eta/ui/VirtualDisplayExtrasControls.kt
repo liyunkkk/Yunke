@@ -41,6 +41,7 @@ internal fun VirtualDisplayExtrasControls() {
     var idleMinutes by remember { mutableIntStateOf(prefs.getInt(IDLE_KEY, DEFAULT_IDLE_MINUTES)) }
     var allowScreenOff by remember { mutableStateOf(prefs.getBoolean(SCREEN_OFF_KEY, false)) }
     var floatingWindow by remember { mutableStateOf(prefs.getBoolean(FLOAT_KEY, false)) }
+    var conflictTakeover by remember { mutableStateOf(prefs.getBoolean(TAKEOVER_KEY, false)) }
     var viewerOpen by remember { mutableStateOf(false) }
 
     Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
@@ -84,6 +85,15 @@ internal fun VirtualDisplayExtrasControls() {
                     prefs.edit().putBoolean(SCREEN_OFF_KEY, next).apply()
                 },
             )
+            SwitchPreference(
+                title = stringResource(R.string.vd_takeover_title),
+                summary = stringResource(R.string.vd_takeover_summary),
+                checked = conflictTakeover,
+                onCheckedChange = { next ->
+                    conflictTakeover = next
+                    prefs.edit().putBoolean(TAKEOVER_KEY, next).apply()
+                },
+            )
             WindowSpinnerPreference(
                 title = stringResource(R.string.vd_idle_title),
                 summary = idleLabel(idleMinutes),
@@ -116,6 +126,7 @@ internal const val PREFERENCES = "eta_agent_preferences"
 internal const val IDLE_KEY = "agent_virtual_display_idle_timeout_minutes"
 internal const val SCREEN_OFF_KEY = "agent_virtual_display_allow_screen_off"
 internal const val FLOAT_KEY = "agent_virtual_display_floating_window"
+internal const val TAKEOVER_KEY = "agent_virtual_display_conflict_takeover"
 internal const val DEFAULT_IDLE_MINUTES = 20
 internal const val NEVER_MINUTES = 0
 private val IDLE_CHOICES = listOf(10, 20, 60, NEVER_MINUTES)

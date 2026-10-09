@@ -515,6 +515,36 @@ final class OwnerHandoff {
         }
         return true;
     }
+    /**
+     * 把已有 task 搬到另一块屏：{@code startActivityFromRecents(taskId, setLaunchDisplayId(display))}。
+     *
+     * <p>不启动新 Activity、不杀进程、不重置界面；本方法只负责发起并检查返回值，
+     * 「是否真的搬到目标屏」必须由调用方事后用同一份 root 清单核对。
+     * 语义对齐 Mangi-11/Eta PR #142 的 switchTask（同一个隐藏 API、同一个 UID 0 helper 前提）。
+     */
+    static void moveTaskToDisplay(int taskId,int displayId)throws Exception {
+        android.app.ActivityOptions options=android.app.ActivityOptions.makeBasic();
+        options.setLaunchDisplayId(displayId);
+        Object result=invokeAtm("startActivityFromRecents",
+                new Class<?>[]{int.class,android.os.Bundle.class},taskId,options.toBundle());
+        if(!(result instanceof Integer) || ((Integer)result).intValue()<0)
+            throw new IllegalStateException("startActivityFromRecents rejected");
+    }
+
+    /**
+     * task 基础 Intent 的包名；读不出返回 null（调用方必须当作不匹配处理，绝不猜）。
+     *
+     * <p>只用组件名判定身份：data URI 不是包名，拿它兜底会让「不匹配」看起来像「匹配」。
+     */
+    static String taskPackage(Object task) {
+        try {
+            android.content.Intent base=(android.content.Intent)field(task,"baseIntent");
+            if(base==null) return null;
+            android.content.ComponentName component=base.getComponent();
+            return component==null?null:component.getPackageName();
+        } catch(Exception ex) { return null; }
+    }
+
     static void tx(Object t, boolean hide, boolean restore)throws Exception {
         Class<?> cl=Class.forName("android.window.WindowContainerTransaction"); Object change=cl.getConstructor().newInstance();
         Class<?> tokenCl=Class.forName("android.window.WindowContainerToken");Object token=field(t,"token");

@@ -32,10 +32,15 @@ public final class OwnerProtocol {
     public static final String OP_SNAPSHOT = "snapshot";
     public static final String OP_HANDOFF = "handoff";
     public static final String OP_RELEASE = "release";
+    /** 把其它屏（通常是主屏）上一个已在运行的应用 task 搬到本副屏接管。 */
+    public static final String OP_TAKEOVER = "takeover";
+    /** 把本会话接管过的 task 搬回主屏；成功才从名单里移除。 */
+    public static final String OP_TAKEOVER_RETURN = "takeover_return";
 
     /** Operations this build answers successfully. */
     public static final String[] SUPPORTED_OPS = {
             OP_STATUS, OP_LAUNCH, OP_INPUT, OP_SNAPSHOT, OP_HANDOFF, OP_RELEASE,
+            OP_TAKEOVER, OP_TAKEOVER_RETURN,
     };
 
     /** Operations that are named in the protocol but deliberately not implemented yet. */
@@ -61,6 +66,14 @@ public final class OwnerProtocol {
     public static final String ERROR_SOURCE_NOT_EMPTY = "SOURCE_NOT_EMPTY";
     public static final String ERROR_SOURCE_STATE_UNKNOWN = "SOURCE_STATE_UNKNOWN";
     public static final String ERROR_LAUNCH_FAILED = "LAUNCH_FAILED";
+    /** 接管：目标包在本会话屏之外没有可接管的活动 task。 */
+    public static final String ERROR_TAKEOVER_TARGET_UNKNOWN = "TAKEOVER_TARGET_UNKNOWN";
+    /** 接管：目标包有多个候选 task，不替用户猜。 */
+    public static final String ERROR_TAKEOVER_AMBIGUOUS = "TAKEOVER_AMBIGUOUS";
+    /** 接管：搬迁已发起但结果无法核对，按不可重放处理。 */
+    public static final String ERROR_TAKEOVER_UNCERTAIN = "TAKEOVER_UNCERTAIN";
+    /** 归还：task 不在本会话的接管名单里。 */
+    public static final String ERROR_TAKEOVER_NOT_TAKEN = "TAKEOVER_NOT_TAKEN";
     public static final String ERROR_INPUT_FAILED = "INPUT_FAILED";
     public static final String ERROR_SNAPSHOT_FAILED = "SNAPSHOT_FAILED";
     public static final String ERROR_IMAGE_TOO_LARGE = "IMAGE_TOO_LARGE";

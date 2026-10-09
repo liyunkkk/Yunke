@@ -166,6 +166,45 @@ internal class VirtualDisplayOwnerClient private constructor(
     }
 
     /** `handoff`：透传调用方给的扁平字段；owner 未实现时会返回错误，本类原样上报。 */
+    /**
+     * 把主屏等其它屏上一个已在运行的应用 task 搬到本副屏接管。
+     *
+     * 不启动 Activity、不杀进程、不重置界面；owner 侧只在「本屏之外恰好一个候选 task」时执行，
+     * 搬完还会核对同一个 taskId 已在本屏。
+     */
+    fun takeover(
+        packageName: String,
+        runId: String = this.runId,
+        timeoutMillis: Long = DEFAULT_REQUEST_TIMEOUT_MS,
+    ): OwnerResponse {
+        if (packageName.isEmpty() || !isSafeFieldValue(packageName)) {
+            return errorResponse(VirtualDisplayOwnerProtocol.OP_TAKEOVER, VirtualDisplayOwnerError.REQUEST_INVALID)
+        }
+        val run = runId.ifBlank {
+            return errorResponse(VirtualDisplayOwnerProtocol.OP_TAKEOVER, VirtualDisplayOwnerError.REQUEST_INVALID)
+        }
+        return request(
+            VirtualDisplayOwnerProtocol.OP_TAKEOVER,
+            linkedMapOf("package" to packageName, VirtualDisplayOwnerProtocol.FIELD_RUN_ID to run),
+            timeoutMillis,
+        )
+    }
+
+    /** 把本会话接管过的 task 搬回主屏；成功才从 owner 的名单里移除。 */
+    fun takeoverReturn(
+        runId: String = this.runId,
+        timeoutMillis: Long = DEFAULT_REQUEST_TIMEOUT_MS,
+    ): OwnerResponse {
+        val run = runId.ifBlank {
+            return errorResponse(VirtualDisplayOwnerProtocol.OP_TAKEOVER_RETURN, VirtualDisplayOwnerError.REQUEST_INVALID)
+        }
+        return request(
+            VirtualDisplayOwnerProtocol.OP_TAKEOVER_RETURN,
+            linkedMapOf(VirtualDisplayOwnerProtocol.FIELD_RUN_ID to run),
+            timeoutMillis,
+        )
+    }
+
     fun handoff(
         fields: Map<String, Any?> = emptyMap(),
         runId: String = this.runId,
@@ -512,6 +551,8 @@ internal object VirtualDisplayOwnerProtocol {
     const val OP_SNAPSHOT = "snapshot"
     const val OP_HANDOFF = "handoff"
     const val OP_RELEASE = "release"
+    const val OP_TAKEOVER = "takeover"
+    const val OP_TAKEOVER_RETURN = "takeover_return"
 
     const val FIELD_VERSION = "v"
     const val FIELD_OP = "op"

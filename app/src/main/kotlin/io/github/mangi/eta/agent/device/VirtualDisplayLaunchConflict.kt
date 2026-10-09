@@ -6,9 +6,11 @@ import org.json.JSONObject
 /**
  * 副屏 launch_app 撞上「主屏正在使用同一应用」时的答复。
  *
- * 语义对齐 Mangi-11/Eta PR #142 的三选项：停止主屏实例后继续 / 改到主屏 / 取消；
- * 自动停止默认关闭（auto_stop_default=false），本对象只产出选项与下一步要求，
- * 不在代码里替用户决定，也不在这里执行任何停止动作。
+ * 选项：接管（首选）/ 停止主屏实例后继续 / 改到主屏 / 取消。
+ *
+ * 「接管」对齐 Mangi-11/Eta PR #142 的 switchTask：把主屏那个 task 搬到副屏，
+ * 不杀进程、不重置界面，收尾时再搬回主屏。自动停止默认关闭（auto_stop_default=false），
+ * 本对象只产出选项与下一步要求，不在代码里替用户决定，也不在这里执行任何停止动作。
  */
 internal object VirtualDisplayLaunchConflict {
     const val CODE_ACTIVE = "TARGET_TASK_ACTIVE"
@@ -16,18 +18,25 @@ internal object VirtualDisplayLaunchConflict {
 
     val codes: Set<String> = setOf(CODE_ACTIVE, CODE_RECENT)
 
+    const val OPTION_TAKEOVER = "takeover"
     const val OPTION_STOP_AND_RETRY = "stop_main_and_retry"
     const val OPTION_CONTINUE_ON_MAIN = "continue_on_main"
     const val OPTION_CANCEL = "cancel"
 
-    fun payload(packageName: String, code: String, detail: String): JSONObject = JSONObject()
+    fun payload(
+        packageName: String,
+        code: String,
+        detail: String,
+        autoTakeoverDefault: Boolean = false,
+    ): JSONObject = JSONObject()
         .put("ok", false)
         .put("error", code)
         .put("package_name", packageName)
         .put("executed", false)
         .put(
             "message",
-            "主屏正在使用 $packageName，副屏无法同时打开同一应用；本次未执行，没有停止或改动任何应用。",
+            "主屏正在使用 $packageName，副屏不能同时打开同一应用；本次未执行，没有停止或改动任何应用。" +
+                "首选「接管」：把它搬到副屏继续（不杀进程、不重置界面），收尾时自动还回主屏。",
         )
         .put(
             "conflict",
@@ -36,9 +45,18 @@ internal object VirtualDisplayLaunchConflict {
                 .put("code", code)
                 .put("detail", detail.take(200))
                 .put("auto_stop_default", false)
+                .put("auto_takeover_default", autoTakeoverDefault)
                 .put(
                     "options",
                     JSONArray()
+                        .put(
+                            option(
+                                OPTION_TAKEOVER,
+                                "接管：把它搬到副屏继续",
+                                "不杀进程、不重置界面，保留应用当前状态；任务收尾时自动还回主屏。" +
+                                    "同意后重试 launch_app 并带上 takeover=true",
+                            ),
+                        )
                         .put(
                             option(
                                 OPTION_STOP_AND_RETRY,
@@ -64,9 +82,9 @@ internal object VirtualDisplayLaunchConflict {
         )
         .put(
             "next_step",
-            "必须先用 ask_user 让用户在这三项里选择；用户同意 stop_main_and_retry 后才可调用 " +
-                "app_state_control(action=force_stop) 再重试 launch_app；用户选 cancel 就跳过；" +
-                "禁止未经用户同意自行停止、冻结或清理任何应用。",
+            "必须先用 ask_user 让用户在这四项里选择；用户选 takeover 就用 launch_app(takeover=true) 重试；" +
+                "用户同意 stop_main_and_retry 后才可调用 app_state_control(action=force_stop) 再重试 launch_app；" +
+                "用户选 cancel 就跳过；禁止未经用户同意自行停止、冻结或清理任何应用。",
         )
 
     private fun option(id: String, label: String, note: String): JSONObject = JSONObject()

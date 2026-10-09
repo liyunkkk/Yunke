@@ -43,6 +43,13 @@ public final class VirtualDisplayOwner {
     /** Set with handoffComplete: true when the completed handoff delivered nothing (cleanup only). */
     private boolean handoffCleanupOnly;
     private final java.util.Map<Integer,OwnerHandoff.Task> owned = new java.util.LinkedHashMap<Integer,OwnerHandoff.Task>();
+    /**
+     * 本会话从别的屏接管过来的 task（taskId -> 包名）。
+     *
+     * <p>这些 task 不是本会话启动的，绝不参与交付与清理；但它们必须在本副屏销毁前搬回主屏，
+     * 否则会随副屏一起被销毁——那等于把用户正在用的应用弄丢。
+     */
+    private final java.util.Map<Integer,String> takenOver = new java.util.LinkedHashMap<Integer,String>();
 
     private VirtualDisplayOwner(VirtualDisplayFactory.Created created, OwnerFrameStore frames,
             Handler handler) {
@@ -130,6 +137,8 @@ public final class VirtualDisplayOwner {
                 out.put("sourcePackages",packages);
             }catch(Exception e){out.put("sourcePackagesKnown",false);}
             out.put("retainedTaskIds",new JSONArray(owned.keySet()));
+            // 接管名单：收尾前必须先归还，App 侧据此决定能不能释放副屏。
+            out.put("takenOverTaskIds",new JSONArray(takenOver.keySet()));
             // Read-only: owned is never pruned here. Absent fields mean "unknown" to the client.
             try {
                 OwnedTaskStates states=OwnedTaskStates.read(created.displayId,OwnerHandoff.roots(),owned);
@@ -278,6 +287,110 @@ public final class VirtualDisplayOwner {
             out.put("displayId", displayId);
         } catch (JSONException ex) {
             throw new OwnerException(OwnerProtocol.ERROR_INTERNAL, "launch");
+        }
+        return out;
+    }
+
+    /**
+     * 把其它屏（通常是主屏）上一个已在运行的应用 task 搬到本副屏接管。
+     *
+     * <p>只读前置：目标包在本会话屏之外必须恰好有一个活动 task，且不是本会话自己启动的；
+     * 唯一副作用是 {@code startActivityFromRecents + setLaunchDisplayId}，搬完必须核对
+     * 「同一个 taskId 现在在本屏、包名未变」，核对通过才记进接管名单。
+     * 期间上不可重放闩（finishing/mutationUncertain），失败一律按不确定回报。
+     */
+    public JSONObject takeover(JSONObject request) throws OwnerException {
+        requireLive();
+        if(finishing || mutationUncertain) throw new OwnerException("SESSION_FINISHING");
+        OwnerProtocol.Request parsed=wrap(request);
+        String packageName=parsed.optionalString("package");
+        if(packageName==null || !OwnerProtocol.isSafeIdentifier(packageName))
+            throw new OwnerException(OwnerProtocol.ERROR_PROTOCOL,"package");
+        int displayId=created.displayId;
+        try { OwnerHandoff.verifyDisplay(displayId,created.uniqueId); }
+        catch(Exception ex) { throw new OwnerException("DISPLAY_REBOUND"); }
+        int targetId=-1; String targetPackage=null;
+        try {
+            for(Object task:OwnerHandoff.roots().values()) {
+                if(OwnerHandoff.number(task,"displayId")==displayId) continue;
+                String base=OwnerHandoff.taskPackage(task);
+                if(base==null || !base.equals(packageName)) continue;
+                int id=OwnerHandoff.number(task,"taskId");
+                if(owned.containsKey(id)) continue;
+                if(targetId>0) throw new OwnerException(OwnerProtocol.ERROR_TAKEOVER_AMBIGUOUS,
+                        targetId+","+id);
+                targetId=id; targetPackage=base;
+            }
+        } catch(OwnerException ex) { throw ex; }
+        catch(Exception ex) { throw new OwnerException(OwnerProtocol.ERROR_TAKEOVER_TARGET_UNKNOWN,
+                ex.getClass().getSimpleName()); }
+        if(targetId<=0) throw new OwnerException(OwnerProtocol.ERROR_TAKEOVER_TARGET_UNKNOWN,packageName);
+        finishing=true; mutationUncertain=true;
+        try {
+            OwnerHandoff.moveTaskToDisplay(targetId,displayId);
+            Object moved=OwnerHandoff.roots().get(targetId);
+            if(moved==null) throw new IllegalStateException("task disappeared");
+            if(OwnerHandoff.number(moved,"displayId")!=displayId)
+                throw new IllegalStateException("task did not move");
+            String after=OwnerHandoff.taskPackage(moved);
+            if(after==null || !after.equals(packageName))
+                throw new IllegalStateException("task identity changed");
+            OwnerHandoff.verifyDisplay(displayId,created.uniqueId);
+        } catch(Exception ex) {
+            throw new OwnerException(OwnerProtocol.ERROR_TAKEOVER_UNCERTAIN,ex.getClass().getSimpleName());
+        }
+        takenOver.put(targetId,targetPackage);
+        finishing=false; mutationUncertain=false;
+        JSONObject out=new JSONObject();
+        try {
+            out.put("taken_over",true);
+            out.put("taskId",targetId);
+            out.put("package",targetPackage);
+            out.put("displayId",displayId);
+            out.put("takenOverTaskIds",new JSONArray(takenOver.keySet()));
+        } catch(JSONException ex) {
+            throw new OwnerException(OwnerProtocol.ERROR_INTERNAL,"takeover");
+        }
+        return out;
+    }
+
+    /**
+     * 把本会话接管过的 task 搬回主屏（display 0）。
+     *
+     * <p>逐个搬、逐个核对：搬到位或已被系统回收才从名单里移除；失败的原样留在名单里，
+     * 在 {@code failedTaskIds} 里如实回报，绝不重放。调用方在名单清空前不得释放副屏。
+     */
+    public JSONObject takeoverReturn(JSONObject request) throws OwnerException {
+        requireLive();
+        if(finishing || mutationUncertain) throw new OwnerException("SESSION_FINISHING");
+        optionalDisplay(wrap(request));
+        JSONArray returned=new JSONArray();
+        JSONArray failed=new JSONArray();
+        for(int taskId:new java.util.ArrayList<Integer>(takenOver.keySet())) {
+            try {
+                Object task=OwnerHandoff.roots().get(taskId);
+                if(task==null) { takenOver.remove(taskId); returned.put(taskId); continue; }
+                int here=OwnerHandoff.number(task,"displayId");
+                if(here==0) { takenOver.remove(taskId); returned.put(taskId); continue; }
+                if(here!=created.displayId) throw new IllegalStateException("unexpected display");
+                OwnerHandoff.moveTaskToDisplay(taskId,0);
+                Object back=OwnerHandoff.roots().get(taskId);
+                if(back==null || OwnerHandoff.number(back,"displayId")!=0)
+                    throw new IllegalStateException("task did not return");
+                takenOver.remove(taskId);
+                returned.put(taskId);
+            } catch(Exception ex) {
+                failed.put(taskId);
+            }
+        }
+        JSONObject out=new JSONObject();
+        try {
+            out.put("complete",failed.length()==0);
+            out.put("returnedTaskIds",returned);
+            out.put("failedTaskIds",failed);
+            out.put("takenOverTaskIds",new JSONArray(takenOver.keySet()));
+        } catch(JSONException ex) {
+            throw new OwnerException(OwnerProtocol.ERROR_INTERNAL,"takeover_return");
         }
         return out;
     }

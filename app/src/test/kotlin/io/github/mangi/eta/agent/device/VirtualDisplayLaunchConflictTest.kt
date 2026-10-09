@@ -23,15 +23,18 @@ class VirtualDisplayLaunchConflictTest {
     }
 
     @Test
-    fun offersExactlyThreeUserDecisionsWithAutoStopOffByDefault() {
+    fun offersFourUserDecisionsWithTakeoverFirstAndAutoStopOffByDefault() {
         val conflict = payload.getJSONObject("conflict")
         assertFalse(conflict.getBoolean("auto_stop_default"))
+        assertFalse(conflict.getBoolean("auto_takeover_default"))
         assertEquals("com.example.shop", conflict.getString("package_name"))
         val options = conflict.getJSONArray("options")
-        assertEquals(3, options.length())
+        assertEquals(4, options.length())
         val ids = (0 until options.length()).map { options.getJSONObject(it).getString("id") }
+        // 接管排第一：不杀进程、不重置界面，收尾自动还回主屏。
         assertEquals(
             listOf(
+                VirtualDisplayLaunchConflict.OPTION_TAKEOVER,
                 VirtualDisplayLaunchConflict.OPTION_STOP_AND_RETRY,
                 VirtualDisplayLaunchConflict.OPTION_CONTINUE_ON_MAIN,
                 VirtualDisplayLaunchConflict.OPTION_CANCEL,
@@ -43,6 +46,21 @@ class VirtualDisplayLaunchConflictTest {
             assertTrue(option.getString("label").isNotBlank())
             assertTrue(option.getString("note").isNotBlank())
         }
+    }
+
+    @Test
+    fun takeoverDefaultIsReportedWithoutDecidingForTheUser() {
+        val auto = VirtualDisplayLaunchConflict.payload(
+            packageName = "com.example.shop",
+            code = VirtualDisplayLaunchConflict.CODE_RECENT,
+            detail = "recent task 42",
+            autoTakeoverDefault = true,
+        )
+        val conflict = auto.getJSONObject("conflict")
+        assertTrue(conflict.getBoolean("auto_takeover_default"))
+        // 自动接管不等于自动停止：停止主屏实例仍然默认关闭、仍然要用户同意。
+        assertFalse(conflict.getBoolean("auto_stop_default"))
+        assertFalse(auto.getBoolean("executed"))
     }
 
     @Test

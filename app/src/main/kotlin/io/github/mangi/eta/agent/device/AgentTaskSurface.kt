@@ -180,7 +180,8 @@ internal object AgentTaskSurface {
             "副屏文本用 replace_text（传 index 或先把光标放进输入框）与 paste_text，clear_text 清空；" +
             "副屏 wait_for_text / wait_for_package 同样作用于副屏，不会去等主屏；" +
             "副屏 launch_app 返回 TARGET_TASK_ACTIVE 或 TARGET_TASK_RECENT，表示主屏正在使用同一应用，本次未执行、也没有停止任何应用：" +
-            "必须先用 ask_user 让用户在 conflict.options 的三项里选择（停止主屏那个实例后继续 / 这次操作改到主屏做 / 取消）；" +
+            "必须先用 ask_user 让用户在 conflict.options 里选择（接管 / 停止主屏那个实例后继续 / 这次操作改到主屏做 / 取消）；" +
+            "用户选 takeover 就用 launch_app(takeover=true) 重试，它会把主屏那个实例搬到副屏继续（不杀进程、不重置界面，收尾自动还回主屏）；" +
             "只有用户选了 stop_main_and_retry，才可 app_state_control(action=force_stop) 后重试 launch_app；" +
             "用户选 cancel 就跳过该应用；禁止未经用户同意自行停止、冻结或清理任何应用。" +
             "副屏文本优先用 type_text（mode=replace/append，submit=true 可直接回车提交，适合搜索框），" +

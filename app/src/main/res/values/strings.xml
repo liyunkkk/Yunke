@@ -365,6 +365,8 @@
   <string name="vd_viewer_no_frame">No frame yet</string>
   <string name="vd_viewer_none_hint">The virtual display exists only while a background task is running; it closes when the task ends.</string>
   <string name="vd_idle_title">Auto-clean idle virtual display</string>
+  <string name="vd_takeover_title">Take over on conflict</string>
+  <string name="vd_takeover_summary">When the target app is already open on the main screen, move it to the virtual display instead of asking (no kill, no UI reset; returned to the main screen when the task ends).</string>
   <string name="vd_idle_minutes">%1$d min</string>
   <string name="vd_idle_never">Never</string>
   <string name="vd_screen_off_title">Allow screen-off execution</string>

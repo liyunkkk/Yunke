@@ -72,6 +72,17 @@ internal object AgentContextAppToolCatalog {
                                         .put("type", "string")
                                         .put("description", "应用显示名，例如 QQ")
                                 )
+                                .put(
+                                    "takeover",
+                                    JSONObject()
+                                        .put("type", "boolean")
+                                        .put(
+                                            "description",
+                                            "仅副屏任务使用：目标应用已在主屏打开时，把它搬到副屏接管" +
+                                                "（不杀进程、不重置界面，收尾自动还回主屏）。" +
+                                                "只有在用户同意「接管」后才传 true。"
+                                        )
+                                )
                         )
                 )
             )
