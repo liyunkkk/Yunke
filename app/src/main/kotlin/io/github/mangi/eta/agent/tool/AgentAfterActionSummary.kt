@@ -11,7 +11,16 @@ import org.json.JSONObject
  * 移植自 Mangi-11/Eta v3.3.0（AgentAfterActionSummary），字段名对齐本仓库设备侧模型。
  */
 internal object AgentAfterActionSummary {
-    fun build(before: ElementObservation?, after: ElementObservation): JSONObject {
+    /**
+     * @param diagnosticOnly 主屏路径传 true：节点列表只用于判断动作是否生效，observation_id 并未发布，
+     *   note 因此不能声称「可直接用该 id 继续操作」，否则模型会拿旧 id 去 tap_element 并拿到
+     *   STALE_OBSERVATION。副屏路径传 false：其 observation_id 已发布，可直接续用。
+     */
+    fun build(
+        before: ElementObservation?,
+        after: ElementObservation,
+        diagnosticOnly: Boolean = false,
+    ): JSONObject {
         val changed = before == null || signature(before.nodes) != signature(after.nodes)
         return JSONObject()
             .put("observation_id", after.id)
@@ -23,10 +32,13 @@ internal object AgentAfterActionSummary {
             .put("ui_nodes", JSONArray().also { array -> after.nodes.forEach { array.put(it.compactJson()) } })
             .put(
                 "note",
-                if (changed) {
-                    "以上为动作后的新界面，可直接用该 observation_id 继续操作；需要更多节点或截图时再调用 observe_screen"
-                } else {
-                    "界面没有可见变化，动作可能未生效；请换目标或方式，不要原样重复"
+                when {
+                    changed && diagnosticOnly ->
+                        "以上为动作后的界面快照，仅用于判断动作是否生效；该 observation_id 未发布，" +
+                            "不能拿去 tap_element，需要节点索引时先调用 observe_screen"
+                    changed ->
+                        "以上为动作后的新界面，可直接用该 observation_id 继续操作；需要更多节点或截图时再调用 observe_screen"
+                    else -> "界面没有可见变化，动作可能未生效；请换目标或方式，不要原样重复"
                 },
             )
     }

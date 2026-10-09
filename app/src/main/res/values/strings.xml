@@ -1584,4 +1584,5 @@
   <string name="reconnect_elapsed_format">%1$s elapsed</string>
     <string name="chat_todo_step_progress">Step %1$d of %2$d</string>
     <string name="chat_todo_toggle_desc">Todo list</string>
+    <string name="chat_todo_expired">Expired plan</string>
 </resources>

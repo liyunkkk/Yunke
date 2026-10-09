@@ -27,11 +27,14 @@ import java.util.concurrent.TimeUnit
  *
  * 只读窗口：不接收任何输入，也不改变副屏的观察状态。建窗沿用本应用既有的覆盖层做法——
  * 无障碍服务可用时用 TYPE_ACCESSIBILITY_OVERLAY（不需要额外权限），否则回退
- * TYPE_APPLICATION_OVERLAY 并要求 canDrawOverlays。刷新 2 秒一次；检测到 Agent 刚有活动
+ * TYPE_APPLICATION_OVERLAY 并要求 canDrawOverlays。刷新 10 秒一次，取帧按 1/4 降采样
+ * （全分辨率解码每 2 秒一次会与副屏 GUI 操作抢 owner 的单条连接）；检测到 Agent 刚有活动
  * （idle_seconds == 0）时跳过取帧，避免与 observe_screen 争抢 owner 的单条连接。
  */
 internal object VirtualDisplayFloatingWindow {
-    private const val REFRESH_SECONDS = 2L
+    private const val REFRESH_SECONDS = 10L
+    /** 取帧降采样倍数：小窗只有 150dp 宽，1/4 解码足够看清，开销降到约 1/16。 */
+    private const val FRAME_SAMPLE_SIZE = 4
     private const val WINDOW_WIDTH_DP = 150
     private const val WINDOW_HEIGHT_DP = 300
 
@@ -39,6 +42,7 @@ internal object VirtualDisplayFloatingWindow {
     private var layoutParams: WindowManager.LayoutParams? = null
     private var frameView: ImageView? = null
     private var statusView: TextView? = null
+    private var lastFrameBitmap: android.graphics.Bitmap? = null
     private var refresh: java.util.concurrent.ScheduledExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -134,6 +138,7 @@ internal object VirtualDisplayFloatingWindow {
         layoutParams = null
         frameView = null
         statusView = null
+        lastFrameBitmap = null
     }
 
     /** 窗口内按下拖动：只更新窗口位置，不接收点击之外的输入。 */
@@ -209,14 +214,20 @@ internal object VirtualDisplayFloatingWindow {
             context.getString(R.string.vd_float_none)
         }
         // Agent 刚有活动时不取帧，避免和 observe_screen 抢 owner 的单条连接。
-        val bitmap = if (running && idleSeconds != 0L) {
+        val fetched = if (running && idleSeconds != 0L) {
             runCatching { VirtualDisplaySession.viewerFrame() }.getOrNull()?.let { payload ->
                 val bytes = runCatching { Base64.decode(payload.optString("data"), Base64.DEFAULT) }.getOrNull()
-                bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                bytes?.let {
+                    val options = BitmapFactory.Options().apply { inSampleSize = FRAME_SAMPLE_SIZE }
+                    BitmapFactory.decodeByteArray(it, 0, it.size, options)
+                }
             }
         } else {
             null
         }
+        // 取帧失败（或正在抢锁）时保留上一帧，避免小窗闪成空白。
+        if (fetched != null) lastFrameBitmap = fetched
+        val bitmap = fetched ?: lastFrameBitmap
         if (windowView == null) return
         mainHandler.post {
             statusView?.text = label

@@ -35,11 +35,15 @@ internal fun Flow<String?>.observeConversationTodos(
         }
     }
 
-internal class ConversationTodoRepository private constructor(context: Context) {
+internal class ConversationTodoRepository private constructor(private val context: Context) {
     private val dao = EtaDatabase.get(context.applicationContext).conversationTodoDao()
 
     fun observe(conversationId: String): Flow<List<ConversationTodo>> =
         dao.observeByConversation(conversationId).map { rows -> rows.map { it.toConversationTodo() } }
+
+    /** 会话最后活动时间（毫秒）；读不到时给 null，调用方按「未过期」处理。 */
+    fun observeConversationUpdatedAt(conversationId: String): Flow<Long?> =
+        EtaDatabase.get(context.applicationContext).conversationDao().observeUpdatedAt(conversationId)
 
     suspend fun replace(conversationId: String, todos: List<ConversationTodo>) {
         require(conversationId.isNotBlank()) { "Conversation ID is required" }

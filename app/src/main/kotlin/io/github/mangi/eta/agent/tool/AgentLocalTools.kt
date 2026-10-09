@@ -472,22 +472,22 @@ internal class AgentLocalTools(
                 "delegate_to_kimi_code" -> textResult(kimiCodeSubagentTool.delegate(args))
                 "browser_use" -> browserUse(args, toolCall.id)
                 "observe_screen" -> observeScreen(args)
-                "tap" -> afterAction(tap(args))
-                "tap_area" -> afterAction(tapArea(args))
-                "tap_element" -> afterAction(tapElement(args))
-                "long_press" -> afterAction(longPress(args))
-                "long_press_element" -> afterAction(longPressElement(args))
-                "swipe" -> afterAction(swipe(args))
-                "scroll" -> afterAction(deviceController.scroll(args.optString("direction")))
-                "scroll_element" -> afterAction(scrollElement(args))
-                "input_text" -> afterAction(inputText(args))
-                "replace_text" -> afterAction(replaceText(args))
-                "type_text" -> afterAction(typeText(args))
-                "clear_text" -> afterAction(clearText(args))
+                "tap" -> textResult(tap(args))
+                "tap_area" -> textResult(tapArea(args))
+                "tap_element" -> textResult(tapElement(args))
+                "long_press" -> textResult(longPress(args))
+                "long_press_element" -> textResult(longPressElement(args))
+                "swipe" -> textResult(swipe(args))
+                "scroll" -> textResult(deviceController.scroll(args.optString("direction")))
+                "scroll_element" -> textResult(scrollElement(args))
+                "input_text" -> textResult(inputText(args))
+                "replace_text" -> textResult(replaceText(args))
+                "type_text" -> textResult(typeText(args))
+                "clear_text" -> textResult(clearText(args))
                 "set_clipboard" -> textResult(setClipboard(args))
                 "get_clipboard" -> textResult(getClipboard())
-                "paste_text" -> afterAction(pasteText(args))
-                "press_key" -> afterAction(deviceController.pressKey(args.optString("button")))
+                "paste_text" -> textResult(pasteText(args))
+                "press_key" -> textResult(deviceController.pressKey(args.optString("button")))
                 "wait" -> textResult(deviceController.waitMs(args.optInt("duration_ms", 1_000)))
                 "wait_for_text" -> textResult(waitForText(args))
                 "wait_for_package" -> textResult(waitForPackage(args))
@@ -1773,11 +1773,15 @@ internal class AgentLocalTools(
             .toString()
 
     /**
-     * 成功的 GUI 动作附带一次轻量观察：只读 UI 树、不截图，节点数减半。
-     * 模型据此确认动作生效并直接用新的 observation_id 继续操作，不必再单独 observe_screen；
-     * 失败或结果未知的动作不附带，保持「先重新观察」的既有约束。
+     * 主屏 GUI 动作的诊断回读：只读 UI 树、不截图，节点数减半。
+     *
+     * 当前主屏工具已不再调用它。每步固定多一次 40 节点取树（失败还会回退 uiautomator dump，长尾约 10 秒），
+     * 而这里返回的 observation_id 并不发布，模型照提示使用只会拿到 STALE_OBSERVATION，白跑一步。
+     * 实现与 [AgentAfterActionSummary] 保留备用：重新接线时必须同步恢复提示词里的 after_action 说明，
+     * 并把 diagnosticOnly 设回 false，否则 note 不能声称「可直接用该 id 继续操作」。
      * 后台副屏会话不会走到这里：GUI 工具已被 virtualRouted 交给 VirtualDisplaySession。
      */
+    @Suppress("unused")
     private fun afterAction(raw: String): AgentModelClient.ToolResult {
         val result = runCatching { JSONObject(raw) }.getOrNull()
         if (result == null || !result.optBoolean("ok")) return textResult(raw)
@@ -1791,7 +1795,7 @@ internal class AgentLocalTools(
         }.getOrNull() ?: return textResult(raw)
         val elementObservation = observation.elementObservation ?: return textResult(raw)
         val summary = runCatching {
-            AgentAfterActionSummary.build(before, elementObservation)
+            AgentAfterActionSummary.build(before, elementObservation, diagnosticOnly = true)
         }.getOrNull() ?: return textResult(raw)
         return textResult(result.put("after_action", summary).toString())
     }

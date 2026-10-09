@@ -7,6 +7,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import androidx.room.Transaction
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 internal interface ConversationDao {
@@ -30,6 +31,10 @@ internal interface ConversationDao {
         "created_at, updated_at, folder_id, is_pinned, has_completion_marker, provider_id, model_id, assistant_id " +
         "FROM conversations WHERE id = :id")
     suspend fun conversationMetadata(id: String): ConversationMetadata?
+
+    /** 会话最后活动时间（毫秒）：会话不存在时给 null。会话 Todo 清单的过期判定用它当基准。 */
+    @Query("SELECT updated_at FROM conversations WHERE id = :id")
+    fun observeUpdatedAt(id: String): Flow<Long?>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMissingConversations(rows: List<ConversationEntity>)
