@@ -171,6 +171,7 @@ internal fun AgentTaskPreferenceScreen(
                                 }
                             }
                         }
+                        VirtualDisplayExtrasControls()
                         VirtualDisplayRecoveryControls(onWorkingChanged = {
                             recoveryWorking = it
                             onRecoveryWorkingChanged(it)

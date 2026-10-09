@@ -65,6 +65,8 @@ public final class VirtualDisplayOwnerMain {
             return 3;
         }
 
+        VirtualDisplayFactory.setAlwaysUnlocked(parsed.allowScreenOff);
+
         Looper.prepareMainLooper();
         Handler handler = new Handler();
 
@@ -152,16 +154,18 @@ public final class VirtualDisplayOwnerMain {
         final Integer height;
         final Integer densityDpi;
         final String name;
+        final boolean allowScreenOff;
         final boolean help;
 
         private Args(String socket, int allowUid, Integer width, Integer height, Integer densityDpi,
-                String name, boolean help) {
+                String name, boolean allowScreenOff, boolean help) {
             this.socket = socket;
             this.allowUid = allowUid;
             this.width = width;
             this.height = height;
             this.densityDpi = densityDpi;
             this.name = name;
+            this.allowScreenOff = allowScreenOff;
             this.help = help;
         }
 
@@ -172,6 +176,7 @@ public final class VirtualDisplayOwnerMain {
             Integer height = null;
             Integer density = null;
             String name = null;
+            boolean allowScreenOff = false;
             boolean help = false;
             if (args != null) {
                 for (int i = 0; i < args.length; i++) {
@@ -190,13 +195,15 @@ public final class VirtualDisplayOwnerMain {
                         density = Integer.valueOf(positive(args, ++i, arg));
                     } else if ("--name".equals(arg)) {
                         name = value(args, ++i, arg);
+                    } else if ("--allow-screen-off".equals(arg)) {
+                        allowScreenOff = true;
                     } else {
                         throw new IllegalArgumentException("unknown arg");
                     }
                 }
             }
             if (help) {
-                return new Args(null, 0, null, null, null, null, true);
+                return new Args(null, 0, null, null, null, null, false, true);
             }
             if (socket == null || socket.isEmpty()) {
                 throw new IllegalArgumentException("socket required");
@@ -207,7 +214,7 @@ public final class VirtualDisplayOwnerMain {
             if (allowUid == null || allowUid.intValue() <= 0) {
                 throw new IllegalArgumentException("allow-uid required");
             }
-            return new Args(socket, allowUid.intValue(), width, height, density, name, false);
+            return new Args(socket, allowUid.intValue(), width, height, density, name, allowScreenOff, false);
         }
 
         private static String value(String[] args, int index, String flag) {

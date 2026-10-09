@@ -49,6 +49,16 @@ final class VirtualDisplayFactory {
 
     private static final int VIRTUAL_DISPLAY_FLAG_OWN_FOCUS = 1 << 14;
 
+    /** @hide 平台常量：主屏熄屏/锁定时该 display 仍继续渲染。 */
+    private static final int VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED = 1 << 12;
+
+    /** 由 --allow-screen-off 打开；默认关闭，避免无谓耗电。 */
+    private static volatile boolean alwaysUnlocked = false;
+
+    static void setAlwaysUnlocked(boolean value) {
+        alwaysUnlocked = value;
+    }
+
     static final int DEFAULT_FLAGS = DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC
             | VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH
             | VIRTUAL_DISPLAY_FLAG_TRUSTED
@@ -115,7 +125,7 @@ final class VirtualDisplayFactory {
         VirtualDisplay display;
         try {
             display = displayManager.createVirtualDisplay(name, width, height, densityDpi, surface,
-                    flags);
+                    flags | (alwaysUnlocked ? VIRTUAL_DISPLAY_FLAG_ALWAYS_UNLOCKED : 0));
         } catch (Throwable ex) {
             reader.close();
             throw new OwnerException(OwnerProtocol.ERROR_DISPLAY_NOT_READY,

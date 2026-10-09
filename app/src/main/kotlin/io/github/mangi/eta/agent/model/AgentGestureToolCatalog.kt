@@ -146,7 +146,7 @@ internal object AgentGestureToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "scroll",
-                    description = "按内容浏览方向滚动当前屏幕：down 显示下方内容，up 显示上方内容，left 显示左侧内容，right 显示右侧内容。",
+                    description = "按内容浏览方向滚动当前屏幕：down 显示下方内容，up 显示上方内容，left 显示左侧内容，right 显示右侧内容。副屏可用 amount 控制幅度。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -157,6 +157,13 @@ internal object AgentGestureToolCatalog {
                                     JSONObject()
                                         .put("type", "string")
                                         .put("enum", JSONArray().put("up").put("down").put("left").put("right"))
+                                )
+                                .put(
+                                    "amount",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("enum", JSONArray().put("small").put("medium").put("large").put("page"))
+                                        .put("description", "滚动幅度：small/medium/large/page；副屏按视口比例换算，主屏忽略。")
                                 )
                         )
                         .put("required", JSONArray().put("direction"))
@@ -189,6 +196,13 @@ internal object AgentGestureToolCatalog {
                                         .put("type", "string")
                                         .put("enum", JSONArray().put("up").put("down").put("left").put("right"))
                                         .put("description", "内容浏览方向；down 显示下方内容，up 显示上方内容。")
+                                )
+                                .put(
+                                    "amount",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("enum", JSONArray().put("small").put("medium").put("large").put("page"))
+                                        .put("description", "滚动幅度：small/medium/large/page；副屏按视口比例换算，主屏忽略。")
                                 )
                         )
                         .put("required", JSONArray().put("index").put("observation_id").put("direction"))

@@ -109,11 +109,20 @@ internal class AgentExecutionService : Service() {
         } else {
             getString(R.string.execution_summary, leases.executingSessionCount())
         }
+        // 副屏存活时在既有常驻通知上补一行状态，不新增通知渠道。
+        val virtualDisplayActive = runCatching {
+            io.github.mangi.eta.agent.device.VirtualDisplaySession.viewerStatus().optBoolean("running")
+        }.getOrDefault(false)
+        val detailWithVirtualDisplay = if (virtualDisplayActive) {
+            detailText + " · " + getString(R.string.execution_virtual_display_active)
+        } else {
+            detailText
+        }
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(appTitle)
             .setSubText(actionText)
-            .setContentText(detailText)
+            .setContentText(detailWithVirtualDisplay)
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

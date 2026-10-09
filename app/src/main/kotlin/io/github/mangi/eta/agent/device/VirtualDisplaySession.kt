@@ -863,7 +863,7 @@ internal object VirtualDisplaySession {
                         .put(
                             "note",
                             if (elementObservation != null && elementObservation.nodes.isNotEmpty()) {
-                                "虚拟屏节点来自无障碍服务（display ${c.displayId}）；坐标为截图空间映射到副屏像素，screen 空间显式直通"
+                                "虚拟屏节点来自无障碍服务（display ${c.displayId}）；坐标为截图空间映射到副屏像素，screen 空间直通，normalized 为 0..999 相对坐标"
                             } else {
                                 "本次未取到副屏节点（应用窗口可能未就绪或无可访问子树）；仍可用截图+坐标操作，坐标为截图空间映射到副屏像素"
                             }
@@ -1093,6 +1093,23 @@ internal object VirtualDisplaySession {
                 "idle_seconds",
                 if (session != null) (System.currentTimeMillis() - session.lastActivityMs) / 1000 else JSONObject.NULL,
             )
+    }
+
+    /**
+     * 只读镜像页取帧：复用本会话的 owner 连接取一帧，返回 {data(base64), width, height}。
+     * 只读、不改变任何观察状态；没有会话或取帧失败时返回 null。
+     */
+    @Synchronized fun viewerFrame(): JSONObject? {
+        val session = sessions.entries.firstOrNull { it.value.phase != "finished" }?.value ?: return null
+        val client = session.client ?: return null
+        val shot = runCatching { client.snapshot() }.getOrNull() ?: return null
+        if (!shot.ok) return null
+        val data = body(shot)
+        val encoded = data.optString("data")
+        val width = data.optInt("width", 0)
+        val height = data.optInt("height", 0)
+        if (encoded.isBlank() || width <= 0 || height <= 0) return null
+        return JSONObject().put("data", encoded).put("width", width).put("height", height)
     }
 
     /** 只读镜像页的最近操作轨迹。 */
