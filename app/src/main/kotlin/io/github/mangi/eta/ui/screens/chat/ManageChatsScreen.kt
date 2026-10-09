@@ -51,6 +51,9 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.app.SearchHistoryDialog
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.streamDiagnosticDraw
+import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
+import io.github.mangi.eta.ui.components.streamDiagnosticPlacement
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import kotlinx.coroutines.delay
@@ -107,6 +110,7 @@ internal fun ManageChatsScreen(
     MiuixScaffoldPage(
         title = stringResource(R.string.history_page_title),
         onBack = onBack,
+        listModifier = Modifier.streamDiagnosticMeasure("manage.lazy.measure").streamDiagnosticPlacement("manage.lazy.place").streamDiagnosticDraw("manage.lazy.draw"),
         actions = {
             IconButton(onClick = { showSearchHistory = true }) {
                 Icon(

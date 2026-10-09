@@ -26,6 +26,13 @@ class SettingsJankHotPathContract(unittest.TestCase):
             self.assertIn(f'{name}: Modifier = Modifier', scaffold)
             self.assertIn(f'{name} = Modifier.streamDiagnosticMeasure("{stage}")', settings)
             self.assertIn(f'"{stage}"', labels)
+        self.assertIn('.streamDiagnosticPlacement("settings.lazy.place").streamDiagnosticDraw("settings.lazy.draw")', settings)
+        manage=(ROOT/'screens/chat/ManageChatsScreen.kt').read_text()
+        drawer=(ROOT/'components/ConversationSidePaneScaffold.kt').read_text()
+        for source,prefix in ((manage,'manage.lazy'),(drawer,'drawer.lazy')):
+            compact=''.join(source.split())
+            self.assertIn(f'.streamDiagnosticMeasure("{prefix}.measure").streamDiagnosticPlacement("{prefix}.place").streamDiagnosticDraw("{prefix}.draw")',compact)
+            for suffix in ('measure','place','draw'): self.assertIn(f'"{prefix}.{suffix}"',labels)
         self.assertIn('modifier = topBarModifier', scaffold)
         self.assertIn('modifier = listModifier', scaffold)
         chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']

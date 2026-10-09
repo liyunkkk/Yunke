@@ -37,7 +37,7 @@ internal object StreamDiagnosticLabels {
         "runtime.checkpoint.buffer.chars", "runtime.checkpoint.buffer.events", "runtime.checkpoint.buffer.residency",
         "runtime.checkpoint.encode", "runtime.checkpoint.lockWait", "runtime.checkpoint.merge", "runtime.checkpoint.write",
         "settings.commitTail", "settings.composition", "settings.editEntryWait", "settings.root.draw", "settings.root.measure", "settings.transform",
-        "settings.topbar.measure", "settings.lazy.measure",
+        "settings.topbar.measure", "settings.lazy.measure", "settings.lazy.place", "settings.lazy.draw", "manage.lazy.measure", "manage.lazy.place", "manage.lazy.draw", "drawer.lazy.measure", "drawer.lazy.place", "drawer.lazy.draw",
         "settings.prefs.initial", "settings.prefs.refresh", "settings.prefs.capture", "settings.prefs.reconcile", "settings.service.subscribe",
         "render.userPrompt.parse", "render.userBubble.compose", "render.userBubble.measure", "render.userBubble.draw", "render.userText.measure", "render.userText.draw",
         "usage.commitTail", "usage.editEntryWait", "usage.ledger.encodeEvents", "usage.ledger.serialize", "usage.ledger.update",
