@@ -64,6 +64,66 @@ class GptServiceTierTest {
         }
     }
 
+    @Test fun codexUsesOfficialFastWireValueAndOmitsNormalAfterCustomBodyMerge() {
+        for (baseUrl in listOf("https://chatgpt.com/backend-api/codex", "https://auth.openai.com")) {
+            for (responses in listOf(false, true)) {
+                val original = config(GptSpeedMode.FAST).copy(
+                    baseUrl = baseUrl,
+                    extraBodyJson = "{\"service_tier\":\"ultrafast\"}",
+                    customBody = listOf(CustomBody("service_tier", JsonPrimitive("fast"))),
+                )
+                val fast = build(original, responses)
+                assertEquals("priority", fast.getString("service_tier"))
+                assertFalse(build(original.copy(gptSpeedMode = GptSpeedMode.NORMAL), responses)
+                    .has("service_tier"))
+                assertEquals(GptSpeedMode.FAST, original.gptSpeedMode)
+                // No explicit speed selection preserves the existing manual-body contract.
+                assertEquals("fast", build(original.copy(gptSpeedMode = null), responses)
+                    .getString("service_tier"))
+            }
+        }
+    }
+
+    @Test fun codexUltraFastIsRejectedBeforeSendingRatherThanSilentlyDowngraded() {
+        for (responses in listOf(false, true)) {
+            val failure = runCatching {
+                build(config(GptSpeedMode.ULTRA_FAST).copy(
+                    baseUrl = "https://chatgpt.com/backend-api/codex",
+                ), responses)
+            }.exceptionOrNull()
+            assertTrue(failure is AgentModelFailure)
+            assertTrue(failure?.message.orEmpty().contains("ULTRA_FAST"))
+            assertEquals(GptServiceTier.UNSUPPORTED_CODEX_TIER, (failure as AgentModelFailure).code)
+        }
+    }
+
+    @Test fun codexMappingDoesNotChangeModelOrReasoningOrMutateRejectedRequest() {
+        for (mode in GptSpeedMode.entries) {
+            val request = JSONObject("{\"model\":\"gpt-5\",\"reasoning\":{\"effort\":\"high\"},\"reasoning_effort\":\"high\"}")
+            val before = request.toString()
+            val outcome = runCatching {
+                GptServiceTier.apply(request, config(mode).copy(baseUrl = "https://chatgpt.com/backend-api/codex"))
+            }
+            if (mode == GptSpeedMode.ULTRA_FAST) {
+                assertTrue(outcome.exceptionOrNull() is AgentModelFailure)
+                assertEquals(before, request.toString())
+            } else {
+                outcome.getOrThrow()
+            }
+            assertEquals("gpt-5", request.getString("model"))
+            assertEquals("high", request.getJSONObject("reasoning").getString("effort"))
+            assertEquals("high", request.getString("reasoning_effort"))
+        }
+    }
+
+    @Test fun relayHostContainingCodexDoesNotReceiveOfficialMapping() {
+        for (baseUrl in listOf("https://chatgpt.com.relay.example.invalid/backend-api/codex",
+            "https://relay.example.invalid/backend-api/codex")) {
+            assertEquals("fast", build(config(GptSpeedMode.FAST).copy(baseUrl = baseUrl), true)
+                .getString("service_tier"))
+        }
+    }
+
     @Test fun nonGptModelsNeverGetAnInjectedTier() {
         listOf(false, true).forEach { responses ->
             listOf("o3", "codex", "foo-gpt-5", "claude-sonnet", "deepseek-chat").forEach { model ->
@@ -109,20 +169,5 @@ class GptServiceTierTest {
         assertEquals("high", request.getJSONObject("reasoning").getString("effort"))
         assertEquals("high", request.getString("reasoning_effort"))
         assertEquals(4, request.length())
-    }
-
-
-    @Test fun subscriptionBackendUsesCodexSpeedValuesAndOmitsStandardRouting() {
-        val base = "https://chatgpt.com/backend-api/codex"
-        listOf(false, true).forEach { responses ->
-            assertFalse(build(config(GptSpeedMode.NORMAL).copy(baseUrl = base,
-                customBody = listOf(CustomBody("service_tier", JsonPrimitive("priority"))),
-            ), responses).has("service_tier"))
-            assertEquals("priority", build(config(GptSpeedMode.FAST).copy(baseUrl = base), responses)
-                .getString("service_tier"))
-            assertEquals("ultrafast", build(config(GptSpeedMode.ULTRA_FAST).copy(baseUrl = base), responses)
-                .getString("service_tier"))
-        }
-        assertEquals("fast", build(config(GptSpeedMode.FAST), false).getString("service_tier"))
     }
 }

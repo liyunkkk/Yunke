@@ -231,6 +231,8 @@ internal class AgentModelRetry(
                         ?: if (reconnectEnabled) AgentModelFailure("PROVIDER_EXCEPTION", false,
                             "模型请求发生异常；保留已有结果并按所选重连策略继续请求。", failure)
                         else throw failure
+                    // A local unsupported tier cannot recover by resending the same configuration.
+                    if (classified.code == GptServiceTier.UNSUPPORTED_CODEX_TIER) throw classified
                     if (classified.code == "CONTEXT_WINDOW_EXCEEDED") throw classified
                     if (classified.code == AgentToolReplayGuard.CODE) replayCorrectionPending = true
                     val envelopeRejected = classified.code == ResponsesToolEnvelopeRecovery.CODE
