@@ -352,6 +352,7 @@
   <string name="vd_viewer_title">View virtual display</string>
   <string name="vd_viewer_close">Close</string>
   <string name="vd_float_title">Floating virtual display window</string>
+  <string name="vd_float_none">No virtual display session</string>
   <string name="vd_float_summary">Keep a small read-only window with the virtual display frame above other apps. No input is accepted.</string>
   <string name="vd_float_running">Virtual display (display %1$d) · idle %2$ds</string>
   <string name="vd_float_denied">Cannot show the floating window: overlay permission missing</string>

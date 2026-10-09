@@ -360,6 +360,7 @@
   <string name="vd_viewer_title">查看虚拟屏</string>
   <string name="vd_viewer_close">关闭</string>
   <string name="vd_float_title">悬浮小窗</string>
+  <string name="vd_float_none">当前没有副屏会话</string>
   <string name="vd_float_summary">在其它应用之上持续显示副屏画面（只读，不接收输入）。</string>
   <string name="vd_float_running">副屏运行中（display %1$d）· 空闲 %2$d 秒</string>
   <string name="vd_float_denied">无法显示悬浮小窗：缺少悬浮窗权限</string>
