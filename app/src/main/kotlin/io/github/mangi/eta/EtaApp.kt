@@ -5,7 +5,6 @@ import android.os.Handler
 import android.os.Looper
 import io.github.mangi.eta.agent.skill.SkillRuntime
 import io.github.mangi.eta.agent.device.RootAccess
-import io.github.mangi.eta.agent.device.VirtualDisplayWebPreview
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -111,13 +110,6 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
             AppearanceSettingsRepository.settings().predictiveBackEnabled
         }
         PredictiveBackController.apply(applicationInfo, predictiveBackEnabled)
-        // Restore only an explicit, device-local web pairing, never create a virtual display.
-        applicationScope.launch {
-            runCatching { VirtualDisplayWebPreview.restore(this@EtaApp) }
-                .onFailure { throwable ->
-                    AndroidAgentLogger.warn("Virtual display web preview restore failed: type=${throwable.safeLogType()}")
-                }
-        }
         XposedServiceHelper.registerListener(this)
         applicationScope.launch {
             LinuxEnvironmentSettingsRepository.initialize(this@EtaApp)

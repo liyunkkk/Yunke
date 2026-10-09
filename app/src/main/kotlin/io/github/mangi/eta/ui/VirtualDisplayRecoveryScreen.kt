@@ -240,69 +240,6 @@ internal fun VirtualDisplayRecoveryControls(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    OutlinedButton(
-                        enabled = installed == true && !working,
-                        onClick = {
-                            if (!working) {
-                                TouchHaptics.click(view)
-                                setWorking(true)
-                                scope.launch {
-                                    try {
-                                        val uri = withContext(Dispatchers.IO) { VirtualDisplayWebPreview.openWithManualClose(context) }
-                                        val stillInstalled = withContext(Dispatchers.IO) { AgentTaskSurface.moduleInstalled() }
-                                        if (!stillInstalled) {
-                                            withContext(NonCancellable + Dispatchers.IO) { VirtualDisplayWebPreview.revoke(context) }
-                                            webPaired = false
-                                            error("Backend module removed")
-                                        }
-                                        webPaired = true
-                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri))
-                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                                    } catch (ex: CancellationException) {
-                                        throw ex
-                                    } catch (ex: Exception) {
-                                        // A partial disk commit with failed cleanup is not an ordinary offline error.
-                                        webPaired = true // Always leave an explicit revoke action available after failure.
-                                        val error = if (ex is VirtualDisplayPreviewLifecycle.PersistenceCleanupException)
-                                            "WEB_PREVIEW_REVOKE_FAILED" else "WEB_PREVIEW_OPEN_FAILED"
-                                        result = JSONObject().put("ok", false).put("error", error)
-                                    } finally { setWorking(false) }
-                                }
-                            }
-                        },
-                    ) {
-                        Text(
-                            text = stringResource(R.string.vd_preview_open),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    OutlinedButton(
-                        enabled = webPaired && !working,
-                        onClick = {
-                            if (!working) {
-                                TouchHaptics.click(view)
-                                setWorking(true)
-                                scope.launch {
-                                    try {
-                                        withContext(NonCancellable + Dispatchers.IO) { VirtualDisplayWebPreview.revoke(context) }
-                                        webPaired = false
-                                        result = null
-                                    } catch (ex: CancellationException) {
-                                        throw ex
-                                    } catch (_: Exception) {
-                                        result = JSONObject().put("ok", false).put("error", "WEB_PREVIEW_REVOKE_FAILED")
-                                    } finally { setWorking(false) }
-                                }
-                            }
-                        },
-                    ) {
-                        Text(
-                            text = stringResource(R.string.vd_preview_revoke),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
                     TextButton(
                         enabled = installed == true && !working,
                         onClick = { TouchHaptics.click(view); refresh() },

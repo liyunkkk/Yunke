@@ -27,13 +27,13 @@ class FinalDeliveryIntegrationTest(unittest.TestCase):
         self.assertNotIn('cloudHistoryTokens = null', prune)
         self.assertIn('AgentContextCompactionUi.applyMarker(', handler)
 
-    def test_four_inline_actions_only_preview_uses_full_preview_entry(self):
+    def test_inline_actions_no_longer_expose_a_web_preview_entry(self):
         controls = self.source('ui/VirtualDisplayRecoveryScreen.kt')
         actions = controls.split('FlowRow(', 1)[1]
-        self.assertEqual(4, actions.count('TouchHaptics.click(view)'))
-        self.assertEqual(1, actions.count('VirtualDisplayWebPreview.openWithManualClose(context)'))
+        self.assertEqual(2, actions.count('TouchHaptics.click(view)'))
+        # 跨设备网页预览入口已移除：手机上改用只读镜像页与悬浮小窗。
+        self.assertNotIn('VirtualDisplayWebPreview.openWithManualClose(context)', actions)
         self.assertNotIn('VirtualDisplayWebPreview.open(context)', actions)
-        self.assertIn('VirtualDisplayWebPreview.revoke(context)', actions)
         self.assertNotIn('VirtualDisplayWebPreview.stop()', actions)
         self.assertIn('onClick = { TouchHaptics.click(view); refresh() }', actions)
         self.assertIn('recover(context.applicationContext)', actions)
