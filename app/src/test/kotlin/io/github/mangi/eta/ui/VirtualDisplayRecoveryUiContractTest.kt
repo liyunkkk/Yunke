@@ -18,16 +18,18 @@ class VirtualDisplayRecoveryUiContractTest {
         assertTrue(source.contains("VirtualDisplayRecoveryControls("))
     }
 
-    @Test fun inlineRecoveryHasWrappingActionsAndExplicitWebRevocation() {
+    @Test fun inlineRecoveryHasWrappingActionsWithoutWebPreviewEntry() {
         val source = File(ui, "VirtualDisplayRecoveryScreen.kt").readText()
         val actions = source.substring(source.indexOf("FlowRow("))
-        assertEquals(4, Regex("""TouchHaptics\.click\(view\)""").findAll(actions).count())
-        assertEquals(4, Regex("""maxLines = 1""").findAll(actions).count())
-        assertTrue(actions.contains("Button(") && actions.contains("OutlinedButton(") && actions.contains("TextButton("))
+        assertEquals(2, Regex("""TouchHaptics\.click\(view\)""").findAll(actions).count())
+        assertEquals(2, Regex("""maxLines = 1""").findAll(actions).count())
+        assertTrue(actions.contains("Button(") && actions.contains("TextButton("))
         assertTrue(source.contains("!present -> R.string.vd_recovery_empty"))
-        assertTrue(source.contains("VirtualDisplayWebPreview.openWithManualClose(context)"))
+        // 跨设备网页预览入口已移除：不再有打开/撤销按钮，只保留后端被移除时的自动撤销。
+        assertFalse(source.contains("VirtualDisplayWebPreview.openWithManualClose(context)"))
         assertFalse(source.contains("VirtualDisplayWebPreview.open(context)"))
-        assertTrue(source.contains("vd_preview_open"))
+        assertFalse(source.contains("vd_preview_open"))
+        assertFalse(source.contains("vd_preview_revoke"))
         assertFalse(source.contains("vd_preview_control_open"))
         for (explanation in listOf("vd_recovery_explanation", "vd_recovery_scope", "vd_preview_note")) {
             assertFalse(source.contains(explanation))
@@ -35,10 +37,7 @@ class VirtualDisplayRecoveryUiContractTest {
         assertTrue(source.contains("recover(context.applicationContext)"))
         assertFalse(source.contains("VirtualDisplayWebPreview.stop()"))
         assertTrue(source.contains("VirtualDisplayWebPreview.revoke(context)"))
-        assertTrue(source.contains("vd_preview_revoke"))
         assertTrue(source.contains("val showWeb = installed == true || webPaired"))
-        val previewButton = actions.substringBefore("R.string.vd_preview_open")
-        assertFalse(previewButton.contains("optBoolean(\"present\")"))
         val leaving = source.substringAfter("DisposableEffect(Unit)").substringBefore("val snapshot")
         assertFalse(leaving.contains("VirtualDisplayWebPreview."))
     }
