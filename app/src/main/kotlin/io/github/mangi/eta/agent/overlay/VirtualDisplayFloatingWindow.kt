@@ -53,25 +53,28 @@ internal object VirtualDisplayFloatingWindow {
             return true
         }
         if (windowView != null) return true
-        val manager = appContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return false
-        val accessibilityOverlay = AgentAccessibilityService.current() != null
-        if (!accessibilityOverlay && !Settings.canDrawOverlays(appContext)) {
+        // TYPE_ACCESSIBILITY_OVERLAY 必须用无障碍服务自己当 Context（与 GestureIndicator 同一做法）；
+        // 用 applicationContext 建这种窗会被 WindowManager 直接拒绝。
+        val service = AgentAccessibilityService.current()
+        val overlayContext: Context = service ?: appContext
+        val manager = overlayContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return false
+        if (service == null && !Settings.canDrawOverlays(appContext)) {
             AndroidAgentLogger.warn("Virtual display floating window denied: no overlay permission")
             return false
         }
-        val density = appContext.resources.displayMetrics.density
+        val density = overlayContext.resources.displayMetrics.density
         val width = (WINDOW_WIDTH_DP * density).toInt()
         val height = (WINDOW_HEIGHT_DP * density).toInt()
-        val root = LinearLayout(appContext).apply {
+        val root = LinearLayout(overlayContext).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.argb(210, 16, 16, 20))
             setPadding(8, 8, 8, 8)
         }
-        val frame = ImageView(appContext).apply {
+        val frame = ImageView(overlayContext).apply {
             layoutParams = LinearLayout.LayoutParams(width, height - (28 * density).toInt())
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        val status = TextView(appContext).apply {
+        val status = TextView(overlayContext).apply {
             setTextColor(Color.WHITE)
             textSize = 11f
             layoutParams = LinearLayout.LayoutParams(
@@ -84,7 +87,7 @@ internal object VirtualDisplayFloatingWindow {
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            if (accessibilityOverlay) {
+            if (service != null) {
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             } else {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -100,9 +103,13 @@ internal object VirtualDisplayFloatingWindow {
             y = (240 * density).toInt()
         }
         attachDrag(root, params, manager, density)
-        val attached = runCatching { manager.addView(root, params) }.isSuccess
-        if (!attached) {
-            AndroidAgentLogger.warn("Virtual display floating window attach failed")
+        val attached = runCatching { manager.addView(root, params) }
+        if (attached.isFailure) {
+            val failure = attached.exceptionOrNull()
+            AndroidAgentLogger.warn(
+                "Virtual display floating window attach failed: " +
+                    "${failure?.javaClass?.simpleName} ${failure?.message?.take(120).orEmpty()}",
+            )
             return false
         }
         windowView = root
