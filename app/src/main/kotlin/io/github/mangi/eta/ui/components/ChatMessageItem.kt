@@ -1096,22 +1096,20 @@ private fun StreamingMarkdown(
         }
     }
 
-    // 完全盖住且没有导航动画时，才用“追平”代替逐帧推进；
-    // 动画期间一帧都不省，避免把露出的部分停在旧画面。
+    // 完全盖住且没有导航动画时，才允许停止逐帧推进；
+    // 横滑露出一点点、露一半都在动画中，一帧都不省。
+    // 原来被盖住时强制继续推进，现在改由这个可见性门控决定；
+    // 被盖住期间追平不可见，回来时不会重播。
     val revealClockAllowed = !routeCoveredNow.value && !navigationInProgressNow.value
-    val animationsAllowed =
-        state.restoreState.animationsAllowed(isPaused) || routeCoveredNow.value
+    val animationsAllowed = state.restoreState.animationsAllowed(isPaused) && revealClockAllowed
     // Content is deliberately not a key. A streaming delta must not re-run the gate decision:
     // while the restore baseline is still pending, animationsAllowed is false, and every delta
     // would catch the reveal up to the newest text. That drains the pending records, the frame
     // clock parks on its wakeup channel, and the typewriter plus its haptics stop for the rest
     // of the message. Only a real gate change may move the coordinator.
-    LaunchedEffect(revealCoordinator, animationsAllowed, isPaused, revealClockAllowed) {
-        when {
-            animationsAllowed -> revealCoordinator.resumeAnimationsWithoutCatchingUp()
-            !revealClockAllowed && !isPaused -> revealCoordinator.pauseAnimationsAndCatchUp()
-            else -> Unit
-        }
+    LaunchedEffect(revealCoordinator, animationsAllowed, isPaused) {
+        if (animationsAllowed) revealCoordinator.resumeAnimationsWithoutCatchingUp()
+        else if (!isPaused) revealCoordinator.pauseAnimationsAndCatchUp()
     }
 
     // An explicit user pause does keep following new text, because nothing will animate it later.

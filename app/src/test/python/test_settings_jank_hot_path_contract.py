@@ -91,8 +91,8 @@ class SettingsJankHotPathContract(unittest.TestCase):
         self.assertIn('val navigationInProgressNow = rememberUpdatedState(LocalChatNavigationInProgress.current)', item)
         self.assertIn('if (routeCoveredNow.value || navigationInProgressNow.value) {', item)
         self.assertIn('val revealClockAllowed = !routeCoveredNow.value && !navigationInProgressNow.value', item)
-        # 动画期间不得走“追平代替推进”的分支
-        self.assertIn('!revealClockAllowed && !isPaused -> revealCoordinator.pauseAnimationsAndCatchUp()', item)
+        # 门控必须真正参与允许条件，否则被盖住时仍会强制推进
+        self.assertIn('val animationsAllowed = state.restoreState.animationsAllowed(isPaused) && revealClockAllowed', item)
 
     def test_streaming_body_skips_selection_registry(self):
         container = (ROOT / 'haptics/HapticSelectionContainer.kt').read_text()
