@@ -47,6 +47,8 @@ internal object VirtualDisplayFloatingWindow {
     private const val BUBBLE_DP = 52
     private const val CORNER_DP = 16
     private const val STATUS_ROW_DP = 28
+    /** 窗口内边距（四周一致）。展开时算屏内边界必须把它算进去。 */
+    private const val WINDOW_PADDING_DP = 8
     /** 判定「点」而不是「拖」的位移阈值。 */
     private const val DRAG_SLOP_DP = 8
 
@@ -122,7 +124,8 @@ internal object VirtualDisplayFloatingWindow {
         val content = LinearLayout(overlayContext).apply {
             orientation = LinearLayout.VERTICAL
             background = roundedBackground(corner, Color.argb(214, 16, 16, 20))
-            setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+            val pad = (WINDOW_PADDING_DP * density).toInt()
+            setPadding(pad, pad, pad, pad)
             addView(frame)
             addView(statusRowView)
         }
@@ -226,8 +229,15 @@ internal object VirtualDisplayFloatingWindow {
         } else {
             params.width = WindowManager.LayoutParams.WRAP_CONTENT
             params.height = WindowManager.LayoutParams.WRAP_CONTENT
-            val maxX = (metrics.widthPixels - (WINDOW_WIDTH_DP * density).toInt()).coerceAtLeast(0)
+            // 用实测尺寸而不是标称 dp：窗口还有内边距，按标称算会把右侧一截留在屏幕外。
+            val contentWidth = content.width.takeIf { it > 0 }
+                ?: ((WINDOW_WIDTH_DP + WINDOW_PADDING_DP * 2) * density).toInt()
+            val contentHeight = content.height.takeIf { it > 0 }
+                ?: ((WINDOW_HEIGHT_DP + WINDOW_PADDING_DP * 2) * density).toInt()
+            val maxX = (metrics.widthPixels - contentWidth).coerceAtLeast(0)
+            val maxY = (metrics.heightPixels - contentHeight).coerceAtLeast(0)
             params.x = params.x.coerceIn(0, maxX)
+            params.y = params.y.coerceIn(0, maxY)
         }
         runCatching { manager.updateViewLayout(root, params) }
     }
@@ -285,8 +295,11 @@ internal object VirtualDisplayFloatingWindow {
                             0
                         }
                     } else {
-                        val maxX = (metrics.widthPixels - windowWidth).coerceAtLeast(0)
-                        val maxY = (metrics.heightPixels - windowHeight).coerceAtLeast(0)
+                        // 同样用实测尺寸：标称 dp 不含内边距，会把窗口留在屏幕外一截。
+                        val width = root.width.takeIf { it > 0 } ?: windowWidth
+                        val height = root.height.takeIf { it > 0 } ?: windowHeight
+                        val maxX = (metrics.widthPixels - width).coerceAtLeast(0)
+                        val maxY = (metrics.heightPixels - height).coerceAtLeast(0)
                         params.x = params.x.coerceIn(0, maxX)
                         params.y = params.y.coerceIn(0, maxY)
                     }
