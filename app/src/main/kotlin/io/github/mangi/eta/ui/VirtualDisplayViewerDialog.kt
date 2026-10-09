@@ -145,11 +145,10 @@ internal fun VirtualDisplayViewerDialog(onDismiss: () -> Unit) {
                 }
             }
             TextButton(
+                text = stringResource(R.string.vd_viewer_close),
                 onClick = onDismiss,
                 modifier = Modifier.align(Alignment.End),
-            ) {
-                Text(stringResource(R.string.vd_viewer_close))
-            }
+            )
         }
     }
 }
