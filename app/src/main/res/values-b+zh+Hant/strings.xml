@@ -351,6 +351,7 @@
   <string name="tool_scroll_element">捲動元素</string>
   <string name="tool_input_text">輸入文字</string>
   <string name="tool_replace_text">取代文字</string>
+  <string name="tool_type_text">輸入文字</string>
   <string name="tool_clear_text">清除文字</string>
   <string name="tool_set_clipboard">寫入剪貼簿</string>
   <string name="tool_get_clipboard">讀取剪貼簿</string>
@@ -881,6 +882,8 @@
   <string name="tool_ui_calendar_events_970349">日曆事件</string>
   <string name="tool_ui_time_and_location_693893">時間與位置</string>
   <string name="tool_ui_replacement_text_1a5c8d">替換文字</string>
+  <string name="tool_ui_type_text_title">輸入文字</string>
+  <string name="tool_ui_type_text_desc">向聚焦或指定節點輸入文字，submit=true 時直接送出</string>
   <string name="tool_ui_replace_text_in_focus_or_node_30d332">替換焦點或節點中的文本</string>
   <string name="tool_ui_recently_applied_08f74c">最近應用</string>
   <string name="tool_ui_bounded_reading_and_filtering_of_recent_logs_0a268a">有界讀取並過濾最近日誌</string>

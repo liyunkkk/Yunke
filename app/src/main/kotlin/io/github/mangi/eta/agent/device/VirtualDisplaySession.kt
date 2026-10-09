@@ -35,6 +35,10 @@ internal object VirtualDisplaySession {
         var persisted = false
         /** 本次副屏会话是否已经尝试过无障碍强制自愈：最多一次，避免反复重绑。 */
         var accessibilityRecoveryAttempted = false
+        /** 副屏文本走剪贴板回退时的备份：写入前记住原内容，动作后尽量还原。 */
+        var clipboardBackup: String? = null
+        var clipboardBackupPresent = false
+        var clipboardWritten: String? = null
         var receipt: JSONObject? = null
         /** Shared across finish/onRunClosed for this run so automatic retries cannot multiply. */
         val handoffBudget = VirtualDisplayHandoffRetry.Budget()
@@ -780,9 +784,8 @@ internal object VirtualDisplaySession {
     }
     @Synchronized fun executeGui(context: Context,runId: String,tool: String,args: JSONObject, excludedPackages: Set<String> = emptySet()): AgentModelClient.ToolResult {
         fun text(obj: JSONObject)=AgentModelClient.ToolResult(obj.put("tool",tool).put("display","virtual").toString())
-        if(tool !in setOf("observe_screen","launch_app","wait","tap","tap_area","swipe","long_press","press_key","paste_text","input_text","replace_text","clear_text","wait_for_text","wait_for_package","tap_element","long_press_element","scroll","scroll_element"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
+        if(tool !in setOf("observe_screen","launch_app","wait","tap","tap_area","swipe","long_press","press_key","paste_text","input_text","replace_text","clear_text","type_text","wait_for_text","wait_for_package","tap_element","long_press_element","scroll","scroll_element"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="press_key" && args.optString("button") !in setOf("BACK","ENTER","PASTE"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
-        if(tool=="input_text" && args.optString("mode","append")!="append")return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="launch_app" && (args.optString("package_name").isBlank() || args.optString("package_name") in excludedPackages))return text(reply(false,"PACKAGE_NOT_ALLOWED"))
         if(sessions[runId]==null && tool !in setOf("launch_app","observe_screen"))return text(reply(false,"NO_VIRTUAL_SESSION"))
         if(sessions[runId]==null){val created=start(context,runId);if(!created.optBoolean("ok"))return text(created)}
@@ -887,36 +890,29 @@ internal object VirtualDisplaySession {
                 return text(body(launched))
             }
             if(tool=="wait") {Thread.sleep(args.optLong("duration_ms",1000).coerceIn(100,30000));return text(reply(true))}
-            if (tool == "replace_text" || tool == "clear_text") {
+            if (tool in setOf("replace_text","clear_text","input_text","paste_text","type_text")) {
                 val value = if (tool == "clear_text") "" else args.optString("text")
-                if (value.length > MAX_TEXT_CHARS) return text(reply(false,"TEXT_TOO_LONG","最多支持 $MAX_TEXT_CHARS 个字符"))
-                val nodes = s.observation.publishedNodes()
-                if (nodes.isEmpty()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","副屏本次观察没有节点，请先 observe_screen 取节点"))
-                val explicit = if (args.has("index")) args.optInt("index",-1).takeIf { it >= 0 } else null
-                val target = (if (explicit != null) nodes.firstOrNull { it.index == explicit } else VirtualDisplayTextTarget.pick(nodes))
-                    ?: return text(reply(false,"VIRTUAL_TEXT_TARGET_UNKNOWN","无法在副屏节点里唯一确定可编辑输入框；请显式传 index，或先 observe_screen"))
-                if (explicit != null && !target.editable) return text(reply(false,"NOT_EDITABLE","指定节点不可编辑"))
-                val snapshot = s.observation.nodesSnapshot()
-                    ?: return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","缺少本次副屏观察快照，请先 observe_screen"))
-                val service = AgentAccessibilityService.current()
-                    ?: return text(reply(false,"ACCESSIBILITY_UNAVAILABLE","副屏文本输入需要 YUNKe 无障碍服务"))
-                val beforeText = s.observation.publishedObservation()
-                val outcome = service.setTextNode(snapshot, target.index, value)
-                if (!outcome.ok) {
-                    // 副屏仍可退化为：先 tap_element 聚焦输入框，再用 paste_text / input_text 写入。
-                    return text(reply(false,outcome.code.ifBlank { "TEXT_SET_FAILED" },
-                        outcome.message + "；副屏可改用 tap_element 聚焦后 paste_text"))
+                // paste_text 仍保留长文本通道；其余文本工具与主屏一致，上限 4000 字符。
+                val textLimit = if (tool == "paste_text") 20_000 else MAX_TEXT_CHARS
+                if (value.length > textLimit) return text(reply(false,"TEXT_TOO_LONG","最多支持 $textLimit 个字符"))
+                val mode = when {
+                    tool == "replace_text" || tool == "clear_text" -> "replace"
+                    tool == "type_text" -> args.optString("mode","replace").takeIf { it == "append" } ?: "replace"
+                    else -> "append"
                 }
-                Thread.sleep(AFTER_ACTION_SETTLE_MS)
-                val payload = JSONObject()
-                    .put("ok",true)
-                    .put("executor","accessibility")
-                    .put("index",target.index)
-                    .put("package_name",target.packageName)
-                    .put("text_length",value.length)
-                outcome.method.takeIf { it.isNotBlank() }?.let { payload.put("method",it) }
-                outcome.verified?.let { payload.put("verified",it) }
-                afterActionSummary(context, s, c.displayId, beforeText)?.let { payload.put("after_action",it) }
+                val index = if (args.has("index")) args.optInt("index",-1).takeIf { it >= 0 } else null
+                val payload = writeVirtualText(context, s, c, c.displayId, mode, index, value)
+                if (!payload.optBoolean("ok")) return text(payload)
+                if (tool == "type_text" && args.optBoolean("submit",false)) {
+                    val enter = c.input(mapOf("kind" to "key","keyCode" to 66))
+                    payload.put("submit",enter.ok)
+                    if (!enter.ok) payload.put("submit_error",enter.errorCode)
+                    if (enter.ok) {
+                        Thread.sleep(AFTER_ACTION_SETTLE_MS)
+                        afterActionSummary(context, s, c.displayId, s.observation.publishedObservation())
+                            ?.let { payload.put("after_action",it) }
+                    }
+                }
                 return text(payload)
             }
             if (tool == "wait_for_text" || tool == "wait_for_package") {
@@ -953,13 +949,6 @@ internal object VirtualDisplaySession {
                     val key=mapOf("BACK" to 4,"ENTER" to 66,"PASTE" to 279)[args.getString("button")]
                         ?:return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
                     fields.putAll(mapOf("kind" to "key","keyCode" to key))
-                }
-                "paste_text","input_text" -> {
-                    if(tool=="input_text" && args.optString("mode","append")!="append")return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
-                    s.observation.require()
-                    val value=args.getString("text");require(value.length<=20000)
-                    (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("",value))
-                    fields.putAll(mapOf("kind" to "key","keyCode" to 279))
                 }
                 "tap_element","long_press_element" -> {
                     if (s.uiTreeAvailability.unavailable()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","该应用窗口暂无可访问节点，请用截图+坐标操作"))
@@ -1016,6 +1005,101 @@ internal object VirtualDisplaySession {
         }catch(e:VirtualDisplayCoordinateRejection){return text(reply(false,e.code,e.message.orEmpty()))}
         catch(e:Exception){return text(reply(false,"VIRTUAL_OPERATION_FAILED",e.javaClass.simpleName))}
     }
+    /**
+     * 副屏文本写入的唯一入口。
+     *
+     * 优先无障碍 SET_TEXT：完全不碰系统剪贴板，append 模式按节点当前文本追加。
+     * 只有取不到输入节点时才回退系统剪贴板 + PASTE 键，并在动作结束后尽量还原原剪贴板内容
+     * （读不到原内容时宁可不还原，也不清空用户的剪贴板）。
+     */
+    private fun writeVirtualText(
+        context: Context,
+        s: Session,
+        c: VirtualDisplayOwnerClient,
+        displayId: Int,
+        mode: String,
+        index: Int?,
+        value: String,
+    ): JSONObject {
+        val nodes = s.observation.publishedNodes()
+        val target = if (index != null) nodes.firstOrNull { it.index == index } else VirtualDisplayTextTarget.pick(nodes)
+        if (index != null && target == null) return reply(false,"VIRTUAL_NODE_INDEX_UNKNOWN","先 observe_screen 取当前节点索引")
+        if (index != null && target != null && !target.editable) return reply(false,"NOT_EDITABLE","指定节点不可编辑")
+        val snapshot = s.observation.nodesSnapshot()
+        val service = if (snapshot != null) AgentAccessibilityService.current() else null
+        if (target != null && snapshot != null && service != null) {
+            val next = if (mode == "append") target.text + value else value
+            val before = s.observation.publishedObservation()
+            val outcome = service.setTextNode(snapshot, target.index, next)
+            if (!outcome.ok) {
+                return reply(false,outcome.code.ifBlank { "TEXT_SET_FAILED" },
+                    outcome.message + "；可先 observe_screen 取新索引，或改用 tap_element 聚焦后 paste_text")
+            }
+            Thread.sleep(AFTER_ACTION_SETTLE_MS)
+            val payload = JSONObject()
+                .put("ok",true)
+                .put("executor","accessibility")
+                .put("index",target.index)
+                .put("package_name",target.packageName)
+                .put("mode",mode)
+                .put("text_length",value.length)
+                .put("clipboard_untouched",true)
+            outcome.method.takeIf { it.isNotBlank() }?.let { payload.put("method",it) }
+            outcome.verified?.let { payload.put("verified",it) }
+            afterActionSummary(context, s, displayId, before)?.let { payload.put("after_action",it) }
+            return payload
+        }
+        if (nodes.isEmpty() && snapshot == null) {
+            return reply(false,"VIRTUAL_NODES_UNAVAILABLE","副屏本次观察没有节点，请先 observe_screen 取节点")
+        }
+        // 回退：借系统剪贴板 + PASTE 键；先备份，动作后由 restoreVirtualClipboard 尽量还原。
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val backup = readClipboardText(context, clipboard)
+        val hadClip = runCatching { clipboard.hasPrimaryClip() }.getOrDefault(false)
+        if (backup != value || !hadClip) {
+            s.clipboardBackup = backup
+            s.clipboardBackupPresent = hadClip
+            s.clipboardWritten = value
+            runCatching { clipboard.setPrimaryClip(ClipData.newPlainText("", value)) }
+        }
+        val before = s.observation.publishedObservation()
+        val pasted = c.input(mapOf("kind" to "key","keyCode" to 279))
+        if (!pasted.ok) return body(pasted)
+        Thread.sleep(AFTER_ACTION_SETTLE_MS)
+        val restored = restoreVirtualClipboard(context, s)
+        val payload = JSONObject()
+            .put("ok",true)
+            .put("executor","clipboard")
+            .put("mode",mode)
+            .put("text_length",value.length)
+            .put("clipboard_restored",restored)
+            .put("note","副屏取不到输入节点，改用系统剪贴板 + PASTE 键输入；已尽量还原原剪贴板内容")
+        afterActionSummary(context, s, displayId, before)?.let { payload.put("after_action",it) }
+        return payload
+    }
+
+    private fun readClipboardText(context: Context, clipboard: ClipboardManager): String? = runCatching {
+        clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+    }.getOrNull()
+
+    /** 用完还原：只有当前剪贴板仍是我们写入的值、且确实读到过原内容时才写回。 */
+    private fun restoreVirtualClipboard(context: Context, s: Session): Boolean {
+        val written = s.clipboardWritten
+        val backup = s.clipboardBackup
+        val hadBackup = s.clipboardBackupPresent
+        s.clipboardWritten = null
+        s.clipboardBackup = null
+        s.clipboardBackupPresent = false
+        if (backup == null || !hadBackup) return false
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val current = readClipboardText(context, clipboard)
+        if (VirtualClipboardRestore.restoreAction(written, current, backup, hadBackup) !=
+            VirtualClipboardRestore.RestoreAction.WRITE_BACK) return false
+        return runCatching {
+            clipboard.setPrimaryClip(ClipData.newPlainText("", backup))
+        }.isSuccess
+    }
+
     /**
      * 副屏取树的唯一入口。
      *

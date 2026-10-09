@@ -31,7 +31,7 @@ internal object AgentToolRequirements {
             "get_current_context", "search_apps", "launch_app", "keep_virtual_result", "open_uri", "browser_use", "text_to_speech",
             "observe_screen", "tap", "tap_area", "tap_element", "long_press",
             "long_press_element", "swipe", "scroll", "scroll_element", "input_text",
-            "replace_text", "clear_text", "set_clipboard", "get_clipboard", "paste_text",
+            "replace_text", "clear_text", "type_text", "set_clipboard", "get_clipboard", "paste_text",
             "wait", "wait_for_text", "wait_for_package", "open_system_panel",
             "set_alarm", "set_timer", "device_status", "media_control", "set_volume",
             "search_notification_history", "recent_app_activity", "app_usage_summary",
@@ -60,7 +60,7 @@ internal object AgentToolRequirements {
         listOf(
             "observe_screen", "tap", "tap_area", "tap_element", "long_press",
             "long_press_element", "swipe", "scroll", "scroll_element", "input_text",
-            "replace_text", "clear_text", "paste_text", "press_key", "open_system_panel",
+            "replace_text", "clear_text", "type_text", "paste_text", "press_key", "open_system_panel",
             "wait_for_text", "wait_for_package",
         ).forEach { name -> put(name, getValue(name).copy(accessibility = true)) }
         mapOf(

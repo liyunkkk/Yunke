@@ -482,6 +482,7 @@ internal class AgentLocalTools(
                 "scroll_element" -> afterAction(scrollElement(args))
                 "input_text" -> afterAction(inputText(args))
                 "replace_text" -> afterAction(replaceText(args))
+                "type_text" -> afterAction(typeText(args))
                 "clear_text" -> afterAction(clearText(args))
                 "set_clipboard" -> textResult(setClipboard(args))
                 "get_clipboard" -> textResult(getClipboard())
@@ -840,6 +841,29 @@ internal class AgentLocalTools(
 
     private fun pasteText(args: JSONObject): String =
         deviceController.pasteText(args.optString("text"))
+
+    /**
+     * type_text：主屏侧的组合实现——replace 走无障碍整体写入，append 走聚焦输入框键入
+     * （长文本退化为粘贴），submit=true 时写入成功后追加一次回车。
+     */
+    private fun typeText(args: JSONObject): String {
+        val text = args.optString("text")
+        val append = args.optString("mode", "replace") == "append"
+        val index = if (args.has("index")) args.optInt("index", -1).takeIf { it >= 0 } else null
+        val observation = publishedObservation.get().elements
+        val primary = if (append) {
+            if (text.length <= 1_000) deviceController.inputText(text) else deviceController.pasteText(text)
+        } else {
+            deviceController.replaceText(text, index, observation)
+        }
+        if (!args.optBoolean("submit", false)) return primary
+        val json = runCatching { JSONObject(primary) }.getOrNull() ?: return primary
+        if (!json.optBoolean("ok")) return primary
+        val enter = runCatching { JSONObject(deviceController.pressKey("ENTER")) }.getOrNull() ?: return primary
+        json.put("submit", enter.optBoolean("ok"))
+        if (!enter.optBoolean("ok")) json.put("submit_error", enter.optString("error"))
+        return json.toString()
+    }
 
     private fun waitForText(args: JSONObject): String =
         deviceController.waitForText(

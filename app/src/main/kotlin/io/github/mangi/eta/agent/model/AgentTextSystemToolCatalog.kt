@@ -48,6 +48,48 @@ internal object AgentTextSystemToolCatalog {
             )
             .put(
                 AgentToolSchema.function(
+                    name = "type_text",
+                    description = "向输入框写入文本：默认整体替换（mode=replace），mode=append 追加到当前内容之后；submit=true 时写入后直接回车提交（适合搜索框）。指定 index 时 index 与 observation_id 必须来自同一次最近的 observe_screen。副屏优先用无障碍直接设置节点文本，不占用系统剪贴板。",
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put(
+                                    "text",
+                                    JSONObject().put("type", "string").put("maxLength", 4_000),
+                                )
+                                .put(
+                                    "mode",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("enum", JSONArray().put("replace").put("append"))
+                                        .put("description", "replace 整体替换（默认），append 追加到当前文本之后。"),
+                                )
+                                .put(
+                                    "submit",
+                                    JSONObject()
+                                        .put("type", "boolean")
+                                        .put("description", "写入成功后是否追加一次回车提交；默认 false。"),
+                                )
+                                .put(
+                                    "index",
+                                    JSONObject()
+                                        .put("type", "integer")
+                                        .put("description", "可选，最近一次 observe_screen 的 editable 节点 index；不传则用当前聚焦输入框。"),
+                                )
+                                .put(
+                                    "observation_id",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "指定 index 时必传，且必须与 index 来自同一次最近 observe_screen。"),
+                                )
+                        )
+                        .put("required", JSONArray().put("text"))
+                )
+            )
+            .put(
+                AgentToolSchema.function(
                     name = "replace_text",
                     description = "把当前聚焦输入框或指定 editable 节点的文本替换为给定内容。指定 index 时，index 与 observation_id 必须来自同一次最近的 observe_screen；若观察已过期，先重新观察。需要启用无障碍服务。",
                     parameters = JSONObject()

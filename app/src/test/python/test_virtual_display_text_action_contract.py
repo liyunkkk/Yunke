@@ -18,13 +18,20 @@ class NodeTextActionDisplayContractTest(unittest.TestCase):
 
     def test_virtual_text_path_stays_on_the_virtual_display(self):
         session = (AGENT / 'device/VirtualDisplaySession.kt').read_text()
-        text = session.split('if (tool == "replace_text" || tool == "clear_text") {', 1)[1].split(
-            'if (tool == "wait_for_text"', 1)[0]
-        self.assertIn('service.setTextNode(snapshot, target.index, value)', text)
-        self.assertIn('VirtualDisplayTextTarget.pick(nodes)', text)
-        self.assertIn('副屏可改用 tap_element 聚焦后 paste_text', text)
-        # 副屏文本写入绝不回退主屏输入焦点。
-        self.assertNotIn('findFocusedEditableNode', text)
+        branch = session.split(
+            'if (tool in setOf("replace_text","clear_text","input_text","paste_text","type_text")) {', 1
+        )[1].split('if (tool == "wait_for_text"', 1)[0]
+        self.assertIn('writeVirtualText(context, s, c, c.displayId, mode, index, value)', branch)
+        self.assertIn('if (tool == "type_text" && args.optBoolean("submit",false))', branch)
+        writer = session.split('private fun writeVirtualText(', 1)[1].split('private fun readClipboardText(', 1)[0]
+        # 优先无障碍直接写节点，不回退主屏输入焦点。
+        self.assertIn('service.setTextNode(snapshot, target.index, next)', writer)
+        self.assertIn('VirtualDisplayTextTarget.pick(nodes)', writer)
+        self.assertIn('.put("clipboard_untouched",true)', writer)
+        self.assertNotIn('findFocusedEditableNode', writer)
+        # 只有取不到节点时才借系统剪贴板，并在动作后尽量还原。
+        self.assertIn('restoreVirtualClipboard(context, s)', writer)
+        self.assertIn('clipboard.setPrimaryClip(ClipData.newPlainText("", value))', writer)
 
 
 if __name__ == '__main__':

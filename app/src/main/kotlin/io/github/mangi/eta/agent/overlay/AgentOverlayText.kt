@@ -101,6 +101,7 @@ internal fun toolDisplayNameResource(name: String): Int? = when (name) {
     "scroll_element" -> R.string.tool_scroll_element
     "input_text" -> R.string.tool_input_text
     "replace_text" -> R.string.tool_replace_text
+    "type_text" -> R.string.tool_type_text
     "clear_text" -> R.string.tool_clear_text
     "set_clipboard" -> R.string.tool_set_clipboard
     "get_clipboard" -> R.string.tool_get_clipboard

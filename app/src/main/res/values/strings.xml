@@ -349,6 +349,7 @@
   <string name="tool_scroll_element">Scroll element</string>
   <string name="tool_input_text">Enter text</string>
   <string name="tool_replace_text">Replace text</string>
+  <string name="tool_type_text">Type text</string>
   <string name="tool_clear_text">Clear text</string>
   <string name="tool_set_clipboard">Set clipboard</string>
   <string name="tool_get_clipboard">Read clipboard</string>
@@ -865,6 +866,8 @@
   <string name="tool_ui_calendar_events_970349">Calendar events</string>
   <string name="tool_ui_time_and_location_693893">time and location</string>
   <string name="tool_ui_replacement_text_1a5c8d">replacement text</string>
+  <string name="tool_ui_type_text_title">typed text</string>
+  <string name="tool_ui_type_text_desc">type into the focused or indexed input, optionally submitting with ENTER</string>
   <string name="tool_ui_replace_text_in_focus_or_node_30d332">Replace text in focus or node</string>
   <string name="tool_ui_recently_applied_08f74c">Recently applied</string>
   <string name="tool_ui_bounded_reading_and_filtering_of_recent_logs_0a268a">Bounded reading and filtering of recent logs</string>

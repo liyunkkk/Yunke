@@ -55,6 +55,7 @@ internal object AgentTaskSurface {
         "input_text",
         "replace_text",
         "clear_text",
+        "type_text",
         "paste_text",
         "press_key",
         "tap",
