@@ -37,8 +37,19 @@ internal object VirtualDisplayManualRecovery {
     /** 摘要长度上限：够看出是哪一项不满足，又不会把记录撑大。 */
     const val SUMMARY_LIMIT = 320
 
-    fun ownerStatusSummary(status: JSONObject?): String {
-        if (status == null) return "owner_status=missing"
+    /** 错误码回显上限：错误码是符号化字段，不需要更长。 */
+    private const val ERROR_CODE_LIMIT = 40
+
+    /**
+     * owner 回报的有界摘要。[ok] 与 [errorCode] 可选：带上它们才能分辨「读不到状态」是
+     * 连接层失败（ok=false）还是字段缺失；不传时输出与旧版逐字一致。
+     */
+    fun ownerStatusSummary(status: JSONObject?, ok: Boolean? = null, errorCode: String = ""): String {
+        val head = buildString {
+            if (ok != null) append("ok=").append(ok).append(' ')
+            if (errorCode.isNotBlank()) append("error=").append(errorCode.take(ERROR_CODE_LIMIT)).append(' ')
+        }
+        if (status == null) return (head + "owner_status=missing").take(SUMMARY_LIMIT)
         val parts = ArrayList<String>(SUMMARY_KEYS.size)
         SUMMARY_KEYS.forEach { key ->
             when {
@@ -47,7 +58,7 @@ internal object VirtualDisplayManualRecovery {
                 else -> parts += "$key=" + summarize(status.opt(key))
             }
         }
-        return parts.joinToString(" ").take(SUMMARY_LIMIT)
+        return (head + parts.joinToString(" ")).take(SUMMARY_LIMIT)
     }
 
     private fun summarize(value: Any?): String = when (value) {

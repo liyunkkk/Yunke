@@ -68,6 +68,12 @@ class VirtualDisplayManualRecoveryTest {
     @Test
     fun missingStatusIsReportedInsteadOfGuessed() {
         assertEquals("owner_status=missing", VirtualDisplayManualRecovery.ownerStatusSummary(null))
+        // 带上 ok/error 时才能分辨「读不到」是连接失败还是字段缺失，且不因此变长或泄密。
+        val failed = VirtualDisplayManualRecovery.ownerStatusSummary(null, false, "OWNER_DISCONNECTED")
+        assertTrue(failed.contains("ok=false"))
+        assertTrue(failed.contains("error=OWNER_DISCONNECTED"))
+        assertTrue(failed.contains("owner_status=missing"))
+        assertTrue(failed.length <= VirtualDisplayManualRecovery.SUMMARY_LIMIT)
         val text = VirtualDisplayManualRecovery.ownerStatusSummary(JSONObject().put("sourceEmpty", JSONObject.NULL))
         assertTrue(text.contains("sourceEmpty=null"))
         assertTrue(text.contains("mutationUncertain=absent"))

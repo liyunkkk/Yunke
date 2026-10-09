@@ -69,9 +69,11 @@ internal object VirtualDisplaySession {
         context.applicationContext.getSharedPreferences(RECOVERY_PREFS, Context.MODE_PRIVATE)
 
     /** 失败时把 owner 回报的有界摘要写进持久记录：不新增日志，但下次能看见失败现场。 */
-    private fun persistOwnerDiag(context: Context?, status: JSONObject?) {
+    private fun persistOwnerDiag(context: Context?, response: OwnerResponse?) {
         val target = context?.applicationContext ?: recoveryContext ?: return
-        val summary = runCatching { VirtualDisplayManualRecovery.ownerStatusSummary(status) }.getOrNull()
+        val summary = runCatching {
+            VirtualDisplayManualRecovery.ownerStatusSummary(response?.json, response?.ok, response?.errorCode.orEmpty())
+        }.getOrNull()
         if (summary.isNullOrBlank()) return
         runCatching {
             recoveryPrefs(target).edit().putString(VirtualDisplayRecoveryRecord.DIAG, summary).commit()
@@ -142,8 +144,8 @@ internal object VirtualDisplaySession {
             field = data::opt,
         )
     }
-    /** 只读探测结果：state 为 null 表示这次读不出已知状态，raw 保留 owner 的原始回报供诊断。 */
-    private class HandoffProbe(val state: VirtualDisplayHandoffRetry.OwnerState?, val raw: JSONObject?)
+    /** 只读探测结果：state 为 null 表示这次读不出已知状态，response 保留 owner 的原始回报供诊断。 */
+    private class HandoffProbe(val state: VirtualDisplayHandoffRetry.OwnerState?, val response: OwnerResponse?)
 
     private fun probeHandoffState(c: VirtualDisplayOwnerClient): HandoffProbe =
         try {
@@ -251,7 +253,7 @@ internal object VirtualDisplaySession {
             return reply(true).put("recovered", true).put("cleanup_only", true).put("phase", s.phase)
         }
         var recoveryStage = "record_read"
-        var lastOwnerStatus: JSONObject? = null
+        var lastOwnerStatus: OwnerResponse? = null
         val saved = try { recoveryPrefs(context) } catch (ex: Exception) {
             val e = VirtualDisplayRecoveryException.classify(recoveryStage, ex)
             return reply(false, e.code).put("recovery_stage", e.stage)
@@ -839,7 +841,7 @@ internal object VirtualDisplaySession {
         val probe = probeHandoffState(c)
         val observed = probe.state ?: run {
             // 读不出已知状态：把 owner 的原始字段摘要有界落盘，下次才不用猜。
-            persistOwnerDiag(context, probe.raw)
+            persistOwnerDiag(context, probe.response)
             return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
         }
         val f = observed.flags
