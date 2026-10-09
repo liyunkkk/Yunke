@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.matchParentSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -25,19 +27,15 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Modifier
@@ -45,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -57,6 +56,7 @@ import io.github.mangi.eta.ui.components.streamDiagnosticPlacement
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.collectLatest
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -195,30 +195,20 @@ private fun SwipeableManageChatRow(
     modifier: Modifier = Modifier,
 ) {
     val view = LocalView.current
-    val dismissState = rememberSwipeToDismissBoxState(
-        positionalThreshold = { distance -> distance * 0.4f },
-    )
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val deleteDistance = with(density) { 96.dp.toPx() }
+    var offsetX by remember { mutableFloatStateOf(0f) }
     var collapsing by remember { mutableStateOf(false) }
     var deleted by remember { mutableStateOf(false) }
     var crossedDeleteThreshold by remember { mutableStateOf(false) }
 
-    LaunchedEffect(dismissState) {
-        snapshotFlow { dismissState.targetValue }.collectLatest { target ->
-            val crossed = target == SwipeToDismissBoxValue.EndToStart
-            if (crossed && !crossedDeleteThreshold) {
-                crossedDeleteThreshold = true
-                TouchHaptics.gestureThreshold(view)
-            } else if (!crossed) {
-                crossedDeleteThreshold = false
-            }
-        }
-    }
-
-    LaunchedEffect(dismissState) {
-        snapshotFlow { dismissState.settledValue }.collectLatest { settled ->
-            if (!collapsing && settled == SwipeToDismissBoxValue.EndToStart) {
-                collapsing = true
-            }
+    LaunchedEffect(offsetX, deleteDistance) {
+        val crossed = offsetX <= -deleteDistance
+        if (crossed && !crossedDeleteThreshold) {
+            crossedDeleteThreshold = true
+            TouchHaptics.gestureThreshold(view)
+        } else if (!crossed) {
+            crossedDeleteThreshold = false
         }
     }
 
@@ -237,31 +227,32 @@ private fun SwipeableManageChatRow(
             shrinkTowards = Alignment.Top,
         ),
     ) {
-        SwipeToDismissBox(
-            state = dismissState,
-            enableDismissFromStartToEnd = false,
+        Box(
             modifier = Modifier
-                .manageChatDismissDoesNotClaimPageBack()
+                .manageChatDeleteDrag(
+                    onMove = { offsetX = it },
+                    onEnd = { total ->
+                        if (total <= -deleteDistance) collapsing = true else offsetX = 0f
+                    },
+                )
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 4.dp)
                 .clip(RoundedCornerShape(18.dp)),
-            backgroundContent = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MiuixTheme.colorScheme.errorContainer)
-                        .padding(horizontal = 20.dp),
-                    contentAlignment = Alignment.CenterEnd,
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Delete,
-                        contentDescription = stringResource(R.string.action_delete),
-                        tint = MiuixTheme.colorScheme.onErrorContainer,
-                    )
-                }
-            },
         ) {
-            Box(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(MiuixTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 20.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Delete,
+                    contentDescription = stringResource(R.string.action_delete),
+                    tint = MiuixTheme.colorScheme.onErrorContainer,
+                )
+            }
+            Box(modifier = Modifier.fillMaxWidth().offset { IntOffset(offsetX.roundToInt(), 0) }) {
                 ManageChatRow(
                     conversation = conversation,
                     onClick = onClick,
@@ -348,26 +339,35 @@ private fun ManageChatRow(
     }
 }
 
-/** Only the row's right-to-left delete gesture is claimed. Vertical scrolling and rightward page-back stay available. */
-private fun Modifier.manageChatDismissDoesNotClaimPageBack(): Modifier = pointerInput(Unit) {
+/**
+ * Claim only a clearly leftward delete drag. Consuming any other direction also
+ * consumes it for the list and the page-back parent, so vertical and rightward
+ * gestures stay untouched.
+ */
+private fun Modifier.manageChatDeleteDrag(
+    onMove: (Float) -> Unit,
+    onEnd: (Float) -> Unit,
+): Modifier = pointerInput(onMove, onEnd) {
     awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        val start = down.position
-        var decided = false
-        var deleteGesture = false
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val slop = viewConfiguration.touchSlop
+        var deleting = false
+        var totalX = 0f
         while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val event = awaitPointerEvent()
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
             if (!change.pressed) break
-            if (!decided) {
-                val delta = change.position - start
-                val slop = viewConfiguration.touchSlop
-                if (kotlin.math.abs(delta.x) > slop || kotlin.math.abs(delta.y) > slop) {
-                    decided = true
-                    deleteGesture = delta.x < 0f && kotlin.math.abs(delta.x) > kotlin.math.abs(delta.y)
-                }
+            val delta = change.position - down.position
+            if (!deleting) {
+                val moved = kotlin.math.abs(delta.x) > slop || kotlin.math.abs(delta.y) > slop
+                if (!moved) continue
+                deleting = delta.x < -slop && kotlin.math.abs(delta.x) > kotlin.math.abs(delta.y)
+                if (!deleting) break
             }
-            if (decided && !deleteGesture) change.consume()
+            change.consume()
+            totalX = delta.x.coerceAtMost(0f)
+            onMove(totalX)
         }
+        if (deleting) onEnd(totalX)
     }
 }
