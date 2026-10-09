@@ -106,7 +106,7 @@ internal class DiagnosticSpanColumns(private val capacity: Int) {
     }
     /** Detached snapshot only: skip out-of-range/non-main rows before allocating records. */
     fun recordsInRange(from: Long, to: Long): List<DiagnosticSpanRecord> = buildList {
-        for (i in 0 until size) {
+        for (i in 0 until this@DiagnosticSpanColumns.size) {
             if (!mains[i] || diagnosticOverlapNs(begins[i], ends[i], from, to) <= 0) continue
             add(DiagnosticSpanRecord(requireNotNull(stages[i]), ids[i], parents[i], begins[i], ends[i],
                 threads[i], mains[i], attrs[i], pages[i], pageEnds[i], values[i]))
