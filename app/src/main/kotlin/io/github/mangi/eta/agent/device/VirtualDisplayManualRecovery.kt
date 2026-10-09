@@ -21,8 +21,9 @@ internal object VirtualDisplayManualRecovery {
         probe == OwnerProbe.GONE -> Action.CLEAR_OWNER_GONE
         // 预算已被 stop()：可能已经发出过释放，再发一次就是重放一个未确认的变更。
         budgetBlocked -> Action.REPORT_UNVERIFIED
-        // 连上了但状态读不出已知结论：不动设备，如实回报。
-        probe == OwnerProbe.UNREADABLE -> Action.REPORT_UNVERIFIED
+        // 其余情况（含连上了但状态读不出）都走既有核验路径：它会给出精确错误码、
+        // 保留可重试的会话，并在真发释放前按 owner 的交接标志再判一次。
+        // 这里不能因为「这次读不出」就跳过核验——那会让一次失败变成不可重试。
         else -> Action.VERIFY_THEN_FINISH
     }
 

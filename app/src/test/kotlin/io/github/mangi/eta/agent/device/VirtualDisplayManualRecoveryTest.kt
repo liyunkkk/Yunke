@@ -29,6 +29,15 @@ class VirtualDisplayManualRecoveryTest {
         )
         assertEquals(
             VirtualDisplayManualRecovery.Action.REPORT_UNVERIFIED,
+            VirtualDisplayManualRecovery.decide(VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE, budgetBlocked = true),
+        )
+    }
+
+    @Test
+    fun unreadableOwnerWithoutBlockedBudgetStillGoesThroughVerification() {
+        // 读不出状态不是「不能核验」：短路会让一次失败变成不可重试，且丢掉精确错误码。
+        assertEquals(
+            VirtualDisplayManualRecovery.Action.VERIFY_THEN_FINISH,
             VirtualDisplayManualRecovery.decide(VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE, budgetBlocked = false),
         )
     }
