@@ -348,22 +348,26 @@ private fun ManageChatRow(
     }
 }
 
-/** Keep the row's right-to-left delete gesture, but leave left-edge page-back to navigation. */
+/** Only the row's right-to-left delete gesture is claimed. Vertical scrolling and rightward page-back stay available. */
 private fun Modifier.manageChatDismissDoesNotClaimPageBack(): Modifier = pointerInput(Unit) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         val start = down.position
-        var claimedByDismiss = false
+        var decided = false
+        var deleteGesture = false
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
             if (!change.pressed) break
-            val delta = change.position - start
-            if (!claimedByDismiss && (kotlin.math.abs(delta.x) > viewConfiguration.touchSlop ||
-                    kotlin.math.abs(delta.y) > viewConfiguration.touchSlop)) {
-                claimedByDismiss = delta.x < 0f && kotlin.math.abs(delta.x) > kotlin.math.abs(delta.y)
+            if (!decided) {
+                val delta = change.position - start
+                val slop = viewConfiguration.touchSlop
+                if (kotlin.math.abs(delta.x) > slop || kotlin.math.abs(delta.y) > slop) {
+                    decided = true
+                    deleteGesture = delta.x < 0f && kotlin.math.abs(delta.x) > kotlin.math.abs(delta.y)
+                }
             }
-            if (!claimedByDismiss) change.consume()
+            if (decided && !deleteGesture) change.consume()
         }
     }
 }
