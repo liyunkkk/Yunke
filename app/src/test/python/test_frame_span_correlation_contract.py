@@ -33,7 +33,8 @@ class FrameSpanCorrelationContract(unittest.TestCase):
         self.assertIn('if (protectedSize == protectedSpans.size) protectedDropped++', capture)
         recent = class_body(self.bounded, 'DiagnosticRawDetailSnapshot').split('fun recentForFrame', 1)[1].split('fun select()', 1)[0]
         self.assertNotIn('synchronized', recent)
-        self.assertIn('candidates(includeProtected = false)', recent)
+        self.assertIn('slowColumns?.recordsInRange(from, to)', recent)
+        self.assertLess(recent.index('if (!mains[slot]'), recent.index('DiagnosticSpanRecord('))
         raw_capture = body(code_only(self.bounded), 'recentSnapshot')
         self.assertNotIn('.copyOf()', raw_capture)
         self.assertIn('endIndex = size', raw_capture)

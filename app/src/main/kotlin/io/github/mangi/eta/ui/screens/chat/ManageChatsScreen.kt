@@ -10,6 +10,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
@@ -92,19 +94,25 @@ internal fun ManageChatsScreen(
     var showSearchHistory by remember { mutableStateOf(false) }
     // 多个会话同时在跑时，更新时间会不断把它们换到前面。管理页按打开时的顺序钉住，
     // 只在原地刷新标题和状态，滑动删除才点得中。新出现的会话插到最前，关掉页面再打开才重排。
-    var orderIds by remember { mutableStateOf(conversations.map { it.id }) }
-    val pinnedIds = conversations.filter { it.isPinned }.map { it.id }
+    // The producer replaces immutable summary snapshots; row data always comes from the latest one.
+    val currentIds = remember(conversations) { conversations.map { it.id } }
+    val pinnedIds = remember(conversations) {
+        conversations.asSequence().filter { it.isPinned }.map { it.id }.toSet()
+    }
+    var orderIds by remember { mutableStateOf(currentIds) }
     var pinnedSnapshot by remember { mutableStateOf(pinnedIds) }
-    val pinnedChanged = pinnedIds.toSet() != pinnedSnapshot.toSet()
-    val nextOrder = stableManageChatOrder(orderIds, conversations.map { it.id }, pinnedChanged)
+    val pinnedChanged = pinnedIds != pinnedSnapshot
+    val nextOrder = remember(orderIds, currentIds, pinnedChanged) {
+        stableManageChatOrder(orderIds, currentIds, pinnedChanged)
+    }
     SideEffect {
         if (nextOrder != orderIds || pinnedChanged) {
             orderIds = nextOrder
             pinnedSnapshot = pinnedIds
         }
     }
-    val byId = conversations.associateBy { it.id }
-    val ordered = nextOrder.mapNotNull { byId[it] }
+    val byId = remember(conversations) { conversations.associateBy { it.id } }
+    val ordered = remember(nextOrder, byId) { nextOrder.mapNotNull { byId[it] } }
 
     MiuixScaffoldPage(
         title = stringResource(R.string.history_page_title),
@@ -137,20 +145,18 @@ internal fun ManageChatsScreen(
                 )
             }
         } else {
-            ordered.forEach { conversation ->
-                item(key = conversation.id) {
-                    SwipeableManageChatRow(
-                        conversation = conversation,
-                        onClick = { onOpenConversation(conversation.id) },
-                        onTogglePin = { onTogglePin(conversation.id) },
-                        onDelete = { onDeleteConversation(conversation) },
-                        modifier = Modifier.animateItem(
-                            fadeInSpec = null,
-                            fadeOutSpec = tween(180),
-                            placementSpec = null,
-                        ),
-                    )
-                }
+            items(ordered, key = { it.id }, contentType = { "conversation" }) { conversation ->
+                SwipeableManageChatRow(
+                    conversation = conversation,
+                    onClick = { onOpenConversation(conversation.id) },
+                    onTogglePin = { onTogglePin(conversation.id) },
+                    onDelete = { onDeleteConversation(conversation) },
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = null,
+                        fadeOutSpec = tween(180),
+                        placementSpec = null,
+                    ),
+                )
             }
         }
     }
@@ -211,11 +217,12 @@ private fun SwipeableManageChatRow(
         }
     }
 
+    val currentOnDelete by rememberUpdatedState(onDelete)
     LaunchedEffect(collapsing) {
         if (!collapsing || deleted) return@LaunchedEffect
         delay(300)
         deleted = true
-        onDelete()
+        currentOnDelete()
     }
 
     AnimatedVisibility(

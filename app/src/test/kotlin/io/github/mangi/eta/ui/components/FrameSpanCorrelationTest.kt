@@ -459,4 +459,27 @@ class FrameSpanCorrelationTest {
         unsupported.onLine("<<<<< Finished", 10_000_000)
         assertEquals(-1L, unsupported.timingsBetween(0, 20_000_000).single().cpuNs)
     }
+    @Test fun lightweightFrameDoesNotAdmitShortSpansOrClaimCompleteEvidence() {
+        val ring = BoundedDiagnosticDetails(0)
+        val target = frame(500_000_000L, 24_000_000L).copy(
+            detailCaptured = false, sourceWindowUnknown = true,
+        )
+        add(ring, span(1, 500_000_001L, 502_000_001L))
+        ring.frame(target)
+        val detail = ring.drain(600_000_000L)
+        assertTrue(detail.spans.isEmpty())
+        assertEquals(target, detail.frames.single())
+        assertTrue(diagnosticFrameEvidenceIncomplete(target, detail, 0))
+        assertTrue(diagnosticFrameEvidenceIncomplete(target.copy(sourceWindowUnknown = false), detail, 0))
+    }
+
+    @Test fun columnFilterPreservesHalfOpenMainThreadCandidates() {
+        val columns = DiagnosticSpanColumns(6)
+        val rows = listOf(span(1, 90, 100), span(2, 200, 210), span(3, 100, 101),
+            span(4, 110, 120, main = false), span(5, 150, 200), span(6, 99, 201))
+        rows.forEach { row -> with(row) {
+            columns.add(stage, span, parent, beginNs, endNs, thread, main, attribution, page, pageEnd, value)
+        } }
+        assertEquals(listOf(3L, 5L, 6L), columns.detached().recordsInRange(100, 200).map { it.span })
+    }
 }

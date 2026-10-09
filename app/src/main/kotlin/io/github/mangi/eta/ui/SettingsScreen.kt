@@ -210,16 +210,16 @@ internal fun SettingsScreen(
 
     // 悬浮窗权限状态：授权后从系统设置返回时（ON_RESUME）刷新。
     var overlayGranted by remember {
-        mutableStateOf(android.provider.Settings.canDrawOverlays(context))
+        mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.overlay.initial") { android.provider.Settings.canDrawOverlays(context) })
     }
     var accessibilityGranted by remember {
-        mutableStateOf(isAgentAccessibilityEnabled(context))
+        mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.accessibility.initial") { isAgentAccessibilityEnabled(context) })
     }
     var accessibilityProtectionEnabled by remember {
-        mutableStateOf(AccessibilityProtectionClient.isEnabled(context))
+        mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.protection.initial") { AccessibilityProtectionClient.isEnabled(context) })
     }
     var accessibilityProtectionPending by remember { mutableStateOf(false) }
-    var etaAssistantActive by remember { mutableStateOf(isEtaAssistantActive(context)) }
+    var etaAssistantActive by remember { mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.assistant.initial") { isEtaAssistantActive(context) }) }
     val openAssistantSettings: () -> Unit = {
         val failed = runCatching {
             context.startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
@@ -232,34 +232,16 @@ internal fun SettingsScreen(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                overlayGranted = android.provider.Settings.canDrawOverlays(context)
-                accessibilityGranted = isAgentAccessibilityEnabled(context)
+                overlayGranted = StreamPerformanceDiagnostics.measure("settings.permission.overlay.resume") { android.provider.Settings.canDrawOverlays(context) }
+                accessibilityGranted = StreamPerformanceDiagnostics.measure("settings.permission.accessibility.resume") { isAgentAccessibilityEnabled(context) }
                 accessibilityProtectionEnabled =
-                    AccessibilityProtectionClient.isEnabled(context)
-                etaAssistantActive = isEtaAssistantActive(context)
+                    StreamPerformanceDiagnostics.measure("settings.permission.protection.resume") { AccessibilityProtectionClient.isEnabled(context) }
+                etaAssistantActive = StreamPerformanceDiagnostics.measure("settings.permission.assistant.resume") { isEtaAssistantActive(context) }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-
-    // Provider / Model 选中状态展示
-    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
-    val storedProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }
-        .collectAsState(initial = null)
-    val storedModelId by remember { RuntimeConfigRepository.selectedModelIdFlow() }
-        .collectAsState(initial = null)
-    val selectedProviderId = currentProviderId?.takeIf { it.isNotBlank() } ?: storedProviderId
-    val selectedModelId = currentModelId?.takeIf { it.isNotBlank() } ?: storedModelId
-    val selectedProvider = remember(providers, selectedProviderId) {
-        providers.find { it.id == selectedProviderId }
-    }
-    val selectedModel = remember(selectedProvider, selectedModelId) {
-        selectedProvider?.models?.find { it.id == selectedModelId }
-    }
-    val providerSummary = selectedProvider?.let { provider ->
-        "${provider.name} / ${selectedModel?.displayName ?: stringResource(R.string.settings_model_not_selected)}"
-    } ?: stringResource(R.string.settings_not_configured)
 
     // prefs 绑定到 XposedService：service 到达时切换到 RemotePreferences（跨进程提交到
     // LSPosed 数据库）；未就绪时保持 null，UI 禁止修改。
@@ -335,16 +317,9 @@ internal fun SettingsScreen(
             item(key = "section_agent") {
                 SmallTitle(stringResource(R.string.settings_llm_providers))
                 Card(modifier = Modifier.settingsSectionDiagnostics("agent").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.ui_model_provider_e8c7f5),
-                        summary = providerSummary,
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Memory,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.ModelProviders) },
-                    )
+                    SettingsProviderEntry(currentProviderId, currentModelId) {
+                        onNavigate(AppRoute.ModelProviders)
+                    }
 
                     SwitchPref(
                         context = context,
@@ -1417,3 +1392,39 @@ private fun SystemizerInstallResult.toToastMessage(context: Context): String =
             ?.let { "$message：$it" }
             ?: message
     }
+
+@Composable
+private fun SettingsProviderEntry(
+    currentProviderId: String?,
+    currentModelId: String?,
+    onClick: () -> Unit,
+) {
+    // Provider / Model 选中状态展示
+    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
+    val storedProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }
+        .collectAsState(initial = null)
+    val storedModelId by remember { RuntimeConfigRepository.selectedModelIdFlow() }
+        .collectAsState(initial = null)
+    val selectedProviderId = currentProviderId?.takeIf { it.isNotBlank() } ?: storedProviderId
+    val selectedModelId = currentModelId?.takeIf { it.isNotBlank() } ?: storedModelId
+    val selectedProvider = remember(providers, selectedProviderId) {
+        providers.find { it.id == selectedProviderId }
+    }
+    val selectedModel = remember(selectedProvider, selectedModelId) {
+        selectedProvider?.models?.find { it.id == selectedModelId }
+    }
+    val providerSummary = selectedProvider?.let { provider ->
+        "${provider.name} / ${selectedModel?.displayName ?: stringResource(R.string.settings_model_not_selected)}"
+    } ?: stringResource(R.string.settings_not_configured)
+
+    ArrowPreference(
+        title = stringResource(R.string.ui_model_provider_e8c7f5),
+        summary = providerSummary,
+        startAction = {
+            PreferenceIcon(
+                icon = Icons.Rounded.Memory,
+            )
+        },
+        onClick = onClick,
+    )
+}

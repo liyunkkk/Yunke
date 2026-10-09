@@ -67,34 +67,49 @@ internal class StreamTimingStats {
 /** Bounded, allocation-light output queue used only by the optional diagnostic sink. */
 internal class BoundedDiagnosticOutputQueue(
     private val capacity: Int = DIAGNOSTIC_OUTPUT_CAPACITY,
+    private val essentialCapacity: Int = 2048,
 ) {
-    private val pending = ArrayDeque<String>(capacity)
+    private data class Entry(val line: String, val essential: Boolean)
+    private val pending = ArrayDeque<Entry>(capacity)
+    private var details = 0
+    private var essentials = 0
 
     @Volatile
     var dropped: Long = 0
         private set
 
+    @Volatile var essentialDropped: Long = 0
+        private set
+
     @Synchronized
-    fun offer(line: String): Boolean {
-        if (pending.size >= capacity) {
+    fun offer(line: String, essential: Boolean = false): Boolean {
+        if (if (essential) essentials >= essentialCapacity else details >= capacity) {
             dropped++
+            if (essential) essentialDropped++
             return false
         }
-        pending.addLast(line)
+        pending.addLast(Entry(line, essential))
+        if (essential) essentials++ else details++
         return true
+    }
+
+    private fun removeFirst(): String {
+        val entry = pending.removeFirst()
+        if (entry.essential) essentials-- else details--
+        return entry.line
     }
 
     @Synchronized
     fun drain(limit: Int): List<String> {
         val result = ArrayList<String>(minOf(limit, pending.size))
-        repeat(minOf(limit, pending.size)) { result += pending.removeFirst() }
+        repeat(minOf(limit, pending.size)) { result += removeFirst() }
         return result
     }
 
     @Synchronized
     fun drainAll(): List<String> {
         val result = ArrayList<String>(pending.size)
-        while (pending.isNotEmpty()) result += pending.removeFirst()
+        while (pending.isNotEmpty()) result += removeFirst()
         return result
     }
 
@@ -122,6 +137,7 @@ internal class AsyncDiagnosticOutput(
     private val failedLines = java.util.concurrent.atomic.AtomicLong()
 
     val dropped: Long get() = queue.dropped
+    val essentialDropped: Long get() = queue.essentialDropped
     val failed: Long get() = failedLines.get()
 
     private fun writeLine(line: String) {
@@ -147,7 +163,7 @@ internal class AsyncDiagnosticOutput(
 
     private fun enqueue(line: String) {
         synchronized(this) {
-            if (closed || !queue.offer(line)) return
+            if (closed || !queue.offer(line, AppFileLogger.isDiagnosticSummary(line))) return
             if (!drainScheduled) {
                 drainScheduled = true
                 handler.postDelayed(::drainBatch, DIAGNOSTIC_OUTPUT_BATCH_DELAY_MS)
@@ -1023,7 +1039,7 @@ internal object StreamPerformanceDiagnostics {
                     "slowBudgetDropped=${detail.slowBudgetDropped} frameBudgetDropped=${detail.frameBudgetDropped} frameBudgetEvicted=${detail.frameBudgetEvicted} " +
                     "spanOutputTruncated=${detail.spanOutputTruncated} tokenSaturated=${session.tokens.saturated} ${session.threadIds.fields()} " +
                     "eventLinksOverwritten=${session.eventLinks.overwritten} mainRingOverwritten=${log.overwritten} " +
-                    "mainOutputTruncated=${log.outputTruncated} noteBudgetDropped=${snapshot.noteDropped} " +
+                    "mainOutputTruncated=${log.outputTruncated} noteBudgetDropped=${snapshot.noteDropped} essentialOutputDropped=${output.essentialDropped} " +
                     "admission=${if (final) "closed" else "open"} openSpansAtCutoff=${snapshot.openSpans} " +
                     "closedRejectedRecords=${snapshot.closedRejectedRecords} lateSpans=${snapshot.lateSpans} " +
                     "callbackRejected=${snapshot.callbackRejected} openAtStop=${snapshot.openAtStop} openIdDropped=${snapshot.openIdDropped} " +
@@ -1082,7 +1098,12 @@ internal object StreamPerformanceDiagnostics {
                         "layoutNs=${frame.layoutNs} drawNs=${frame.drawNs} syncNs=${frame.syncNs} commandNs=${frame.commandNs} " +
                         "swapNs=${frame.swapNs} gpuNs=${frame.gpuNs} unaccountedNs=${frame.unaccountedNs} " +
                         "overlapNs=${frame.overlapNs} vsyncLateNs=${frame.vsyncLateNs} " +
-                        "accounting=frameMetricsResidualNotAdditive")
+                        "detailCaptured=${frame.detailCaptured} accounting=frameMetricsResidualNotAdditive")
+                    if (!frame.detailCaptured) {
+                        output.write("$prefix v=2 type=frameCorrelation abnormalFrame=$index " +
+                            "detailCaptured=false capture=notSampled evidenceIncomplete=true evidenceComplete=notClaimed")
+                        return@forEachIndexed
+                    }
                     val messages = log.between(frame.intendedNs - SPIKE_LOOKBACK_NS, frame.intendedNs + frame.totalNs, frame.intendedNs, 12)
                     messages.forEach { output.write("$prefix abnormalFrame=$index main $it") }
                     frame.mainMessages.take(24).forEach { message ->
@@ -1180,7 +1201,9 @@ internal object StreamPerformanceDiagnostics {
                         firstDraw = firstDraw, pageSegment = page.startSegment)
                     // One bounded capture per retained frame, never for normal or budget-rejected frames.
                     // Include retention, source matching and dispatch capture in non-recursive observer cost.
-                    session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
+                    if (!firstDraw && !severe) {
+                        session.details.frame(record.copy(detailCaptured = false, sourceWindowUnknown = true))
+                    } else session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
                         val evidence = session.details.protectFrame(record)
                         val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
                             session.listSamples.forFrame(record, evidence) else null
@@ -1283,7 +1306,7 @@ internal object StreamPerformanceDiagnostics {
                         val finalAppendFlushed = AppFileLogger.diagnosticCompletion(
                             "StreamDiag id=${session.id} v=2 type=finalCompletion final=true windowStartNs=$cutoff " +
                                 "windowEndNs=$cutoff boundary=admissionSnapshot cutoffNs=$cutoff " +
-                                "loggerRejected=$rejected loggerFailed=$failed outputDroppedLines=$outputDropped " +
+                                "loggerRejected=$rejected loggerFailed=$failed outputDroppedLines=$outputDropped essentialOutputDropped=${output.essentialDropped} " +
                                 "outputFailedLines=$outputFailed " +
                                 "outputFlushed=$outputFlushed drainGraceMs=250 " +
                                 "completion=appendAndFlush privacyGate=honored evidenceComplete=notClaimed")

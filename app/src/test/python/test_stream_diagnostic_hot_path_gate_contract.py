@@ -56,7 +56,9 @@ val listener = Window.OnFrameMetricsAvailableListener { _, frame, dropped ->
                 firstDraw = firstDraw, pageSegment = page.startSegment)
             // One bounded capture per retained frame, never for normal or budget-rejected frames.
             // Include retention, source matching and dispatch capture in non-recursive observer cost.
-            session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
+            if (!firstDraw && !severe) {
+                session.details.frame(record.copy(detailCaptured = false, sourceWindowUnknown = true))
+            } else session.observerCosts.observe(DiagnosticObserverCosts.Phase.Protect) {
                 val evidence = session.details.protectFrame(record)
                 val listSnapshot = if (page.start == FrameDiagnosticPage.Chat || page.start == FrameDiagnosticPage.Home)
                     session.listSamples.forFrame(record, evidence) else null

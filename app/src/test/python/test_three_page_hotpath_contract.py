@@ -1,0 +1,55 @@
+from pathlib import Path
+import unittest
+ROOT = Path(__file__).resolve().parents[4]
+MAIN = ROOT / 'app/src/main/kotlin/io/github/mangi/eta'
+
+class ThreePageHotpathContract(unittest.TestCase):
+    def test_disabled_follow_does_not_read_layout_and_keeps_two_frame_drain(self):
+        s = (MAIN / 'ui/components/AgentChatBody.kt').read_text()
+        gate = s.index('if (!shouldFollowBottom) return@snapshotFlow InactiveBottomFollowLayout')
+        self.assertLess(gate, s.index('val layoutInfo = scrollState.layoutInfo', gate))
+        settling = s[s.index('var isBottomSettling'):s.index('var initialBottomPositionPending')]
+        self.assertEqual(2, settling.count('withFrameNanos { }'))
+        self.assertIn('snapshotFlow { !scrollState.canScrollForward }.first { it }', settling)
+
+    def test_light_frames_explicitly_skip_heavy_capture_and_output(self):
+        s = (MAIN / 'ui/components/StreamPerformanceDiagnostics.kt').read_text()
+        lightweight = s.split('if (!firstDraw && !severe) {')[1].split('} else')[0]
+        self.assertIn('detailCaptured = false, sourceWindowUnknown = true', lightweight)
+        self.assertNotIn('protectFrame', lightweight)
+        emitted = s.split('if (!frame.detailCaptured) {')[1].split('val messages')[0]
+        self.assertIn('capture=notSampled evidenceIncomplete=true', emitted)
+        self.assertIn('return@forEachIndexed', emitted)
+        data = (MAIN / 'ui/components/BoundedStreamDiagnostics.kt').read_text()
+        record = data.split('data class DiagnosticFrameRecord(')[1].split(') {')[0]
+        self.assertIn('val detailCaptured: Boolean', record)
+
+    def test_settings_summary_reads_are_local_and_permission_labels_registered(self):
+        s = (MAIN / 'ui/SettingsScreen.kt').read_text()
+        helper = s.split('private fun SettingsProviderEntry(')[1]
+        outside = s.split('private fun SettingsProviderEntry(')[0]
+        for flow in ('providersFlow()', 'selectedProviderIdFlow()', 'selectedModelIdFlow()'):
+            self.assertIn(flow, helper)
+            self.assertNotIn(flow, outside)
+        self.assertIn('SettingsProviderEntry(currentProviderId, currentModelId)', outside)
+        labels = (MAIN / 'ui/components/BoundedStreamDiagnostics.kt').read_text()
+        for name in ('overlay', 'accessibility', 'protection', 'assistant'):
+            for phase in ('initial', 'resume'):
+                label = f'"settings.permission.{name}.{phase}"'
+                self.assertIn(label, s)
+                self.assertIn(label, labels)
+
+    def test_manage_batch_keeps_latest_row_delete_callback(self):
+        s = (MAIN / 'ui/screens/chat/ManageChatsScreen.kt').read_text()
+        self.assertIn('items(ordered, key = { it.id }', s)
+        self.assertIn('remember(nextOrder, byId)', s)
+        self.assertIn('val currentOnDelete by rememberUpdatedState(onDelete)', s)
+        self.assertIn('currentOnDelete()', s)
+
+    def test_summary_sink_lifecycle_and_loss_accounting_are_wired(self):
+        logger = (MAIN / 'core/AppFileLogger.kt').read_text()
+        for operation in ('close', 'clear', 'flush'):
+            self.assertIn(f'diagnosticSummarySink?.{operation}()', logger)
+        self.assertIn('FileLogSink(directory, DIAGNOSTIC_SUMMARY_FILE).files()', logger)
+        stream = (MAIN / 'ui/components/StreamPerformanceDiagnostics.kt').read_text()
+        self.assertEqual(2, stream.count('essentialOutputDropped=${output.essentialDropped}'))

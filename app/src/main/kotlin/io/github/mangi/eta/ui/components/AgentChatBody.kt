@@ -897,21 +897,22 @@ internal fun AgentConversationMessages(
     var isBottomSettling by remember { mutableStateOf(isStreaming) }
     LaunchedEffect(scrollState) {
         snapshotFlow {
-            val rendering = hasPendingAssistantReveal(currentVisibleMessages.value) { message ->
-                val retained = streamingMarkdownStates[message.id]
-                retained != null && retained.revealedContent != message.content
+            bottomFollowSettlingState(
+                streaming = currentStreaming.value,
+                anchored = currentAnchor.value,
+                userScrolling = isUserScrolling,
+            ) {
+                hasPendingAssistantReveal(currentVisibleMessages.value) { message ->
+                    val retained = streamingMarkdownStates[message.id]
+                    retained != null && retained.revealedContent != message.content
+                }
             }
-            arrayOf(currentStreaming.value, currentAnchor.value, rendering, isUserScrolling)
         }
-            .distinctUntilChanged { old, new -> old.contentEquals(new) }
+            .distinctUntilChanged()
             .collectLatest { state ->
-                val streaming = state[0] as Boolean
-                val anchored = state[1] as Boolean
-                val rendering = state[2] as Boolean
-                val userScrolling = state[3] as Boolean
-                if (!anchored || userScrolling) {
+                if (state == BottomFollowSettlingState.Disabled) {
                     isBottomSettling = false
-                } else if (streaming || rendering) {
+                } else if (state == BottomFollowSettlingState.Active) {
                     isBottomSettling = true
                 } else if (isBottomSettling) {
                     withFrameNanos { }
@@ -1156,13 +1157,15 @@ internal fun AgentConversationMessages(
     // 列表高度，但那是用户主动查看内容，不能被误判成尾部文字增长。
     LaunchedEffect(scrollState) {
         snapshotFlow {
+            // Preserve the existing gate; disabling must still send a zero target.
+            if (!shouldFollowBottom) return@snapshotFlow InactiveBottomFollowLayout
             val layoutInfo = scrollState.layoutInfo
             val sentinel = layoutInfo.visibleItemsInfo.firstOrNull { item ->
                 item.key == ChatBottomSentinelKey
             }
             val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
             BottomFollowLayout(
-                enabled = shouldFollowBottom,
+                enabled = true,
                 bottomItemIndex = currentBottomItemIndex,
                 // 哨兵被挤出可视区、但最后一段内容还可见时，用它的下沿，不再按整屏估算。
                 sentinelBottom = resolveTailBottomPx(
@@ -1174,10 +1177,10 @@ internal fun AgentConversationMessages(
                 // 视口已扣除底栏高度；这里只扣列表自身的尾部留白。
                 // 跟底目标仍是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
-                lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index,
+                lastVisibleIndex = lastVisible?.index,
                 viewportSizePx = layoutInfo.viewportSize.height,
                 canScrollForward = scrollState.canScrollForward,
-                lastVisibleOffset = layoutInfo.visibleItemsInfo.lastOrNull()?.offset,
+                lastVisibleOffset = lastVisible?.offset,
             )
         }
             .distinctUntilChanged()
@@ -1769,6 +1772,25 @@ internal fun AgentConversationMessages(
         )
     }
 }
+
+internal enum class BottomFollowSettlingState { Disabled, Active, Draining }
+
+/** Branch-equivalent short circuit: do not scan messages until reveal completion matters. */
+internal inline fun bottomFollowSettlingState(
+    streaming: Boolean,
+    anchored: Boolean,
+    userScrolling: Boolean,
+    pendingReveal: () -> Boolean,
+): BottomFollowSettlingState = when {
+    !anchored || userScrolling -> BottomFollowSettlingState.Disabled
+    streaming || pendingReveal() -> BottomFollowSettlingState.Active
+    else -> BottomFollowSettlingState.Draining
+}
+
+private val InactiveBottomFollowLayout = BottomFollowLayout(
+    enabled = false, bottomItemIndex = 0, sentinelBottom = null, viewportEnd = 0,
+    lastVisibleIndex = null, viewportSizePx = 0, canScrollForward = false, lastVisibleOffset = null,
+)
 
 internal data class BottomFollowLayout(
     val enabled: Boolean,
