@@ -107,6 +107,7 @@ import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
+import io.github.mangi.eta.ui.components.streamDiagnosticPlacement
 import io.github.mangi.eta.ui.components.streamDiagnosticDraw
 import io.github.mangi.eta.ui.components.settingsSectionDiagnostics
 import io.github.mangi.eta.ui.components.WithoutPressRipple
