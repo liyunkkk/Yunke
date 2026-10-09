@@ -87,8 +87,10 @@ public final class OwnerProtocol {
     private static final int MAX_TEXT_CHARS = 4096;
     private static final int MAX_TOKEN_CHARS = 256;
 
+    /** 解析层白名单：不在这里的 op 连 dispatcher 都到不了（UNKNOWN_OP）。 */
     private static final Set<String> OPS = new HashSet<String>(Arrays.asList(
-            OP_STATUS, OP_LAUNCH, OP_INPUT, OP_SNAPSHOT, OP_HANDOFF, OP_RELEASE));
+            OP_STATUS, OP_LAUNCH, OP_INPUT, OP_SNAPSHOT, OP_HANDOFF, OP_RELEASE,
+            OP_TAKEOVER, OP_TAKEOVER_RETURN));
 
     private OwnerProtocol() {
     }
