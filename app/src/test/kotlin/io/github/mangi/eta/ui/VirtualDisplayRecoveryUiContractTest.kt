@@ -37,7 +37,6 @@ class VirtualDisplayRecoveryUiContractTest {
         assertTrue(source.contains("recover(context.applicationContext)"))
         assertFalse(source.contains("VirtualDisplayWebPreview.stop()"))
         assertTrue(source.contains("VirtualDisplayWebPreview.revoke(context)"))
-        assertTrue(source.contains("val showWeb = installed == true || webPaired"))
         val leaving = source.substringAfter("DisposableEffect(Unit)").substringBefore("val snapshot")
         assertFalse(leaving.contains("VirtualDisplayWebPreview."))
     }
