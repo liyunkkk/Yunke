@@ -43,10 +43,11 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertNotIn("TopAppBar(", page)
         self.assertIn("Row(", page)
         self.assertIn("FlowRow(", page)
-        # 四个操作各只有一个入口；按钮文字不允许折行。
-        self.assertEqual(4, page.count("TouchHaptics.click(view)"))
-        self.assertEqual(4, page.count("maxLines = 1"))
-        self.assertIn("VirtualDisplayWebPreview.openWithManualClose(context)", page)
+        # 内联动作只剩刷新与手动收尾，各一个入口；按钮文字不允许折行。
+        self.assertEqual(2, page.count("TouchHaptics.click(view)"))
+        self.assertEqual(2, page.count("maxLines = 1"))
+        # 跨设备网页预览入口已移除：手机上改用只读镜像页与悬浮小窗。
+        self.assertNotIn("VirtualDisplayWebPreview.openWithManualClose(context)", page)
         self.assertNotIn("VirtualDisplayWebPreview.open(context)", page)
         self.assertNotIn("vd_preview_control_open", page)
         self.assertNotIn("WindowDialog", page)
@@ -84,19 +85,18 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertNotIn("inspect_virtual_backend", source)
         self.assertIn("awaitCancellation()", source)
 
-    def test_leaving_page_keeps_pairing_and_revocation_is_explicit(self):
+    def test_leaving_page_does_not_touch_pairing_and_uninstall_revokes(self):
         page = (UI / "VirtualDisplayRecoveryScreen.kt").read_text()
         cleanup = page.split("DisposableEffect(Unit) {", 1)[1].split("val snapshot", 1)[0]
         self.assertIn("onDispose {", cleanup)
         self.assertIn("onWorkingChanged(false)", cleanup)
         self.assertNotIn("VirtualDisplayWebPreview.", cleanup)
         self.assertNotIn("VirtualDisplayWebPreview.stop()", page)
+        # 后端被移除时仍会自动撤销历史配对；页面本身不再暴露预览/撤销按钮。
         self.assertIn("if (installed == false && !working)", page)
-        self.assertIn("if (!stillInstalled)", page)
-        revoke_button = page.split("R.string.vd_preview_open", 1)[1].split("R.string.vd_preview_revoke", 1)[0]
-        self.assertIn("enabled = webPaired && !working", revoke_button)
-        self.assertIn("VirtualDisplayWebPreview.revoke(context)", revoke_button)
-        self.assertIn("webPaired = false", revoke_button)
+        self.assertIn("VirtualDisplayWebPreview.revoke(context)", page)
+        self.assertNotIn("R.string.vd_preview_open", page)
+        self.assertNotIn("R.string.vd_preview_revoke", page)
         self.assertNotIn("Lifecycle.Event.ON_PAUSE", page)
         self.assertNotIn("Lifecycle.Event.ON_STOP", page)
 
