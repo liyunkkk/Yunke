@@ -6,6 +6,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +37,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -233,6 +237,7 @@ private fun SwipeableManageChatRow(
             state = dismissState,
             enableDismissFromStartToEnd = false,
             modifier = Modifier
+                .manageChatDismissDoesNotClaimPageBack()
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 4.dp)
                 .clip(RoundedCornerShape(18.dp)),
@@ -335,6 +340,26 @@ private fun ManageChatRow(
                     MiuixTheme.colorScheme.onSurfaceVariantSummary
                 },
             )
+        }
+    }
+}
+
+/** Keep the row's right-to-left delete gesture, but leave left-edge page-back to navigation. */
+private fun Modifier.manageChatDismissDoesNotClaimPageBack(): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        val start = down.position
+        var claimedByDismiss = false
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) break
+            val delta = change.position - start
+            if (!claimedByDismiss && (kotlin.math.abs(delta.x) > viewConfiguration.touchSlop ||
+                    kotlin.math.abs(delta.y) > viewConfiguration.touchSlop)) {
+                claimedByDismiss = delta.x < 0f && kotlin.math.abs(delta.x) > kotlin.math.abs(delta.y)
+            }
+            if (!claimedByDismiss) change.consume()
         }
     }
 }

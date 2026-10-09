@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.model.oauth.OpenAiCodexOAuth
 import io.github.mangi.eta.data.model.GptSpeedMode
 import io.github.mangi.eta.data.model.isGptSpeedModel
 import org.json.JSONObject
@@ -10,6 +11,8 @@ internal object GptServiceTier {
         val mode = config.gptSpeedMode ?: return // Preserve legacy/manual service_tier settings.
         val actualModel = request.opt("model") as? String ?: return
         if (!isGptSpeedModel(actualModel)) return
+        // Official ChatGPT OAuth rejects service tiers. API-key GPT providers still receive them.
+        if (OpenAiCodexOAuth.isCodexEndpoint(config.baseUrl)) return
         request.put("service_tier", when (mode) {
             GptSpeedMode.NORMAL -> "default"
             GptSpeedMode.FAST -> "fast"

@@ -111,3 +111,10 @@ class GptServiceTierTest {
         assertEquals(4, request.length())
     }
 }
+
+    @Test fun officialOauthEndpointNeverReceivesAServiceTier() {
+        val oauth = config(GptSpeedMode.FAST).copy(baseUrl = "https://chatgpt.com/backend-api/codex")
+        assertFalse(build(oauth, false).has("service_tier"))
+        assertFalse(build(oauth, true).has("service_tier"))
+        assertEquals("fast", build(config(GptSpeedMode.FAST), false).getString("service_tier"))
+    }
