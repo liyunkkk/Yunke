@@ -35,6 +35,25 @@ internal fun Flow<String?>.observeConversationTodos(
         }
     }
 
+/**
+ * 归一化清单：最多保留一项 in_progress，多余的按顺序降级为 pending。
+ *
+ * 模型偶尔会把两项同时标成 in_progress。整份拒绝会让清单停在上一版（界面看起来卡住），
+ * 所以这里保序降级而不是丢弃；内容为空的项仍由 [validateConversationTodoSnapshot] 拒绝。
+ */
+internal fun normalizeConversationTodoSnapshot(todos: List<ConversationTodo>): List<ConversationTodo> {
+    var seenInProgress = false
+    return todos.map { todo ->
+        if (todo.status != ConversationTodoStatus.IN_PROGRESS) return@map todo
+        if (!seenInProgress) {
+            seenInProgress = true
+            todo
+        } else {
+            todo.copy(status = ConversationTodoStatus.PENDING)
+        }
+    }
+}
+
 internal class ConversationTodoRepository private constructor(private val context: Context) {
     private val dao = EtaDatabase.get(context.applicationContext).conversationTodoDao()
 

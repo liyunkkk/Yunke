@@ -27,6 +27,22 @@ internal object VirtualDisplayManualRecovery {
         else -> Action.VERIFY_THEN_FINISH
     }
 
+    /**
+     * 残留（上一次收尾已经失败）会话的处置：只有确认 owner 已消失才丢它，其余一律如实回报。
+     *
+     * 复用 [decide] 的 blocked 分支语义：这里等价于「预算已被 stop()」。
+     */
+    fun decideLeftover(probe: OwnerProbe): Action = decide(probe, budgetBlocked = true)
+
+    /**
+     * 从 uniqueId（形如 `virtual:android,0,eta-vd-<hash>,0`）里取出副屏的 display 名。
+     *
+     * 用来交叉确认「记录里的副屏是不是真的还在系统里」，避免把暂时连不上误判成已消失。
+     */
+    fun displayNameFromUniqueId(uniqueId: String): String? =
+        uniqueId.split(',').map { it.trim() }
+            .firstOrNull { it.startsWith("eta-vd-") && it.length in 8..80 }
+
     /** owner 原始状态的允许清单：只保留符号化字段，绝不回显 token、凭据或任务内容。 */
     private val SUMMARY_KEYS = listOf(
         // 顺序即重要性：先给四个交接标志与三个任务清单，截断时丢的只是尾部的环境字段。

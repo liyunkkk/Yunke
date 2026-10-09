@@ -43,8 +43,17 @@ internal object AgentAfterActionSummary {
             )
     }
 
+    /**
+     * 变化判定用的可见语义签名。
+     *
+     * 除类名、view_id、文本、描述与位置外，还要带上勾选/选中/可用状态：开关、单选、复选框
+     * 变化时节点其余字段完全不变，漏掉这三位会把「已生效」误判成「界面没有变化」。
+     */
     private fun signature(nodes: List<UiNode>): List<String> =
-        nodes.map { "${it.className}|${it.viewId}|${it.text}|${it.desc}|${it.bounds.toShortString()}" }
+        nodes.map {
+            "${it.className}|${it.viewId}|${it.text}|${it.desc}|${it.bounds.toShortString()}" +
+                "|${it.checked}|${it.selected}|${it.enabled}"
+        }
 
     /** 精简字段：省略默认值为 false 的布尔与包名，降低每步附带观察的 token 开销。 */
     private fun UiNode.compactJson(): JSONObject = JSONObject()

@@ -365,6 +365,7 @@
   <string name="vd_viewer_status">虛擬屏執行中（display %1$d）</string>
   <string name="vd_viewer_actions">最近操作</string>
   <string name="vd_viewer_no_frame">尚無畫面</string>
+  <string name="vd_viewer_none_hint">副屏只在背景任務執行期間存在；任務結束或收尾後畫面即關閉。</string>
   <string name="vd_idle_title">虛擬屏閒置自動清理</string>
   <string name="vd_idle_minutes">%1$d 分鐘</string>
   <string name="vd_idle_never">永不關閉</string>

@@ -70,6 +70,7 @@ internal fun currentTodoStep(todos: List<ConversationTodo>): Int {
 internal fun AgentChatTodoDock(
     conversationId: String?,
     modifier: Modifier = Modifier,
+    runActive: Boolean = false,
     leadingContent: (@Composable () -> Unit)? = null,
 ) {
     val context = LocalContext.current
@@ -100,11 +101,11 @@ internal fun AgentChatTodoDock(
     }
     // 过期判定：清单里还有 in_progress，而会话已经 STALE_MS 没有任何更新（模型漏写终态时会一直卡在界面上）。
     var now by remember(conversationId) { mutableStateOf(System.currentTimeMillis()) }
-    val expired = todoDockExpired(todos, lastActivityAt, now)
-    LaunchedEffect(conversationId, todos, lastActivityAt) {
+    val expired = todoDockExpired(todos, lastActivityAt, now, runActive)
+    LaunchedEffect(conversationId, todos, lastActivityAt, runActive) {
         // 只在可能过期时启动分钟级巡检：清单进入终态或判定过期就停，不做常驻轮询。
         if (allTerminal || lastActivityAt == null) return@LaunchedEffect
-        while (!todoDockExpired(todos, lastActivityAt, System.currentTimeMillis())) {
+        while (!todoDockExpired(todos, lastActivityAt, System.currentTimeMillis(), runActive)) {
             delay(TODO_DOCK_STALE_POLL_MS)
             now = System.currentTimeMillis()
         }
@@ -238,23 +239,29 @@ private fun TodoDetailRow(todo: ConversationTodo) {
 }
 
 /**
- * 过期判定：清单里还有 in_progress 项，而会话已超过 [TODO_DOCK_STALE_MS] 没有任何更新。
+ * 过期判定：本轮没有在跑（[runActive] 为 false），清单还没到终态，而会话已超过
+ * [TODO_DOCK_STALE_MS] 没有任何更新。
  *
- * 只看 in_progress：等用户回话的 pending 清单仍是有效计划，不该被判过期。
+ * 收尾前没把清单更新到终态是模型常见漏项，只按 in_progress 判会让「只剩 pending」的清单永久驻留。
  * [lastActivityAt] 为 null（读不到会话）时按未过期处理，宁可留着也不误伤正在跑的任务。
  */
 internal fun todoDockExpired(
     todos: List<ConversationTodo>,
     lastActivityAt: Long?,
     now: Long,
+    runActive: Boolean,
 ): Boolean =
-    lastActivityAt != null &&
+    !runActive &&
+        todos.isNotEmpty() &&
+        todos.any {
+            it.status == ConversationTodoStatus.PENDING || it.status == ConversationTodoStatus.IN_PROGRESS
+        } &&
+        lastActivityAt != null &&
         lastActivityAt > 0L &&
-        now - lastActivityAt >= TODO_DOCK_STALE_MS &&
-        todos.any { it.status == ConversationTodoStatus.IN_PROGRESS }
+        now - lastActivityAt >= TODO_DOCK_STALE_MS
 
-/** in_progress 项超过该时长仍无任何会话更新，视为「已过期的计划」。 */
-internal const val TODO_DOCK_STALE_MS = 60 * 60 * 1000L
+/** 任务已结束、清单却停在该时长前没动过，视为「已过期的计划」。 */
+internal const val TODO_DOCK_STALE_MS = 10 * 60 * 1000L
 
 /** 过期巡检间隔：判定靠会话最后活动时间，巡检只负责把「现在」推进到过期点。 */
 private const val TODO_DOCK_STALE_POLL_MS = 60_000L

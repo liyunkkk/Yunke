@@ -21,8 +21,11 @@ class NodeTextActionDisplayContractTest(unittest.TestCase):
         branch = session.split(
             'if (tool in setOf("replace_text","clear_text","input_text","paste_text","type_text")) {', 1
         )[1].split('if (tool == "wait_for_text"', 1)[0]
-        self.assertIn('writeVirtualText(context, s, c, c.displayId, mode, index, value)', branch)
-        self.assertIn('if (tool == "type_text" && args.optBoolean("submit",false))', branch)
+        self.assertIn(
+            'writeVirtualText(context, s, c, c.displayId, mode, index, value, deferAfterAction = submit)', branch)
+        # submit 时写入路径不得自己再回读一次：写入与回车之间只允许一次动作后取树。
+        self.assertIn('val submit = tool == "type_text" && args.optBoolean("submit",false)', branch)
+        self.assertIn('if (!deferAfterAction) afterActionSummary(context, s, displayId, before)', session)
         writer = session.split('private fun writeVirtualText(', 1)[1].split('private fun readClipboardText(', 1)[0]
         # 优先无障碍直接写节点，不回退主屏输入焦点。
         self.assertIn('service.setTextNode(snapshot, target.index, next)', writer)

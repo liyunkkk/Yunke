@@ -42,37 +42,51 @@ class AgentChatTodoDockTest {
     }
 
     @Test
-    fun inProgressPlanExpiresAfterAnHourWithoutActivity() {
+    fun unfinishedPlanExpiresAfterTheIdleWindow() {
         val todos = listOf(todo("一", ConversationTodoStatus.IN_PROGRESS))
         val lastActivityAt = 1_000_000L
-        assertFalse(todoDockExpired(todos, lastActivityAt, lastActivityAt + TODO_DOCK_STALE_MS - 1))
-        assertTrue(todoDockExpired(todos, lastActivityAt, lastActivityAt + TODO_DOCK_STALE_MS))
+        assertFalse(todoDockExpired(todos, lastActivityAt, lastActivityAt + TODO_DOCK_STALE_MS - 1, false))
+        assertTrue(todoDockExpired(todos, lastActivityAt, lastActivityAt + TODO_DOCK_STALE_MS, false))
     }
 
     @Test
-    fun recentActivityKeepsRunningPlanVisible() {
+    fun runningPlanNeverExpires() {
         val todos = listOf(
             todo("一", ConversationTodoStatus.COMPLETED),
             todo("二", ConversationTodoStatus.IN_PROGRESS),
         )
-        assertFalse(todoDockExpired(todos, 5_000L, 5_000L + TODO_DOCK_STALE_MS - 60_000L))
+        val lastActivityAt = 5_000L
+        assertFalse(todoDockExpired(todos, lastActivityAt, lastActivityAt + TODO_DOCK_STALE_MS * 10, true))
     }
 
     @Test
-    fun pendingOnlyPlanNeverExpires() {
+    fun recentActivityKeepsThePlanVisible() {
+        val todos = listOf(
+            todo("一", ConversationTodoStatus.COMPLETED),
+            todo("二", ConversationTodoStatus.IN_PROGRESS),
+        )
+        assertFalse(todoDockExpired(todos, 5_000L, 5_000L + TODO_DOCK_STALE_MS - 60_000L, false))
+    }
+
+    @Test
+    fun pendingOnlyPlanAlsoExpires() {
+        // 模型收尾前漏写终态时，清单常常只剩 pending；不判过期会让胶囊永久驻留。
         val todos = listOf(
             todo("一", ConversationTodoStatus.COMPLETED),
             todo("二", ConversationTodoStatus.PENDING),
         )
-        assertFalse(todoDockExpired(todos, 1_000_000L, 1_000_000L + TODO_DOCK_STALE_MS * 10))
+        assertTrue(todoDockExpired(todos, 1_000_000L, 1_000_000L + TODO_DOCK_STALE_MS, false))
+        assertFalse(todoDockExpired(todos, 1_000_000L, 1_000_000L + TODO_DOCK_STALE_MS - 1, false))
     }
 
     @Test
-    fun unknownActivityTimeNeverExpires() {
-        val todos = listOf(todo("一", ConversationTodoStatus.IN_PROGRESS))
+    fun terminalOrUnknownPlansNeverExpire() {
         val farFuture = Long.MAX_VALUE / 2
-        assertFalse(todoDockExpired(todos, null, farFuture))
-        assertFalse(todoDockExpired(todos, 0L, farFuture))
-        assertFalse(todoDockExpired(emptyList(), 1_000_000L, farFuture))
+        val done = listOf(todo("一", ConversationTodoStatus.COMPLETED))
+        assertFalse(todoDockExpired(done, 1_000_000L, farFuture, false))
+        assertFalse(todoDockExpired(emptyList(), 1_000_000L, farFuture, false))
+        val running = listOf(todo("一", ConversationTodoStatus.IN_PROGRESS))
+        assertFalse(todoDockExpired(running, null, farFuture, false))
+        assertFalse(todoDockExpired(running, 0L, farFuture, false))
     }
 }

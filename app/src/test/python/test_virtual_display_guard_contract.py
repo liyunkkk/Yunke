@@ -13,7 +13,15 @@ class VirtualDisplayGuardContractTest(unittest.TestCase):
         self.assertIn('val live = c.status()',session)
         self.assertIn('s.observation.validateFrame(body(live).optInt("width", 0), body(live).optInt("height", 0))',session)
         # Finish now obtains flags through fresh authenticated, strictly validated evidence.
-        self.assertIn('val observed = freshHandoffState(c) ?: return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")',session)
+        # 读不出状态时先确认 owner 是否真的消失；只有确认消失才清记录，否则保持原有保守失败路径。
+        self.assertIn('val observed = freshHandoffState(c) ?: return (clearWhenOwnerVerifiedGone(context, s)',session)
+        self.assertIn('failPreservingPrior(s, "OWNER_STATE_UNKNOWN")',session)
+        self.assertIn('if (VirtualDisplayManualRecovery.decideLeftover(probeRecoveredOwner(context)) !=',session)
+        # 「连不上」本身不足以判定 owner 消失：必须交叉确认当前没有任何同名副屏。
+        self.assertIn('!ownerDisplayStillAlive(context, record.uniqueId)',session)
+        # 上一次收尾已失败的残留会话不得被当成可用的 cleanup_only 再交给模型。
+        self.assertIn('if (s.phase == "uncertain" || s.handoffBudget.blocked) {',session)
+        self.assertIn('return reply(false, "RECOVERY_NEEDS_OWNER_VERIFICATION").put("phase", s.phase)',session)
         # 仍然必须是「现场取一次 status 再判定」：不接受缓存、旧回执或省略的 raw。
         self.assertIn('val raw = c.status()\n            HandoffProbe(handoffState(c, raw), raw)',session)
         self.assertIn('probeHandoffState(c).state',session)

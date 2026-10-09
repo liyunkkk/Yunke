@@ -15,8 +15,13 @@ import org.json.JSONObject
 /** Single-device owner. Recovery errors never authorize a second display. */
 internal object VirtualDisplaySession {
     const val NOT_READY = "VIRTUAL_DISPLAY_HANDOFF_NOT_READY"
-    /** 副屏一次观察附带的最大节点数：只为节点动作服务，取一半控制开销。 */
-    private const val NODE_LIMIT = 40
+    /**
+     * 副屏一次观察附带的最大节点数。
+     *
+     * 40 太容易在列表页被截断（truncated=true），模型只能再观察一次才拿得到目标节点；
+     * 60 在 1080x2400 的常见界面上基本够用，省下的那一步比多出的 token 更值。
+     */
+    private const val NODE_LIMIT = 60
     /** 动作后回读的节点上限：只取节点、不取截图，控制每步附带观察的开销。 */
     private const val AFTER_ACTION_NODE_LIMIT = 40
     /** 动作后回读前的稳定等待：给副屏一次渲染机会，避免读到动作前的旧树。 */
@@ -80,6 +85,35 @@ internal object VirtualDisplaySession {
         }
     }
 
+    /** 记录里的副屏是否仍在系统里：按 uniqueId 里的 eta-vd-<hash> 段与当前 display 名比对。 */
+    private fun ownerDisplayStillAlive(context: Context?, uniqueId: String): Boolean {
+        val name = VirtualDisplayManualRecovery.displayNameFromUniqueId(uniqueId) ?: return true
+        val ctx = context?.applicationContext ?: recoveryContext ?: return true
+        return runCatching {
+            val manager = ctx.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager
+            manager == null || manager.displays.any { it.name == name }
+        }.getOrDefault(true)
+    }
+
+    /**
+     * 读不出 owner 状态时的收口：只有确认 owner 真的消失（记录来自上次开机，或 socket 连不上且
+     * 当前没有任何同名副屏）才清 App 侧记录并如实回报「副屏已不存在」；否则返回 null，
+     * 让调用方保持原有的保守失败路径（保留证据、不重放未确认的释放）。
+     */
+    private fun clearWhenOwnerVerifiedGone(context: Context?, s: Session): JSONObject? {
+        val ctx = context ?: recoveryContext ?: return null
+        if (VirtualDisplayManualRecovery.decideLeftover(probeRecoveredOwner(ctx)) !=
+            VirtualDisplayManualRecovery.Action.CLEAR_OWNER_GONE
+        ) return null
+        s.client?.close()
+        s.phase = "finished"
+        val cleared = runCatching {
+            recoveryPrefs(ctx).edit().clear().commit()
+        }.getOrDefault(false)
+        return if (cleared) reply(true).put("released", true).put("cleared", "OWNER_GONE")
+        else reply(false, "RECOVERY_RECORD_CLEAR_FAILED").put("released", true)
+    }
+
     /**
      * 只读核验记录里的 owner 进程：连得上且状态可判定＝READABLE，连不上/对端已不是它＝GONE。
      * 不发送任何交接或释放；探测用的连接用完即关。
@@ -109,8 +143,11 @@ internal object VirtualDisplaySession {
             Thread.currentThread().interrupt()
             VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
         } catch (ex: VirtualDisplayRecoveryException) {
-            // connect/peer 阶段失败＝记录里的 owner 已不在（副屏随它一起消失）。
-            if (ex.stage == "connect" || ex.stage == "peer") VirtualDisplayManualRecovery.OwnerProbe.GONE
+            // connect/peer 阶段失败＝记录里的 owner 已不在（副屏随它一起消失）；
+            // 但只有当前确实没有任何同名副屏时才算「已消失」，避免把暂时连不上误判成丢了。
+            if ((ex.stage == "connect" || ex.stage == "peer") &&
+                !ownerDisplayStillAlive(context, record.uniqueId)
+            ) VirtualDisplayManualRecovery.OwnerProbe.GONE
             else VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
         } catch (_: Exception) {
             VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
@@ -242,15 +279,29 @@ internal object VirtualDisplaySession {
         if (others.any { !it.closedRun } || others.size > 1) return reply(false, "VIRTUAL_SESSION_BUSY")
         if (others.size == 1) {
             val s = others.single()
-            sessions.entries.removeAll { it.value === s }
-            s.cleanupOnly = true
-            sessions[runId] = s
-            // A deliberate later run gets a fresh clean-rejection budget, never mutation replay.
-            s.handoffBudget.reset()
-            // reset() 在 blocked 后是空操作：可能已经发出过释放的会话不得再走一次 finish。
-            if (s.handoffBudget.blocked)
-                return reply(false, "RECOVERY_NEEDS_OWNER_VERIFICATION").put("phase", s.phase)
-            return reply(true).put("recovered", true).put("cleanup_only", true).put("phase", s.phase)
+            // 上一次收尾已经失败（uncertain）或预算已被 stop()：这个会话不可能再被安全地用一次。
+            // 先只读核验 owner：确认它已消失就丢掉残留会话并清记录，让本轮直接开新会话；
+            // 否则如实回报，绝不复用一次可能已经发出过释放的会话。
+            if (s.phase == "uncertain" || s.handoffBudget.blocked) {
+                if (VirtualDisplayManualRecovery.decideLeftover(probeRecoveredOwner(context)) !=
+                    VirtualDisplayManualRecovery.Action.CLEAR_OWNER_GONE
+                ) {
+                    sessions.entries.removeAll { it.value === s }
+                    s.cleanupOnly = true
+                    sessions[runId] = s
+                    return reply(false, "RECOVERY_NEEDS_OWNER_VERIFICATION").put("phase", s.phase)
+                }
+                // owner 与副屏都已确认消失：清掉 App 侧记录，按「没有残留」继续，本轮直接开新会话。
+                sessions.entries.removeAll { it.value === s }
+                runCatching { recoveryPrefs(context).edit().clear().commit() }
+            } else {
+                sessions.entries.removeAll { it.value === s }
+                s.cleanupOnly = true
+                sessions[runId] = s
+                // A deliberate later run gets a fresh clean-rejection budget, never mutation replay.
+                s.handoffBudget.reset()
+                return reply(true).put("recovered", true).put("cleanup_only", true).put("phase", s.phase)
+            }
         }
         var recoveryStage = "record_read"
         var lastOwnerStatus: OwnerResponse? = null
@@ -674,7 +725,8 @@ internal object VirtualDisplaySession {
         if (s.handoffBudget.blocked || Thread.currentThread().isInterrupted)
             return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
         val c = s.client ?: return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
-        val observed = freshHandoffState(c) ?: return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
+        val observed = freshHandoffState(c) ?: return (clearWhenOwnerVerifiedGone(context, s)
+            ?: failPreservingPrior(s, "OWNER_STATE_UNKNOWN"))
         val marked = s.kept.toSet()
         val baseline = s.handoffState
         val f = observed.flags
@@ -840,6 +892,8 @@ internal object VirtualDisplaySession {
         val c = s.client ?: return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
         val probe = probeHandoffState(c)
         val observed = probe.state ?: run {
+            // 先确认 owner 是不是真的没了：还在就保留现场、绝不重放。
+            clearWhenOwnerVerifiedGone(context, s)?.let { return it }
             // 读不出已知状态：把 owner 的原始字段摘要有界落盘，下次才不用猜。
             persistOwnerDiag(context, probe.response)
             return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
@@ -1015,17 +1069,18 @@ internal object VirtualDisplaySession {
                     else -> "append"
                 }
                 val index = if (args.has("index")) args.optInt("index",-1).takeIf { it >= 0 } else null
-                val payload = writeVirtualText(context, s, c, c.displayId, mode, index, value)
+                // submit 时把动作后回读推迟到回车之后：写入与回车之间只取一次节点，省一次 60 节点取树与 350ms 等待。
+                val submit = tool == "type_text" && args.optBoolean("submit",false)
+                val payload = writeVirtualText(context, s, c, c.displayId, mode, index, value, deferAfterAction = submit)
                 if (!payload.optBoolean("ok")) return text(payload)
-                if (tool == "type_text" && args.optBoolean("submit",false)) {
+                if (submit) {
                     val enter = c.input(mapOf("kind" to "key","keyCode" to 66))
                     payload.put("submit",enter.ok)
                     if (!enter.ok) payload.put("submit_error",enter.errorCode)
-                    if (enter.ok) {
-                        Thread.sleep(AFTER_ACTION_SETTLE_MS)
-                        afterActionSummary(context, s, c.displayId, s.observation.publishedObservation())
-                            ?.let { payload.put("after_action",it) }
-                    }
+                    // 回车成功与否都只在这里回读一次：写入路径已按 deferAfterAction 跳过自己的回读。
+                    Thread.sleep(AFTER_ACTION_SETTLE_MS)
+                    afterActionSummary(context, s, c.displayId, s.observation.publishedObservation())
+                        ?.let { payload.put("after_action",it) }
                 }
                 return text(payload)
             }
@@ -1239,6 +1294,7 @@ internal object VirtualDisplaySession {
         mode: String,
         index: Int?,
         value: String,
+        deferAfterAction: Boolean = false,
     ): JSONObject {
         val nodes = s.observation.publishedNodes()
         val target = if (index != null) nodes.firstOrNull { it.index == index } else VirtualDisplayTextTarget.pick(nodes)
@@ -1265,7 +1321,7 @@ internal object VirtualDisplaySession {
                 .put("clipboard_untouched",true)
             outcome.method.takeIf { it.isNotBlank() }?.let { payload.put("method",it) }
             outcome.verified?.let { payload.put("verified",it) }
-            afterActionSummary(context, s, displayId, before)?.let { payload.put("after_action",it) }
+            if (!deferAfterAction) afterActionSummary(context, s, displayId, before)?.let { payload.put("after_action",it) }
             return payload
         }
         if (nodes.isEmpty() && snapshot == null) {
@@ -1293,7 +1349,7 @@ internal object VirtualDisplaySession {
             .put("text_length",value.length)
             .put("clipboard_restored",restored)
             .put("note","副屏取不到输入节点，改用系统剪贴板 + PASTE 键输入；已尽量还原原剪贴板内容")
-        afterActionSummary(context, s, displayId, before)?.let { payload.put("after_action",it) }
+        if (!deferAfterAction) afterActionSummary(context, s, displayId, before)?.let { payload.put("after_action",it) }
         return payload
     }
 

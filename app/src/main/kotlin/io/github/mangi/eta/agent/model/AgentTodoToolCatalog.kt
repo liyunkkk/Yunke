@@ -16,7 +16,9 @@ internal object AgentTodoToolCatalog {
                 name = "todowrite",
                 description = "用完整的新快照替换当前会话的 Todo 清单；用户会在聊天界面看到该清单。" +
                     "任务包含至少三个独立步骤、多个用户要求或其他非简单执行时使用；" +
-                    "简单一步操作或仅回答信息时不要使用。",
+                    "简单一步操作或仅回答信息时不要使用。" +
+                    "收尾前必须把清单更新到终态：没做或不需要做的项标 cancelled，不要留下 in_progress；" +
+                    "只有确实在等用户或外部条件时才保留 pending。",
                 parameters = JSONObject()
                     .put("type", "object")
                     .put(
@@ -27,9 +29,10 @@ internal object AgentTodoToolCatalog {
                                 .put("type", "string")
                                 .put(
                                     "description",
-                                    "JSON 编码的完整有序对象数组：[{content, status, priority}]；" +
+                                    "JSON 编码的完整有序对象数组的字符串（不是数组本身）：" +
+                                        "[{content, status, priority}]；" +
                                         "status 为 pending | in_progress | completed | cancelled；" +
-                                        "priority 为 high | medium | low"
+                                        "priority 为 high | medium | low；最多一项 in_progress"
                                 )
                         )
                     )

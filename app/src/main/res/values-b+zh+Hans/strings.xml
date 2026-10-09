@@ -371,6 +371,7 @@
   <string name="vd_viewer_status">副屏运行中（display %1$d）</string>
   <string name="vd_viewer_actions">最近操作</string>
   <string name="vd_viewer_no_frame">暂无画面</string>
+  <string name="vd_viewer_none_hint">副屏只在后台任务运行期间存在；任务结束或收尾后画面即关闭。</string>
   <string name="vd_idle_title">虚拟屏空闲自动清理</string>
   <string name="vd_idle_minutes">%1$d 分钟</string>
   <string name="vd_idle_never">永不关闭</string>

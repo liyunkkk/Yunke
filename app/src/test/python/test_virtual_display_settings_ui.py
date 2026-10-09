@@ -15,27 +15,51 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertIn("VirtualDisplayRecoveryControls(", task)
         self.assertIn("moduleInstalled != true", task)
 
-    def test_task_preference_page_is_material3_with_radio_group(self):
+    def test_task_preference_page_is_miuix_with_radio_group(self):
         task = (UI / "AgentTaskPreferenceScreen.kt").read_text()
+        # 与全应用统一：Miuix 骨架 + Miuix 卡片/排版，不再混用 Material 3 的容器控件。
         for text in (
+            "import io.github.mangi.eta.ui.components.MiuixScaffoldPage",
+            "import top.yukonga.miuix.kmp.basic.Card",
+            "import top.yukonga.miuix.kmp.basic.Text",
+            "import top.yukonga.miuix.kmp.theme.MiuixTheme",
+            "MiuixScaffoldPage(",
+            "Card(",
+            "selectableGroup()",
+            ".selectable(",
+            "role = Role.RadioButton",
+        ):
+            self.assertIn(text, task)
+        for forbidden in (
             "import androidx.compose.material3.Scaffold",
             "import androidx.compose.material3.TopAppBar",
             "import androidx.compose.material3.ListItem",
             "import androidx.compose.material3.RadioButton",
-            "Scaffold(",
-            "TopAppBar(",
-            "Icons.AutoMirrored.Rounded.ArrowBack",
-            "selectableGroup()",
-            "Modifier.selectable(",
-            "role = Role.RadioButton",
-            "verticalScroll(",
         ):
-            self.assertIn(text, task)
-        self.assertNotIn("MiuixScaffoldPage", task)
+            self.assertNotIn(forbidden, task)
         # 选择语义不变：可选项仍由 allowsPersist 决定，整行点击仍写同一份持久化值。
         self.assertIn("AgentTaskSurface.allowsPersist(mode)", task)
         self.assertIn("AgentTaskSurface.save(mode)", task)
         self.assertIn("AgentTaskSurface.stored()", task)
+
+    def test_virtual_display_surfaces_stay_miuix(self):
+        extras = (UI / "VirtualDisplayExtrasControls.kt").read_text()
+        viewer = (UI / "VirtualDisplayViewerDialog.kt").read_text()
+        # 虚拟屏分区：Miuix 偏好行（开关/箭头/弹窗选择），不再用 Material 3 的控件。
+        for text in (
+            "io.github.mangi.eta.ui.components.SwitchPreference",
+            "io.github.mangi.eta.ui.components.ArrowPreference",
+            "io.github.mangi.eta.ui.components.WindowSpinnerPreference",
+            "top.yukonga.miuix.kmp.basic.Card",
+            "IDLE_CHOICES",
+        ):
+            self.assertIn(text, extras)
+        self.assertNotIn("androidx.compose.material3.", extras)
+        # 只读镜像页：Miuix 圆角弹窗 + 卡片；没有会话时要解释用途，而不是丢一块空白。
+        self.assertIn("top.yukonga.miuix.kmp.window.WindowDialog", viewer)
+        self.assertIn("top.yukonga.miuix.kmp.basic.Card", viewer)
+        self.assertIn("R.string.vd_viewer_none_hint", viewer)
+        self.assertNotIn("androidx.compose.material3.", viewer)
 
     def test_recovery_is_inline_controls_not_separate_page(self):
         page = (UI / "VirtualDisplayRecoveryScreen.kt").read_text()

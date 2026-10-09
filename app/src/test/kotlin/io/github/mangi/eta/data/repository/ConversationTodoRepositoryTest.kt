@@ -48,6 +48,38 @@ class ConversationTodoRepositoryTest {
     }
 
     @Test
+    fun normalizeKeepsTheFirstInProgressAndDemotesTheRest() {
+        val normalized = normalizeConversationTodoSnapshot(
+            listOf(
+                todo("已完成", ConversationTodoStatus.COMPLETED),
+                todo("进行中一", ConversationTodoStatus.IN_PROGRESS, ConversationTodoPriority.HIGH),
+                todo("进行中二", ConversationTodoStatus.IN_PROGRESS),
+                todo("待办"),
+            ),
+        )
+        assertEquals(
+            listOf(
+                ConversationTodoStatus.COMPLETED,
+                ConversationTodoStatus.IN_PROGRESS,
+                ConversationTodoStatus.PENDING,
+                ConversationTodoStatus.PENDING,
+            ),
+            normalized.map { it.status },
+        )
+        // 归一化后必须仍然满足快照合同。
+        validateConversationTodoSnapshot(normalized)
+    }
+
+    @Test
+    fun normalizeLeavesASingleInProgressUntouched() {
+        val todos = listOf(
+            todo("进行中", ConversationTodoStatus.IN_PROGRESS),
+            todo("待办"),
+        )
+        assertEquals(todos, normalizeConversationTodoSnapshot(todos))
+    }
+
+    @Test
     fun waitingForUserMayKeepEveryUnfinishedItemPending() {
         validateConversationTodoSnapshot(
             listOf(

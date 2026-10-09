@@ -55,6 +55,37 @@ class VirtualDisplayManualRecoveryTest {
     }
 
     @Test
+    fun leftoverSessionIsOnlyDroppedWhenTheOwnerIsVerifiedGone() {
+        assertEquals(
+            VirtualDisplayManualRecovery.Action.CLEAR_OWNER_GONE,
+            VirtualDisplayManualRecovery.decideLeftover(VirtualDisplayManualRecovery.OwnerProbe.GONE),
+        )
+        // 连不上、读不出、或记录根本没有：都不足以证明 owner 消失，一律如实回报。
+        assertEquals(
+            VirtualDisplayManualRecovery.Action.REPORT_UNVERIFIED,
+            VirtualDisplayManualRecovery.decideLeftover(VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE),
+        )
+        assertEquals(
+            VirtualDisplayManualRecovery.Action.REPORT_UNVERIFIED,
+            VirtualDisplayManualRecovery.decideLeftover(VirtualDisplayManualRecovery.OwnerProbe.ABSENT),
+        )
+        assertEquals(
+            VirtualDisplayManualRecovery.Action.REPORT_UNVERIFIED,
+            VirtualDisplayManualRecovery.decideLeftover(VirtualDisplayManualRecovery.OwnerProbe.READABLE),
+        )
+    }
+
+    @Test
+    fun displayNameIsParsedFromTheRecordedUniqueId() {
+        assertEquals(
+            "eta-vd-cb4479a5d74a3ee114ab",
+            VirtualDisplayManualRecovery.displayNameFromUniqueId("virtual:android,0,eta-vd-cb4479a5d74a3ee114ab,0"),
+        )
+        assertNull(VirtualDisplayManualRecovery.displayNameFromUniqueId("virtual:android,0,whatever,0"))
+        assertNull(VirtualDisplayManualRecovery.displayNameFromUniqueId(""))
+    }
+
+    @Test
     fun summaryIsAllowlistedAndBounded() {
         val status = JSONObject()
             .put("ok", true)

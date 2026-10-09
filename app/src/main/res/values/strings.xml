@@ -363,6 +363,7 @@
   <string name="vd_viewer_status">Virtual display running (display %1$d)</string>
   <string name="vd_viewer_actions">Recent actions</string>
   <string name="vd_viewer_no_frame">No frame yet</string>
+  <string name="vd_viewer_none_hint">The virtual display exists only while a background task is running; it closes when the task ends.</string>
   <string name="vd_idle_title">Auto-clean idle virtual display</string>
   <string name="vd_idle_minutes">%1$d min</string>
   <string name="vd_idle_never">Never</string>

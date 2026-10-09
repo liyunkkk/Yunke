@@ -62,6 +62,7 @@ import io.github.mangi.eta.data.repository.AgentMemoryMutation
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.ConversationTodoRepository
+import io.github.mangi.eta.data.repository.normalizeConversationTodoSnapshot
 import io.github.mangi.eta.data.repository.AgentMemoryWriteResult
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import java.util.Locale
@@ -1721,9 +1722,10 @@ internal class AgentLocalTools(
      * （内容非空、最多一项 in_progress）。失败时返回明确错误码，不静默丢弃。
      */
     private fun todoWrite(args: JSONObject): String {
-        val raw = args.optString("todos")
+        // 合同要求 JSON 字符串，但个别 provider 会把数组原样送进来：两种都接受。
+        val raw = (args.opt("todos") as? JSONArray)?.toString() ?: args.optString("todos")
         if (raw.isBlank()) return errorResult("TODO_MISSING_TODOS", "缺少必要参数：todos")
-        val todos = runCatching {
+        val parsed = runCatching {
             val array = JSONArray(raw)
             buildList {
                 repeat(array.length()) { index ->
@@ -1744,6 +1746,10 @@ internal class AgentLocalTools(
             "Todo 列表无效：todos 必须为 JSON 数组，每项包含非空 content、status 与 priority；" +
                 "最多一项为 in_progress。",
         )
+        // 多项 in_progress 不再整份拒绝：保留第一项，其余降级为 pending，清单不会因此丢掉更新。
+        val todos = normalizeConversationTodoSnapshot(parsed)
+        val demoted = parsed.count { it.status == ConversationTodoStatus.IN_PROGRESS } -
+            todos.count { it.status == ConversationTodoStatus.IN_PROGRESS }
         if (conversationId.isBlank()) {
             return errorResult("TODO_NO_CONVERSATION", "更新 Todo 需要一个当前会话")
         }
@@ -1756,7 +1762,12 @@ internal class AgentLocalTools(
                 JSONObject()
                     .put("ok", true)
                     .put("count", todos.size)
-                    .put("message", "Todo 列表已更新（${todos.size} 项）")
+                    .put("demoted_in_progress", demoted)
+                    .put(
+                        "message",
+                        "Todo 列表已更新（${todos.size} 项）" +
+                            if (demoted > 0) "；有 $demoted 项多余 in_progress 已降级为 pending" else "",
+                    )
                     .toString()
             },
             onFailure = { error ->
