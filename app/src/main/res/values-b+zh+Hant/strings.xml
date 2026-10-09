@@ -1526,6 +1526,7 @@
   <string name="vd_recovery_working">正在檢查或復原…</string>
   <string name="vd_recovery_success">工作階段復原完成，副螢幕已釋放</string>
   <string name="vd_recovery_failed">復原未完成：%1$s</string>
+  <string name="vd_recovery_cleared_owner_gone">owner 程序已消失，副屏隨之釋放，恢復記錄已清理</string>
   <string name="vd_recovery_refresh">重新整理狀態</string>
   <string name="vd_recovery_explanation">將本工作階段任務交付到主螢幕背景，確認副螢幕為空後關閉。身分或狀態無法驗證時，保留副螢幕並顯示錯誤，不會強制停止應用程式。</string>
   <string name="vd_preview_open">網頁即時預覽</string>

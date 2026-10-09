@@ -67,6 +67,53 @@ internal object VirtualDisplaySession {
     private const val RECOVERY_PREFS = "virtual_display_owner_recovery"
     private fun recoveryPrefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(RECOVERY_PREFS, Context.MODE_PRIVATE)
+
+    /** 失败时把 owner 回报的有界摘要写进持久记录：不新增日志，但下次能看见失败现场。 */
+    private fun persistOwnerDiag(context: Context?, status: JSONObject?) {
+        val target = context?.applicationContext ?: recoveryContext ?: return
+        val summary = runCatching { VirtualDisplayManualRecovery.ownerStatusSummary(status) }.getOrNull()
+        if (summary.isNullOrBlank()) return
+        runCatching {
+            recoveryPrefs(target).edit().putString(VirtualDisplayRecoveryRecord.DIAG, summary).commit()
+        }
+    }
+
+    /**
+     * 只读核验记录里的 owner 进程：连得上且状态可判定＝READABLE，连不上/对端已不是它＝GONE。
+     * 不发送任何交接或释放；探测用的连接用完即关。
+     */
+    private fun probeRecoveredOwner(context: Context): VirtualDisplayManualRecovery.OwnerProbe {
+        val saved = runCatching { recoveryPrefs(context) }.getOrNull()
+            ?: return VirtualDisplayManualRecovery.OwnerProbe.ABSENT
+        val fields = runCatching { saved.all }.getOrNull()
+            ?: return VirtualDisplayManualRecovery.OwnerProbe.ABSENT
+        if (fields.isEmpty()) return VirtualDisplayManualRecovery.OwnerProbe.ABSENT
+        val boot = bootId() ?: return VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
+        // 跨启动的记录：记录里的 owner 一定已经随上次开机消失。
+        if (VirtualDisplayRecoveryRecord.previousBoot(fields["boot"], boot))
+            return VirtualDisplayManualRecovery.OwnerProbe.GONE
+        val record = runCatching { VirtualDisplayRecoveryRecord.decode(fields) }.getOrNull()
+            ?: return VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
+        return try {
+            val c = VirtualDisplayOwnerClient.reconnectChecked(AndroidAgentLogger, record.socket, record.pid,
+                record.displayId, record.uniqueId, record.token, record.run)
+            try {
+                if (handoffState(c, c.status()) == null) VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
+                else VirtualDisplayManualRecovery.OwnerProbe.READABLE
+            } finally {
+                runCatching { c.close() }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
+        } catch (ex: VirtualDisplayRecoveryException) {
+            // connect/peer 阶段失败＝记录里的 owner 已不在（副屏随它一起消失）。
+            if (ex.stage == "connect" || ex.stage == "peer") VirtualDisplayManualRecovery.OwnerProbe.GONE
+            else VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
+        } catch (_: Exception) {
+            VirtualDisplayManualRecovery.OwnerProbe.UNREADABLE
+        }
+    }
     private fun bootId(): String? = runCatching {
         java.io.File("/proc/sys/kernel/random/boot_id").readText().trim()
             .takeIf { it.matches(Regex("[0-9a-fA-F-]{36}")) }
@@ -95,10 +142,22 @@ internal object VirtualDisplaySession {
             field = data::opt,
         )
     }
+    /** 只读探测结果：state 为 null 表示这次读不出已知状态，raw 保留 owner 的原始回报供诊断。 */
+    private class HandoffProbe(val state: VirtualDisplayHandoffRetry.OwnerState?, val raw: JSONObject?)
+
+    private fun probeHandoffState(c: VirtualDisplayOwnerClient): HandoffProbe =
+        try {
+            val raw = c.status()
+            HandoffProbe(handoffState(c, raw), raw)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            HandoffProbe(null, null)
+        } catch (_: Exception) {
+            HandoffProbe(null, null)
+        }
+
     private fun freshHandoffState(c: VirtualDisplayOwnerClient): VirtualDisplayHandoffRetry.OwnerState? =
-        try { handoffState(c, c.status()) }
-        catch (_: InterruptedException) { Thread.currentThread().interrupt(); null }
-        catch (_: Exception) { null }
+        probeHandoffState(c).state
 
     private fun fail(s: Session, code: String, detail: String = ""): JSONObject {
         s.handoffBudget.stop()
@@ -186,9 +245,13 @@ internal object VirtualDisplaySession {
             sessions[runId] = s
             // A deliberate later run gets a fresh clean-rejection budget, never mutation replay.
             s.handoffBudget.reset()
+            // reset() 在 blocked 后是空操作：可能已经发出过释放的会话不得再走一次 finish。
+            if (s.handoffBudget.blocked)
+                return reply(false, "RECOVERY_NEEDS_OWNER_VERIFICATION").put("phase", s.phase)
             return reply(true).put("recovered", true).put("cleanup_only", true).put("phase", s.phase)
         }
         var recoveryStage = "record_read"
+        var lastOwnerStatus: JSONObject? = null
         val saved = try { recoveryPrefs(context) } catch (ex: Exception) {
             val e = VirtualDisplayRecoveryException.classify(recoveryStage, ex)
             return reply(false, e.code).put("recovery_stage", e.stage)
@@ -213,6 +276,7 @@ internal object VirtualDisplaySession {
                 s.client = c
                 recoveryStage = "status"
                 val state = c.status()
+                lastOwnerStatus = state
                 recoveryStage = "handoff_state"
                 val observed = handoffState(c, state)
                     ?: throw VirtualDisplayRecoveryException(recoveryStage, "RECOVERY_HANDOFF_STATE_INVALID")
@@ -232,6 +296,7 @@ internal object VirtualDisplaySession {
         } catch (ex: Exception) {
             val e = VirtualDisplayRecoveryException.classify(recoveryStage, ex)
             AndroidAgentLogger.warn("Virtual display recovery stage=${e.stage} code=${e.code} field=${e.field} type=${e.exceptionType}")
+            persistOwnerDiag(context, lastOwnerStatus)
             // This block authenticates and reads only; it has not sent a handoff or release.
             s.phase = "held"; s.closedRun = true; s.cleanupOnly = true
             return reply(false, e.code).put("recovery_stage", e.stage).put("recovery_field", e.field)
@@ -275,7 +340,11 @@ internal object VirtualDisplaySession {
                 .put("phase", s?.phase ?: "recovery_pending")
                 .put("busy", busy).put("recoverable", !busy && pending.size <= 1)
                 .put("lastError", s?.receipt?.optString("error").orEmpty())
-                .put("lastDetail", s?.receipt?.optString("message").orEmpty())
+                .put("lastDetail", s?.receipt?.optString("message").orEmpty().ifBlank {
+                    // 进程重启后内存回执没了：用失败时写进记录的有界 owner 摘要补上，方便定位。
+                    runCatching { saved.getString(VirtualDisplayRecoveryRecord.DIAG, "").orEmpty() }
+                        .getOrDefault("")
+                })
         } catch (_: Exception) { reply(false, "RECOVERY_STATE_UNREADABLE") }
     }
 
@@ -516,6 +585,25 @@ internal object VirtualDisplaySession {
         // capability intact, but allow the next explicit attempt to authenticate it again.
         val previous = sessions.entries.singleOrNull { it.value.phase != "finished" }
         if (previous != null && previous.value.client == null) sessions.remove(previous.key)
+        // 先只读核验 owner：确认它还在、状态可判定，才谈得上释放。
+        val budgetBlocked = sessions.values.any { it.phase != "finished" && it.handoffBudget.blocked }
+        when (VirtualDisplayManualRecovery.decide(probeRecoveredOwner(context), budgetBlocked)) {
+            VirtualDisplayManualRecovery.Action.CLEAR_OWNER_GONE -> {
+                // 副屏随 owner 进程一起消失，这里只清 App 侧记录，绝不补发释放。
+                val cleared = runCatching { recoveryPrefs(context).edit().clear().commit() }.getOrDefault(false)
+                sessions.clear()
+                return if (cleared) reply(true).put("released", true).put("cleared", "OWNER_GONE")
+                else reply(false, "RECOVERY_RECORD_CLEAR_FAILED").put("released", false)
+            }
+            VirtualDisplayManualRecovery.Action.REPORT_UNVERIFIED -> {
+                val diag = runCatching {
+                    recoveryPrefs(context).getString(VirtualDisplayRecoveryRecord.DIAG, "").orEmpty()
+                }.getOrDefault("")
+                return reply(false, "RECOVERY_RELEASED_UNVERIFIED", diag)
+                    .put("released", false).put("manual_restart_required", true)
+            }
+            VirtualDisplayManualRecovery.Action.VERIFY_THEN_FINISH -> Unit
+        }
         val runId = "manual-vd-recovery-" + java.util.UUID.randomUUID()
         try {
             val restored = start(context, runId, createIfMissing = false)
@@ -748,7 +836,12 @@ internal object VirtualDisplaySession {
             return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
         if (!s.persisted) return fail(s, "RECOVERY_STATE_UNWRITABLE")
         val c = s.client ?: return failPreservingPrior(s, "RECOVERY_UNCERTAIN")
-        val observed = freshHandoffState(c) ?: return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
+        val probe = probeHandoffState(c)
+        val observed = probe.state ?: run {
+            // 读不出已知状态：把 owner 的原始字段摘要有界落盘，下次才不用猜。
+            persistOwnerDiag(context, probe.raw)
+            return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")
+        }
         val f = observed.flags
         if (f.finishing || f.handoffComplete || f.releaseAttempted || f.mutationUncertain)
             return failPreservingPrior(s, "RECOVERY_UNCERTAIN")

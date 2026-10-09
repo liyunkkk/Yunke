@@ -14,7 +14,9 @@ class VirtualDisplayGuardContractTest(unittest.TestCase):
         self.assertIn('s.observation.validateFrame(body(live).optInt("width", 0), body(live).optInt("height", 0))',session)
         # Finish now obtains flags through fresh authenticated, strictly validated evidence.
         self.assertIn('val observed = freshHandoffState(c) ?: return failPreservingPrior(s, "OWNER_STATE_UNKNOWN")',session)
-        self.assertIn('try { handoffState(c, c.status()) }',session)
+        # 仍然必须是「现场取一次 status 再判定」：不接受缓存、旧回执或省略的 raw。
+        self.assertIn('val raw = c.status()\n            HandoffProbe(handoffState(c, raw), raw)',session)
+        self.assertIn('probeHandoffState(c).state',session)
         adapter=session.split('private fun handoffState(',1)[1].split('private fun freshHandoffState(',1)[0]
         self.assertIn('val data = response.json ?: return null',adapter)
         self.assertIn('return VirtualDisplayHandoffEvidence.state(',adapter)

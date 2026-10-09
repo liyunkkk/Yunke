@@ -1532,6 +1532,7 @@
   <string name="vd_recovery_working">正在检查或恢复…</string>
   <string name="vd_recovery_success">会话恢复完成，副屏已释放</string>
   <string name="vd_recovery_failed">恢复未完成：%1$s</string>
+  <string name="vd_recovery_cleared_owner_gone">owner 进程已消失，副屏随之释放，恢复记录已清理</string>
   <string name="vd_recovery_refresh">刷新状态</string>
   <string name="vd_recovery_explanation">将本会话任务交付到主屏后台，确认副屏为空后关闭。身份或状态无法验证时，保留副屏并显示错误，不会强杀应用。</string>
   <string name="vd_preview_open">网页实时预览</string>

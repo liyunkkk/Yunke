@@ -207,7 +207,13 @@ internal fun VirtualDisplayRecoveryControls(
                     }
                 }
                 result?.let { receipt ->
-                    if (receipt.optBoolean("ok") && receipt.optBoolean("released")) {
+                    if (receipt.optBoolean("ok") && receipt.optString("cleared") == "OWNER_GONE") {
+                        Text(
+                            text = stringResource(R.string.vd_recovery_cleared_owner_gone),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    } else if (receipt.optBoolean("ok") && receipt.optBoolean("released")) {
                         Text(
                             text = stringResource(R.string.vd_recovery_success),
                             style = MaterialTheme.typography.bodyMedium,

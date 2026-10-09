@@ -4,13 +4,16 @@ package io.github.mangi.eta.agent.device
 internal class VirtualDisplayRecoveryRecord private constructor(
     val socket: String, val pid: Long, val displayId: Int, val uniqueId: String,
     val token: String, val run: String, val boot: String?, val kept: String?,
-    val mutationBarrier: String?,
+    val mutationBarrier: String?, val diag: String?,
 ) {
     override fun toString() = "RecoveryRecord(displayId=$displayId, credential=redacted)"
     fun key() = VirtualDisplayManualClose.Key(displayId, uniqueId, boot.orEmpty(), pid, socket)
 
     companion object {
         const val BARRIER = "mutation_barrier"
+
+        /** 失败现场的有界摘要（owner 原始状态字段），只用于诊断，不参与任何判定。 */
+        const val DIAG = "diag"
         fun decode(fields: Map<String, *>): VirtualDisplayRecoveryRecord {
             fun string(key: String): String = (fields[key] as? String)?.takeIf { it.isNotBlank() }
                 ?: throw VirtualDisplayRecoveryException("record_decode", "RECOVERY_RECORD_FIELD_INVALID", key)
@@ -31,7 +34,7 @@ internal class VirtualDisplayRecoveryRecord private constructor(
             if (boot != null && !validBoot(boot))
                 throw VirtualDisplayRecoveryException("record_decode", "RECOVERY_RECORD_FIELD_INVALID", "boot")
             return VirtualDisplayRecoveryRecord(socket, pid, display, string("unique"), string("token"),
-                string("run"), boot, optionalString("kept"), optionalString(BARRIER))
+                string("run"), boot, optionalString("kept"), optionalString(BARRIER), optionalString(DIAG))
         }
         fun validBoot(value: String): Boolean =
             value.matches(Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"))
