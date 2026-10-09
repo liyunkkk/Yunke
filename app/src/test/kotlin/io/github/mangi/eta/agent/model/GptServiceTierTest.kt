@@ -110,7 +110,7 @@ class GptServiceTierTest {
         assertEquals("high", request.getString("reasoning_effort"))
         assertEquals(4, request.length())
     }
-}
+
 
     @Test fun subscriptionBackendUsesCodexSpeedValuesAndOmitsStandardRouting() {
         val base = "https://chatgpt.com/backend-api/codex"
@@ -125,3 +125,4 @@ class GptServiceTierTest {
         }
         assertEquals("fast", build(config(GptSpeedMode.FAST), false).getString("service_tier"))
     }
+}
