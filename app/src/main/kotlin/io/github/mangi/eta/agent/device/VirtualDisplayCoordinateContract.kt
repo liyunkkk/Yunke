@@ -40,6 +40,7 @@ internal class VirtualDisplayCoordinateContract(
         return when {
             normalized.isEmpty() || normalized == SPACE_SCREENSHOT -> fromScreenshot(x, y)
             normalized == SPACE_SCREEN -> fromScreen(x, y)
+            normalized == SPACE_NORMALIZED -> fromNormalized(x, y)
             else -> throw VirtualDisplayCoordinateRejection(
                 "UNKNOWN_COORDINATE_SPACE",
                 "unsupported coordinate_space: ${space?.trim()}",
@@ -68,6 +69,23 @@ internal class VirtualDisplayCoordinateContract(
         return VirtualDisplayPoint(
             x = (x.toLong() * screenWidth / screenshotWidth).toInt(),
             y = (y.toLong() * screenHeight / screenshotHeight).toInt(),
+        )
+    }
+
+    /**
+     * `normalized` 坐标：0..999 的相对坐标，按副屏真实像素映射。
+     * 与 screenshot 空间不同，它不依赖截图分辨率，模型可在不取截图时按比例定位。
+     */
+    fun fromNormalized(x: Int, y: Int): VirtualDisplayPoint {
+        if (x < 0 || x > NORMALIZED_MAX || y < 0 || y > NORMALIZED_MAX) {
+            throw VirtualDisplayCoordinateRejection(
+                "COORDINATE_OUT_OF_BOUNDS",
+                "normalized coordinates out of bounds: ($x,$y) not in 0..$NORMALIZED_MAX",
+            )
+        }
+        return VirtualDisplayPoint(
+            x = (x.toLong() * (screenWidth - 1) / NORMALIZED_MAX).toInt(),
+            y = (y.toLong() * (screenHeight - 1) / NORMALIZED_MAX).toInt(),
         )
     }
 
@@ -100,6 +118,8 @@ internal class VirtualDisplayCoordinateContract(
 
     companion object {
         const val SPACE_SCREENSHOT = "screenshot"
+        const val SPACE_NORMALIZED = "normalized"
+        const val NORMALIZED_MAX = 999
         const val SPACE_SCREEN = "screen"
     }
 }

@@ -23,6 +23,13 @@ internal object VirtualDisplaySession {
     private const val AFTER_ACTION_SETTLE_MS = 350L
     /** 副屏 replace_text / clear_text 的文本上限，与主屏一致。 */
     private const val MAX_TEXT_CHARS = 4_000
+    /** 空闲巡检间隔与默认空闲上限（分钟，0=永不）。 */
+    private const val IDLE_CHECK_INTERVAL_MS = 30_000L
+    private const val DEFAULT_IDLE_TIMEOUT_MINUTES = 20
+    private const val IDLE_TIMEOUT_PREF = "agent_virtual_display_idle_timeout_minutes"
+    private const val AGENT_PREFERENCES = "eta_agent_preferences"
+    /** 只读镜像页展示的最近操作条数。 */
+    private const val TRACE_LIMIT = 100
     private class Session(var client: VirtualDisplayOwnerClient? = null, var phase: String = "starting") {
         val kept = linkedSetOf<Int>()
         val packages = linkedMapOf<String, Set<Int>>()
@@ -35,6 +42,10 @@ internal object VirtualDisplaySession {
         var persisted = false
         /** 本次副屏会话是否已经尝试过无障碍强制自愈：最多一次，避免反复重绑。 */
         var accessibilityRecoveryAttempted = false
+        /** 最近一次 Agent 活动时间；空闲巡检据此判断是否自动收尾。 */
+        var lastActivityMs = System.currentTimeMillis()
+        /** 只读镜像页用的最近操作轨迹（不含节点内容）。 */
+        val recentActions = ArrayDeque<String>()
         /** 副屏文本走剪贴板回退时的备份：写入前记住原内容，动作后尽量还原。 */
         var clipboardBackup: String? = null
         var clipboardBackupPresent = false
@@ -51,6 +62,7 @@ internal object VirtualDisplaySession {
     }
     private val sessions = linkedMapOf<String, Session>()
     private var recoveryContext: Context? = null
+    private var idleMonitor: java.util.concurrent.ScheduledExecutorService? = null
     private const val RECOVERY_PREFS = "virtual_display_owner_recovery"
     private fun recoveryPrefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(RECOVERY_PREFS, Context.MODE_PRIVATE)
@@ -790,6 +802,8 @@ internal object VirtualDisplaySession {
         if(sessions[runId]==null && tool !in setOf("launch_app","observe_screen"))return text(reply(false,"NO_VIRTUAL_SESSION"))
         if(sessions[runId]==null){val created=start(context,runId);if(!created.optBoolean("ok"))return text(created)}
         val s=sessions[runId]?:return text(reply(false,"NO_VIRTUAL_SESSION"))
+        s.lastActivityMs = System.currentTimeMillis()
+        ensureIdleMonitor(context)
         s.previewExcludedPackages.addAll(excludedPackages)
         if(s.phase!="active" || s.cleanupOnly || !s.persisted)return text(reply(false,"SESSION_NOT_ACTIVE"))
         val c=s.client!!
@@ -967,6 +981,8 @@ internal object VirtualDisplaySession {
                     if (s.uiTreeAvailability.unavailable()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","该应用窗口暂无可访问节点，请用截图+坐标操作"))
                     val direction=args.optString("direction")
                     if(direction !in setOf("up","down","left","right"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY","direction 必须是 up/down/left/right"))
+                    val amount=args.optString("amount","medium")
+                    if(amount !in setOf("small","medium","large","page"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY","amount 必须是 small/medium/large/page"))
                     val node=if(tool=="scroll_element") {
                         s.observation.node(args.getInt("index"))
                             ?: return text(reply(false,"VIRTUAL_NODE_INDEX_UNKNOWN","先 observe_screen 取当前节点索引"))
@@ -977,7 +993,8 @@ internal object VirtualDisplaySession {
                     val area=node?.bounds ?: android.graphics.Rect(0,0,contract.screenWidth,contract.screenHeight)
                     val cx=area.centerX();val cy=area.centerY()
                     val horizontal=direction=="left"||direction=="right"
-                    val span=((if(horizontal) area.width() else area.height())*0.6f).toInt().coerceAtLeast(60)
+                    val fraction=when(amount){"small"->0.3f;"large"->0.85f;"page"->0.95f;else->0.6f}
+                    val span=((if(horizontal) area.width() else area.height())*fraction).toInt().coerceAtLeast(60)
                     val half=span/2
                     val (sx,sy,ex,ey) = when(direction) {
                         "down" -> listOf(cx,cy+half,cx,cy-half)
@@ -997,6 +1014,7 @@ internal object VirtualDisplaySession {
             val input = c.input(fields)
             if (input.errorCode in setOf("VIRTUAL_FRAME_CHANGED", "VIRTUAL_FRAME_UNKNOWN")) s.observation.invalidate()
             val result = body(input)
+            s.recordTrace(tool, fields["kind"]?.toString().orEmpty(), fields.toString(), input.ok)
             if (input.ok) {
                 Thread.sleep(AFTER_ACTION_SETTLE_MS)
                 afterActionSummary(context, s, c.displayId, beforeAction)?.let { result.put("after_action", it) }
@@ -1005,6 +1023,84 @@ internal object VirtualDisplaySession {
         }catch(e:VirtualDisplayCoordinateRejection){return text(reply(false,e.code,e.message.orEmpty()))}
         catch(e:Exception){return text(reply(false,"VIRTUAL_OPERATION_FAILED",e.javaClass.simpleName))}
     }
+    private fun Session.recordTrace(tool: String, kind: String, detail: String, ok: Boolean) {
+        recentActions.addLast(
+            JSONObject()
+                .put("tool", tool)
+                .put("kind", kind)
+                .put("ok", ok)
+                .put("detail", detail.take(160))
+                .put("at", System.currentTimeMillis())
+                .toString(),
+        )
+        while (recentActions.size > TRACE_LIMIT) recentActions.removeFirst()
+    }
+
+    /** 空闲巡检只在「run 已结束但副屏还留着」时收尾，绝不动正在运行的任务。 */
+    private fun ensureIdleMonitor(context: Context) {
+        if (idleMonitor != null) return
+        synchronized(this) {
+            if (idleMonitor != null) return
+            val executor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
+                Thread(runnable, "eta-vd-idle").apply { isDaemon = true }
+            }
+            executor.scheduleWithFixedDelay(
+                {
+                    runCatching { checkIdleSessions() }
+                        .onFailure { AndroidAgentLogger.warn("Virtual display idle check failed: ${it.javaClass.simpleName}") }
+                },
+                IDLE_CHECK_INTERVAL_MS,
+                IDLE_CHECK_INTERVAL_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+            idleMonitor = executor
+        }
+    }
+
+    private fun checkIdleSessions() {
+        val context = recoveryContext ?: return
+        val timeoutMs = idleTimeoutMs(context)
+        if (timeoutMs <= 0L) return
+        val now = System.currentTimeMillis()
+        val expired = sessions.entries
+            .filter { (_, s) -> s.phase != "finished" && s.closedRun && now - s.lastActivityMs > timeoutMs }
+            .map { it.key }
+            .toList()
+        for (runId in expired) {
+            AndroidAgentLogger.info("Virtual display idle timeout reached; finishing run=$runId")
+            runCatching { finish(runId, context) }
+        }
+    }
+
+    private fun idleTimeoutMs(context: Context): Long {
+        val minutes = runCatching {
+            context.getSharedPreferences(AGENT_PREFERENCES, Context.MODE_PRIVATE)
+                .getInt(IDLE_TIMEOUT_PREF, DEFAULT_IDLE_TIMEOUT_MINUTES)
+        }.getOrDefault(DEFAULT_IDLE_TIMEOUT_MINUTES)
+        return if (minutes <= 0) 0L else minutes * 60_000L
+    }
+
+    /** 只读镜像页的状态快照：只给运行态与计数，不给节点、截图或包内容。 */
+    @Synchronized fun viewerStatus(): JSONObject {
+        val session = sessions.entries.firstOrNull { it.value.phase != "finished" }?.value
+        return JSONObject()
+            .put("running", session != null)
+            .put("display_id", session?.client?.displayId ?: JSONObject.NULL)
+            .put("phase", session?.phase ?: "")
+            .put("run_closed", session?.closedRun ?: true)
+            .put("delivered_tasks", session?.kept?.size ?: 0)
+            .put(
+                "idle_seconds",
+                if (session != null) (System.currentTimeMillis() - session.lastActivityMs) / 1000 else JSONObject.NULL,
+            )
+    }
+
+    /** 只读镜像页的最近操作轨迹。 */
+    @Synchronized fun recentActions(): JSONArray {
+        val session = sessions.entries.firstOrNull { it.value.phase != "finished" }?.value ?: return JSONArray()
+        return JSONArray().also { array -> session.recentActions.forEach { array.put(it) } }
+    }
+
     /**
      * 副屏文本写入的唯一入口。
      *
