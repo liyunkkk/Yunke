@@ -1292,7 +1292,9 @@ open class AgentAccessibilityService : AccessibilityService() {
             putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, safeCursor)
         }
         val refreshed = runCatching { node.refresh() }.getOrDefault(false)
-        if (!node.isPassword && (!refreshed || node.text?.toString() != text)) {
+        // 空输入框的 node.text 为 null；按空字符串比较，否则 clear_text 永远只能报 OUTCOME_UNKNOWN。
+        val actualText = node.text?.toString().orEmpty()
+        if (!node.isPassword && (!refreshed || actualText != text)) {
             return NodeActionResult.outcomeUnknown()
         }
         val selectionRestored = refreshed && node.performAction(
