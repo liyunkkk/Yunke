@@ -60,7 +60,6 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
             self.assertIn("R.string." + action, page)
         self.assertIn('snapshot?.optBoolean("busy")', page)
         self.assertIn("busy -> R.string.vd_recovery_busy", page)
-        self.assertIn("val showWeb = installed == true || webPaired", page)
         # 预览入口删除后，FlowRow 里只剩刷新与手动收尾两个动作。
         actions_block = page.split("FlowRow(", 1)[1]
         self.assertIn("enabled = installed == true && !working,", actions_block)

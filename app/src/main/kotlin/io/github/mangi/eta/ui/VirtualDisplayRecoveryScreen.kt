@@ -76,7 +76,6 @@ internal fun VirtualDisplayRecoveryControls(
     var working by remember { mutableStateOf(false) }
     var state by remember { mutableStateOf<JSONObject?>(null) }
     var result by remember { mutableStateOf<JSONObject?>(null) }
-    var webPaired by remember { mutableStateOf(false) }
 
     fun setWorking(value: Boolean) {
         working = value
@@ -87,7 +86,6 @@ internal fun VirtualDisplayRecoveryControls(
         if (installed == false && !working) {
             try {
                 withContext(NonCancellable + Dispatchers.IO) { VirtualDisplayWebPreview.revoke(context) }
-                webPaired = false
             } catch (ex: CancellationException) {
                 throw ex
             } catch (_: Exception) {
@@ -101,7 +99,6 @@ internal fun VirtualDisplayRecoveryControls(
         setWorking(true)
         scope.launch {
             try {
-                webPaired = withContext(Dispatchers.IO) { VirtualDisplayWebPreview.hasPairing(context) }
                 state = withContext(Dispatchers.IO) { readStatus(context.applicationContext) }
             } catch (ex: CancellationException) {
                 throw ex
