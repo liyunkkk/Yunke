@@ -358,6 +358,7 @@
   <string name="vd_float_none">No virtual display session</string>
   <string name="vd_float_summary">Keep a small read-only window with the virtual display frame above other apps. No input is accepted.</string>
   <string name="vd_float_running">Virtual display (display %1$d) · idle %2$ds</string>
+  <string name="vd_float_bubble">VD</string>
   <string name="vd_float_denied">Cannot show the floating window (permission missing or rejected by the system)</string>
   <string name="vd_viewer_none">No virtual display session</string>
   <string name="vd_viewer_status">Virtual display running (display %1$d)</string>
@@ -1589,4 +1590,5 @@
     <string name="chat_todo_step_progress">Step %1$d of %2$d</string>
     <string name="chat_todo_toggle_desc">Todo list</string>
     <string name="chat_todo_expired">Expired plan</string>
+    <string name="chat_todo_unfinished">Ended · %1$d unfinished</string>
 </resources>

@@ -80,6 +80,19 @@ class AgentChatTodoDockTest {
     }
 
     @Test
+    fun unfinishedPlanIsReportedOnceTheRunEnds() {
+        val todos = listOf(
+            todo("一", ConversationTodoStatus.COMPLETED),
+            todo("二", ConversationTodoStatus.PENDING),
+        )
+        // 本轮结束而清单没到终态：不再当作「还在跑」，也不再挂着不动。
+        assertTrue(todoDockUnfinished(todos, runActive = false))
+        assertFalse(todoDockUnfinished(todos, runActive = true))
+        assertFalse(todoDockUnfinished(listOf(todo("一", ConversationTodoStatus.COMPLETED)), runActive = false))
+        assertFalse(todoDockUnfinished(emptyList(), runActive = false))
+    }
+
+    @Test
     fun terminalOrUnknownPlansNeverExpire() {
         val farFuture = Long.MAX_VALUE / 2
         val done = listOf(todo("一", ConversationTodoStatus.COMPLETED))

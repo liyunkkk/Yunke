@@ -360,6 +360,7 @@
   <string name="vd_float_none">目前沒有虛擬屏工作階段</string>
   <string name="vd_float_summary">在其它應用之上持續顯示虛擬屏畫面（唯讀，不接收輸入）。</string>
   <string name="vd_float_running">虛擬屏執行中（display %1$d）· 閒置 %2$d 秒</string>
+  <string name="vd_float_bubble">副屏</string>
   <string name="vd_float_denied">無法顯示懸浮小窗（缺少權限或被系統拒絕）</string>
   <string name="vd_viewer_none">目前沒有虛擬屏工作階段</string>
   <string name="vd_viewer_status">虛擬屏執行中（display %1$d）</string>
@@ -1556,4 +1557,5 @@
     <string name="chat_todo_step_progress">第 %1$d / %2$d 步</string>
     <string name="chat_todo_toggle_desc">Todo 清單</string>
     <string name="chat_todo_expired">已過期的計畫</string>
+    <string name="chat_todo_unfinished">已結束 · %1$d 項未完成</string>
 </resources>

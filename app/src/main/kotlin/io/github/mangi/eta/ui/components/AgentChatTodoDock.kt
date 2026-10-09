@@ -62,7 +62,8 @@ internal fun currentTodoStep(todos: List<ConversationTodo>): Int {
  * 会话 Todo 清单的常驻胶囊：显示「第 N / M 步」与进度圆环，点开是完整清单。
  *
  * 数据直接来自仓库（按会话 id 观察），全部项终态时先收起、再在短暂停留后整条隐藏；清单为空时不占位。
- * 会话超过 [TODO_DOCK_STALE_MS] 没有任何更新、而清单里还有 in_progress 时，按「已过期的计划」同样收起并隐藏，
+ * 本轮结束后清单仍未到终态时，按「已结束 · N 项未完成」收起并在 AUTO_HIDE_MS 后隐藏；
+ * 会话超过 [TODO_DOCK_STALE_MS] 没有任何更新时按「已过期的计划」同样处理，
  * 避免模型漏写终态后胶囊永远停在界面上。
  * 移植自 Operit-Ry 的 ChatTodoDock，位置与交互保持一致（输入框正上方）。
  */
@@ -102,6 +103,8 @@ internal fun AgentChatTodoDock(
     // 过期判定：清单里还有 in_progress，而会话已经 STALE_MS 没有任何更新（模型漏写终态时会一直卡在界面上）。
     var now by remember(conversationId) { mutableStateOf(System.currentTimeMillis()) }
     val expired = todoDockExpired(todos, lastActivityAt, now, runActive)
+    // 本轮已经结束、清单还没到终态：模型漏了收尾，胶囊不能一直挂着等下一次交互。
+    val runEnded = todoDockUnfinished(todos, runActive)
     LaunchedEffect(conversationId, todos, lastActivityAt, runActive) {
         // 只在可能过期时启动分钟级巡检：清单进入终态或判定过期就停，不做常驻轮询。
         if (allTerminal || lastActivityAt == null) return@LaunchedEffect
@@ -111,8 +114,8 @@ internal fun AgentChatTodoDock(
         }
         now = System.currentTimeMillis()
     }
-    LaunchedEffect(conversationId, todos, allTerminal, expired) {
-        if (allTerminal || expired) {
+    LaunchedEffect(conversationId, todos, allTerminal, expired, runEnded) {
+        if (allTerminal || expired || runEnded) {
             expanded = false
             delay(TODO_DOCK_AUTO_HIDE_MS)
             autoHidden = true
@@ -182,10 +185,10 @@ internal fun AgentChatTodoDock(
                     size = 14.dp,
                 )
                 Text(
-                    text = if (expired) {
-                        stringResource(R.string.chat_todo_expired)
-                    } else {
-                        stringResource(R.string.chat_todo_step_progress, step, todos.size)
+                    text = when {
+                        expired -> stringResource(R.string.chat_todo_expired)
+                        runEnded -> stringResource(R.string.chat_todo_unfinished, todos.size - terminalCount)
+                        else -> stringResource(R.string.chat_todo_step_progress, step, todos.size)
                     },
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
@@ -259,6 +262,17 @@ internal fun todoDockExpired(
         lastActivityAt != null &&
         lastActivityAt > 0L &&
         now - lastActivityAt >= TODO_DOCK_STALE_MS
+
+/**
+ * 本轮已结束（没有在跑）而清单还没到终态：模型漏了收尾。
+ *
+ * 与 [todoDockExpired] 的区别：那条看「多久没动」，这条只看「本轮结束没结束」，
+ * 所以用户接着聊天也不会让胶囊永久驻留——这正是「最后一步一直卡着」的来源。
+ */
+internal fun todoDockUnfinished(todos: List<ConversationTodo>, runActive: Boolean): Boolean =
+    !runActive && todos.any {
+        it.status == ConversationTodoStatus.PENDING || it.status == ConversationTodoStatus.IN_PROGRESS
+    }
 
 /** 任务已结束、清单却停在该时长前没动过，视为「已过期的计划」。 */
 internal const val TODO_DOCK_STALE_MS = 10 * 60 * 1000L
