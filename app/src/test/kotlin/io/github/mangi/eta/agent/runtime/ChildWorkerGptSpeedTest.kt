@@ -60,16 +60,17 @@ class ChildWorkerGptSpeedTest {
         assertFalse(off.thinkingEnabled)
     }
 
-    @Test fun oauthCodexChildKeepsItsOwnSpeedButOmitsRejectedServiceTier() = runBlocking {
+    @Test fun oauthCodexChildUsesSubscriptionSpeedWireValues() = runBlocking {
         val oauth = provider.copy(baseUrl = "https://chatgpt.com/backend-api/codex", endpointMode = OpenAiEndpointMode.RESPONSES)
-        for (mode in GptSpeedMode.entries) {
+        val expected = mapOf(GptSpeedMode.NORMAL to null, GptSpeedMode.FAST to "priority", GptSpeedMode.ULTRA_FAST to "ultrafast")
+        for ((mode, tier) in expected) {
             val result = resolve(speed(mode), oauth)
             assertEquals(Policy.Availability.AVAILABLE, result.availability)
             val config = requireNotNull(result.configuration).model
             assertEquals(mode, config.gptSpeedMode)
             assertEquals(ReasoningEffort.HIGH, config.effectiveReasoningEffort)
             val request = ResponsesRequestBuilder.build(config, JSONArray(), JSONArray())
-            assertFalse(request.has("service_tier"))
+            if (tier == null) assertFalse(request.has("service_tier")) else assertEquals(tier, request.getString("service_tier"))
             assertEquals("high", request.getJSONObject("reasoning").getString("effort"))
         }
     }

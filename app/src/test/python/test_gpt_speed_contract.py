@@ -70,6 +70,9 @@ class GptSpeedContractTest(unittest.TestCase):
         self.assertIn("if (!isGptSpeedModel(actualModel)) return", tier)
         for mode, value in (("NORMAL", "default"), ("FAST", "fast"), ("ULTRA_FAST", "ultrafast")):
             self.assertIn(f'GptSpeedMode.{mode} -> "{value}"', tier)
+        self.assertIn('GptSpeedMode.FAST -> "priority"', tier)
+        self.assertIn("OpenAiCodexOAuth.isCodexEndpoint(config.baseUrl)", tier)
+        self.assertIn('request.remove("service_tier")', tier)
         self.assertEqual(tier.count("request.put("), 1)
 
     def test_wire_has_symmetric_mode_transfer(self):

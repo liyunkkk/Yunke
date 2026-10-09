@@ -112,9 +112,16 @@ class GptServiceTierTest {
     }
 }
 
-    @Test fun officialOauthEndpointNeverReceivesAServiceTier() {
-        val oauth = config(GptSpeedMode.FAST).copy(baseUrl = "https://chatgpt.com/backend-api/codex")
-        assertFalse(build(oauth, false).has("service_tier"))
-        assertFalse(build(oauth, true).has("service_tier"))
+    @Test fun subscriptionBackendUsesCodexSpeedValuesAndOmitsStandardRouting() {
+        val base = "https://chatgpt.com/backend-api/codex"
+        listOf(false, true).forEach { responses ->
+            assertFalse(build(config(GptSpeedMode.NORMAL).copy(baseUrl = base,
+                customBody = listOf(CustomBody("service_tier", JsonPrimitive("priority"))),
+            ), responses).has("service_tier"))
+            assertEquals("priority", build(config(GptSpeedMode.FAST).copy(baseUrl = base), responses)
+                .getString("service_tier"))
+            assertEquals("ultrafast", build(config(GptSpeedMode.ULTRA_FAST).copy(baseUrl = base), responses)
+                .getString("service_tier"))
+        }
         assertEquals("fast", build(config(GptSpeedMode.FAST), false).getString("service_tier"))
     }
