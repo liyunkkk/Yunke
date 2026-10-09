@@ -24,8 +24,14 @@ class AgentAccessibilityHealthProvider : ContentProvider() {
                 AccessibilityProtectionProtocol.HEALTH_STATUS_REJECTED,
             )
         }
+        // 只有「已连接且真的能枚举默认屏窗口」才算 CONNECTED：否则后端会据此重绑，
+        // 这正是重装 APK 后实例存在但窗口缓存为空时的唯一自愈途径。
+        val healthy = accessibilityConnectionHealthy(
+            instanceAvailable = AgentAccessibilityService.isAvailable(),
+            defaultDisplayWindowsUsable = AgentAccessibilityService.defaultDisplayWindowsUsable(),
+        )
         return AccessibilityProtectionProtocol.healthResult(
-            if (AgentAccessibilityService.isAvailable()) {
+            if (healthy) {
                 AccessibilityProtectionProtocol.HEALTH_STATUS_CONNECTED
             } else {
                 AccessibilityProtectionProtocol.HEALTH_STATUS_DISCONNECTED

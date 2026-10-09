@@ -41,6 +41,50 @@ object AgentAccessibilityKeeper {
         return result
     }
 
+    /**
+     * 服务自称可用（实例存在）但取不到窗口/节点时的强自愈：跳过「已连接」短路，
+     * 直接请后端按真实可用性重绑，并等待默认屏窗口重新可枚举。
+     *
+     * 只在调用方已经确认「连默认屏窗口都枚举不出来」时使用，避免应用窗口未就绪时误重绑。
+     */
+    internal fun forceRecoveryForGuiOperation(context: Context): AccessibilityEnableResult {
+        val protectionAvailable = runCatching { EtaApp.serviceInstance != null }.getOrDefault(false)
+        val protectionEnabled = runCatching { AccessibilityProtectionClient.isEnabled(context) }.getOrDefault(false)
+        if (!protectionAvailable || !protectionEnabled) {
+            return AccessibilityEnableResult.failure(
+                code = "ACCESSIBILITY_PROTECTION_UNAVAILABLE",
+                message = "无障碍保护后端不可用；本次未做重绑",
+                recoveryRequested = false,
+            )
+        }
+        if (
+            runCatching { AccessibilityProtectionClient.requestRecoveryBlocking(context) }.getOrNull() !=
+            AccessibilityProtectionClient.ControlStatus.APPLIED
+        ) {
+            return AccessibilityEnableResult.failure(
+                code = "ACCESSIBILITY_PROTECTION_UNAVAILABLE",
+                message = "无障碍恢复请求未被后端接受；本次未做重绑",
+                recoveryRequested = true,
+            )
+        }
+        if (!awaitUsableWindowContent()) {
+            return AccessibilityEnableResult.failure(
+                code = "ACCESSIBILITY_REPAIR_TIMEOUT",
+                message = "YUNKe 无障碍服务未在恢复时限内恢复取窗口能力",
+                recoveryRequested = true,
+            )
+        }
+        return AccessibilityEnableResult.available(recoveryRequested = true)
+    }
+
+    private fun awaitUsableWindowContent(): Boolean {
+        repeat(SERVICE_BIND_ATTEMPTS) {
+            if (AgentAccessibilityService.defaultDisplayWindowsUsable()) return true
+            SystemClock.sleep(SERVICE_BIND_POLL_MS)
+        }
+        return AgentAccessibilityService.defaultDisplayWindowsUsable()
+    }
+
     internal fun ensureAvailable(
         serviceAvailable: () -> Boolean,
         protectionEnabled: () -> Boolean,

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.ClipData
 import android.content.ClipboardManager
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeper
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.tool.AgentAfterActionSummary
@@ -32,6 +33,8 @@ internal object VirtualDisplaySession {
         var cleanupOnly = false
         var abortCleanupAttempted = false
         var persisted = false
+        /** 本次副屏会话是否已经尝试过无障碍强制自愈：最多一次，避免反复重绑。 */
+        var accessibilityRecoveryAttempted = false
         var receipt: JSONObject? = null
         /** Shared across finish/onRunClosed for this run so automatic retries cannot multiply. */
         val handoffBudget = VirtualDisplayHandoffRetry.Budget()
@@ -806,26 +809,18 @@ internal object VirtualDisplaySession {
                 }
                 s.observation.record(capture.contract)
                 // 副屏节点来自 App 自身的无障碍服务（按 display 取树）；取不到时保持纯截图模式，坐标契约不变。
-                var vdNodeSnapshot: AgentAccessibilityService.NodeSnapshot? = null
-                val elementObservation = runCatching {
-                    val accessibility = AgentAccessibilityService.current()
-                    if (accessibility == null) {
-                        null
-                    } else {
-                        accessibility.captureNodeSnapshot(NODE_LIMIT, c.displayId)?.let { snapshot ->
-                            vdNodeSnapshot = snapshot
-                            RootShellDeviceController.ElementObservation(
-                                id = snapshot.id,
-                                source = RootShellDeviceController.ElementSource.ACCESSIBILITY,
-                                packageName = snapshot.packageName,
-                                windowId = snapshot.windowId,
-                                nodes = DeviceNodeProjection.project(snapshot.nodes),
-                                maxNodes = NODE_LIMIT,
-                                truncated = snapshot.truncated,
-                            )
-                        }
-                    }
-                }.getOrNull()
+                val vdNodeSnapshot = captureVirtualNodes(context, s, NODE_LIMIT, c.displayId)
+                val elementObservation = vdNodeSnapshot?.let { snapshot ->
+                    RootShellDeviceController.ElementObservation(
+                        id = snapshot.id,
+                        source = RootShellDeviceController.ElementSource.ACCESSIBILITY,
+                        packageName = snapshot.packageName,
+                        windowId = snapshot.windowId,
+                        nodes = DeviceNodeProjection.project(snapshot.nodes),
+                        maxNodes = NODE_LIMIT,
+                        truncated = snapshot.truncated,
+                    )
+                }
                 s.uiTreeAvailability.updateScope(runId, c.displayId, elementObservation?.packageName.orEmpty())
                 val nodesUnavailable = s.uiTreeAvailability.record(elementObservation?.nodes.orEmpty().isNotEmpty())
                 if (nodesUnavailable) {
@@ -921,11 +916,11 @@ internal object VirtualDisplaySession {
                     .put("text_length",value.length)
                 outcome.method.takeIf { it.isNotBlank() }?.let { payload.put("method",it) }
                 outcome.verified?.let { payload.put("verified",it) }
-                afterActionSummary(s, c.displayId, beforeText)?.let { payload.put("after_action",it) }
+                afterActionSummary(context, s, c.displayId, beforeText)?.let { payload.put("after_action",it) }
                 return text(payload)
             }
             if (tool == "wait_for_text" || tool == "wait_for_package") {
-                return text(waitOnVirtualDisplay(c, tool, args))
+                return text(waitOnVirtualDisplay(context, s, c, tool, args))
             }
             if (tool in setOf("tap", "tap_area", "swipe", "long_press", "tap_element", "long_press_element", "scroll", "scroll_element")) {
                 s.observation.require()
@@ -1015,25 +1010,55 @@ internal object VirtualDisplaySession {
             val result = body(input)
             if (input.ok) {
                 Thread.sleep(AFTER_ACTION_SETTLE_MS)
-                afterActionSummary(s, c.displayId, beforeAction)?.let { result.put("after_action", it) }
+                afterActionSummary(context, s, c.displayId, beforeAction)?.let { result.put("after_action", it) }
             }
             return text(result)
         }catch(e:VirtualDisplayCoordinateRejection){return text(reply(false,e.code,e.message.orEmpty()))}
         catch(e:Exception){return text(reply(false,"VIRTUAL_OPERATION_FAILED",e.javaClass.simpleName))}
     }
     /**
+     * 副屏取树的唯一入口。
+     *
+     * 取不到节点时，只有在「连默认屏窗口都枚举不出来」的情况下才判定无障碍服务失效
+     * （重装 APK 后常见：已启用、已绑定、实例也在，但窗口缓存为空），按会话最多做一次强制自愈
+     * 后重试一次；应用窗口单纯未就绪时不重绑。自愈失败不改调用方语义，仍按纯截图路径继续。
+     */
+    private fun captureVirtualNodes(
+        context: Context,
+        s: Session,
+        maxNodes: Int,
+        displayId: Int,
+    ): AgentAccessibilityService.NodeSnapshot? {
+        val first = runCatching {
+            AgentAccessibilityService.current()?.captureNodeSnapshot(maxNodes, displayId)
+        }.getOrNull()
+        if (first != null) return first
+        if (s.accessibilityRecoveryAttempted || AgentAccessibilityService.defaultDisplayWindowsUsable()) return null
+        s.accessibilityRecoveryAttempted = true
+        val healed = runCatching {
+            AgentAccessibilityKeeper.forceRecoveryForGuiOperation(context)
+        }.getOrNull()
+        AndroidAgentLogger.warn(
+            "Virtual display node capture failed; accessibility force recovery " +
+                "available=${healed?.available} code=${healed?.code}",
+        )
+        return runCatching {
+            AgentAccessibilityService.current()?.captureNodeSnapshot(maxNodes, displayId)
+        }.getOrNull()
+    }
+
+    /**
      * 动作后回读：只取节点，不取截图；取不到就返回 null，绝不改变动作本身的结果。
      * 同时把新节点发布给本次会话，模型可直接用新索引继续，不必再 observe_screen。
      */
     private fun afterActionSummary(
+        context: Context,
         s: Session,
         displayId: Int,
         before: RootShellDeviceController.ElementObservation?,
     ): JSONObject? {
         if (s.uiTreeAvailability.unavailable()) return null
-        val snapshot = runCatching {
-            AgentAccessibilityService.current()?.captureNodeSnapshot(AFTER_ACTION_NODE_LIMIT, displayId)
-        }.getOrNull() ?: return null
+        val snapshot = captureVirtualNodes(context, s, AFTER_ACTION_NODE_LIMIT, displayId) ?: return null
         val after = RootShellDeviceController.ElementObservation(
             id = snapshot.id,
             source = RootShellDeviceController.ElementSource.ACCESSIBILITY,
@@ -1054,6 +1079,8 @@ internal object VirtualDisplaySession {
      * 语义与主屏 wait_for_text / wait_for_package 对齐（匹配模式、attempts、超时错误码）。
      */
     private fun waitOnVirtualDisplay(
+        context: Context,
+        s: Session,
         c: VirtualDisplayOwnerClient,
         tool: String,
         args: JSONObject,
@@ -1061,9 +1088,8 @@ internal object VirtualDisplaySession {
         val timeout = args.optInt("timeout_ms",10_000).coerceIn(500,60_000)
         val deadline = System.currentTimeMillis() + timeout
         var attempts = 0
-        fun snapshot(): AgentAccessibilityService.NodeSnapshot? = runCatching {
-            AgentAccessibilityService.current()?.captureNodeSnapshot(NODE_LIMIT, c.displayId)
-        }.getOrNull()
+        fun snapshot(): AgentAccessibilityService.NodeSnapshot? =
+            captureVirtualNodes(context, s, NODE_LIMIT, c.displayId)
         if (tool == "wait_for_package") {
             val target = args.optString("package_name").trim()
             if (target.isBlank()) return reply(false,"INVALID_ARGUMENT","package_name 不能为空")

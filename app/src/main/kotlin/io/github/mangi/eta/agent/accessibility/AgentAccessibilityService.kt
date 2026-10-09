@@ -234,6 +234,24 @@ open class AgentAccessibilityService : AccessibilityService() {
         focusedPackage.takeIf { root.packageName?.toString() == it }
     }
 
+    /**
+     * 默认屏窗口列表是否真的可枚举。
+     *
+     * 重装 APK 后无障碍服务可能处于「已启用、已绑定、实例也在」但窗口缓存为空的状态：
+     * 此时节点工具与自身前台判据都会静默失效，只有重新绑定才能恢复。
+     * 主线程超时返回 null（未知），调用方按保守值处理。
+     */
+    internal fun canEnumerateDefaultDisplayWindows(): Boolean? =
+        when (
+            val result = callOnMainSync {
+                windowsOnAllDisplays.get(android.view.Display.DEFAULT_DISPLAY).orEmpty().isNotEmpty()
+            }
+        ) {
+            is MainThreadCallResult.Completed -> result.value
+            MainThreadCallResult.NOT_STARTED,
+            MainThreadCallResult.OUTCOME_UNKNOWN -> null
+        }
+
     fun displaySize(): Pair<Int, Int>? = runCatching {
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val point = Point()
@@ -2446,6 +2464,10 @@ open class AgentAccessibilityService : AccessibilityService() {
         fun current(): AgentAccessibilityService? = instance
 
         fun isAvailable(): Boolean = instance != null
+
+        /** 服务不仅已连接，而且真的能枚举默认屏窗口；用于判断是否需要强制重绑。 */
+        fun defaultDisplayWindowsUsable(): Boolean =
+            instance?.canEnumerateDefaultDisplayWindows() ?: false
     }
 
     private sealed interface NodeValidation {
