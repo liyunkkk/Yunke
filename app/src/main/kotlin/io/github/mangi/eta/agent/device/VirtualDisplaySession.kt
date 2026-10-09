@@ -1104,14 +1104,12 @@ internal object VirtualDisplaySession {
                                     .put("taskId",takenId)
                                     .put("displayId",c.displayId)
                                     .put("note","已把主屏那个实例搬到副屏接管（未杀进程、未重置界面）；" +
-                                        "任务收尾时会自动还回主屏。先用 observe_screen 取新界面。")
-                                    .toString())
+                                        "任务收尾时会自动还回主屏。先用 observe_screen 取新界面。"))
                             }
                             // 接管失败：如实回报并退回原来的选项，绝不悄悄改成强停。
                             return text(VirtualDisplayLaunchConflict.payload(pkg,conflictCode,body(launched).optString("message"),autoTakeover)
                                 .put("takeover_error",taken.errorCode)
-                                .put("message","接管失败（${taken.errorCode}），本次未执行；请选择下面的处理方式。")
-                                .toString())
+                                .put("message","接管失败（${taken.errorCode}），本次未执行；请选择下面的处理方式。"))
                         }
                         return text(VirtualDisplayLaunchConflict.payload(pkg,conflictCode,body(launched).optString("message"),autoTakeover))
                     }
