@@ -56,15 +56,16 @@ class VirtualDisplaySettingsUiTest(unittest.TestCase):
         self.assertIn('snapshot.optBoolean("recoverable")', page)
         self.assertIn("VirtualDisplaySession::recoverAndFinishManually", page)
         self.assertNotIn("VirtualDisplayWebPreview.stop()", page)
-        for action in ("vd_preview_open", "vd_preview_revoke", "vd_recovery_refresh", "vd_recovery_action"):
+        for action in ("vd_recovery_refresh", "vd_recovery_action"):
             self.assertIn("R.string." + action, page)
         self.assertIn('snapshot?.optBoolean("busy")', page)
         self.assertIn("busy -> R.string.vd_recovery_busy", page)
         self.assertIn("val showWeb = installed == true || webPaired", page)
-        preview_button = page.split("FlowRow(", 1)[1].split("R.string.vd_preview_open", 1)[0]
-        self.assertIn("enabled = installed == true && !working,", preview_button)
-        self.assertNotIn('optBoolean("present")', preview_button)
-        self.assertNotIn('optBoolean("recoverable")', preview_button)
+        # 预览入口删除后，FlowRow 里只剩刷新与手动收尾两个动作。
+        actions_block = page.split("FlowRow(", 1)[1]
+        self.assertIn("enabled = installed == true && !working,", actions_block)
+        self.assertNotIn("R.string.vd_preview_open", actions_block)
+        self.assertNotIn("R.string.vd_preview_revoke", actions_block)
         root = (UI / "app/AgentAppRoot.kt").read_text()
         self.assertIn("entry<AppRoute.VirtualDisplayRecovery>", root)
         self.assertNotIn("VirtualDisplayRecoveryScreen(onBack = ::popRoute)", root)
