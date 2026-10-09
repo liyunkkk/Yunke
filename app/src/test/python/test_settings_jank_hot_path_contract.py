@@ -73,3 +73,30 @@ class SettingsJankHotPathContract(unittest.TestCase):
         self.assertIn('isPaused = uiPaused', host)
         self.assertIn('LaunchedEffect(messages, isStreaming)', host)
         self.assertIn('enabled = chatUiActive && !isPaused', host)
+
+    def test_chat_keeps_live_output_while_navigation_animates(self):
+        helper = (ROOT / 'components/ChatUiActive.kt').read_text()
+        self.assertIn('val LocalChatNavigationInProgress = staticCompositionLocalOf { false }', helper)
+        root = (ROOT / 'app/AgentAppRoot.kt').read_text()
+        self.assertIn('LocalChatNavigationInProgress provides navigationInProgress', root)
+        self.assertIn('transition = navigationTransition,', root)
+        transition = (ROOT / 'app/ChatNavigationTransition.kt').read_text()
+        # 手势与回弹、普通入栈出栈都算动画进行中
+        self.assertIn('scope.gesture != null || scope.settle != null', transition)
+        # 视觉与默认预设一致，不新增位移/缩放/透明度
+        self.assertIn('translationX = (if (rtl) 1f else -1f) * coverProgress(d) * width * 0.25f', transition)
+        self.assertIn('alpha = 1f - 0.1f * coverProgress(d)', transition)
+        self.assertIn('navGraphicsTransition(opaqueDepth = 1f)', transition)
+        item = (ROOT / 'components/ChatMessageItem.kt').read_text()
+        self.assertIn('val navigationInProgressNow = rememberUpdatedState(LocalChatNavigationInProgress.current)', item)
+        self.assertIn('if (routeCoveredNow.value || navigationInProgressNow.value) {', item)
+        self.assertIn('val revealClockAllowed = !routeCoveredNow.value && !navigationInProgressNow.value', item)
+        # 动画期间不得走“追平代替推进”的分支
+        self.assertIn('!revealClockAllowed && !isPaused -> revealCoordinator.pauseAnimationsAndCatchUp()', item)
+
+    def test_streaming_body_skips_selection_registry(self):
+        container = (ROOT / 'haptics/HapticSelectionContainer.kt').read_text()
+        self.assertIn('selectionEnabled: Boolean = true', container)
+        self.assertIn('if (!selectionEnabled) {', container)
+        item = (ROOT / 'components/ChatMessageItem.kt').read_text()
+        self.assertIn('selectionEnabled = !message.isStreaming &&\n                    (!keepStreamingMarkdown || streamingRevealComplete),', item)

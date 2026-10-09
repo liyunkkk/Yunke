@@ -525,9 +525,19 @@ fun AgentAppRoot(
         io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor provides subAgentEditor,
     ) {
     Box(modifier = Modifier.fillMaxSize()) {
+    // 横滑返回期间（手指驱动或释放后的回弹）上一页会露出一部分，正文必须继续实时输出；
+    // 只有回弹结束、完全盖住后才停止推进。视觉仍由默认转场提供。
+    var navigationInProgress by remember { mutableStateOf(false) }
+    val navigationTransition = remember {
+        navigationAwareMiuixTransition { active -> navigationInProgress = active }
+    }
+    CompositionLocalProvider(
+        io.github.mangi.eta.ui.components.LocalChatNavigationInProgress provides navigationInProgress,
+    ) {
     NavDisplay(
         backStack = backStack,
         onBack = { popRoute() },
+        transition = navigationTransition,
         effects = NavDisplayEffects(
             cornerClipRadius = rememberNavSystemCornerRadius(),
         ),
@@ -1038,6 +1048,7 @@ fun AgentAppRoot(
                     onBack = ::popRoute
                 )
             }
+    }
     }
 
     AgentPendingChildStopDialog(agentState.conversationPaneState.selectedConversationId)
