@@ -39,6 +39,7 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.data.db.ConversationTodo
 import io.github.mangi.eta.data.db.ConversationTodoStatus
 import io.github.mangi.eta.data.repository.ConversationTodoRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.ProgressIndicatorDefaults
@@ -60,7 +61,7 @@ internal fun currentTodoStep(todos: List<ConversationTodo>): Int {
 /**
  * 会话 Todo 清单的常驻胶囊：显示「第 N / M 步」与进度圆环，点开是完整清单。
  *
- * 数据直接来自仓库（按会话 id 观察），全部项终态时自动收起；清单为空时不占位。
+ * 数据直接来自仓库（按会话 id 观察），全部项终态时先收起、再在短暂停留后整条隐藏；清单为空时不占位。
  * 移植自 Operit-Ry 的 ChatTodoDock，位置与交互保持一致（输入框正上方）。
  */
 @Composable
@@ -81,14 +82,22 @@ internal fun AgentChatTodoDock(
 
     val hasTodos = !conversationId.isNullOrBlank() && todos.isNotEmpty()
     var expanded by rememberSaveable(conversationId) { mutableStateOf(false) }
+    // 全部完成/取消后，胶囊先收起，再在 AUTO_HIDE_MS 后整条隐藏；新一轮清单会立刻重新出现。
+    var autoHidden by remember(conversationId) { mutableStateOf(false) }
     val allTerminal = todos.isNotEmpty() && todos.all {
         it.status == ConversationTodoStatus.COMPLETED || it.status == ConversationTodoStatus.CANCELLED
     }
-    LaunchedEffect(conversationId, allTerminal) {
-        if (allTerminal) expanded = false
+    LaunchedEffect(conversationId, todos) {
+        if (allTerminal) {
+            expanded = false
+            delay(TODO_DOCK_AUTO_HIDE_MS)
+            autoHidden = true
+        } else {
+            autoHidden = false
+        }
     }
 
-    if (!hasTodos) {
+    if (!hasTodos || autoHidden) {
         if (leadingContent != null) {
             Column(
                 modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
@@ -200,3 +209,6 @@ private fun TodoDetailRow(todo: ConversationTodo) {
         )
     }
 }
+
+/** 全部项终态后胶囊继续停留的时长；之后整条隐藏。 */
+private const val TODO_DOCK_AUTO_HIDE_MS = 6_000L

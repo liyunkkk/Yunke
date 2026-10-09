@@ -136,9 +136,9 @@ internal fun VirtualDisplayRecoveryControls(
     val phase = snapshot?.optString("phase", RECOVERY_PHASE_PENDING) ?: RECOVERY_PHASE_PENDING
     // 没有副屏也能首次授权网页；已有配对时始终可撤销。
     // 首次读取期间 working=true 会吞掉返回键，此时也显示卡片（带进度），避免“无响应”。
+    // 只有确实有待恢复会话、或正在执行恢复动作时才占位；没有内容时整块不显示。
     val showRecovery = result != null || working || (snapshot != null && (!readable || present))
-    val showWeb = installed == true || webPaired
-    if (!showRecovery && !showWeb) return
+    if (!showRecovery) return
 
     Column(
         modifier = modifier.fillMaxWidth(),

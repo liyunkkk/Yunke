@@ -349,7 +349,10 @@
   <string name="tool_scroll_element">Scroll element</string>
   <string name="tool_input_text">Enter text</string>
   <string name="tool_replace_text">Replace text</string>
-  <string name="vd_viewer_title">View virtual display</string>
+  <string name="vd_viewer_title">Virtual display status</string>
+  <string name="vd_section_title">Virtual display</string>
+  <string name="vd_status_title">Status and recent actions</string>
+  <string name="vd_status_summary">Running state and the last 100 GUI actions; the frame itself is shown by the floating window.</string>
   <string name="vd_viewer_close">Close</string>
   <string name="vd_float_title">Floating virtual display window</string>
   <string name="vd_float_none">No virtual display session</string>
