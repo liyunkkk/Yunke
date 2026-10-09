@@ -5,18 +5,17 @@ import unittest
 ROOT = Path(__file__).resolve().parents[3] / 'src/main/kotlin/io/github/mangi/eta'
 
 class MainMergeIntegrationTest(unittest.TestCase):
-    def test_inline_controls_retain_authorized_preview_and_safe_close(self):
+    def test_inline_controls_keep_safe_close_without_web_preview_entry(self):
         page = (ROOT / 'ui/VirtualDisplayRecoveryScreen.kt').read_text()
-        for text in ('VirtualDisplayRecoveryControls(', 'VirtualDisplayWebPreview.openWithManualClose(context)',
-                     'onDispose {', 'VirtualDisplayWebPreview.revoke(context)', 'snapshot.optBoolean("recoverable")'):
+        for text in ('VirtualDisplayRecoveryControls(', 'onDispose {',
+                     'VirtualDisplayWebPreview.revoke(context)', 'snapshot.optBoolean("recoverable")'):
             self.assertIn(text, page)
-        self.assertEqual(1, page.count('if (!stillInstalled)'))
-        installation_gate = page.split('if (!stillInstalled)', 1)[1].split('webPaired = true', 1)[0]
-        self.assertIn('VirtualDisplayWebPreview.revoke(context)', installation_gate)
-        self.assertIn('error("Backend module removed")', installation_gate)
+        # 跨设备网页预览入口已移除；仅保留「后端被移除时自动撤销历史配对」这条清理路径。
+        self.assertNotIn('VirtualDisplayWebPreview.openWithManualClose(context)', page)
+        self.assertNotIn('if (!stillInstalled)', page)
         self.assertNotIn('VirtualDisplayWebPreview.stop()', page)
-        # 四个操作各只有一个入口，且仍在同一页内联展示（不是独立页面）。
-        self.assertEqual(4, page.count('TouchHaptics.click(view)'))
+        # 内联动作只剩刷新与手动收尾，仍在同一页展示（不是独立页面）。
+        self.assertEqual(2, page.count('TouchHaptics.click(view)'))
         self.assertNotIn('VirtualDisplayWebPreview.open(context)', page)
         self.assertNotIn('Scaffold(', page)
 
