@@ -3,6 +3,7 @@ package io.github.mangi.eta.data.repository
 import android.content.Context
 import io.github.mangi.eta.data.db.ConversationTodo
 import io.github.mangi.eta.data.db.ConversationTodoStatus
+import io.github.mangi.eta.data.db.ConversationTodoPriority
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.toConversationTodo
 import io.github.mangi.eta.data.db.toEntity
