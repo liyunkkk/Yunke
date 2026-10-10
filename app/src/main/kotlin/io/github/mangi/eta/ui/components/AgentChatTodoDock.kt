@@ -122,7 +122,7 @@ internal fun AgentChatTodoDock(
             delay(TODO_DOCK_AUTO_HIDE_MS)
             // 收起动画走完就把这份清单销毁：只隐藏组件的话，重开会话时会重新组合、又弹一次。
             // 清单已经收尾/过期，留着没有价值；下一轮任务里模型写新快照会自动重建。
-            runCatching { repository.clear(conversationId) }
+            conversationId?.takeIf { it.isNotBlank() }?.let { id -> runCatching { repository.clear(id) } }
             autoHidden = true
         } else {
             autoHidden = false
