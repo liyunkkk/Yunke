@@ -42,6 +42,7 @@ internal class ScreenTranslationOverlayService : Service() {
     private var bubbleStatusText: TextView? = null
     private var bubbleIcon: TextView? = null
     private var bubbleCloseBtn: TextView? = null
+    private var bubbleModeBtn: TextView? = null
     private var bubbleDivider: View? = null
     private val isAttached = AtomicBoolean(false)
 
@@ -210,6 +211,34 @@ internal class ScreenTranslationOverlayService : Service() {
         }
         bubble.addView(divider, dividerParams)
 
+        // 渲染模式切换：替换 ⇄ 对照。
+        val modeBtn = TextView(this).apply {
+            text = modeLabel(RenderMode.REPLACE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(textColor)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(
+                (6 * density).roundToInt(),
+                (2 * density).roundToInt(),
+                (6 * density).roundToInt(),
+                (2 * density).roundToInt(),
+            )
+        }
+        bubbleModeBtn = modeBtn
+        bubble.addView(modeBtn)
+
+        val modeDivider = View(this).apply {
+            setBackgroundColor(dividerColor)
+        }
+        val modeDividerParams = LinearLayout.LayoutParams(
+            (1f * density).roundToInt().coerceAtLeast(1),
+            (14 * density).roundToInt(),
+        ).apply {
+            leftMargin = (4 * density).roundToInt()
+            rightMargin = (4 * density).roundToInt()
+        }
+        bubble.addView(modeDivider, modeDividerParams)
+
         val closeBtn = TextView(this).apply {
             text = "✕"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
@@ -257,16 +286,24 @@ internal class ScreenTranslationOverlayService : Service() {
                 MotionEvent.ACTION_UP -> {
                     if (!isDragging) {
                         val touchX = event.x
-                        val dividerLeft = divider.left
-                        if (touchX >= dividerLeft - 4 * density) {
-                            ScreenTranslationController.stop(applicationContext)
-                        } else {
-                            if (ScreenTranslationController.hasActiveTranslations() ||
-                                ScreenTranslationController.isTranslating()
-                            ) {
-                                ScreenTranslationController.clearAndStop(applicationContext)
-                            } else {
-                                ScreenTranslationController.requestRefresh()
+                        // 独立命中区域：右侧为关闭，模式按钮为切换，其余为翻译/取消主区域。
+                        val modeLeft = modeBtn.left - 4 * density
+                        val modeRight = modeBtn.right + 4 * density
+                        when {
+                            touchX >= modeRight -> {
+                                ScreenTranslationController.stop(applicationContext)
+                            }
+                            touchX >= modeLeft -> {
+                                toggleRenderMode()
+                            }
+                            else -> {
+                                if (ScreenTranslationController.hasActiveTranslations() ||
+                                    ScreenTranslationController.isTranslating()
+                                ) {
+                                    ScreenTranslationController.clearAndStop(applicationContext)
+                                } else {
+                                    ScreenTranslationController.requestRefresh()
+                                }
                             }
                         }
                     } else {
@@ -303,6 +340,7 @@ internal class ScreenTranslationOverlayService : Service() {
         bubbleStatusText = null
         bubbleIcon = null
         bubbleCloseBtn = null
+        bubbleModeBtn = null
         bubbleDivider = null
         isAttached.set(false)
         ScreenTranslationController.detachOverlay(this)
@@ -316,6 +354,17 @@ internal class ScreenTranslationOverlayService : Service() {
         canvasOverlayView?.clear()
         bubbleStatusText?.text = getString(io.github.mangi.eta.R.string.screen_translation_btn_translate)
     }
+
+    /** 切换原位替换 / 双语对照，并同步按钮文案。 */
+    private fun toggleRenderMode() {
+        val view = canvasOverlayView ?: return
+        val next = if (view.renderMode == RenderMode.REPLACE) RenderMode.BILINGUAL else RenderMode.REPLACE
+        view.setRenderMode(next)
+        bubbleModeBtn?.text = modeLabel(next)
+    }
+
+    private fun modeLabel(mode: RenderMode): String =
+        if (mode == RenderMode.REPLACE) "替换" else "对照"
 
     /**
      * 单层 Canvas 硬件加速直绘渲染
