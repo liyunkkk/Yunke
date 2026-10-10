@@ -4,6 +4,7 @@ import io.github.mangi.eta.data.db.ConversationTodo
 import io.github.mangi.eta.data.db.ConversationTodoPriority
 import io.github.mangi.eta.data.db.ConversationTodoStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -77,6 +78,62 @@ class ConversationTodoRepositoryTest {
             todo("待办"),
         )
         assertEquals(todos, normalizeConversationTodoSnapshot(todos))
+    }
+
+    @Test
+    fun updatesChangeOnlyTheNamedItems() {
+        val current = listOf(
+            todo("一", ConversationTodoStatus.COMPLETED),
+            todo("二", ConversationTodoStatus.IN_PROGRESS),
+            todo("三"),
+        )
+        val merged = applyConversationTodoUpdates(
+            current,
+            listOf(
+                ConversationTodoUpdate(1, status = ConversationTodoStatus.COMPLETED),
+                ConversationTodoUpdate(2, status = ConversationTodoStatus.COMPLETED, priority = ConversationTodoPriority.HIGH),
+            ),
+        )
+        assertEquals(
+            listOf(
+                ConversationTodoStatus.COMPLETED,
+                ConversationTodoStatus.COMPLETED,
+                ConversationTodoStatus.COMPLETED,
+            ),
+            merged?.map { it.status },
+        )
+        assertEquals(ConversationTodoPriority.HIGH, merged?.get(2)?.priority)
+        // 未指定的字段保持原值。
+        assertEquals("三", merged?.get(2)?.content)
+    }
+
+    @Test
+    fun updatesRejectOutOfRangeIndexInsteadOfGuessing() {
+        val current = listOf(todo("一"), todo("二"))
+        assertNull(applyConversationTodoUpdates(current, listOf(ConversationTodoUpdate(2, status = ConversationTodoStatus.COMPLETED))))
+        assertNull(applyConversationTodoUpdates(current, listOf(ConversationTodoUpdate(-1, status = ConversationTodoStatus.COMPLETED))))
+        assertNull(applyConversationTodoUpdates(current, emptyList()))
+    }
+
+    @Test
+    fun updatesNeverWriteBlankContentAndStayValidAfterNormalize() {
+        val current = listOf(
+            todo("一", ConversationTodoStatus.IN_PROGRESS),
+            todo("二"),
+        )
+        val merged = applyConversationTodoUpdates(
+            current,
+            listOf(
+                ConversationTodoUpdate(0, status = ConversationTodoStatus.PENDING),
+                ConversationTodoUpdate(1, status = ConversationTodoStatus.IN_PROGRESS, content = "   "),
+            ),
+        )
+        // 空白内容不覆盖原值。
+        assertEquals("二", merged?.get(1)?.content)
+        val normalized = normalizeConversationTodoSnapshot(merged!!)
+        assertEquals(ConversationTodoStatus.PENDING, normalized[0].status)
+        assertEquals(ConversationTodoStatus.IN_PROGRESS, normalized[1].status)
+        validateConversationTodoSnapshot(normalized)
     }
 
     @Test

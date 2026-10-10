@@ -62,6 +62,8 @@ import io.github.mangi.eta.data.repository.AgentMemoryMutation
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.ConversationTodoRepository
+import io.github.mangi.eta.data.repository.ConversationTodoUpdate
+import io.github.mangi.eta.data.repository.applyConversationTodoUpdates
 import io.github.mangi.eta.data.repository.normalizeConversationTodoSnapshot
 import io.github.mangi.eta.data.repository.AgentMemoryWriteResult
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
@@ -1722,9 +1724,19 @@ internal class AgentLocalTools(
      * （内容非空、最多一项 in_progress）。失败时返回明确错误码，不静默丢弃。
      */
     private fun todoWrite(args: JSONObject): String {
+        val rawUpdates = args.opt("updates")
+        val hasUpdates = rawUpdates != null && rawUpdates != JSONObject.NULL &&
+            (rawUpdates !is String || rawUpdates.isNotBlank())
         // 合同要求 JSON 字符串，但个别 provider 会把数组原样送进来：两种都接受。
         val raw = (args.opt("todos") as? JSONArray)?.toString() ?: args.optString("todos")
-        if (raw.isBlank()) return errorResult("TODO_MISSING_TODOS", "缺少必要参数：todos")
+        if (hasUpdates && raw.isNotBlank()) {
+            return errorResult(
+                "TODO_ARGUMENT_CONFLICT",
+                "todos 与 updates 只能二选一：整份替换用 todos，只改若干项用 updates。",
+            )
+        }
+        if (hasUpdates) return todoUpdate(args, rawUpdates)
+        if (raw.isBlank()) return errorResult("TODO_MISSING_TODOS", "缺少必要参数：todos 或 updates")
         val parsed = runCatching {
             val array = JSONArray(raw)
             buildList {
@@ -1775,6 +1787,93 @@ internal class AgentLocalTools(
             },
         )
     }
+
+    /**
+     * 增量更新：只改清单里的若干项，不必重发整张表。
+     *
+     * 存在的理由：模型常把清单写在任务早期，收尾时再发一次完整快照的成本高、容易被省掉，
+     * 于是最后一项一直停在 in_progress。这里让收尾只需要一条 `{index, status}`。
+     */
+    private fun todoUpdate(args: JSONObject, raw: Any?): String {
+        val updates = parseTodoUpdates(raw) ?: return errorResult(
+            "TODO_INVALID_UPDATES",
+            "updates 必须是数组或 JSON 字符串，每项 {index, status?, content?, priority?}；" +
+                "index 为 0 基下标，status 为 pending | in_progress | completed | cancelled。",
+        )
+        if (conversationId.isBlank()) {
+            return errorResult("TODO_NO_CONVERSATION", "更新 Todo 需要一个当前会话")
+        }
+        var currentCount = 0
+        val outcome = runCatching {
+            runBlocking(Dispatchers.IO) {
+                val repository = ConversationTodoRepository.getInstance(context)
+                val current = repository.current(conversationId)
+                currentCount = current.size
+                val merged = applyConversationTodoUpdates(current, updates) ?: return@runBlocking null
+                val todos = normalizeConversationTodoSnapshot(merged)
+                repository.replace(conversationId, todos)
+                todos
+            }
+        }
+        return outcome.fold(
+            onSuccess = { todos ->
+                if (todos == null) {
+                    return errorResult(
+                        "TODO_UPDATE_INDEX_UNKNOWN",
+                        "updates 里的 index 越界：当前清单共 $currentCount 项，index 用 0 基下标（0..${
+                            (currentCount - 1).coerceAtLeast(0)
+                        }）。请按清单实际项数重试，不要猜。",
+                    )
+                }
+                JSONObject()
+                    .put("ok", true)
+                    .put("count", todos.size)
+                    .put("updated", JSONArray(updates.map { it.index }))
+                    .put(
+                        "todos",
+                        JSONArray().also { array ->
+                            todos.forEachIndexed { index, todo ->
+                                array.put(
+                                    JSONObject()
+                                        .put("index", index)
+                                        .put("status", todo.status.wire)
+                                        .put("content", todo.content),
+                                )
+                            }
+                        },
+                    )
+                    .put("message", "Todo 清单已按 updates 更新（${updates.size} 项）")
+                    .toString()
+            },
+            onFailure = { error ->
+                errorResult("TODO_SAVE_FAILED", "保存 Todo 列表失败：${error.message.orEmpty()}")
+            },
+        )
+    }
+
+    /** 解析 updates：接受数组或 JSON 字符串；下标缺失/为负、或一项都没有时返回 null。 */
+    private fun parseTodoUpdates(raw: Any?): List<ConversationTodoUpdate>? = runCatching {
+        val array = when (raw) {
+            is JSONArray -> raw
+            is String -> JSONArray(raw)
+            else -> null
+        } ?: return null
+        buildList {
+            repeat(array.length()) { position ->
+                val item = array.getJSONObject(position)
+                val index = item.optInt("index", -1)
+                if (index < 0) return null
+                add(
+                    ConversationTodoUpdate(
+                        index = index,
+                        status = ConversationTodoStatus.fromWire(item.optString("status")),
+                        content = item.optString("content").takeIf { it.isNotBlank() },
+                        priority = ConversationTodoPriority.fromWire(item.optString("priority")),
+                    ),
+                )
+            }
+        }.takeIf { it.isNotEmpty() }
+    }.getOrNull()
 
     private fun errorResult(code: String, message: String): String =
         JSONObject()

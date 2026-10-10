@@ -14,9 +14,10 @@ internal object AgentTodoToolCatalog {
         tools.put(
             AgentToolSchema.function(
                 name = "todowrite",
-                description = "用完整的新快照替换当前会话的 Todo 清单；用户会在聊天界面看到该清单。" +
+                description = "维护当前会话的 Todo 清单；用户会在聊天界面看到该清单。" +
                     "任务包含至少三个独立步骤、多个用户要求或其他非简单执行时使用；" +
                     "简单一步操作或仅回答信息时不要使用。" +
+                    "两种用法：整份替换用 todos，只改若干项用 updates（推荐收尾时用，成本最低）。" +
                     "收尾前必须把清单更新到终态：没做或不需要做的项标 cancelled，不要留下 in_progress；" +
                     "只有确实在等用户或外部条件时才保留 pending。",
                 parameters = JSONObject()
@@ -34,9 +35,21 @@ internal object AgentTodoToolCatalog {
                                         "status 为 pending | in_progress | completed | cancelled；" +
                                         "priority 为 high | medium | low；最多一项 in_progress"
                                 )
-                        )
+                            )
+                            .put(
+                                "updates",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put(
+                                        "description",
+                                        "JSON 编码的增量更新（数组或 JSON 字符串）：" +
+                                            "[{index, status?, content?, priority?}]；index 为 0 基下标。" +
+                                            "只改若干项时用它，不必重发整张表——例如把最后一项收尾成 " +
+                                            "[{\"index\": 4, \"status\": \"completed\"}]。" +
+                                            "与 todos 只能二选一。"
+                                    )
+                            )
                     )
-                    .put("required", JSONArray().put("todos"))
             )
         )
     }

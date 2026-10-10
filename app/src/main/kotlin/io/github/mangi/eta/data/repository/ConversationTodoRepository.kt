@@ -54,6 +54,39 @@ internal fun normalizeConversationTodoSnapshot(todos: List<ConversationTodo>): L
     }
 }
 
+/** 增量更新的一项：index 是 0 基下标，status/content/priority 至少给一个（不给即保持原值）。 */
+internal data class ConversationTodoUpdate(
+    val index: Int,
+    val status: ConversationTodoStatus? = null,
+    val content: String? = null,
+    val priority: ConversationTodoPriority? = null,
+)
+
+/**
+ * 把增量更新应用到当前清单，保持顺序不变、只改指定项。
+ *
+ * 返回 null 表示下标越界或没有任何更新：调用方据此回报并让模型重新取下标，
+ * 绝不猜、也不整份丢弃。
+ */
+internal fun applyConversationTodoUpdates(
+    current: List<ConversationTodo>,
+    updates: List<ConversationTodoUpdate>,
+): List<ConversationTodo>? {
+    if (updates.isEmpty()) return null
+    if (updates.any { it.index !in current.indices }) return null
+    val next = current.toMutableList()
+    for (update in updates) {
+        val old = next[update.index]
+        next[update.index] = old.copy(
+            status = update.status ?: old.status,
+            // 空白内容不覆盖原值：宁可只改状态，也不把一项写成空。
+            content = update.content?.trim()?.takeIf { it.isNotEmpty() } ?: old.content,
+            priority = update.priority ?: old.priority,
+        )
+    }
+    return next
+}
+
 internal class ConversationTodoRepository private constructor(private val context: Context) {
     private val dao = EtaDatabase.get(context.applicationContext).conversationTodoDao()
 
@@ -63,6 +96,12 @@ internal class ConversationTodoRepository private constructor(private val contex
     /** 会话最后活动时间（毫秒）；读不到时给 null，调用方按「未过期」处理。 */
     fun observeConversationUpdatedAt(conversationId: String): Flow<Long?> =
         EtaDatabase.get(context.applicationContext).conversationDao().observeUpdatedAt(conversationId)
+
+    /** 读取某会话当前的清单（按 position 顺序）；用于增量更新。 */
+    suspend fun current(conversationId: String): List<ConversationTodo> {
+        if (conversationId.isBlank()) return emptyList()
+        return dao.todosByConversation(conversationId).map { it.toConversationTodo() }
+    }
 
     /**
      * 销毁某会话的清单。
