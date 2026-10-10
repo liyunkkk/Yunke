@@ -58,12 +58,21 @@ internal class BottomFollowViewportRecovery(
         val items = state.layoutInfo.visibleItemsInfo
         val row = items.firstOrNull { it.key == rowKey } ?: return false
         val anchor = items.firstOrNull { it.index > row.index } ?: return false
-        workExpansion = WorkExpansion(rowKey, emptySet(), anchor.key, anchor.offset, expiresAtNanos)
+        // This existing row grows BEFORE the captured anchor. If that anchor is temporarily
+        // virtualized, the row's measured bottom proves a lower bound without guessing tail height.
+        workExpansion = WorkExpansion(rowKey, setOf(rowKey), anchor.key, anchor.offset, expiresAtNanos)
         return true
     }
 
-    fun cancelWorkExpansion(groupKey: Any) {
-        if (workExpansion?.groupKey == groupKey) workExpansion = null
+    fun cancelWorkExpansion(groupKey: Any, childRowKeys: Collection<Any> = emptyList()) {
+        val owner = workExpansion?.groupKey ?: return
+        if (owner == groupKey || owner in childRowKeys) workExpansion = null
+    }
+
+    /** Read the same explicit owner; a snap timer alone is not capture evidence. */
+    fun hasActiveExpansion(canOwnViewport: Boolean): Boolean {
+        val expansion = workExpansion ?: return false
+        return canOwnViewport && System.nanoTime() < expansion.expiresAtNanos
     }
 
     fun recover(
@@ -90,7 +99,7 @@ internal class BottomFollowViewportRecovery(
                 val expansion = workExpansion
                 val expansionStep = if (expansion != null) {
                     val anchor = info.visibleItemsInfo.firstOrNull { it.key == expansion.anchorKey }
-                    // These exact keys were inserted BEFORE the old anchor. Their measured
+                    // These exact rows were inserted or grew BEFORE the old anchor. Their measured
                     // bottoms are a lower bound on its new offset, not an estimated tail.
                     val precedingBottom = info.visibleItemsInfo
                         .filter { it.key in expansion.precedingStepKeys }

@@ -72,6 +72,21 @@ class GptSpeedContractTest(unittest.TestCase):
             self.assertIn(f'GptSpeedMode.{mode} -> "{value}"', tier)
         self.assertEqual(tier.count("request.put("), 1)
 
+    def test_codex_uses_official_mapping_without_changing_relay_modes(self):
+        tier = source("agent/model/GptServiceTier.kt")
+        codex = between(tier, "if (OpenAiCodexOAuth.isCodexEndpoint(config.baseUrl))", "} else {")
+        self.assertIn("GptSpeedMode.NORMAL -> null", codex)
+        self.assertIn('GptSpeedMode.FAST -> "priority"', codex)
+        self.assertIn("GptSpeedMode.ULTRA_FAST -> throw AgentModelFailure", codex)
+        self.assertNotIn('-> "ultrafast"', codex)
+        self.assertIn('if (tier == null) request.remove("service_tier")', tier)
+
+    def test_local_unsupported_codex_tier_bypasses_reconnect(self):
+        retry = source("agent/model/AgentModelRetry.kt")
+        self.assertIn("if (classified.code == GptServiceTier.UNSUPPORTED_CODEX_TIER) throw classified", retry)
+        self.assertLess(retry.index("if (classified.code == GptServiceTier.UNSUPPORTED_CODEX_TIER)"),
+                        retry.index('if (classified.code == "CONTEXT_WINDOW_EXCEEDED")'))
+
     def test_wire_has_symmetric_mode_transfer(self):
         wire = source("agent/runtime/AgentRuntimeWire.kt")
         self.assertIn('KEY_GPT_SPEED_MODE = "gpt_speed_mode"', wire)

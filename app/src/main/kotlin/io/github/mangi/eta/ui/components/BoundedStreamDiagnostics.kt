@@ -16,7 +16,7 @@ internal object StreamDiagnosticLabels {
         "ipc.attach.callback.live", "ipc.attach.callback.replay", "ipc.attach.callback.replayBatch",
         "runtime.checkpoint.accept", "runtime.checkpoint.append", "runtime.checkpoint.flush.size", "runtime.checkpoint.flush.timer",
         "runtime.checkpoint.flush.boundary", "runtime.checkpoint.flush.seal",
-        "chat.compose", "chat.input.compose", "timeline.project", "timeline.prefaces", "gallery.scan", "gallery.parse", "gallery.hit", "gallery.skip",
+        "chat.compose", "chat.compose.elapsed", "chat.input.compose", "timeline.project", "timeline.prefaces", "gallery.scan", "gallery.parse", "gallery.hit", "gallery.skip",
         "markdown.target", "markdown.coalesced", "markdown.queueWait", "markdown.parse", "markdown.superseded",
         "markdown.publishBlock", "markdown.targetToPublish", "markdown.publish", "markdown.layout", "markdown.blockDraw",
         "reveal.frameGap", "reveal.step", "reveal.backlog", "reveal.remeasure",
@@ -37,7 +37,11 @@ internal object StreamDiagnosticLabels {
         "runtime.checkpoint.buffer.chars", "runtime.checkpoint.buffer.events", "runtime.checkpoint.buffer.residency",
         "runtime.checkpoint.encode", "runtime.checkpoint.lockWait", "runtime.checkpoint.merge", "runtime.checkpoint.write",
         "settings.commitTail", "settings.composition", "settings.editEntryWait", "settings.root.draw", "settings.root.measure", "settings.transform",
-        "settings.topbar.measure", "settings.lazy.measure",
+        "settings.topbar.measure", "settings.lazy.measure", "settings.lazy.place", "settings.lazy.draw", "manage.lazy.measure", "manage.lazy.place", "manage.lazy.draw", "drawer.lazy.measure", "drawer.lazy.place", "drawer.lazy.draw",
+        "settings.permission.overlay.initial", "settings.permission.overlay.resume",
+        "settings.permission.accessibility.initial", "settings.permission.accessibility.resume",
+        "settings.permission.protection.initial", "settings.permission.protection.resume",
+        "settings.permission.assistant.initial", "settings.permission.assistant.resume",
         "settings.prefs.initial", "settings.prefs.refresh", "settings.prefs.capture", "settings.prefs.reconcile", "settings.service.subscribe",
         "render.userPrompt.parse", "render.userBubble.compose", "render.userBubble.measure", "render.userBubble.draw", "render.userText.measure", "render.userText.draw",
         "usage.commitTail", "usage.editEntryWait", "usage.ledger.encodeEvents", "usage.ledger.serialize", "usage.ledger.update",
@@ -153,6 +157,8 @@ internal data class DiagnosticMainMessageRecord(
     val beginNs: Long, val endNs: Long, val frameDispatch: Boolean,
     val coveredNs: Long, val revealNs: Long, val cpuNs: Long = -1, val partial: Boolean = false,
     val schedRunNs: Long = -1, val schedRunnableNs: Long = -1,
+    val topStage: String? = null,
+    val beforeFirstNs: Long = -1, val afterLastNs: Long = -1,
 ) {
     val uninstrumentedNs: Long get() = endNs - beginNs - coveredNs
     val nonRevealNs: Long get() = endNs - beginNs - revealNs
@@ -176,6 +182,7 @@ internal data class DiagnosticFrameRecord(
     val pageSegment: Long = 0,
     val sourceWindowLoss: Boolean = false,
     val sourceWindowUnknown: Boolean = false,
+    val detailCaptured: Boolean = true,
 ) {
     val severe: Boolean get() = totalNs >= 33_000_000L || unknownNs >= 8_000_000L
     val missed: Boolean get() = deadlineNs > 0 && totalNs > deadlineNs
@@ -231,26 +238,38 @@ internal class DiagnosticRawDetailSnapshot internal constructor(
         return out.values.toList()
     }
 
-    fun recentForFrame(frame: DiagnosticFrameRecord): List<DiagnosticSpanRecord> =
-        candidates(includeProtected = false).filter {
-            it.main && diagnosticOverlapNs(it.beginNs, it.endNs,
-                frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS, frame.intendedNs + frame.totalNs) > 0
+    fun recentForFrame(frame: DiagnosticFrameRecord): List<DiagnosticSpanRecord> {
+        val from = frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS
+        val to = frame.intendedNs + frame.totalNs
+        val out = linkedMapOf<Long, DiagnosticSpanRecord>()
+        slowColumns?.recordsInRange(from, to)?.forEach { out[it.span] = it }
+        for (i in 0 until size) {
+            val slot = (first + i) % stages.size
+            if (!mains[slot] || diagnosticOverlapNs(begins[slot], ends[slot], from, to) <= 0 ||
+                out.containsKey(spans[slot])) continue
+            out[spans[slot]] = DiagnosticSpanRecord(
+                requireNotNull(stages[slot]), spans[slot], parents[slot], begins[slot], ends[slot], threads[slot],
+                mains[slot], attrs[slot], pages[slot], pageEnds[slot], values[slot],
+            )
         }
+        return out.values.toList()
+    }
 
     /** Lost timestamps are unavailable: conservatively propagate loss in any inspected admission generation. */
     fun sourceWindowLoss(): Boolean = overwritten > 0 || slowDropped > 0
 
     fun select(): DiagnosticDetailSnapshot {
         val frameSnapshot = frames.filterNotNull()
+        val detailedFrames = frameSnapshot.filter { it.detailCaptured }
         val eligible = candidates(includeProtected = true).filter { span ->
-            span.endNs - span.beginNs >= slowNs || frameSnapshot.any { frame ->
+            span.endNs - span.beginNs >= slowNs || detailedFrames.any { frame ->
                 span.main && diagnosticOverlapNs(span.beginNs, span.endNs,
                     frame.intendedNs - FRAME_CORRELATION_LOOKBACK_NS, frame.intendedNs + frame.totalNs) > 0
             }
         }
         // Actual frame overlaps precede lookback-only and unrelated slow work. Stable ties keep admission order.
         val prioritized = eligible.sortedBy { span ->
-            if (span.main && frameSnapshot.any { diagnosticOverlapNs(span.beginNs, span.endNs,
+            if (span.main && detailedFrames.any { diagnosticOverlapNs(span.beginNs, span.endNs,
                     it.intendedNs, it.intendedNs + it.totalNs) > 0 }) 0 else 1
         }
         val out = prioritized.take(slowLimit)

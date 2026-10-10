@@ -48,7 +48,7 @@ class WorkGroupAnimationContractTest(unittest.TestCase):
         toggle = BODY.split('val now = System.nanoTime()\n                                val alreadyPinned', 1)[1]
         toggle = toggle.split('is AgentTimelineRow.WorkStep ->', 1)[0]
         self.assertIn('val captured = if (!entry.expanded)', toggle)
-        self.assertIn('viewportRecovery.cancelWorkExpansion(entry.key)', toggle)
+        self.assertIn('entry.key, entry.group.messages.map { "work-step:${it.id}" }', toggle)
         self.assertIn('fromBottom = pinned', toggle)
         self.assertNotIn('onBottomAnchorChanged(true)', toggle)
         self.assertNotIn('scrollToItem', toggle)

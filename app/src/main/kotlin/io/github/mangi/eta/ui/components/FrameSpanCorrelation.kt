@@ -45,7 +45,7 @@ internal data class DiagnosticFrameEvidence(
 )
 
 internal fun diagnosticFrameEvidenceIncomplete(frame: DiagnosticFrameRecord, detail: DiagnosticDetailSnapshot,
-    openSpans: Long): Boolean = frame.sourceWindowLoss || frame.sourceWindowUnknown ||
+    openSpans: Long): Boolean = !frame.detailCaptured || frame.sourceWindowLoss || frame.sourceWindowUnknown ||
     detail.overwritten > 0 || detail.slowBudgetDropped > 0 || detail.spanOutputTruncated > 0 ||
     detail.protectedBudgetDropped > 0 || detail.frameCaptureTruncated > 0 || openSpans > 0
 
@@ -104,6 +104,15 @@ internal class DiagnosticSpanColumns(private val capacity: Int) {
         DiagnosticSpanRecord(requireNotNull(stages[i]), ids[i], parents[i], begins[i], ends[i], threads[i], mains[i],
             attrs[i], pages[i], pageEnds[i], values[i])
     }
+    /** Detached snapshot only: skip out-of-range/non-main rows before allocating records. */
+    fun recordsInRange(from: Long, to: Long): List<DiagnosticSpanRecord> = buildList {
+        for (i in 0 until this@DiagnosticSpanColumns.size) {
+            if (!mains[i] || diagnosticOverlapNs(begins[i], ends[i], from, to) <= 0) continue
+            add(DiagnosticSpanRecord(requireNotNull(stages[i]), ids[i], parents[i], begins[i], ends[i],
+                threads[i], mains[i], attrs[i], pages[i], pageEnds[i], values[i]))
+        }
+    }
+
     fun reset() { stages.fill(null); attrs.fill(null); size = 0 }
 }
 

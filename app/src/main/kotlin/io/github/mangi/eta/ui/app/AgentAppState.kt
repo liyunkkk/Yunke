@@ -3413,7 +3413,7 @@ internal class AgentAppState(
                 )
             }
             withContext(Dispatchers.Main) {
-                applyRunResult(runId, result, acknowledgeRuntimeResult = true)
+                applyRunResult(runId, result, acknowledgeRuntimeResult = true, petReaction = true)
                 if (!MainActivity.isForeground && result.error != LEGACY_STOPPED_ERROR && result.error != SYNTHETIC_STATUS_STOPPED) {
                     val title = prompt.lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
                     val content = if (result.ok) {
@@ -3655,6 +3655,11 @@ internal class AgentAppState(
         refreshConversationSummaries()
         persistConversations()
         if (conversationId != null) {
+            val petTitle = conversationTitles[conversationId].orEmpty()
+            val petContext = appContext
+            scope.launch(Dispatchers.IO) {
+                io.github.mangi.eta.agent.pet.WhaleMaidController.onWorkDone(petContext, petTitle)
+            }
             onConversationRunSettled(conversationId)
         }
     }
@@ -5767,6 +5772,7 @@ internal class AgentAppState(
         runId: String,
         result: AgentRuntimeWire.RunResult,
         acknowledgeRuntimeResult: Boolean = false,
+        petReaction: Boolean = false,
     ) {
         val stoppedDuringRetry = stoppingRuns.remove(runId)
         cancelStopSealWatchdog(runId)
@@ -5833,6 +5839,13 @@ internal class AgentAppState(
                 null
             }
         )
+        if (petReaction && result.ok && stoppedDuringRetry == null && conversationId != null) {
+            val petTitle = conversationTitles[conversationId].orEmpty()
+            val petContext = appContext
+            scope.launch(Dispatchers.IO) {
+                io.github.mangi.eta.agent.pet.WhaleMaidController.onWorkDone(petContext, petTitle)
+            }
+        }
         if (conversationId != null) {
             onConversationRunSettled(conversationId)
         }

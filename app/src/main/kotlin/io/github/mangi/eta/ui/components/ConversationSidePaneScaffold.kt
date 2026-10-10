@@ -32,6 +32,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import io.github.mangi.eta.ui.components.streamDiagnosticDraw
+import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
+import io.github.mangi.eta.ui.components.streamDiagnosticPlacement
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.AbsoluteRoundedCornerShape
@@ -407,6 +410,9 @@ private fun ConversationPanePanel(
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
+                    .streamDiagnosticMeasure("drawer.lazy.measure")
+                    .streamDiagnosticPlacement("drawer.lazy.place")
+                    .streamDiagnosticDraw("drawer.lazy.draw")
                     .scrollEndHaptic()
                     .overScrollVertical(),
                 contentPadding = PaddingValues(bottom = DrawerMetrics.ListBottomPadding),

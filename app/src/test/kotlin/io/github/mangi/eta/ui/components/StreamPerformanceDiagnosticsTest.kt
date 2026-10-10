@@ -310,24 +310,24 @@ class StreamPerformanceDiagnosticsTest {
     @Test fun slowMessageReportsTimeCoveredByMeasuredStages() {
         val log = MainThreadMessageLog(capacity = 4)
         log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} q60@4: 0", 0)
-        log.addCovered("ui.flush", 12_000_000)
-        log.addCovered("reveal.step", 3_000_000)
+        log.addCovered("ui.flush", 1, 12_000_001, 12_000_000)
+        log.addCovered("reveal.step", 12_000_001, 15_000_001, 3_000_000)
         log.onLine("<<<<< Finished to Handler (android.os.Handler) {3} x", 30_000_000)
         val line = log.between(0, 100_000_000, originNs = 0, limit = 10).single()
         assertTrue(line, line.endsWith("coveredUs=15000 top=ui.flush:12000"))
         // 消息之外的计时不计入。
-        log.addCovered("ui.flush", 5_000_000)
+        log.addCovered("ui.flush", 0, 5_000_000, 5_000_000)
         assertEquals(1, log.between(0, Long.MAX_VALUE, 0, 10).size)
     }
 
     @Test fun numericDispatchAccountingKeepsNestedRevealAsASubsetAndDoesNotLeakNames() {
         var callback: List<Long>? = null
-        val log = MainThreadMessageLog(capacity = 4, onMessage = { begin, end, _, covered, reveal ->
+        val log = MainThreadMessageLog(capacity = 4, onMessage = { begin, end, _, covered, reveal, _, _ ->
             callback = listOf(begin, end, covered, reveal)
         })
         log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} PRIVATE_PAYLOAD@4: 0", 0)
         // The collector receives only outermost scopes, so a child reveal is not covered twice.
-        log.addCovered("ui.flush", 12_000_000)
+        log.addCovered("ui.flush", 1, 12_000_001, 12_000_000)
         log.addReveal(3_000_000)
         log.onLine("<<<<< Finished", 30_000_000)
         assertEquals(listOf(0L, 30_000_000L, 12_000_000L, 3_000_000L), callback)
@@ -342,7 +342,7 @@ class StreamPerformanceDiagnosticsTest {
     @Test fun revealAndCoveredCountersResetAndAreClampedToDispatchWallTime() {
         val log = MainThreadMessageLog(capacity = 2)
         log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} x@4: 0", 0)
-        log.addCovered("ui.flush", 30_000_000)
+        log.addCovered("ui.flush", 0, 30_000_000, 30_000_000)
         log.addReveal(50_000_000)
         log.onLine("<<<<< Finished", 10_000_000)
         log.onLine(">>>>> Dispatching to Handler (android.os.Handler) {3} x@4: 0", 20_000_000)
@@ -354,6 +354,29 @@ class StreamPerformanceDiagnosticsTest {
         assertEquals(10_000_000L, samples[1].nonRevealNs)
     }
 
+
+    @Test fun uncoveredTimeSplitsAroundTheFirstAndLastMeasuredStage() {
+        var callback: List<Long>? = null
+        val log = MainThreadMessageLog(capacity = 2, onMessage = { _, _, frame, _, _, before, after ->
+            if (frame) callback = listOf(before, after)
+        })
+        val frame = ">>>>> Dispatching to Handler (android.view.Choreographer\$FrameHandler) {1} " +
+            "android.view.Choreographer\$FrameDisplayEventReceiver@2: 0"
+        log.onLine(frame, 1_000_000)
+        log.addCovered("list.measure", 4_000_000, 6_000_000, 2_000_000)
+        log.addCovered("render.measure", 7_000_000, 9_000_000, 2_000_000)
+        log.onLine("<<<<< Finished to Handler (android.view.Choreographer\$FrameHandler) {1} x", 12_000_000)
+        val sample = log.timingsBetween(0, 20_000_000).single()
+        assertEquals(3_000_000L, sample.beforeFirstNs)
+        assertEquals(3_000_000L, sample.afterLastNs)
+        assertEquals(listOf(3_000_000L, 3_000_000L), callback)
+        log.onLine(frame, 20_000_000)
+        log.onLine("<<<<< Finished to Handler (android.view.Choreographer\$FrameHandler) {1} x", 28_000_000)
+        val untouched = log.timingsBetween(20_000_000, 30_000_000).single()
+        assertEquals(-1L, untouched.beforeFirstNs)
+        assertEquals(-1L, untouched.afterLastNs)
+    }
+
     @Test fun disabledMeasureRunsTheOriginalBlockExactlyOnceWithoutAnyRecord() {
         assertFalse(StreamPerformanceDiagnostics.enabled)
         var calls = 0
@@ -363,7 +386,7 @@ class StreamPerformanceDiagnosticsTest {
     }
 
     @Test fun supplementalStageRegistryContainsOnlyFixedShortLiterals() {
-        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"),
+        assertEquals(setOf("main.uninstrumented", "main.nonReveal", "main.beforeFirst", "main.afterLast", "chat.content.commit", "list.measure", "list.place", "row.measure", "row.place", "row.draw", "settings.section.measure", "settings.section.draw"),
             StreamDiagnosticGapLabels.stages)
         for (stage in StreamDiagnosticGapLabels.stages) {
             assertTrue(Regex("[a-z]+(?:\\.[a-zA-Z]+)+").matches(stage))

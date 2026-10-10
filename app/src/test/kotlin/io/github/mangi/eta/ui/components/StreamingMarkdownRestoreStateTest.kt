@@ -114,4 +114,13 @@ class StreamingMarkdownRestoreStateTest {
         assertFalse(isStreamingMarkdownTargetComplete("正文", false, null, false))
         assertTrue(isStreamingMarkdownTargetComplete("正文", false, "正文", true))
     }
+
+    @Test
+    fun coveredHoldKeepsTheTypewriterWithoutARestoreBaseline() {
+        val state = StreamingMarkdownRestoreState()
+        state.begin("已打出", live = true)
+        state.holdCovered()
+        assertTrue(state.animationsAllowed(false))
+        assertFalse(state.completeLayout(state.generation, "已打出", "已打出更多"))
+    }
 }

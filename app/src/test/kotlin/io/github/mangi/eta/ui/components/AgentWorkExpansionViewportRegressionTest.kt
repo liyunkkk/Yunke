@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
@@ -68,6 +69,11 @@ class AgentWorkExpansionViewportRegressionTest {
     private var revision by mutableIntStateOf(0)
     private var expectedCount = BASE_COUNT
     private var stepCount = 18
+    private var thinkingGrowth = 0
+    private var instantThinkingGrowth = false
+    private var sawMissingThinkingAnchor = false
+    private var measuredInstantThinkingGrowth by mutableStateOf(false)
+    private val upperKey: String get() = if (thinkingGrowth > 0) THINKING else UPPER
     private var enableRecovery = true
     private var streaming = false
     private var consumed = 0f
@@ -76,11 +82,94 @@ class AgentWorkExpansionViewportRegressionTest {
     private lateinit var recovery: BottomFollowViewportRecovery
     private val probes = mutableMapOf<Int, Probe>()
     private val images = mutableMapOf<Int, Bitmap>()
+    private val imageFailures = mutableMapOf<Int, Throwable>()
+    private val drawAttempts = mutableMapOf<Int, Int>()
+    private var lastThinkingHeight = 0
     private data class Probe(val answerTop: Int?, val markerBottom: Int?, val consumed: Float)
 
     @Test fun eighteenInsertedStepsKeepLowerContentOnEveryFirstDraw() = checkExpansion(18, false)
     @Test fun thirtyTwoInsertedStepsKeepLowerContentOnEveryFirstDraw() = checkExpansion(32, false)
     @Test fun streamingExpansionAlsoKeepsExistingLowerContentOnFirstDraw() = checkExpansion(32, true)
+
+    @Test fun singleThinkingGrowthKeepsLowerContentOnEveryFirstDraw() {
+        checkThinkingExpansion(360, follow = false)
+    }
+
+    @Test fun tallThinkingGrowthRecoversEvenAfterTheNextKeyIsVirtualized() {
+        setup(0, thinkingHeight = 1400, instantThinking = true)
+        captureExpansion()
+        assertPinnedFirstDraws()
+        assertTrue("long thinking must exercise its measured-row lower bound", sawMissingThinkingAnchor)
+        assertEquals(1400f, consumed, 1f)
+    }
+
+    @Test fun streamingThinkingGrowthKeepsLowerContentOnEveryFirstDraw() {
+        checkThinkingExpansion(1400, follow = true)
+    }
+
+    @Test fun unconnectedThinkingExpansionIsAFirstDrawNegativeControl() {
+        setup(0, recoveryEnabled = false, thinkingHeight = 1400)
+        captureExpansion()
+        assertTrue(probes.values.any { it.answerTop == null || abs(it.answerTop - ANSWER_TOP) > 2 })
+        assertTrue(images.values.any { markerPixels(it) == 0 })
+        assertEquals(0f, consumed, 0f)
+    }
+
+    @Test fun instantUnconnectedThinkingExpansionIsAFirstDrawNegativeControl() {
+        setup(0, recoveryEnabled = false, thinkingHeight = 1400, instantThinking = true)
+        captureExpansion()
+        assertTrue(probes.values.any { it.answerTop == null || abs(it.answerTop - ANSWER_TOP) > 2 })
+        assertTrue(images.values.any { markerPixels(it) == 0 })
+        assertTrue(sawMissingThinkingAnchor)
+        assertEquals(0f, consumed, 0f)
+    }
+
+    @Test fun thinkingRejectedSecondCaptureDiscardsTheOldAnchor() {
+        setup(0, thinkingHeight = 1400)
+        assertTrue(begin())
+        compose.runOnIdle {
+            assertFalse(recovery.beginThinkingExpansion("missing-work-step", Long.MAX_VALUE, true))
+        }
+        captureExpansion(captureOwner = false)
+        assertEquals(0f, consumed, 0f)
+    }
+
+    @Test fun thinkingPointerInterruptPreventsRawRecovery() {
+        setup(0, thinkingHeight = 1400)
+        assertTrue(begin())
+        compose.runOnIdle { pointer.value = true }
+        captureExpansion(captureOwner = false)
+        assertEquals(0f, consumed, 0f)
+    }
+
+    @Test fun thinkingCancelDiscardsTheCapturedOwnerBeforeGrowth() {
+        setup(0, thinkingHeight = 1400)
+        assertTrue(begin())
+        compose.runOnIdle { recovery.cancelWorkExpansion(THINKING) }
+        captureExpansion(captureOwner = false)
+        assertEquals(0f, consumed, 0f)
+    }
+
+    @Test fun parentGroupCancelRetiresTheCapturedThinkingChildOnly() {
+        setup(0, thinkingHeight = 1400)
+        assertTrue(begin())
+        compose.runOnIdle {
+            assertTrue(recovery.hasActiveExpansion(true))
+            assertFalse(recovery.hasActiveExpansion(false))
+            recovery.cancelWorkExpansion("unrelated-group", listOf("unrelated-child"))
+            assertTrue(recovery.hasActiveExpansion(true))
+            recovery.cancelWorkExpansion("parent-group", listOf(THINKING))
+            assertFalse(recovery.hasActiveExpansion(true))
+        }
+        captureExpansion(captureOwner = false)
+        assertEquals(0f, consumed, 0f)
+    }
+
+    private fun checkThinkingExpansion(height: Int, follow: Boolean) {
+        setup(0, follow = follow, thinkingHeight = height)
+        captureExpansion()
+        assertPinnedFirstDraws()
+    }
 
     @Test fun oldUnknownTailPathIsANegativeControlNotAnEventualIdleAssertion() {
         setup(32, recoveryEnabled = false)
@@ -143,6 +232,10 @@ class AgentWorkExpansionViewportRegressionTest {
     private fun checkExpansion(count: Int, follow: Boolean) {
         setup(count, follow = follow)
         captureExpansion()
+        assertPinnedFirstDraws()
+    }
+
+    private fun assertPinnedFirstDraws() {
         assertTrue("actual first-frame records must exist", probes.size >= 10)
         probes.forEach { (frame, sample) ->
             assertNotNull("answer virtualized at first draw frame=$frame", sample.answerTop)
@@ -158,7 +251,10 @@ class AgentWorkExpansionViewportRegressionTest {
         assertTrue("expanded rows require actual recovery consumption", consumed > 0f)
     }
 
-    private fun setup(count: Int, recoveryEnabled: Boolean = true, follow: Boolean = false) {
+    private fun setup(count: Int, recoveryEnabled: Boolean = true, follow: Boolean = false,
+                      thinkingHeight: Int = 0, instantThinking: Boolean = false) {
+        thinkingGrowth = thinkingHeight
+        instantThinkingGrowth = instantThinking
         stepCount = count
         enableRecovery = recoveryEnabled
         streaming = follow
@@ -179,7 +275,10 @@ class AgentWorkExpansionViewportRegressionTest {
                 }
                 Box(Modifier.size(WIDTH.dp, HEIGHT.dp).testTag(ROOT).drawWithContent {
                     val rev = revision
-                    if (rev > 0 && probes[rev] == null && state.layoutInfo.totalItemsCount == expectedCount) {
+                    if (rev > 0) drawAttempts[rev] = (drawAttempts[rev] ?: 0) + 1
+                    if (rev > 0 && probes[rev] == null && state.layoutInfo.totalItemsCount == expectedCount &&
+                        (!instantThinkingGrowth || measuredInstantThinkingGrowth)
+                    ) {
                         val layer = snapshots[rev]
                         layer.record {
                             drawRect(BG)
@@ -194,8 +293,12 @@ class AgentWorkExpansionViewportRegressionTest {
                             consumed,
                         )
                         scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                            images[rev] = layer.toImageBitmap().asAndroidBitmap()
-                                .copy(Bitmap.Config.ARGB_8888, false)
+                            try {
+                                images[rev] = layer.toImageBitmap().asAndroidBitmap()
+                                    .copy(Bitmap.Config.ARGB_8888, false)
+                            } catch (failure: Throwable) {
+                                imageFailures[rev] = failure
+                            }
                         }
                     } else {
                         drawRect(BG)
@@ -221,6 +324,9 @@ class AgentWorkExpansionViewportRegressionTest {
                                 )
                                 translationY = -heldTailLift[0].toFloat()
                             }.onGloballyPositioned {
+                                if (thinkingGrowth > 0 && expanded.value &&
+                                    state.layoutInfo.visibleItemsInfo.none { it.key == ANSWER }
+                                ) sawMissingThinkingAnchor = true
                                 if (enableRecovery) consumed += recovery.recover(
                                     canRecoverExpansion = { owner.value && !pointer.value },
                                     canRecover = { streaming && owner.value && !pointer.value },
@@ -230,10 +336,28 @@ class AgentWorkExpansionViewportRegressionTest {
                             items(20, key = { "filler-$it" }) {
                                 Box(Modifier.fillMaxWidth().height(40.dp).background(Color.Gray))
                             }
-                            item(key = UPPER) {
-                                Box(Modifier.fillMaxWidth().height(36.dp).background(Color.DarkGray))
+                            item(key = upperKey) {
+                                Column(Modifier.onSizeChanged { size ->
+                                    lastThinkingHeight = size.height
+                                    // Keep the actual growth measurement even if synchronous
+                                    // recovery subsequently virtualizes this row before draw.
+                                    if (instantThinkingGrowth && expanded.value &&
+                                        size.height == 36 + thinkingGrowth
+                                    ) measuredInstantThinkingGrowth = true
+                                }) {
+                                    Box(Modifier.fillMaxWidth().height(36.dp).background(Color.DarkGray))
+                                    if (instantThinkingGrowth && expanded.value) {
+                                        Box(Modifier.fillMaxWidth().height(thinkingGrowth.dp).background(Color.LightGray))
+                                    } else if (thinkingGrowth > 0 && !instantThinkingGrowth) AnimatedVisibility(
+                                        visible = expanded.value,
+                                        enter = tailDetailsEnter(fromBottom = true),
+                                        exit = tailDetailsExit(toBottom = true),
+                                    ) {
+                                        Box(Modifier.fillMaxWidth().height(thinkingGrowth.dp).background(Color.LightGray))
+                                    }
+                                }
                             }
-                            if (expanded.value) items(stepCount, key = { "work-step:upper-$it" }) { index ->
+                            if (thinkingGrowth == 0 && expanded.value) items(stepCount, key = { "work-step:upper-$it" }) { index ->
                                 val key = "work-step:upper-$index"
                                 val animation = workAnimation.value
                                 // Production admission/exit entry points: one bounded cohort per
@@ -300,9 +424,13 @@ class AgentWorkExpansionViewportRegressionTest {
     private fun begin(): Boolean {
         var captured = false
         compose.runOnIdle {
-            captured = recovery.beginWorkExpansion(UPPER,
-                (0 until stepCount).mapTo(HashSet<Any>()) { "work-step:upper-$it" },
-                expiresAtNanos = Long.MAX_VALUE, canOwnViewport = owner.value && !pointer.value)
+            captured = if (thinkingGrowth > 0) {
+                recovery.beginThinkingExpansion(THINKING, Long.MAX_VALUE, owner.value && !pointer.value)
+            } else {
+                recovery.beginWorkExpansion(UPPER,
+                    (0 until stepCount).mapTo(HashSet<Any>()) { "work-step:upper-$it" },
+                    expiresAtNanos = Long.MAX_VALUE, canOwnViewport = owner.value && !pointer.value)
+            }
         }
         return captured
     }
@@ -310,6 +438,7 @@ class AgentWorkExpansionViewportRegressionTest {
     private fun captureExpansion(captureOwner: Boolean = true) {
         if (captureOwner && enableRecovery) assertTrue("pre-click stable row capture", begin())
         compose.runOnIdle {
+            measuredInstantThinkingGrowth = false
             expectedCount = BASE_COUNT + stepCount
             // Production entry point for this explicit toggle: one bounded entrance cohort.
             workAnimation.value = newWorkGroupAnimation(
@@ -328,8 +457,34 @@ class AgentWorkExpansionViewportRegressionTest {
             compose.waitForIdle()
             // Pump a real host draw with clock still frozen; discard its eventual image.
             compose.onNodeWithTag(ROOT).captureToImage()
+            // A frozen frame may still show the pre-toggle lazy composition. Keep the
+            // same sampling revision armed while delivering the non-animated growth.
+            // Never advance again after its actual measurement or first probe exists.
+            if (frame == 0 && instantThinkingGrowth) {
+                repeat(3) {
+                    if (!measuredInstantThinkingGrowth && probes[revision] == null) {
+                        compose.mainClock.advanceTimeByFrame()
+                        compose.waitForIdle()
+                        compose.onNodeWithTag(ROOT).captureToImage()
+                    }
+                }
+            }
             val rev = revision
-            compose.waitUntil(5_000) { probes.containsKey(rev) && images.containsKey(rev) }
+            try {
+                compose.waitUntil(5_000) {
+                    imageFailures.containsKey(rev) || (probes.containsKey(rev) && images.containsKey(rev))
+                }
+            } catch (timeout: androidx.compose.ui.test.ComposeTimeoutException) {
+                throw AssertionError(
+                    "first draw missing: frame=$frame revision=$rev draws=${drawAttempts[rev]} " +
+                        "measured=$measuredInstantThinkingGrowth height=$lastThinkingHeight " +
+                        "count=${state.layoutInfo.totalItemsCount}/$expectedCount " +
+                        "probe=${probes[rev]} image=${images.containsKey(rev)} consumed=$consumed " +
+                        "items=${state.layoutInfo.visibleItemsInfo.map { Triple(it.key, it.offset, it.size) }}",
+                    timeout,
+                )
+            }
+            imageFailures[rev]?.let { throw AssertionError("first-draw image failed revision=$rev", it) }
         }
     }
 
@@ -345,6 +500,7 @@ class AgentWorkExpansionViewportRegressionTest {
     private companion object {
         const val ROOT = "work-expansion-first-draw"
         const val UPPER = "work-upper"
+        const val THINKING = "work-step:reasoning"
         const val ANSWER = "existing-answer"
         const val LOWER = "work-lower"
         const val LAST_LOWER = "work-step:lower-3"

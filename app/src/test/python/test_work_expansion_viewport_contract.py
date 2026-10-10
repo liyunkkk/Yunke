@@ -45,7 +45,7 @@ class WorkExpansionViewportContractTest(unittest.TestCase):
         self.assertIn('"work-step:${it.id}"', window)
         self.assertIn('canOwnWorkExpansionViewport()', window)
         self.assertIn('scrollState.isConversationAtBottom()', window)
-        self.assertIn('viewportRecovery.cancelWorkExpansion(entry.key)', window)
+        self.assertIn('entry.key, entry.group.messages.map { "work-step:${it.id}" }', window)
 
     def test_failed_capture_replaces_stale_owner_before_returning(self):
         capture = function_body(RECOVERY, 'beginWorkExpansion')
@@ -163,7 +163,7 @@ class WorkExpansionViewportContractTest(unittest.TestCase):
         self.assertNotIn('bottomFollowLayer(', source)
 
     def test_rollback_keeps_inline_graphics_layer_and_no_placement_lift(self):
-        self.assertIn('.graphicsLayer {\n                    val overflow = scrollState.followTailOverflow()', BODY)
+        self.assertIn('.graphicsLayer {\n                    // 不跟底时不读滚动位置。滑动中读取会让这一层每帧失效，子内容的离屏纹理被整列重录。\n                    translationY = if (shouldLiftTail) {\n                        val overflow = scrollState.followTailOverflow()', BODY)
         self.assertIn('translationY = if (shouldLiftTail)', BODY)
         self.assertNotIn('bottomFollowLayer(', BODY + POLICY + RECOVERY)
         self.assertNotIn('placeWithLayer', POLICY)

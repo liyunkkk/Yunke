@@ -58,6 +58,27 @@ class WorkExpansionViewportPolicyTest {
         assertFalse(owns(navigation = true))
     }
 
+    @Test fun followDoesNotConsumeTheAlreadyRecoveredDistanceTwice() {
+        assertEquals(0f, resolveFollowScrollStepAfterRecovery(480f, 0), 0f)
+        assertEquals(24f, resolveFollowScrollStepAfterRecovery(480f, 24), 0f)
+        assertEquals(7f, resolveFollowScrollStepAfterRecovery(7f, 24), 0f)
+        assertEquals(0f, resolveFollowScrollStepAfterRecovery(480f, -8), 0f)
+    }
+
+    @Test fun freshFollowLimitKeepsUnknownTailFallbackAndRejectsInvalidPlans() {
+        assertEquals(480f, resolveFollowScrollStepAfterRecovery(480f, null), 0f)
+        assertEquals(0f, resolveFollowScrollStepAfterRecovery(Float.NaN, 24), 0f)
+        assertEquals(0f, resolveFollowScrollStepAfterRecovery(Float.POSITIVE_INFINITY, null), 0f)
+        assertEquals(0f, resolveFollowScrollStepAfterRecovery(-1f, 24), 0f)
+    }
+
+    @Test fun measuredExpansionOwnerBlocksOnlyUnknownFallback() {
+        assertEquals(0f, resolveFollowScrollStepAfterRecovery(600f, null, true), 0f)
+        assertEquals(600f, resolveFollowScrollStepAfterRecovery(600f, null, false), 0f)
+        assertEquals(12f, resolveFollowScrollStepAfterRecovery(600f, 12, true), 0f)
+        assertEquals(12f, resolveFollowScrollStepAfterRecovery(600f, 12, false), 0f)
+    }
+
     private fun owns(
         anchored: Boolean = true,
         initial: Boolean = false,

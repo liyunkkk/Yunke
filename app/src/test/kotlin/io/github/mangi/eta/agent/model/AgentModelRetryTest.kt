@@ -21,6 +21,30 @@ import javax.net.ssl.SSLHandshakeException
 
 class AgentModelRetryTest {
     @Test
+    fun unsupportedCodexTierNeverReconnectsEvenUnderContinuousPolicy() {
+        for (policy in ErrorReconnectPolicy.entries) {
+            var calls = 0
+            val delivered = mutableListOf<ProviderEvent>()
+            val failure = assertThrows(AgentModelFailure::class.java) {
+                complete(AgentModelRetry { _, _ -> fail("local configuration must not retry") },
+                    provider { _, _ ->
+                        calls++
+                        ResponsesRequestBuilder.build(AgentModelClient.ModelConfig(
+                            baseUrl = "https://chatgpt.com/backend-api/codex", apiKey = "", model = "gpt-5",
+                            systemPrompt = "", gptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.ULTRA_FAST,
+                        ), JSONArray(), JSONArray())
+                        fail("unsupported tier must fail before a request can be sent")
+                        response()
+                    }, onProviderEvent = { _, event -> delivered += event }, policy = policy)
+            }
+            assertEquals(GptServiceTier.UNSUPPORTED_CODEX_TIER, failure.code)
+            assertFalse(failure.retryable)
+            assertEquals(1, calls)
+            assertTrue(delivered.isEmpty())
+        }
+    }
+
+    @Test
     fun safeRequestRetryUsesPolicyDelayAndDistinctModelRound() {
         val delays = mutableListOf<Long>()
         // 注入中性随机源：抖动因子恒为 1.0，便于断言基础退避序列。

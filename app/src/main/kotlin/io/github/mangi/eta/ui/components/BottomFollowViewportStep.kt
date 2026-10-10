@@ -18,6 +18,22 @@ internal fun resolveWorkExpansionViewportStep(
     return (observed.toLong() - anchorOffsetPx.toLong()).coerceAtLeast(0L).toFloat()
 }
 
+/**
+ * A queued follow target predates post-layout expansion recovery. Cap the actual scroll by
+ * fresh measured overflow so the two owners cannot consume the same distance twice. Unknown
+ * tail geometry retains the existing controller fallback unless an explicit expansion owner
+ * is recovering it from measured rows. It never invents another target here.
+ */
+internal fun resolveFollowScrollStepAfterRecovery(
+    plannedStepPx: Float,
+    measuredOverflowPx: Int?,
+    expansionOwnsViewport: Boolean = false,
+): Float {
+    if (!plannedStepPx.isFinite() || plannedStepPx <= 0f) return 0f
+    val overflow = measuredOverflowPx ?: return if (expansionOwnsViewport) 0f else plannedStepPx
+    return min(plannedStepPx, overflow.coerceAtLeast(0).toFloat())
+}
+
 /** Authorization for the bounded explicit expansion only; not a general idle follow mode. */
 internal fun resolveWorkExpansionViewportOwnership(
     keepBottomAnchored: Boolean,

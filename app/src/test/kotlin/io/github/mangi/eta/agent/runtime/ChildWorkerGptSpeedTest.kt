@@ -3,6 +3,8 @@ package io.github.mangi.eta.agent.runtime
 import android.app.Application
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentConfig
 import io.github.mangi.eta.agent.delegation.SubAgentProfile
+import io.github.mangi.eta.agent.model.AgentModelFailure
+import io.github.mangi.eta.agent.model.GptServiceTier
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.OpenAiChatCompletionsProvider
 import io.github.mangi.eta.agent.model.ResponsesRequestBuilder
@@ -58,6 +60,35 @@ class ChildWorkerGptSpeedTest {
         assertEquals(GptSpeedMode.FAST, off.gptSpeedMode)
         assertEquals(ReasoningEffort.OFF, off.effectiveReasoningEffort)
         assertFalse(off.thinkingEnabled)
+    }
+
+    @Test fun oauthCodexChildUsesSubscriptionSpeedWireValues() = runBlocking {
+        val oauth = provider.copy(baseUrl = "https://chatgpt.com/backend-api/codex", endpointMode = OpenAiEndpointMode.RESPONSES)
+        val expected = mapOf(GptSpeedMode.NORMAL to null, GptSpeedMode.FAST to "priority")
+        for ((mode, tier) in expected) {
+            val result = resolve(speed(mode), oauth)
+            assertEquals(Policy.Availability.AVAILABLE, result.availability)
+            val config = requireNotNull(result.configuration).model
+            assertEquals(mode, config.gptSpeedMode)
+            assertEquals(ReasoningEffort.HIGH, config.effectiveReasoningEffort)
+            val request = ResponsesRequestBuilder.build(config, JSONArray(), JSONArray())
+            if (tier == null) assertFalse(request.has("service_tier")) else assertEquals(tier, request.getString("service_tier"))
+            assertEquals("high", request.getJSONObject("reasoning").getString("effort"))
+        }
+    }
+
+    @Test fun oauthCodexChildRejectsUltraFastWithoutSilentDowngrade() = runBlocking {
+        val oauth = provider.copy(baseUrl = "https://chatgpt.com/backend-api/codex", endpointMode = OpenAiEndpointMode.RESPONSES)
+        val result = resolve(speed(GptSpeedMode.ULTRA_FAST), oauth)
+        assertEquals(Policy.Availability.AVAILABLE, result.availability)
+        val config = requireNotNull(result.configuration).model
+        assertEquals(GptSpeedMode.ULTRA_FAST, config.gptSpeedMode)
+        assertEquals(ReasoningEffort.HIGH, config.effectiveReasoningEffort)
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            ResponsesRequestBuilder.build(config, JSONArray(), JSONArray())
+        }
+        assertEquals(GptServiceTier.UNSUPPORTED_CODEX_TIER, failure.code)
+        assertFalse(failure.retryable)
     }
 
     @Test fun customProviderChildTiersReachBothWireFormats() = runBlocking {

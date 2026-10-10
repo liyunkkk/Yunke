@@ -6,14 +6,18 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -23,33 +27,37 @@ import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.app.SearchHistoryDialog
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.streamDiagnosticDraw
+import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
+import io.github.mangi.eta.ui.components.streamDiagnosticPlacement
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.MessageSearchHit
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.collectLatest
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -86,23 +94,30 @@ internal fun ManageChatsScreen(
     var showSearchHistory by remember { mutableStateOf(false) }
     // 多个会话同时在跑时，更新时间会不断把它们换到前面。管理页按打开时的顺序钉住，
     // 只在原地刷新标题和状态，滑动删除才点得中。新出现的会话插到最前，关掉页面再打开才重排。
-    var orderIds by remember { mutableStateOf(conversations.map { it.id }) }
-    val pinnedIds = conversations.filter { it.isPinned }.map { it.id }
+    // The producer replaces immutable summary snapshots; row data always comes from the latest one.
+    val currentIds = remember(conversations) { conversations.map { it.id } }
+    val pinnedIds = remember(conversations) {
+        conversations.asSequence().filter { it.isPinned }.map { it.id }.toSet()
+    }
+    var orderIds by remember { mutableStateOf(currentIds) }
     var pinnedSnapshot by remember { mutableStateOf(pinnedIds) }
-    val pinnedChanged = pinnedIds.toSet() != pinnedSnapshot.toSet()
-    val nextOrder = stableManageChatOrder(orderIds, conversations.map { it.id }, pinnedChanged)
+    val pinnedChanged = pinnedIds != pinnedSnapshot
+    val nextOrder = remember(orderIds, currentIds, pinnedChanged) {
+        stableManageChatOrder(orderIds, currentIds, pinnedChanged)
+    }
     SideEffect {
         if (nextOrder != orderIds || pinnedChanged) {
             orderIds = nextOrder
             pinnedSnapshot = pinnedIds
         }
     }
-    val byId = conversations.associateBy { it.id }
-    val ordered = nextOrder.mapNotNull { byId[it] }
+    val byId = remember(conversations) { conversations.associateBy { it.id } }
+    val ordered = remember(nextOrder, byId) { nextOrder.mapNotNull { byId[it] } }
 
     MiuixScaffoldPage(
         title = stringResource(R.string.history_page_title),
         onBack = onBack,
+        listModifier = Modifier.streamDiagnosticMeasure("manage.lazy.measure").streamDiagnosticPlacement("manage.lazy.place").streamDiagnosticDraw("manage.lazy.draw"),
         actions = {
             IconButton(onClick = { showSearchHistory = true }) {
                 Icon(
@@ -130,20 +145,18 @@ internal fun ManageChatsScreen(
                 )
             }
         } else {
-            ordered.forEach { conversation ->
-                item(key = conversation.id) {
-                    SwipeableManageChatRow(
-                        conversation = conversation,
-                        onClick = { onOpenConversation(conversation.id) },
-                        onTogglePin = { onTogglePin(conversation.id) },
-                        onDelete = { onDeleteConversation(conversation) },
-                        modifier = Modifier.animateItem(
-                            fadeInSpec = null,
-                            fadeOutSpec = tween(180),
-                            placementSpec = null,
-                        ),
-                    )
-                }
+            items(ordered, key = { it.id }, contentType = { "conversation" }) { conversation ->
+                SwipeableManageChatRow(
+                    conversation = conversation,
+                    onClick = { onOpenConversation(conversation.id) },
+                    onTogglePin = { onTogglePin(conversation.id) },
+                    onDelete = { onDeleteConversation(conversation) },
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = null,
+                        fadeOutSpec = tween(180),
+                        placementSpec = null,
+                    ),
+                )
             }
         }
     }
@@ -187,38 +200,29 @@ private fun SwipeableManageChatRow(
     modifier: Modifier = Modifier,
 ) {
     val view = LocalView.current
-    val dismissState = rememberSwipeToDismissBoxState(
-        positionalThreshold = { distance -> distance * 0.4f },
-    )
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val deleteDistance = with(density) { 96.dp.toPx() }
+    var offsetX by remember { mutableFloatStateOf(0f) }
     var collapsing by remember { mutableStateOf(false) }
     var deleted by remember { mutableStateOf(false) }
     var crossedDeleteThreshold by remember { mutableStateOf(false) }
 
-    LaunchedEffect(dismissState) {
-        snapshotFlow { dismissState.targetValue }.collectLatest { target ->
-            val crossed = target == SwipeToDismissBoxValue.EndToStart
-            if (crossed && !crossedDeleteThreshold) {
-                crossedDeleteThreshold = true
-                TouchHaptics.gestureThreshold(view)
-            } else if (!crossed) {
-                crossedDeleteThreshold = false
-            }
+    LaunchedEffect(offsetX, deleteDistance) {
+        val crossed = offsetX <= -deleteDistance
+        if (crossed && !crossedDeleteThreshold) {
+            crossedDeleteThreshold = true
+            TouchHaptics.gestureThreshold(view)
+        } else if (!crossed) {
+            crossedDeleteThreshold = false
         }
     }
 
-    LaunchedEffect(dismissState) {
-        snapshotFlow { dismissState.settledValue }.collectLatest { settled ->
-            if (!collapsing && settled == SwipeToDismissBoxValue.EndToStart) {
-                collapsing = true
-            }
-        }
-    }
-
+    val currentOnDelete by rememberUpdatedState(onDelete)
     LaunchedEffect(collapsing) {
         if (!collapsing || deleted) return@LaunchedEffect
         delay(300)
         deleted = true
-        onDelete()
+        currentOnDelete()
     }
 
     AnimatedVisibility(
@@ -229,30 +233,32 @@ private fun SwipeableManageChatRow(
             shrinkTowards = Alignment.Top,
         ),
     ) {
-        SwipeToDismissBox(
-            state = dismissState,
-            enableDismissFromStartToEnd = false,
+        Box(
             modifier = Modifier
+                .manageChatDeleteDrag(
+                    onMove = { offsetX = it },
+                    onEnd = { total ->
+                        if (total <= -deleteDistance) collapsing = true else offsetX = 0f
+                    },
+                )
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 4.dp)
                 .clip(RoundedCornerShape(18.dp)),
-            backgroundContent = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MiuixTheme.colorScheme.errorContainer)
-                        .padding(horizontal = 20.dp),
-                    contentAlignment = Alignment.CenterEnd,
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Delete,
-                        contentDescription = stringResource(R.string.action_delete),
-                        tint = MiuixTheme.colorScheme.onErrorContainer,
-                    )
-                }
-            },
         ) {
-            Box(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(MiuixTheme.colorScheme.errorContainer)
+                    .padding(horizontal = 20.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Delete,
+                    contentDescription = stringResource(R.string.action_delete),
+                    tint = MiuixTheme.colorScheme.onErrorContainer,
+                )
+            }
+            Box(modifier = Modifier.fillMaxWidth().offset { IntOffset(offsetX.roundToInt(), 0) }) {
                 ManageChatRow(
                     conversation = conversation,
                     onClick = onClick,
@@ -336,5 +342,38 @@ private fun ManageChatRow(
                 },
             )
         }
+    }
+}
+
+/**
+ * Claim only a clearly leftward delete drag. Consuming any other direction also
+ * consumes it for the list and the page-back parent, so vertical and rightward
+ * gestures stay untouched.
+ */
+private fun Modifier.manageChatDeleteDrag(
+    onMove: (Float) -> Unit,
+    onEnd: (Float) -> Unit,
+): Modifier = pointerInput(onMove, onEnd) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val slop = viewConfiguration.touchSlop
+        var deleting = false
+        var totalX = 0f
+        while (true) {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            if (!change.pressed) break
+            val delta = change.position - down.position
+            if (!deleting) {
+                val moved = kotlin.math.abs(delta.x) > slop || kotlin.math.abs(delta.y) > slop
+                if (!moved) continue
+                deleting = delta.x < -slop && kotlin.math.abs(delta.x) > kotlin.math.abs(delta.y)
+                if (!deleting) break
+            }
+            change.consume()
+            totalX = delta.x.coerceAtMost(0f)
+            onMove(totalX)
+        }
+        if (deleting) onEnd(totalX)
     }
 }

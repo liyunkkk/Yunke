@@ -88,11 +88,16 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
         cell = between(chat, 'measure("markdown.annotated.cell"', "val revealState =")
         self.assertEqual(cell.count("buildAnnotatedString {"), 1)
         frozen = between(chat, "private fun FrozenMarkdownElement", "internal fun shouldFreezeStreamingMarkdownBlock")
-        self.assertIn("Modifier.graphicsLayer()", frozen)
+        self.assertIn("Modifier.graphicsLayer(", frozen)
+        self.assertIn("val retainTexture = freeze && retainedHeightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX", frozen)
+        self.assertIn("CompositingStrategy.Offscreen", frozen)
+        self.assertIn("CompositingStrategy.Auto", frozen)
+        self.assertLess(frozen.index("compositingStrategy"), frozen.index(".onSizeChanged"))
         self.assertIn('streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure", diagnosticAttribution)', frozen)
         self.assertIn('measure("markdown.blockDraw")', frozen)
         self.assertIn('if (freeze) "markdown.stable.draw" else "markdown.tail.draw"', frozen)
-        enabled, rest = frozen.split("} else {", 1)
+        draw = frozen.split(".drawWithContent {", 1)[1]
+        enabled, rest = draw.split("} else {", 1)
         self.assertEqual(enabled.count("drawContent()"), 1)
         self.assertEqual(rest.split("if (freeze)", 1)[0].count("drawContent()"), 1)
 

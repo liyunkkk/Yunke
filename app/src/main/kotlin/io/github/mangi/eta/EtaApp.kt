@@ -121,6 +121,9 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
                 )
             }
         }
+        applicationScope.launch {
+            runCatching { io.github.mangi.eta.agent.pet.WhaleMaidController.restore(this@EtaApp) }
+        }
     }
 
     override fun onServiceBind(service: XposedService) {

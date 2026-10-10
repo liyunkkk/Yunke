@@ -230,6 +230,99 @@ class AnthropicMessagesProviderTest {
         }
     }
 
+    /**
+     * 复现线上的圆环抖动：流开头只报未缓存部分（input 28225 / 无缓存 / output 1），
+     * 同一次请求结束时才是真实账单（input 240479 / cache 206810）。开头那条不得单独
+     * 更新占用，只发布合并后的最终账单。
+     */
+    @Test
+    fun defersOpeningUsageUntilTheRequestEnds() {
+        val body = buildString {
+            append(event("message_start", JSONObject()
+                .put("type", "message_start")
+                .put("message", JSONObject().put("usage", JSONObject()
+                    .put("input_tokens", 28_225)
+                    .put("output_tokens", 1)))))
+            append(event("content_block_delta", JSONObject()
+                .put("type", "content_block_delta")
+                .put("index", 0)
+                .put("delta", JSONObject().put("type", "text_delta").put("text", "你好"))))
+            append(event("message_delta", JSONObject()
+                .put("type", "message_delta")
+                .put("delta", JSONObject().put("stop_reason", "end_turn"))
+                .put("usage", JSONObject()
+                    .put("input_tokens", 33_669)
+                    .put("cache_read_input_tokens", 206_810)
+                    .put("output_tokens", 538))))
+            append(event("message_stop", JSONObject().put("type", "message_stop")))
+        }
+
+        withAnthropicServer(body, onRequest = {}) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            AnthropicMessagesProvider.complete(
+                request = ProviderRequest(
+                    config = AgentModelClient.ModelConfig(
+                        providerType = ProviderTypes.ANTHROPIC,
+                        baseUrl = baseUrl,
+                        apiKey = "key",
+                        model = "claude-opus-5",
+                        systemPrompt = "system"
+                    ),
+                    messages = JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
+                    tools = JSONArray(),
+                ),
+                runController = AgentRunController(),
+                onEvent = events::add,
+            )
+
+            val usages = events.filterIsInstance<ProviderEvent.Usage>().map { it.usage }
+            assertEquals(1, usages.size)
+            assertEquals(240_479, usages.single().inputTokens)
+            assertEquals(206_810, usages.single().cachedTokens)
+            assertEquals(538, usages.single().outputTokens)
+        }
+    }
+
+    /** 流在最终账单前中断时，被推迟的开头回执仍要发布，圆环不能停在上一轮。 */
+    @Test
+    fun publishesTheDeferredOpeningUsageWhenTheStreamEndsWithoutAMeasurement() {
+        val body = buildString {
+            append(event("message_start", JSONObject()
+                .put("type", "message_start")
+                .put("message", JSONObject().put("usage", JSONObject()
+                    .put("input_tokens", 27_346)
+                    .put("output_tokens", 1)))))
+            append(event("content_block_delta", JSONObject()
+                .put("type", "content_block_delta")
+                .put("index", 0)
+                .put("delta", JSONObject().put("type", "text_delta").put("text", "可以"))))
+            append(event("message_stop", JSONObject().put("type", "message_stop")))
+        }
+
+        withAnthropicServer(body, onRequest = {}) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            AnthropicMessagesProvider.complete(
+                request = ProviderRequest(
+                    config = AgentModelClient.ModelConfig(
+                        providerType = ProviderTypes.ANTHROPIC,
+                        baseUrl = baseUrl,
+                        apiKey = "key",
+                        model = "claude-opus-5",
+                        systemPrompt = "system"
+                    ),
+                    messages = JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
+                    tools = JSONArray(),
+                ),
+                runController = AgentRunController(),
+                onEvent = events::add,
+            )
+
+            val usages = events.filterIsInstance<ProviderEvent.Usage>().map { it.usage }
+            assertEquals(1, usages.size)
+            assertEquals(27_346, usages.single().inputTokens)
+        }
+    }
+
     private fun event(name: String, data: JSONObject): String =
         "event: $name\ndata: $data\n\n"
 

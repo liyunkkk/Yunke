@@ -896,7 +896,7 @@ private fun AgentMessageBlock(
                     message.renderMarkdown -> {
                         StableMarkdown(
                             content = displayContent,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = completedContentDrawLayer(Modifier.fillMaxWidth(), true),
                         )
                     }
                     message.content.isNotBlank() -> {
@@ -904,6 +904,7 @@ private fun AgentMessageBlock(
                             text = message.content,
                             style = MiuixTheme.textStyles.body1,
                             color = MiuixTheme.colorScheme.onSurface,
+                            modifier = completedContentDrawLayer(Modifier, true),
                         )
                     }
                 }
@@ -1058,6 +1059,7 @@ private fun StreamingMarkdown(
     val currentPaused by rememberUpdatedState(isPaused)
     val restoreGeneration = state.restoreState.generation
     val view = LocalView.current
+    val routeCoveredNow = rememberUpdatedState(LocalChatRouteCovered.current)
 
     LifecycleResumeEffect(state) {
         val animateExisting = animateInitialContent && !currentPaused && currentContent.isNotEmpty()
@@ -1075,12 +1077,18 @@ private fun StreamingMarkdown(
             revealCoordinator.restoreHistoryThrough(currentContent.length)
         }
         onPauseOrDispose {
-            state.restoreState.pause()
-            revealCoordinator.pauseAnimationsAndCatchUp()
+            // 回调不在组合里，读进入回调前记住的最新值。半遮住时导航把聊天降到
+            // STARTED，页面还在组合里，继续逐字打。真正离开前台才追平，避免回来补播。
+            if (routeCoveredNow.value) {
+                state.restoreState.holdCovered()
+            } else {
+                state.restoreState.pause()
+                revealCoordinator.pauseAnimationsAndCatchUp()
+            }
         }
     }
 
-    val animationsAllowed = state.restoreState.animationsAllowed(isPaused)
+    val animationsAllowed = state.restoreState.animationsAllowed(isPaused) || routeCoveredNow.value
     // Content is deliberately not a key. A streaming delta must not re-run the gate decision:
     // while the restore baseline is still pending, animationsAllowed is false, and every delta
     // would catch the reveal up to the newest text. That drains the pending records, the frame
@@ -1414,9 +1422,22 @@ private fun FrozenMarkdownElement(
     diagnosticAttribution: StreamDiagnosticAttribution? = null,
     preparedBlock: PreparedMarkdownBlock? = null,
 ) {
-    // Keep completed blocks in independent RenderNode display lists. Tail draw
-    // invalidation must not re-record every paragraph in a tall message.
-    Box(Modifier.graphicsLayer()
+    // A plain graphics layer still redraws when its parent records. Completed
+    // blocks keep one layer and switch to an offscreen texture once they stop
+    // changing, so the tail does not re-issue their text commands. The layer
+    // stays mounted: inserting it only after freeze would remount the block.
+    // Content above the retained-texture limit stays a plain layer; clipping
+    // it would change the visible text. The tail is never cached.
+    var retainedHeightPx by remember { mutableIntStateOf(0) }
+    val retainTexture = freeze && retainedHeightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    Box(Modifier.graphicsLayer(
+            compositingStrategy = if (retainTexture) {
+                CompositingStrategy.Offscreen
+            } else {
+                CompositingStrategy.Auto
+            },
+        )
+        .onSizeChanged { retainedHeightPx = it.height }
         .streamDiagnosticMeasure(if (freeze) "markdown.stable.measure" else "markdown.tail.measure", diagnosticAttribution)
         .drawWithContent {
             StreamPerformanceDiagnostics.withRenderAttribution(diagnosticAttribution) {
@@ -2300,14 +2321,18 @@ private fun ChatMarkdownTable(
                     }
                 }
             }
+            val tableTail = if (revealCoordinator == null) null else bodyRows.asReversed().firstOrNull { row ->
+                row.any { cell -> !cell.containsMarkdownImage() }
+            }
             bodyRows.forEach { rowCells ->
+                val rowSettled = revealCoordinator == null || rowCells !== tableTail
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(0.5.dp)
                         .background(borderColor.copy(alpha = 0.6f)),
                 )
-                Row(modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = completedContentDrawLayer(Modifier.fillMaxWidth(), rowSettled)) {
                     rowCells.forEach { cell ->
                         Box(
                             modifier = Modifier
@@ -2672,7 +2697,7 @@ private fun ThinkingRow(
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             HapticSelectionContainer(
-                modifier = retainDrawLayerWhenIdle()
+                modifier = completedContentDrawLayer(retainDrawLayerWhenIdle(), streamingState == null)
                     .toggleProbe(toggleProbeRef, "content"),
             ) {
                 Column {
@@ -2721,6 +2746,7 @@ private fun ThinkingRow(
 }
 
 // ── 工具调用：优雅极简时间线 ─────────────────────────────────────────
+
 
 /**
  * 展开和收起的时长、缓动不变，只换生长方向：下沿被钉住时从下沿长出，
@@ -2829,8 +2855,11 @@ private fun ToolActivityInline(
         null
     }
 
+    val toolRowSettled = message.status != ToolActivityStatusUi.Running
     Column(
         modifier = modifier
+            
+            .let { completedContentDrawLayer(it, toolRowSettled) }
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .then(

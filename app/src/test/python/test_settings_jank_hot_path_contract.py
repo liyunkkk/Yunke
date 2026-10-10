@@ -26,11 +26,23 @@ class SettingsJankHotPathContract(unittest.TestCase):
             self.assertIn(f'{name}: Modifier = Modifier', scaffold)
             self.assertIn(f'{name} = Modifier.streamDiagnosticMeasure("{stage}")', settings)
             self.assertIn(f'"{stage}"', labels)
+        self.assertIn('.streamDiagnosticPlacement("settings.lazy.place").streamDiagnosticDraw("settings.lazy.draw")', settings)
+        manage=(ROOT/'screens/chat/ManageChatsScreen.kt').read_text()
+        drawer=(ROOT/'components/ConversationSidePaneScaffold.kt').read_text()
+        for source,prefix in ((manage,'manage.lazy'),(drawer,'drawer.lazy')):
+            compact=''.join(source.split())
+            self.assertIn(f'.streamDiagnosticMeasure("{prefix}.measure").streamDiagnosticPlacement("{prefix}.place").streamDiagnosticDraw("{prefix}.draw")',compact)
+            for suffix in ('measure','place','draw'): self.assertIn(f'"{prefix}.{suffix}"',labels)
         self.assertIn('modifier = topBarModifier', scaffold)
         self.assertIn('modifier = listModifier', scaffold)
         chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
         lazy = scaffold.split('LazyColumn(', 1)[1]
         self.assertEqual(sorted(lazy.index(item) for item in chain), [lazy.index(item) for item in chain])
+        backdrop = (ROOT / 'components/TopBarBackdrop.kt').read_text()
+        capture = backdrop.split('internal fun Modifier.captureForTopBar(', 1)[1].split('@Composable', 1)[0]
+        self.assertNotIn('isScrollInProgress', capture)
+        self.assertIn('layerBackdrop(backdrop)', capture)
+
 
     def test_settings_collects_remembered_store_flows(self):
         settings = (ROOT / 'SettingsScreen.kt').read_text()
@@ -44,8 +56,11 @@ class SettingsJankHotPathContract(unittest.TestCase):
         helper = (ROOT / 'components/ChatUiActive.kt').read_text()
         self.assertIn('staticCompositionLocalOf { true }', helper)
         self.assertIn('val LocalChatUiActive', helper)
+        self.assertIn('val LocalChatRouteCovered = staticCompositionLocalOf { false }', helper)
         root = (ROOT / 'app/AgentAppRoot.kt').read_text()
-        self.assertIn('LocalChatUiActive provides (backStack.lastOrNull() == route)', root)
+        # 半遮住时聊天还在组合里，继续用实时消息；完全盖住后导航移出组合。
+        self.assertIn('LocalChatUiActive provides true', root)
+        self.assertIn('LocalChatRouteCovered provides (backStack.lastOrNull() != route)', root)
         self.assertNotIn('if (isCurrentRoute) {\n                    AgentHomeScreen', root)
         body = (ROOT / 'components/AgentChatBody.kt').read_text()
         start = body.index('internal fun AgentChatBody(')
@@ -58,3 +73,26 @@ class SettingsJankHotPathContract(unittest.TestCase):
         self.assertIn('isPaused = uiPaused', host)
         self.assertIn('LaunchedEffect(messages, isStreaming)', host)
         self.assertIn('enabled = chatUiActive && !isPaused', host)
+
+    def test_navigation_does_not_write_root_state_from_a_graphics_layer(self):
+        root = (ROOT / 'app/AgentAppRoot.kt').read_text()
+        helper = (ROOT / 'components/ChatUiActive.kt').read_text()
+        self.assertNotIn('navigationAwareMiuixTransition', root)
+        self.assertNotIn('LocalChatNavigationInProgress', helper)
+        self.assertFalse((ROOT / 'app/ChatNavigationTransition.kt').exists())
+
+    def test_covered_route_does_not_disable_reveal_during_swipe(self):
+        item = (ROOT / 'components/ChatMessageItem.kt').read_text()
+        self.assertNotIn('revealClockAllowed', item)
+        self.assertNotIn('navigationInProgressNow', item)
+        # Stopgap restores covered-hold behavior, not hidden-page optimization.
+        self.assertIn('val animationsAllowed = state.restoreState.animationsAllowed(isPaused) || routeCoveredNow.value', item)
+        self.assertIn('LaunchedEffect(revealCoordinator, animationsAllowed, isPaused)', item)
+        self.assertIn('if (routeCoveredNow.value) {', item)
+
+    def test_selection_completion_does_not_swap_markdown_parent(self):
+        container = (ROOT / 'haptics/HapticSelectionContainer.kt').read_text()
+        item = (ROOT / 'components/ChatMessageItem.kt').read_text()
+        self.assertNotIn('selectionEnabled', container)
+        self.assertNotIn('selectionEnabled = !message.isStreaming', item)
+        self.assertIn('SelectionContainer(', container)

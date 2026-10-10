@@ -23,6 +23,7 @@ internal object AppFileLogger {
     const val DIRECTORY_NAME = "logs"
     const val APP_LOG_FILE = "eta-app.log"
     const val LOGCAT_FILE = "eta-logcat.log"
+    const val DIAGNOSTIC_SUMMARY_FILE = "eta-performance-summary.log"
 
     private val timeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         .withZone(ZoneId.systemDefault())
@@ -39,6 +40,7 @@ internal object AppFileLogger {
     @Volatile private var logsDir: File? = null
     @Volatile private var appSink: FileLogSink? = null
     @Volatile private var logcatSink: FileLogSink? = null
+    @Volatile private var diagnosticSummarySink: FileLogSink? = null
     @Volatile private var previousCrashHandler: Thread.UncaughtExceptionHandler? = null
     @Volatile private var debugHeader: DiagnosticHeader? = null
 
@@ -62,6 +64,7 @@ internal object AppFileLogger {
                 }
                 appSink = FileLogSink(directory, APP_LOG_FILE)
                 logcatSink = FileLogSink(directory, LOGCAT_FILE)
+                diagnosticSummarySink = FileLogSink(directory, DIAGNOSTIC_SUMMARY_FILE)
                 writeSessionHeader()
                 writeLock.withLock { enabled.set(true) }
                 startLogcatLocked()
@@ -70,8 +73,10 @@ internal object AppFileLogger {
                 stopLogcatLocked()
                 appSink?.close()
                 logcatSink?.close()
+                diagnosticSummarySink?.close()
                 appSink = null
                 logcatSink = null
+                diagnosticSummarySink = null
             }
         }
     }
@@ -94,6 +99,14 @@ internal object AppFileLogger {
     val diagnosticRejected = java.util.concurrent.atomic.AtomicLong()
     val diagnosticFailed = java.util.concurrent.atomic.AtomicLong()
 
+    /** Only fixed-schema stream metrics, never message bodies, get independent retention. */
+    fun isDiagnosticSummary(message: String): Boolean = message.startsWith("StreamDiag ") && (
+        message.contains(" scope=window ") || message.contains(" type=window ") ||
+            message.contains(" type=runtime ") || message.contains(" type=observerCost ") ||
+            message.contains(" type=frame ") || message.contains(" type=finalCompletion ") ||
+            message.contains("frameValue=deadlineMiss")
+        )
+
     fun warn(message: String) { write("W", message, null) }
 
     fun error(message: String, throwable: Throwable? = null) { write("E", message, throwable) }
@@ -102,6 +115,7 @@ internal object AppFileLogger {
         lock.withLock {
             appSink?.flush()
             logcatSink?.flush()
+            diagnosticSummarySink?.flush()
         }
     }
 
@@ -113,17 +127,21 @@ internal object AppFileLogger {
             }
             appSink?.clear()
             logcatSink?.clear()
+            diagnosticSummarySink?.clear()
             val directory = logsDir
             if (directory != null) {
                 FileLogSink(directory, APP_LOG_FILE).clear()
                 FileLogSink(directory, LOGCAT_FILE).clear()
+                FileLogSink(directory, DIAGNOSTIC_SUMMARY_FILE).clear()
             }
             appSink = null
             logcatSink = null
+            diagnosticSummarySink = null
             if (wasEnabled) {
                 val dir = directory ?: return
                 appSink = FileLogSink(dir, APP_LOG_FILE)
                 logcatSink = FileLogSink(dir, LOGCAT_FILE)
+                diagnosticSummarySink = FileLogSink(dir, DIAGNOSTIC_SUMMARY_FILE)
                 writeSessionHeader()
                 writeLock.withLock { enabled.set(true) }
                 startLogcatLocked()
@@ -134,14 +152,16 @@ internal object AppFileLogger {
     fun hasLogs(): Boolean {
         val directory = logsDir ?: return false
         return FileLogSink(directory, APP_LOG_FILE).files().isNotEmpty() ||
-            FileLogSink(directory, LOGCAT_FILE).files().isNotEmpty()
+            FileLogSink(directory, LOGCAT_FILE).files().isNotEmpty() ||
+            FileLogSink(directory, DIAGNOSTIC_SUMMARY_FILE).files().isNotEmpty()
     }
 
     fun export(output: OutputStream): Int {
         flush()
         val directory = logsDir ?: throw IllegalStateException("诊断日志尚未初始化")
         val files = FileLogSink(directory, APP_LOG_FILE).files() +
-            FileLogSink(directory, LOGCAT_FILE).files()
+            FileLogSink(directory, LOGCAT_FILE).files() +
+            FileLogSink(directory, DIAGNOSTIC_SUMMARY_FILE).files()
         if (files.isEmpty()) {
             throw IllegalStateException("没有可导出的日志")
         }
@@ -174,8 +194,13 @@ internal object AppFileLogger {
                 builder.append('\n').append(Log.getStackTraceString(throwable).trimEnd())
             }
             val result = runCatching {
-                sink.append(builder.toString())
-                if (flush) sink.flush()
+                val line = builder.toString()
+                if (echoLogcat && isDiagnosticSummary(message)) diagnosticSummarySink?.append(line)
+                sink.append(line)
+                if (flush) {
+                    sink.flush()
+                    diagnosticSummarySink?.flush()
+                }
             }.onFailure { failure ->
                 if (echoLogcat) diagnosticFailed.incrementAndGet()
                 // Report only the type: paths and message contents may contain private data.

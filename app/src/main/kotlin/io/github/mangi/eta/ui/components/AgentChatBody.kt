@@ -227,7 +227,9 @@ internal fun AgentChatBody(
     onScrollToMessageConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val chatComposeStartedNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else 0L
     val chatUiActive = LocalChatUiActive.current
+    // 还露在屏幕上时继续用实时消息。冻结会把字停在入栈那一帧。
     val frozenChatSnapshot = remember(chatUiActive) {
         if (chatUiActive) null else Triple(messages, isStreaming, isPaused)
     }
@@ -238,7 +240,15 @@ internal fun AgentChatBody(
         enabled = chatUiActive && !isPaused,
         conversationId = collaborationConversationId,
     )
-    SideEffect { StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong()) }
+    SideEffect {
+        StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong())
+        if (chatComposeStartedNs != 0L) {
+            StreamPerformanceDiagnostics.record(
+                "chat.compose.elapsed",
+                System.nanoTime() - chatComposeStartedNs,
+            )
+        }
+    }
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val view = LocalView.current
@@ -892,21 +902,22 @@ internal fun AgentConversationMessages(
     var isBottomSettling by remember { mutableStateOf(isStreaming) }
     LaunchedEffect(scrollState) {
         snapshotFlow {
-            val rendering = hasPendingAssistantReveal(currentVisibleMessages.value) { message ->
-                val retained = streamingMarkdownStates[message.id]
-                retained != null && retained.revealedContent != message.content
+            bottomFollowSettlingState(
+                streaming = currentStreaming.value,
+                anchored = currentAnchor.value,
+                userScrolling = isUserScrolling,
+            ) {
+                hasPendingAssistantReveal(currentVisibleMessages.value) { message ->
+                    val retained = streamingMarkdownStates[message.id]
+                    retained != null && retained.revealedContent != message.content
+                }
             }
-            arrayOf(currentStreaming.value, currentAnchor.value, rendering, isUserScrolling)
         }
-            .distinctUntilChanged { old, new -> old.contentEquals(new) }
+            .distinctUntilChanged()
             .collectLatest { state ->
-                val streaming = state[0] as Boolean
-                val anchored = state[1] as Boolean
-                val rendering = state[2] as Boolean
-                val userScrolling = state[3] as Boolean
-                if (!anchored || userScrolling) {
+                if (state == BottomFollowSettlingState.Disabled) {
                     isBottomSettling = false
-                } else if (streaming || rendering) {
+                } else if (state == BottomFollowSettlingState.Active) {
                     isBottomSettling = true
                 } else if (isBottomSettling) {
                     withFrameNanos { }
@@ -932,6 +943,8 @@ internal fun AgentConversationMessages(
     // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
     // 上提照常，标签随动画一帧一帧往上让开。
     val shouldLiftTail = shouldFollowBottom
+    // 被盖住但仍露在屏幕上时不走整列离屏裁剪。完全打开时仍按原来的条件。
+    val routeCovered = LocalChatRouteCovered.current
     val shouldClipTail = shouldClipChatTail(
         isStreaming = isStreaming,
         isBottomSettling = isBottomSettling,
@@ -939,6 +952,7 @@ internal fun AgentConversationMessages(
         isUserScrolling = isUserScrolling,
         isUserDragging = isUserDragging,
         navigationActive = messageNavigationJob != null || scrollToMessageId != null,
+        routeCovered = routeCovered,
     )
     // 附件、输入框换行和 IME 改的是实际尾部留白，不是新消息增长。
     // 静态时没有跟底控制器接手；只在仍锚定且视口静止线确实变化时重新停靠。
@@ -1099,6 +1113,22 @@ internal fun AgentConversationMessages(
                     }
             }
     }
+    val viewportRecovery = remember(scrollState) {
+        BottomFollowViewportRecovery(scrollState, ChatBottomSentinelKey)
+    }
+    val canOwnWorkExpansionViewport: () -> Boolean = remember(scrollState) {
+        {
+            resolveWorkExpansionViewportOwnership(
+                keepBottomAnchored = currentAnchor.value,
+                initialBottomPositionPending = initialBottomPositionPending,
+                pointerDown = pointerDown[0],
+                isUserDragging = currentDragging.value,
+                isUserScrolling = isUserScrolling,
+                navigationActive = messageNavigationJob != null || currentScrollTarget != null,
+            )
+        }
+    }
+
     val currentBottomItemIndex by rememberUpdatedState(bottomItemIndex)
     val bottomFollowDecisions = remember(scrollState) {
         Channel<BottomFollowDecision>(Channel.CONFLATED)
@@ -1132,13 +1162,15 @@ internal fun AgentConversationMessages(
     // 列表高度，但那是用户主动查看内容，不能被误判成尾部文字增长。
     LaunchedEffect(scrollState) {
         snapshotFlow {
+            // Preserve the existing gate; disabling must still send a zero target.
+            if (!shouldFollowBottom) return@snapshotFlow InactiveBottomFollowLayout
             val layoutInfo = scrollState.layoutInfo
             val sentinel = layoutInfo.visibleItemsInfo.firstOrNull { item ->
                 item.key == ChatBottomSentinelKey
             }
             val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()
             BottomFollowLayout(
-                enabled = shouldFollowBottom,
+                enabled = true,
                 bottomItemIndex = currentBottomItemIndex,
                 // 哨兵被挤出可视区、但最后一段内容还可见时，用它的下沿，不再按整屏估算。
                 sentinelBottom = resolveTailBottomPx(
@@ -1150,10 +1182,10 @@ internal fun AgentConversationMessages(
                 // 视口已扣除底栏高度；这里只扣列表自身的尾部留白。
                 // 跟底目标仍是 afterContentPadding 之前的正文边界。
                 viewportEnd = layoutInfo.viewportEndOffset - layoutInfo.afterContentPadding,
-                lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index,
+                lastVisibleIndex = lastVisible?.index,
                 viewportSizePx = layoutInfo.viewportSize.height,
                 canScrollForward = scrollState.canScrollForward,
-                lastVisibleOffset = layoutInfo.visibleItemsInfo.lastOrNull()?.offset,
+                lastVisibleOffset = lastVisible?.offset,
             )
         }
             .distinctUntilChanged()
@@ -1212,6 +1244,18 @@ internal fun AgentConversationMessages(
                 continue
             }
             val snapping = System.nanoTime() < bottomSnapUntilNanos
+            val latestOverflow = scrollState.layoutInfo.measuredTailOverflow()
+            val expansionOwnsViewport = viewportRecovery.hasActiveExpansion(canOwnWorkExpansionViewport())
+            if (expansionOwnsViewport && latestOverflow == null) {
+                // The measured-anchor owner recovers unknown-tail expansion. Do not let the
+                // ordinary one-viewport fallback race it; retain the pending target for expiry.
+                motion.reset()
+                previousFrameNanos = null
+                continue
+            }
+            if ((snapping || expansionOwnsViewport) && latestOverflow != null) {
+                remainingDistancePx = latestOverflow.coerceAtLeast(0).toFloat()
+            }
             val step = if (snapping) {
                 motion.reset()
                 remainingDistancePx
@@ -1236,7 +1280,13 @@ internal fun AgentConversationMessages(
             try {
                 scrollState.scroll {
                     if (!isUserScrolling && messageNavigationJob == null && shouldFollowBottom) {
-                        consumedStep = StreamPerformanceDiagnostics.measure("follow.scroll") { scrollBy(step) }
+                        // Post-layout expansion recovery may already have consumed this target.
+                        // Recheck fresh geometry inside the scroll owner, not the queued decision.
+                        val currentStep = resolveFollowScrollStepAfterRecovery(
+                            step, scrollState.layoutInfo.measuredTailOverflow(),
+                            expansionOwnsViewport = viewportRecovery.hasActiveExpansion(canOwnWorkExpansionViewport()),
+                        )
+                        consumedStep = StreamPerformanceDiagnostics.measure("follow.scroll") { scrollBy(currentStep) }
                         if (StreamPerformanceDiagnostics.probing) {
                             StreamPerformanceDiagnostics.probeNote("follow") {
                                 "stepPx=${"%.1f".format(step)} consumedPx=${"%.1f".format(consumedStep)} " +
@@ -1266,19 +1316,26 @@ internal fun AgentConversationMessages(
     val restClip = remember(bottomInset) { ComposerRestClip(bottomInset + ConversationComposerGap) }
     // 尾部这一帧量不到时不能把上提清零，否则卡片会掉进输入框再弹回来。
     val heldTailLift = remember { intArrayOf(0) }
-    val viewportRecovery = remember(scrollState) {
-        BottomFollowViewportRecovery(scrollState, ChatBottomSentinelKey)
-    }
-    val canOwnWorkExpansionViewport: () -> Boolean = remember(scrollState) {
-        {
-            resolveWorkExpansionViewportOwnership(
-                keepBottomAnchored = currentAnchor.value,
-                initialBottomPositionPending = initialBottomPositionPending,
-                pointerDown = pointerDown[0],
-                isUserDragging = currentDragging.value,
-                isUserScrolling = isUserScrolling,
-                navigationActive = messageNavigationJob != null || currentScrollTarget != null,
+    // The callback reports message.id, but a work step's lazy key is work-step:<id>.
+    // Both row branches capture the actual entry key before ThinkingRow changes its height.
+    val onThinkingRowToggle: (String, Boolean) -> Unit = { rowKey, willExpand ->
+        val now = System.nanoTime()
+        val alreadyPinned = expansionHoldsBottom()
+        val captured = if (willExpand) {
+            viewportRecovery.beginThinkingExpansion(
+                rowKey = rowKey,
+                expiresAtNanos = now + WORK_EXPANSION_RECOVERY_NANOS,
+                canOwnViewport = canOwnWorkExpansionViewport() &&
+                    (alreadyPinned || scrollState.isConversationAtBottom()),
             )
+        } else {
+            viewportRecovery.cancelWorkExpansion(rowKey)
+            false
+        }
+        if (alreadyPinned || captured ||
+            (!willExpand && canOwnWorkExpansionViewport() && scrollState.isConversationAtBottom())
+        ) {
+            bottomSnapUntilNanos = now + EXPANSION_BOTTOM_SNAP_NANOS
         }
     }
     Box(
@@ -1341,8 +1398,9 @@ internal fun AgentConversationMessages(
                 .streamDiagnosticPlacement("list.place", diagnosticListAttribution)
                 .fillMaxSize()
                 .graphicsLayer {
-                    val overflow = scrollState.followTailOverflow()
+                    // 不跟底时不读滚动位置。滑动中读取会让这一层每帧失效，子内容的离屏纹理被整列重录。
                     translationY = if (shouldLiftTail) {
+                        val overflow = scrollState.followTailOverflow()
                         // 与滚动步长同一套整像素。这一帧量不到尾部时沿用上一帧，避免底边掉下去再弹回。
                         -nextHeldTailLift(
                             shouldLift = true,
@@ -1485,27 +1543,7 @@ internal fun AgentConversationMessages(
                             isEditing = message.id == editTargetMessageId,
                             isPaused = isPaused,
                             onThinkingToggle = if (message is ThinkingMessageUi) {
-                                { thinkingKey, willExpand ->
-                                    val now = System.nanoTime()
-                                    val alreadyPinned = expansionHoldsBottom()
-                                    val captured = if (willExpand) {
-                                        viewportRecovery.beginThinkingExpansion(
-                                            rowKey = thinkingKey,
-                                            expiresAtNanos = now + WORK_EXPANSION_RECOVERY_NANOS,
-                                            canOwnViewport = canOwnWorkExpansionViewport() &&
-                                                (alreadyPinned || scrollState.isConversationAtBottom()),
-                                        )
-                                    } else {
-                                        viewportRecovery.cancelWorkExpansion(thinkingKey)
-                                        false
-                                    }
-                                    if (alreadyPinned || captured ||
-                                        (!willExpand && canOwnWorkExpansionViewport() &&
-                                            scrollState.isConversationAtBottom())
-                                    ) {
-                                        bottomSnapUntilNanos = now + EXPANSION_BOTTOM_SNAP_NANOS
-                                    }
-                                }
+                                { _, willExpand -> onThinkingRowToggle(entry.key, willExpand) }
                             } else null,
                             // Keep this modifier stable. Attaching fadeIn only after the run
                             // ends replays appearance on the already-visible answer.
@@ -1541,7 +1579,10 @@ internal fun AgentConversationMessages(
                                             (alreadyPinned || scrollState.isConversationAtBottom()),
                                     )
                                 } else {
-                                    viewportRecovery.cancelWorkExpansion(entry.key)
+                                    // Closing a group also retires a captured inner thinking row.
+                                    viewportRecovery.cancelWorkExpansion(
+                                        entry.key, entry.group.messages.map { "work-step:${it.id}" },
+                                    )
                                     false
                                 }
                                 val pinned = alreadyPinned || captured ||
@@ -1631,6 +1672,9 @@ internal fun AgentConversationMessages(
                                 enableLivePreview = !isStreaming,
                                 compact = true,
                                 isPaused = isPaused,
+                                onThinkingToggle = if (message is ThinkingMessageUi) {
+                                    { _, willExpand -> onThinkingRowToggle(entry.key, willExpand) }
+                                } else null,
                                 modifier = Modifier.padding(
                                     top = if (entry.isFirst) 2.dp else 0.dp,
                                     bottom = if (entry.isLast) 8.dp else 0.dp,
@@ -1733,6 +1777,25 @@ internal fun AgentConversationMessages(
         )
     }
 }
+
+internal enum class BottomFollowSettlingState { Disabled, Active, Draining }
+
+/** Branch-equivalent short circuit: do not scan messages until reveal completion matters. */
+internal inline fun bottomFollowSettlingState(
+    streaming: Boolean,
+    anchored: Boolean,
+    userScrolling: Boolean,
+    pendingReveal: () -> Boolean,
+): BottomFollowSettlingState = when {
+    !anchored || userScrolling -> BottomFollowSettlingState.Disabled
+    streaming || pendingReveal() -> BottomFollowSettlingState.Active
+    else -> BottomFollowSettlingState.Draining
+}
+
+private val InactiveBottomFollowLayout = BottomFollowLayout(
+    enabled = false, bottomItemIndex = 0, sentinelBottom = null, viewportEnd = 0,
+    lastVisibleIndex = null, viewportSizePx = 0, canScrollForward = false, lastVisibleOffset = null,
+)
 
 internal data class BottomFollowLayout(
     val enabled: Boolean,
@@ -2075,10 +2138,12 @@ internal fun shouldClipChatTail(
     isUserScrolling: Boolean,
     isUserDragging: Boolean,
     navigationActive: Boolean,
+    routeCovered: Boolean = false,
 ): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored &&
     !isUserScrolling &&
     !isUserDragging &&
-    !navigationActive
+    !navigationActive &&
+    !routeCovered
 
 internal fun shouldRequestInitialBottom(
     isStreaming: Boolean,
