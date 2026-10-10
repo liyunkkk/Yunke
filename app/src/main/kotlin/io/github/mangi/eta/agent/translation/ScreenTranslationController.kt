@@ -46,6 +46,15 @@ internal object ScreenTranslationController {
     /** 聚合：同一行内相邻块合并的垂直容差（dp）。 */
     private const val LINE_MERGE_GAP_DP = 6f
 
+    /**
+     * 节点兜底路径拿不到真实文字像素框，用节点高度的一半保守估算字号，
+     * 避免按整个按钮点击区高度放大译文。
+     */
+    private const val NODE_TEXT_SIZE_RATIO = 0.5f
+
+    /** 节点路径的字号估算上限（dp），防止"大按钮里一行小字"被整按钮高度撑大。 */
+    private const val NODE_TEXT_MAX_SIZE_DP = 16f
+
     /** 缓存上限：超过后清空重建，防止长会话内存增长。 */
     private const val CACHE_MAX_ENTRIES = 512
 
@@ -251,7 +260,18 @@ internal object ScreenTranslationController {
             if (text.length < MIN_TEXT_LENGTH || isNoiseText(text)) continue
             val bounds = node.bounds
             if (bounds.isEmpty || bounds.width() <= 0 || bounds.height() <= 0) continue
-            rawCandidates.add(ScreenTranslationBlock(source = text, boundsInScreen = Rect(bounds)))
+            // 节点路径没有像素框：用高度的一半估算字号，并封顶 16dp，避免按整按钮高度放大。
+            val estimatedTextSizePx = minOf(
+                bounds.height() * NODE_TEXT_SIZE_RATIO,
+                NODE_TEXT_MAX_SIZE_DP * density,
+            )
+            rawCandidates.add(
+                ScreenTranslationBlock(
+                    source = text,
+                    boundsInScreen = Rect(bounds),
+                    estimatedTextSizePx = estimatedTextSizePx,
+                ),
+            )
         }
         if (rawCandidates.isEmpty()) return emptyList()
 
@@ -294,12 +314,16 @@ internal object ScreenTranslationController {
             .sortedWith(compareBy({ it.boundsInScreen.top }, { it.boundsInScreen.left }))
     }
 
+    /**
+     * 只取控件可见的 text；绝不回退 contentDescription。
+     *
+     * content-description 是给无障碍朗读用的语义标签（加号、麦克风、文件夹等纯图标按钮
+     * 只有它），把它当可见文字翻译会出现"麦克风图标被译成录制语音备忘录"这类误翻。
+     * 没有可见文字的控件直接返回 null，不参与翻译。
+     */
     private fun pickNodeText(node: AgentAccessibilityService.UiNode): String? {
         val text = node.text.trim()
-        if (text.isNotEmpty()) return text
-        val desc = node.desc.trim()
-        if (desc.isNotEmpty()) return desc
-        return null
+        return text.takeIf { it.isNotEmpty() }
     }
 
     private fun isNoiseText(text: String): Boolean {

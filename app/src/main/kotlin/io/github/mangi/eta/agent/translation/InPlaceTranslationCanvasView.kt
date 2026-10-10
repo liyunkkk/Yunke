@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.translation
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -53,6 +54,11 @@ internal class InPlaceTranslationCanvasView @JvmOverloads constructor(
     private var translationBlocks: List<ScreenTranslationBlock> = emptyList()
     private val density = resources.displayMetrics.density
     private val minTextSizePx = 7f * density
+
+    /** 系统深浅色：节点兜底路径没有像素底色，用它选近白/近黑底。 */
+    private val isNight: Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
 
     /** 当前渲染模式；只读暴露给控制气泡同步按钮文案。 */
     var renderMode: RenderMode = RenderMode.REPLACE
@@ -136,12 +142,12 @@ internal class InPlaceTranslationCanvasView @JvmOverloads constructor(
         if (patch != null && !patch.isRecycled && patch.width > 0 && patch.height > 0) {
             canvas.drawBitmap(patch, null, scratchRect, patchPaint)
         } else {
-            erasePaint.color = block.sampledBgColor ?: DEFAULT_BG
+            erasePaint.color = block.sampledBgColor ?: defaultBackgroundColor()
             canvas.drawRect(scratchRect, erasePaint)
         }
 
         // 2. 样式继承：颜色优先用原文笔画色，字重按估计切换。
-        val bg = block.sampledBgColor ?: DEFAULT_BG
+        val bg = block.sampledBgColor ?: defaultBackgroundColor()
         textPaint.color = block.foregroundColor
             ?: if (isColorDark(bg)) DARK_TEXT else LIGHT_TEXT
         textPaint.typeface = if (block.isBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
@@ -150,7 +156,7 @@ internal class InPlaceTranslationCanvasView @JvmOverloads constructor(
             ?.takeIf { it > 0f }
             ?.coerceIn(minTextSizePx, boxH.coerceAtLeast(minTextSizePx))
 
-        // 3. 原位自适应排版：以估算字号为首选，放不下才按比例缩小。
+        // 3. 原位自适应排版：以估算字号为上限（绝不因 box 很高而放大），放不下才二分缩小。
         val isSingleLine = boxH <= 32f * density
         if (isSingleLine) {
             val highSize = (estimated ?: (boxH * 0.78f))
@@ -306,8 +312,15 @@ internal class InPlaceTranslationCanvasView @JvmOverloads constructor(
         return luminance < 145.0
     }
 
+    /**
+     * 节点兜底路径拿不到像素底色（sampledBgColor/is backgroundPatch 都为空）时的回退：
+     * 跟随系统深浅色给近白/近黑底，而不是写死的浅色，避免深色界面上出现突兀白块。
+     */
+    private fun defaultBackgroundColor(): Int = if (isNight) NIGHT_BG else DAY_BG
+
     private companion object {
-        private val DEFAULT_BG = 0xFFF7F8FA.toInt()
+        private val DAY_BG = 0xFFF7F8FA.toInt()
+        private val NIGHT_BG = 0xFF1C1C1E.toInt()
         private val LIGHT_TEXT = 0xFF151515.toInt()
         private val DARK_TEXT = 0xFFF0F0F2.toInt()
         private val BILINGUAL_BG = 0xCC000000.toInt()
