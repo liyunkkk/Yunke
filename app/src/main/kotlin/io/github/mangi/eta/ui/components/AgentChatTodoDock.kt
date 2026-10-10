@@ -65,6 +65,8 @@ internal fun currentTodoStep(todos: List<ConversationTodo>): Int {
  * 本轮结束后清单仍未到终态时，按「已结束 · N 项未完成」收起并在 AUTO_HIDE_MS 后隐藏；
  * 会话超过 [TODO_DOCK_STALE_MS] 没有任何更新时按「已过期的计划」同样处理，
  * 避免模型漏写终态后胶囊永远停在界面上。
+ *
+ * 隐藏的同时会把该会话的清单行销毁：只隐藏组件的话，重新打开会话时会重新组合并再弹一次。
  * 移植自 Operit-Ry 的 ChatTodoDock，位置与交互保持一致（输入框正上方）。
  */
 @Composable
@@ -118,6 +120,9 @@ internal fun AgentChatTodoDock(
         if (allTerminal || expired || runEnded) {
             expanded = false
             delay(TODO_DOCK_AUTO_HIDE_MS)
+            // 收起动画走完就把这份清单销毁：只隐藏组件的话，重开会话时会重新组合、又弹一次。
+            // 清单已经收尾/过期，留着没有价值；下一轮任务里模型写新快照会自动重建。
+            runCatching { repository.clear(conversationId) }
             autoHidden = true
         } else {
             autoHidden = false

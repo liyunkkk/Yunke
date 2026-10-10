@@ -64,6 +64,17 @@ internal class ConversationTodoRepository private constructor(private val contex
     fun observeConversationUpdatedAt(conversationId: String): Flow<Long?> =
         EtaDatabase.get(context.applicationContext).conversationDao().observeUpdatedAt(conversationId)
 
+    /**
+     * 销毁某会话的清单。
+     *
+     * 清单是「当前任务的进度指示」，不是历史记录：一份已经收尾（全终态）或已经过期的清单
+     * 在隐藏之后没有保留价值，留着只会让用户重开会话时又被弹一次。
+     */
+    suspend fun clear(conversationId: String) {
+        if (conversationId.isBlank()) return
+        dao.deleteByConversation(conversationId)
+    }
+
     suspend fun replace(conversationId: String, todos: List<ConversationTodo>) {
         require(conversationId.isNotBlank()) { "Conversation ID is required" }
         validateConversationTodoSnapshot(todos)
