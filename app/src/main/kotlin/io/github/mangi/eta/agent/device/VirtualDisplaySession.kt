@@ -140,8 +140,8 @@ internal object VirtualDisplaySession {
                 if (data == null) {
                     false
                 } else {
-                    val retained = ids(data.optJSONArray("retainedTaskIds")).size
-                    val live = ids(data.optJSONArray("liveTaskIds")).size
+                    val retained = ids(data.optJSONArray("retainedTaskIds"))?.size ?: 0
+                    val live = ids(data.optJSONArray("liveTaskIds"))?.size ?: 0
                     // 上面还有任务就绝不丢：那是用户可能还要取回的东西。
                     retained == 0 && live == 0 && (
                         data.optBoolean("finishing", false) ||
