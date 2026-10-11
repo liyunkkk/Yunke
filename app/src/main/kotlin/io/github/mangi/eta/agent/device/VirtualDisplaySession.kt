@@ -119,14 +119,18 @@ internal object VirtualDisplaySession {
     }
 
     /**
-     * 残留会话是否「可以安全丢下」：owner 还活着，但它那边的副屏已经空掉并在收尾——
-     * 没有留驻任务、没有活跃任务，且已 finishing 或已尝试过释放。
+     * 残留会话是否「可以安全丢下」：owner 还活着，但它那边的副屏已经是空壳——
+     * 没有任何还在跑的任务、也没有去向不明的任务（retained - live - gone 为空），
+     * 并且要么没有源应用、要么干脆什么都没保留。
      *
-     * 这种残留丢的只是一个空壳副屏（owner 自己会把它收掉），既不值得让用户重启设备，
-     * 也不该让后续每次开副屏都被挡在 cleanup_only 上。全程只读：只看 status，
-     * 绝不补发交接或释放。
+     * 这种残留剩下的只是记账：任何任务都不可能再交付，丢它不会丢用户的东西。
+     * 以前只认「owner 已消失」，于是 owner 活着但副屏空掉的残留永远清不掉，
+     * 每次都被挡在 RECOVERY_NEEDS_OWNER_VERIFICATION / cleanup_only，只能重启设备。
+     *
+     * 判定为可丢下时顺手请 owner 释放副屏（空壳副屏没有可丢的东西，
+     * 放掉它只是回收泄漏的 display），随后由调用方清掉 App 侧记录。
      */
-    private fun leftoverOwnerIsAbandonable(context: Context): Boolean {
+    private fun abandonLeftoverOwnerIfEmpty(context: Context): Boolean {
         val saved = runCatching { recoveryPrefs(context) }.getOrNull() ?: return false
         val fields = runCatching { saved.all }.getOrNull() ?: return false
         if (fields.isEmpty()) return false
@@ -135,21 +139,23 @@ internal object VirtualDisplaySession {
             val c = VirtualDisplayOwnerClient.reconnectChecked(AndroidAgentLogger, record.socket, record.pid,
                 record.displayId, record.uniqueId, record.token, record.run)
             try {
-                val response = c.status()
-                val data = response.json
+                val data = c.status().json
                 if (data == null) {
                     false
                 } else {
-                    val live = ids(data.optJSONArray("liveTaskIds"))?.size ?: 0
-                    val sourceEmpty = data.optBoolean("sourceEmpty", false)
-                    val closing = data.optBoolean("finishing", false) ||
-                        data.optBoolean("releaseAttempted", false) ||
-                        data.optBoolean("mutationUncertain", false)
-                    // 判据只看「副屏上还有没有东西」：没有在跑的任务、也没有源应用，
-                    // 且 owner 自己正在收尾。retainedTaskIds 可能仍留着已经被移走的旧 id
-                    // （用户机上就是 retained=[770] 而 live=[]、gone=[770]），不能拿它当阻拦条件，
-                    // 否则空壳残留永远清不掉、只能重启设备。
-                    live == 0 && sourceEmpty && closing
+                    val retained = ids(data.optJSONArray("retainedTaskIds")) ?: emptySet()
+                    val live = ids(data.optJSONArray("liveTaskIds"))
+                    val gone = ids(data.optJSONArray("goneTaskIds"))
+                    // live/gone 缺失时不猜：照旧保守拒绝（与 handoff 证据链一致）。
+                    val empty = live != null && gone != null &&
+                        live.isEmpty() && (retained - live - gone).isEmpty() &&
+                        (data.optBoolean("sourceEmpty", false) || retained.isEmpty())
+                    if (empty) {
+                        // 空壳副屏没有可丢的东西：请 owner 放掉它，免得留下泄漏的 display。
+                        runCatching { c.release(record.run.orEmpty()) }
+                            .onFailure { AndroidAgentLogger.warn("Leftover owner release failed: ${it.javaClass.simpleName}") }
+                    }
+                    empty
                 }
             } finally {
                 runCatching { c.close() }
@@ -382,7 +388,7 @@ internal object VirtualDisplaySession {
             // 残留「可以安全丢下」的第二种情形：owner 还活着，但它那边的副屏已经空掉、
             // 并且正在收尾（没有任何留驻/活跃任务）。这种空壳残留不值得为它重启设备，
             // 也不该让后续每次开副屏都被挡在 cleanup_only 上。
-            val abandonable = !leftoverGone && leftoverOwnerIsAbandonable(context)
+            val abandonable = !leftoverGone && abandonLeftoverOwnerIfEmpty(context)
             if (leftoverGone || abandonable) {
                 // owner 与副屏都已确认消失、或只剩一个正在收尾的空壳：清掉 App 侧记录，
                 // 按「没有残留」继续，本轮直接开新会话。绝不重放任何释放动作。
@@ -404,7 +410,7 @@ internal object VirtualDisplaySession {
         }
         // 记录里的残留如果只是「副屏已空 + owner 正在收尾」的空壳，先就地清掉再往下走：
         // 否则本轮会被它挡成 recovered/cleanup_only，用户得再开一次（以前甚至只能重启设备）。
-        if (leftoverOwnerIsAbandonable(context)) {
+        if (abandonLeftoverOwnerIfEmpty(context)) {
             runCatching { recoveryPrefs(context).edit().clear().commit() }
         }
         var recoveryStage = "record_read"
