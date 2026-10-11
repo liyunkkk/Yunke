@@ -27,14 +27,12 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import org.robolectric.annotation.Implements
-import org.robolectric.annotation.Implementation
-import org.robolectric.shadows.ShadowView
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowDisplay
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @RunWith(RobolectricTestRunner::class)
-@Config(application = Application::class, sdk = [36], qualifiers = "w411dp-h891dp",
-    shadows = [EtaDropdownMenuResizeTest.FrameShadow::class])
+@Config(application = Application::class, sdk = [36], qualifiers = "w411dp-h891dp")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class EtaDropdownMenuResizeTest {
     @get:Rule val compose = createComposeRule()
@@ -52,20 +50,16 @@ class EtaDropdownMenuResizeTest {
         }
     }
 
-    @Implements(View::class)
-    class FrameShadow : ShadowView() {
-        @Implementation
-        public override fun getWindowVisibleDisplayFrame(outRect: Rect) {
-            super.getWindowVisibleDisplayFrame(outRect)
-            visibleHeight?.let { outRect.bottom = outRect.top + it }
-        }
-        companion object { var visibleHeight: Int? = null }
+    private var originalDisplayHeight: Int? = null
+
+    @After fun resetFrame() {
+        originalDisplayHeight?.let { shadowOf(ShadowDisplay.getDefaultDisplay()).setHeight(it) }
     }
 
-    @After fun resetFrame() { FrameShadow.visibleHeight = null }
-
     @Test fun stationaryHostFrameGrowthExpandsOpenMenuWithoutRemountingContent() {
-        FrameShadow.visibleHeight = 320
+        val display = ShadowDisplay.getDefaultDisplay()
+        originalDisplayHeight = Rect().also(display::getRectSize).height()
+        shadowOf(display).setHeight(320)
         lateinit var host: View
         var mounts = 0
         compose.setContent {
@@ -83,14 +77,14 @@ class EtaDropdownMenuResizeTest {
         compose.onNodeWithText("row-10").assertIsNotDisplayed()
         // Change the frame read by both the host and Popup without moving the anchor.
         compose.runOnIdle {
-            FrameShadow.visibleHeight = null
+            shadowOf(display).setHeight(requireNotNull(originalDisplayHeight))
             host.viewTreeObserver.dispatchOnGlobalLayout()
         }
         compose.waitForIdle()
         compose.onNodeWithText("row-10").assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, mounts) }
         compose.runOnIdle {
-            FrameShadow.visibleHeight = 320
+            shadowOf(display).setHeight(320)
             host.viewTreeObserver.dispatchOnGlobalLayout()
         }
         compose.waitForIdle()
