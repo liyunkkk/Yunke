@@ -42,7 +42,9 @@ class ThreePageHotpathContract(unittest.TestCase):
     def test_manage_batch_keeps_latest_row_delete_callback(self):
         s = (MAIN / 'ui/screens/chat/ManageChatsScreen.kt').read_text()
         self.assertIn('items(ordered, key = { it.id }', s)
-        self.assertIn('remember(nextOrder, byId)', s)
+        self.assertIn('remember(nextOrder, rowItemsById)', s)
+        self.assertIn('val latestById by rememberUpdatedState(remember(conversations)', s)
+        self.assertIn('latestById[conversation.id]?.let(onDeleteConversation)', s)
         self.assertIn('val currentOnDelete by rememberUpdatedState(onDelete)', s)
         self.assertIn('currentOnDelete()', s)
 

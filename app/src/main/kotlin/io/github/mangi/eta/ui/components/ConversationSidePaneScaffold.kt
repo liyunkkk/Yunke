@@ -285,9 +285,12 @@ fun ConversationSidePaneScaffold(
                     state = state,
                     width = paneWidth,
                     drawerShape = drawerShape,
-                    enableSearchFocus = visible &&
-                        drawerState.currentValue == DrawerValue.Open &&
-                        !drawerState.isAnimationRunning,
+                    // Only the search row observes open/settle state. The panel and its
+                    // lazy item provider must stay reusable when the drawer opens.
+                    enableSearchFocus = {
+                        currentVisible && drawerState.currentValue == DrawerValue.Open &&
+                            !drawerState.isAnimationRunning
+                    },
                     onSearchChange = onSearchChange,
                     onConversationSelected = onConversationSelected,
                     onConversationRename = onConversationRename,
@@ -325,7 +328,7 @@ private fun ConversationPanePanel(
     state: ConversationPaneUiState,
     width: androidx.compose.ui.unit.Dp,
     drawerShape: AbsoluteRoundedCornerShape,
-    enableSearchFocus: Boolean,
+    enableSearchFocus: () -> Boolean,
     onSearchChange: (String) -> Unit,
     onConversationSelected: (String) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
@@ -472,8 +475,9 @@ private fun ConversationPanePanel(
 private fun PaneSearchRow(
     query: String,
     onSearchChange: (String) -> Unit,
-    enableSearchFocus: Boolean,
+    enableSearchFocus: () -> Boolean,
 ) {
+    val searchFocusEnabled = enableSearchFocus()
     val textStyle = MiuixTheme.textStyles.body2.merge(
         TextStyle(
             color = MiuixTheme.colorScheme.onSurface,
@@ -485,14 +489,14 @@ private fun PaneSearchRow(
     val keyboard = LocalSoftwareKeyboardController.current
     val view = LocalView.current
     var searchActive by remember { mutableStateOf(false) }
-    LaunchedEffect(enableSearchFocus) {
-        if (!enableSearchFocus) {
+    LaunchedEffect(searchFocusEnabled) {
+        if (!searchFocusEnabled) {
             searchActive = false
             focusManager.clearFocus(force = true)
         }
     }
-    LaunchedEffect(searchActive, enableSearchFocus) {
-        if (searchActive && enableSearchFocus) {
+    LaunchedEffect(searchActive, searchFocusEnabled) {
+        if (searchActive && searchFocusEnabled) {
             showChatInputIme(searchFocusRequester, keyboard, view)
         }
     }
@@ -502,7 +506,7 @@ private fun PaneSearchRow(
             .clip(RoundedCornerShape(DrawerMetrics.SearchCornerRadius))
             .background(MiuixTheme.colorScheme.surfaceContainerHigh)
             .clickable(
-                enabled = enableSearchFocus && !searchActive,
+                enabled = searchFocusEnabled && !searchActive,
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
             ) {
@@ -531,11 +535,11 @@ private fun PaneSearchRow(
             BasicTextField(
                 value = query,
                 onValueChange = onSearchChange,
-                enabled = enableSearchFocus && searchActive,
+                enabled = searchFocusEnabled && searchActive,
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(searchFocusRequester)
-                    .focusProperties { canFocus = enableSearchFocus && searchActive },
+                    .focusProperties { canFocus = searchFocusEnabled && searchActive },
                 singleLine = true,
                 textStyle = textStyle,
                 cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),

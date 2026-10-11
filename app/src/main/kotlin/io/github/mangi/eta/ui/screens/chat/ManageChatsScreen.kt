@@ -36,11 +36,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -111,8 +113,15 @@ internal fun ManageChatsScreen(
             pinnedSnapshot = pinnedIds
         }
     }
-    val byId = remember(conversations) { conversations.associateBy { it.id } }
-    val ordered = remember(nextOrder, byId) { nextOrder.mapNotNull { byId[it] } }
+    // Summary previews and raw timestamps may change while a background run is active.
+    // Keep those out of the lazy item provider, but never freeze action payloads.
+    val latestById by rememberUpdatedState(remember(conversations) { conversations.associateBy { it.id } })
+    val rowItemsById = remember(conversations) {
+        conversations.associate { it.id to it.manageChatListItem() }
+    }
+    val ordered = remember(nextOrder, rowItemsById) {
+        nextOrder.mapNotNull { rowItemsById[it] }
+    }
 
     MiuixScaffoldPage(
         title = stringResource(R.string.history_page_title),
@@ -150,7 +159,7 @@ internal fun ManageChatsScreen(
                     conversation = conversation,
                     onClick = { onOpenConversation(conversation.id) },
                     onTogglePin = { onTogglePin(conversation.id) },
-                    onDelete = { onDeleteConversation(conversation) },
+                    onDelete = { latestById[conversation.id]?.let(onDeleteConversation) },
                     modifier = Modifier.animateItem(
                         fadeInSpec = null,
                         fadeOutSpec = tween(180),
@@ -193,7 +202,7 @@ internal fun ManageChatsScreen(
 
 @Composable
 private fun SwipeableManageChatRow(
-    conversation: ConversationSummaryUi,
+    conversation: ManageChatListItem,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
     onDelete: () -> Unit,
@@ -205,15 +214,10 @@ private fun SwipeableManageChatRow(
     var offsetX by remember { mutableFloatStateOf(0f) }
     var collapsing by remember { mutableStateOf(false) }
     var deleted by remember { mutableStateOf(false) }
-    var crossedDeleteThreshold by remember { mutableStateOf(false) }
-
-    LaunchedEffect(offsetX, deleteDistance) {
-        val crossed = offsetX <= -deleteDistance
-        if (crossed && !crossedDeleteThreshold) {
-            crossedDeleteThreshold = true
-            TouchHaptics.gestureThreshold(view)
-        } else if (!crossed) {
-            crossedDeleteThreshold = false
+    LaunchedEffect(deleteDistance, view) {
+        // Observe only threshold crossings, not every drag pixel in composition.
+        snapshotFlow { offsetX <= -deleteDistance }.collectLatest { crossed ->
+            if (crossed) TouchHaptics.gestureThreshold(view)
         }
     }
 
@@ -248,6 +252,9 @@ private fun SwipeableManageChatRow(
             Box(
                 modifier = Modifier
                     .matchParentSize()
+                    // At rest the opaque foreground covers this entire layer. Keep its
+                    // layout/semantics, but do not record a hidden icon and background.
+                    .drawWithContent { if (offsetX < 0f) drawContent() }
                     .background(MiuixTheme.colorScheme.errorContainer)
                     .padding(horizontal = 20.dp),
                 contentAlignment = Alignment.CenterEnd,
@@ -271,7 +278,7 @@ private fun SwipeableManageChatRow(
 
 @Composable
 private fun ManageChatRow(
-    conversation: ConversationSummaryUi,
+    conversation: ManageChatListItem,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
 ) {
@@ -291,7 +298,7 @@ private fun ManageChatRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
-                    text = conversation.title.ifBlank { conversation.preview },
+                    text = conversation.title,
                     color = MiuixTheme.colorScheme.onSurface,
                     style = MiuixTheme.textStyles.body1,
                     fontWeight = FontWeight.Medium,
