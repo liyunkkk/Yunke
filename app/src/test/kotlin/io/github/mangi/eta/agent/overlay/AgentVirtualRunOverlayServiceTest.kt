@@ -24,6 +24,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowSettings
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 
@@ -214,6 +215,8 @@ class AgentVirtualRunOverlayServiceTest {
     )!!
 
     private fun withService(block: (AgentRuntimeService) -> Unit) {
+        // 胶囊挂载需要悬浮窗权限（无障碍未注册时的回退路径），测试环境显式授予。
+        ShadowSettings.setCanDrawOverlays(true)
         val controller = Robolectric.buildService(AgentRuntimeService::class.java).create()
         try {
             block(controller.get())
