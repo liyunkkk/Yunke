@@ -38,6 +38,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.layout.PaddingValues
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -739,4 +749,88 @@ private fun overlayPhaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
     AgentOverlayPhase.PAUSED -> Color(0xFFFF9F0A)
     AgentOverlayPhase.FINISHED -> Color(0xFF34C759)
     AgentOverlayPhase.FAILED -> MiuixTheme.colorScheme.error
+}
+
+
+/** 胶囊展开后的「补充指令」输入区：一个多行输入框 + 取消/发送。 */
+@Composable
+private fun OverlaySupplementInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onCancel: () -> Unit,
+    onSend: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val textColor = MiuixTheme.colorScheme.onSurface
+    val fieldBg = MiuixTheme.colorScheme.surfaceContainerHigh
+
+    LaunchedEffect(Unit) {
+        delay(180)
+        focusRequester.requestFocus()
+        keyboard?.show()
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp, max = 112.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(fieldBg)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            contentAlignment = Alignment.TopStart,
+        ) {
+            if (value.isBlank()) {
+                Text(
+                    text = stringResource(R.string.overlay_supplement_hint),
+                    color = textColor.copy(alpha = 0.45f),
+                    fontSize = 14.sp,
+                    lineHeight = 18.sp,
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(focusRequester),
+                textStyle = TextStyle(
+                    color = textColor,
+                    fontSize = 14.sp,
+                    lineHeight = 18.sp,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
+                maxLines = 4,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(
+                text = stringResource(R.string.action_cancel),
+                onClick = onCancel,
+                minWidth = 44.dp,
+                minHeight = 32.dp,
+                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            TextButton(
+                text = stringResource(R.string.overlay_send),
+                onClick = onSend,
+                enabled = value.isNotBlank(),
+                minWidth = 44.dp,
+                minHeight = 32.dp,
+                insideMargin = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+    }
 }
