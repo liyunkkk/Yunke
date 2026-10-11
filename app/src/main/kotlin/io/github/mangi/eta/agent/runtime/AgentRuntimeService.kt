@@ -1266,13 +1266,34 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun onCapsuleCollapsedSettled() {
-        if (!capsuleExpanded.value) {
-            setCapsuleWindowSize(CAPSULE_COLLAPSED_WIDTH_DP, CAPSULE_COLLAPSED_HEIGHT_DP)
-            restoreCapsuleCollapsedPosition()
-            capsuleOffsetX.value = capsuleCollapsedX.takeIf { it != Int.MIN_VALUE } ?: capsuleOffsetX.value
-            capsuleOffsetY.value = capsuleCollapsedY.takeIf { it != Int.MIN_VALUE } ?: capsuleOffsetY.value
-            capsuleFullScreen.value = false
+        if (capsuleExpanded.value) return
+        // 尺寸和位置必须在同一次 updateViewLayout 里改完：先缩窗再挪位会在中间帧
+        // 把窗口留在展开时的 (0,0) 却已变成小尺寸，胶囊会先闪到屏幕左缘再跳回来。
+        val wm = windowManager ?: return
+        val capsule = capsuleView ?: return
+        val lp = capsuleParams ?: return
+        val width = dpToPx(CAPSULE_COLLAPSED_WIDTH_DP)
+        val height = dpToPx(CAPSULE_COLLAPSED_HEIGHT_DP)
+        val screenWidth = resources.displayMetrics.widthPixels
+        val screenHeight = resources.displayMetrics.heightPixels
+        val x = if (capsuleCollapsedX != Int.MIN_VALUE) {
+            capsuleCollapsedX.coerceIn(0, maxOf(0, screenWidth - width))
+        } else {
+            (screenWidth - width) / 2
         }
+        val y = if (capsuleCollapsedY != Int.MIN_VALUE) {
+            capsuleCollapsedY.coerceIn(0, maxOf(0, screenHeight - height))
+        } else {
+            dpToPx(CAPSULE_DEFAULT_TOP_MARGIN_DP)
+        }
+        lp.width = width
+        lp.height = height
+        lp.x = x
+        lp.y = y
+        runCatching { wm.updateViewLayout(capsule, lp) }
+        capsuleOffsetX.value = x
+        capsuleOffsetY.value = y
+        capsuleFullScreen.value = false
     }
 
     /** 收起后回到用户拖到的位置（贴边就继续贴边）。 */

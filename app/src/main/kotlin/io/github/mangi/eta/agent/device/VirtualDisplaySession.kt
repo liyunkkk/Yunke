@@ -307,6 +307,12 @@ internal object VirtualDisplaySession {
     @Synchronized fun start(context: Context, runId: String, createIfMissing: Boolean = true): JSONObject {
         recoveryContext = context.applicationContext
         if (runId.isBlank()) return reply(false, "RUN_ID_REQUIRED")
+        // 开关打开时随会话自动挂上只读悬浮小窗。必须放在下面所有提前 return 之前：
+        // 本 runId 已有会话、别的会话占着副屏（BUSY / 残留 recovered）、恢复失败等分支
+        // 都会直接返回，原来放在末尾的小窗挂载就永远执行不到——这正是「开了开关也看不到小窗」。
+        if (floatingWindowEnabled(context)) {
+            runCatching { io.github.mangi.eta.agent.overlay.VirtualDisplayFloatingWindow.show(context) }
+        }
         sessions[runId]?.let { s ->
             if (s.phase == "finished") return reply(false, "SESSION_FINISHED")
             // A cancelled run can still select delivery tasks and finish through the owner.
@@ -403,10 +409,6 @@ internal object VirtualDisplaySession {
         if (!createIfMissing) {
             sessions.remove(runId)
             return reply(false, "NO_VIRTUAL_SESSION")
-        }
-        // 开关打开时随会话自动挂上只读悬浮小窗；会话结束后小窗会自行收掉。
-        if (floatingWindowEnabled(context)) {
-            runCatching { io.github.mangi.eta.agent.overlay.VirtualDisplayFloatingWindow.show(context) }
         }
         return when (val started = VirtualDisplayOwnerClient.start(context, AndroidAgentLogger)) {
             is OwnerStartResult.Failed -> fail(s, started.errorCode)

@@ -212,9 +212,11 @@ internal fun AgentOverlayCapsule(
             val panelOuterWidthPx = panelWidthPx + panelPadPx * 2f
             // 面板本体与屏幕四边保持对称留白，靠边也不贴死。
             val panelEdgePx = with(LocalDensity.current) { 16.dp.toPx() }
-            // 展开态水平居中：面板比胶囊宽得多，沿用胶囊左边缘会整体偏到一侧。
+            // 展开态水平居中，但位置要跟着展开进度从「胶囊原位」平滑过渡到「屏幕居中」：
+            // 直接取居中值会让胶囊在展开/收起落定的那一帧从原位置瞬移到面板左缘（位置乱跳）。
             val panelStartX = if (fullScreen) {
-                ((constraints.maxWidth - panelOuterWidthPx) / 2f).coerceAtLeast(0f)
+                val centered = ((constraints.maxWidth - panelOuterWidthPx) / 2f).coerceAtLeast(0f)
+                collapsedX.toFloat() + (centered - collapsedX.toFloat()) * expansion
             } else {
                 0f
             }

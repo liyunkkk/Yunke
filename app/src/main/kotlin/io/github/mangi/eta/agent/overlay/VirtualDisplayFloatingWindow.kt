@@ -40,6 +40,8 @@ import java.util.concurrent.TimeUnit
  */
 internal object VirtualDisplayFloatingWindow {
     private const val REFRESH_SECONDS = 10L
+    /** 连续这么多轮（× REFRESH_SECONDS）没看到副屏在跑，就把小窗收掉。 */
+    private const val IDLE_HIDE_POLLS = 3
     /** 取帧降采样倍数：小窗只有 150dp 宽，1/4 解码足够看清，开销降到约 1/16。 */
     private const val FRAME_SAMPLE_SIZE = 4
     private const val WINDOW_WIDTH_DP = 150
@@ -62,6 +64,8 @@ internal object VirtualDisplayFloatingWindow {
     private var collapsed = false
     /** 是否真正见过 running=true；用于区分「握手未完成」和「会话确实结束」。 */
     private var sawRunning = false
+    /** 连续多少轮没看到 running；用来收掉「挂了窗但始终没跑起来」的残留小窗。 */
+    private var idlePolls = 0
     private var refresh: java.util.concurrent.ScheduledExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -187,6 +191,7 @@ internal object VirtualDisplayFloatingWindow {
         statusView = status
         collapsed = false
         sawRunning = false
+        idlePolls = 0
         status.text = appContext.getString(R.string.vd_float_none)
         startRefresh(appContext, manager)
         return true
@@ -210,6 +215,7 @@ internal object VirtualDisplayFloatingWindow {
         lastFrameBitmap = null
         collapsed = false
         sawRunning = false
+        idlePolls = 0
     }
 
     /** 收起 / 展开：收起时贴到最近的一侧边缘，展开时贴回屏内。 */
@@ -359,7 +365,12 @@ internal object VirtualDisplayFloatingWindow {
         } else {
             context.getString(R.string.vd_float_none)
         }
-        if (running) sawRunning = true
+        if (running) {
+            sawRunning = true
+            idlePolls = 0
+        } else {
+            idlePolls++
+        }
         // 运行中就取帧。原先用 idle_seconds != 0 当门控，Agent 一忙 idle 恒为 0，小窗就长期空白。
         // 收起成气泡时不取帧，省掉一次 owner 连接占用。
         val fetched = if (running && !collapsed) {
@@ -381,9 +392,11 @@ internal object VirtualDisplayFloatingWindow {
             statusView?.text = label
             if (bitmap != null && !collapsed) frameView?.setImageBitmap(bitmap)
         }
-        // 只有「先前确实跑过、现在不再运行」才收窗；握手未完成时的瞬时 running=false 不再误杀小窗。
-        if (status != null && !running && sawRunning) {
+        // 两种收窗情形：先前确实跑过、现在停了；或者挂了窗却一直没跑起来（残留小窗）。
+        // 握手未完成时的瞬时 running=false 不会误杀小窗。
+        if (!running && (sawRunning || idlePolls >= IDLE_HIDE_POLLS)) {
             sawRunning = false
+            idlePolls = 0
             mainHandler.post { hide(context) }
         }
     }
