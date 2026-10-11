@@ -126,6 +126,8 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 @Composable
 fun AgentAppRoot(
     assistantConversationKey: String? = null,
+    /** true 表示 assistantConversationKey 是本体会话 id，要切回本体那条对话本身。 */
+    openMainConversation: Boolean = false,
     inboundShareUris: List<String> = emptyList(),
     onAssistantConversationOpened: (Boolean) -> Unit = {},
     onInboundShareConsumed: () -> Unit = {},
@@ -359,8 +361,15 @@ fun AgentAppRoot(
             ?.let { updateOffer = it }
     }
 
-    LaunchedEffect(assistantConversationKey) {
+    LaunchedEffect(assistantConversationKey, openMainConversation) {
         val conversationKey = assistantConversationKey ?: return@LaunchedEffect
+        if (openMainConversation) {
+            // 胶囊「最近打开」要回到本体那条对话本身。走助手会话会得到一个与本体无关的孤儿会话。
+            val selected = agentState.openExistingConversation(conversationKey)
+            if (selected) navigator.replace(AppRoute.Chat)
+            onAssistantConversationOpened(false)
+            return@LaunchedEffect
+        }
         val opened = agentState.openAssistantConversation(conversationKey)
         if (opened) {
             navigator.replace(AppRoute.Chat)

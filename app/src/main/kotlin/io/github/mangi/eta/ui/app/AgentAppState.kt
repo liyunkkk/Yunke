@@ -1866,6 +1866,16 @@ internal class AgentAppState(
 
     fun selectConversation(conversationId: String) = selectConversationContent(conversationId) {}
 
+    /**
+     * 切到本体里已经存在的那条对话（胶囊「最近打开」用）。
+     * 返回 false 表示这条对话已经不在（例如被删掉），调用方不要再退化成开新会话。
+     */
+    fun openExistingConversation(conversationId: String): Boolean {
+        if (conversationId.isBlank() || conversationsById[conversationId] == null) return false
+        selectConversation(conversationId)
+        return true
+    }
+
     private fun selectConversationContent(conversationId: String, onSelected: () -> Unit) {
         if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         if (homeState.messageEdit != null) cancelMessageEdit()

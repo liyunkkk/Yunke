@@ -119,6 +119,48 @@ internal object VirtualDisplaySession {
     }
 
     /**
+     * 残留会话是否「可以安全丢下」：owner 还活着，但它那边的副屏已经空掉并在收尾——
+     * 没有留驻任务、没有活跃任务，且已 finishing 或已尝试过释放。
+     *
+     * 这种残留丢的只是一个空壳副屏（owner 自己会把它收掉），既不值得让用户重启设备，
+     * 也不该让后续每次开副屏都被挡在 cleanup_only 上。全程只读：只看 status，
+     * 绝不补发交接或释放。
+     */
+    private fun leftoverOwnerIsAbandonable(context: Context): Boolean {
+        val saved = runCatching { recoveryPrefs(context) }.getOrNull() ?: return false
+        val fields = runCatching { saved.all }.getOrNull() ?: return false
+        if (fields.isEmpty()) return false
+        val record = runCatching { VirtualDisplayRecoveryRecord.decode(fields) }.getOrNull() ?: return false
+        return try {
+            val c = VirtualDisplayOwnerClient.reconnectChecked(AndroidAgentLogger, record.socket, record.pid,
+                record.displayId, record.uniqueId, record.token, record.run)
+            try {
+                val response = c.status()
+                val data = response.json
+                if (data == null) {
+                    false
+                } else {
+                    val retained = ids(data.optJSONArray("retainedTaskIds")).size
+                    val live = ids(data.optJSONArray("liveTaskIds")).size
+                    // 上面还有任务就绝不丢：那是用户可能还要取回的东西。
+                    retained == 0 && live == 0 && (
+                        data.optBoolean("finishing", false) ||
+                            data.optBoolean("releaseAttempted", false) ||
+                            data.optBoolean("mutationUncertain", false)
+                        )
+                }
+            } finally {
+                runCatching { c.close() }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * 只读核验记录里的 owner 进程：连得上且状态可判定＝READABLE，连不上/对端已不是它＝GONE。
      * 不发送任何交接或释放；探测用的连接用完即关。
      */
@@ -332,18 +374,23 @@ internal object VirtualDisplaySession {
             // 上一次收尾已经失败（uncertain）或预算已被 stop()：这个会话不可能再被安全地用一次。
             // 先只读核验 owner：确认它已消失就丢掉残留会话并清记录，让本轮直接开新会话；
             // 否则如实回报，绝不复用一次可能已经发出过释放的会话。
-            if (s.phase == "uncertain" || s.handoffBudget.blocked) {
-                if (VirtualDisplayManualRecovery.decideLeftover(probeRecoveredOwner(context)) !=
+            val leftoverGone =
+                VirtualDisplayManualRecovery.decideLeftover(probeRecoveredOwner(context)) ==
                     VirtualDisplayManualRecovery.Action.CLEAR_OWNER_GONE
-                ) {
-                    sessions.entries.removeAll { it.value === s }
-                    s.cleanupOnly = true
-                    sessions[runId] = s
-                    return reply(false, "RECOVERY_NEEDS_OWNER_VERIFICATION").put("phase", s.phase)
-                }
-                // owner 与副屏都已确认消失：清掉 App 侧记录，按「没有残留」继续，本轮直接开新会话。
+            // 残留「可以安全丢下」的第二种情形：owner 还活着，但它那边的副屏已经空掉、
+            // 并且正在收尾（没有任何留驻/活跃任务）。这种空壳残留不值得为它重启设备，
+            // 也不该让后续每次开副屏都被挡在 cleanup_only 上。
+            val abandonable = !leftoverGone && leftoverOwnerIsAbandonable(context)
+            if (leftoverGone || abandonable) {
+                // owner 与副屏都已确认消失、或只剩一个正在收尾的空壳：清掉 App 侧记录，
+                // 按「没有残留」继续，本轮直接开新会话。绝不重放任何释放动作。
                 sessions.entries.removeAll { it.value === s }
                 runCatching { recoveryPrefs(context).edit().clear().commit() }
+            } else if (s.phase == "uncertain" || s.handoffBudget.blocked) {
+                sessions.entries.removeAll { it.value === s }
+                s.cleanupOnly = true
+                sessions[runId] = s
+                return reply(false, "RECOVERY_NEEDS_OWNER_VERIFICATION").put("phase", s.phase)
             } else {
                 sessions.entries.removeAll { it.value === s }
                 s.cleanupOnly = true

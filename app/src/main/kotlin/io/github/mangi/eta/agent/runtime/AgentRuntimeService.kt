@@ -39,6 +39,7 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayCapsule
 import io.github.mangi.eta.agent.overlay.AgentOverlayRunningSession
 import io.github.mangi.eta.agent.overlay.AgentResultCard
 import io.github.mangi.eta.ui.MainActivity
+import io.github.mangi.eta.ui.app.AgentConversationStore
 import io.github.mangi.eta.ui.haptics.AppForeground
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
@@ -597,7 +598,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             runningSessionInfo[request.runId] = RunningSessionInfo(
                 runId = request.runId,
                 conversationId = conversationId,
-                title = conversationId.takeIf { it.isNotBlank() } ?: "会话",
+                // 真实标题由 ensureConversationTitles() 异步补齐；这里绝不能塞 conversationId，
+                // 否则胶囊列表会显示成 conv-xxxx 这种内部 id。
+                title = "",
             )
             syncRunningSessions()
             // 副屏运行也要常驻胶囊：有任意会话就确保浮层出现。
@@ -1397,8 +1400,42 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
     }
 
+    /**
+     * 会话标题缓存：胶囊的「最近打开 / 最新回复」要显示标题，而不是 conv-xxxx 这种内部 id。
+     * 标题存在 UI 侧的会话库里，服务这边按 TTL 拉一次、缓存起来。
+     */
+    private var conversationTitleCache: Map<String, String> = emptyMap()
+    private var conversationTitleFetchedAt = 0L
+
+    private fun resolveConversationTitle(conversationId: String): String? =
+        conversationTitleCache[conversationId]?.takeIf { it.isNotBlank() }
+
+    /** 列表要显示的标题：优先真实标题，其次非 id 的旧标题，最后兜底「会话」。 */
+    private fun overlaySessionTitle(info: RunningSessionInfo): String =
+        resolveConversationTitle(info.conversationId)
+            ?: info.title.takeIf { it.isNotBlank() && it != info.conversationId }
+            ?: "会话"
+
+    /** 按需（带 TTL）把会话标题拉进缓存；拿到后重刷三处胶囊列表。 */
+    private fun ensureConversationTitles() {
+        val now = System.currentTimeMillis()
+        if (now - conversationTitleFetchedAt < CONVERSATION_TITLE_TTL_MS) return
+        conversationTitleFetchedAt = now
+        lifecycleScope.launch {
+            val loaded = runCatching {
+                AgentConversationStore.loadRecentConversations(this@AgentRuntimeService, CONVERSATION_TITLE_LIMIT)
+            }.getOrNull().orEmpty().associate { it.id to it.title }
+            if (loaded.isEmpty() || loaded == conversationTitleCache) return@launch
+            conversationTitleCache = loaded
+            syncRunningSessions()
+            refreshUnreadSessions()
+            rebuildRecentOpenedSessions()
+        }
+    }
+
     /** 按当前 sessions 同步胶囊用的运行中清单（多会话并发时列表会变长）。 */
     private fun syncRunningSessions() {
+        ensureConversationTitles()
         runningSessionInfo.keys.retainAll(sessions.snapshot().map { it.runId }.toSet())
         val list = mutableListOf<AgentOverlayRunningSession>()
         sessions.snapshot().forEach { session ->
@@ -1406,7 +1443,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 list += AgentOverlayRunningSession(
                     runId = info.runId,
                     conversationId = info.conversationId,
-                    title = info.title,
+                    title = overlaySessionTitle(info),
                     running = true,
                 )
             }
@@ -1417,7 +1454,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             list += AgentOverlayRunningSession(
                 runId = info.runId,
                 conversationId = info.conversationId,
-                title = info.title,
+                title = overlaySessionTitle(info),
                 running = false,
             )
         }
@@ -1461,7 +1498,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             AgentOverlayRunningSession(
                 runId = id,
                 conversationId = id,
-                title = title ?: "会话",
+                title = resolveConversationTitle(id) ?: title ?: "会话",
                 running = false,
             )
         }
@@ -1472,12 +1509,22 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         recentOpenedIds.remove(conversationId)
         recentOpenedIds.addFirst(conversationId)
         while (recentOpenedIds.size > RECENT_OPENED_KEEP) recentOpenedIds.removeLast()
+        rebuildRecentOpenedSessions()
+    }
+
+    /** 重建「最近打开」列表；标题补齐后也要重刷一次。 */
+    private fun rebuildRecentOpenedSessions() {
         recentOpenedState.value = recentOpenedIds.map { id ->
             val title = recentSessionInfo.values
                 .firstOrNull { it.conversationId == id }
                 ?.title
-                ?.takeIf { it.isNotBlank() }
-            AgentOverlayRunningSession(runId = id, conversationId = id, title = title ?: "会话", running = false)
+                ?.takeIf { it.isNotBlank() && it != id }
+            AgentOverlayRunningSession(
+                runId = id,
+                conversationId = id,
+                title = resolveConversationTitle(id) ?: title ?: "会话",
+                running = false,
+            )
         }
     }
 
@@ -1491,6 +1538,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 Intent(this, MainActivity::class.java)
                     .setAction(EtaAssistantOverlayService.ACTION_OPEN_CONVERSATION)
                     .putExtra(EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY, conversationId)
+                    .putExtra(EtaAssistantOverlayService.EXTRA_OPEN_MAIN_CONVERSATION, true)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             )
             capsuleExpanded.value = false
@@ -1744,6 +1792,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         const val ACTION_KEEP_ALIVE = "io.github.mangi.eta.agent.runtime.KEEP_ALIVE"
         // 胶囊几何与会话列表上限（dp / 条数）
+        /** 会话标题缓存的刷新间隔：够快跟上改名，又不会每次刷新都去查库。 */
+        const val CONVERSATION_TITLE_TTL_MS = 30_000L
+        const val CONVERSATION_TITLE_LIMIT = 60
+
         const val CAPSULE_COLLAPSED_WIDTH_DP = 88
         const val CAPSULE_COLLAPSED_HEIGHT_DP = 60
         const val CAPSULE_DEFAULT_TOP_MARGIN_DP = 12

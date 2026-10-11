@@ -1932,6 +1932,12 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         const val ACTION_SHOW = "io.github.mangi.eta.agent.voice.SHOW"
         const val ACTION_OPEN_CONVERSATION = "io.github.mangi.eta.agent.voice.OPEN_CONVERSATION"
         const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.agent.voice.extra.CONVERSATION_KEY"
+
+        /**
+         * 置 true 时表示这个 key 是「本体会话 id」：跳转要回到主界面那条对话本身，
+         * 而不是开一个助手（语音悬浮）会话——后者会变成与本体无关的孤儿会话。
+         */
+        const val EXTRA_OPEN_MAIN_CONVERSATION = "io.github.mangi.eta.agent.voice.extra.OPEN_MAIN_CONVERSATION"
         /** 外部指定入口态：voice=直接语音聆听，input=直接输入态。缺省时沿用录音权限判定。 */
         const val EXTRA_ENTRY_MODE = "io.github.mangi.eta.agent.voice.extra.ENTRY_MODE"
         const val ENTRY_MODE_VOICE = "voice"

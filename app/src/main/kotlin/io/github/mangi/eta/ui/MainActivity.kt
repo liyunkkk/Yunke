@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var assistantConversationKey by mutableStateOf<String?>(null)
+    private var openMainConversation by mutableStateOf(false)
     private var inboundShareUris by mutableStateOf<List<String>>(emptyList())
     private var appliedPredictiveBackEnabled = true
     private var refreshRateWindowResumed = false
@@ -66,9 +67,11 @@ class MainActivity : ComponentActivity() {
                 ) {
                     AgentAppRoot(
                         assistantConversationKey = assistantConversationKey,
+                        openMainConversation = openMainConversation,
                         inboundShareUris = inboundShareUris,
                         onAssistantConversationOpened = { opened ->
                             assistantConversationKey = null
+                            openMainConversation = false
                             if (opened) {
                                 EtaAssistantOverlayService.notifyHandoffReady(this@MainActivity)
                             }
@@ -193,6 +196,10 @@ class MainActivity : ComponentActivity() {
         assistantConversationKey = intent.getStringExtra(
             EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY,
         )?.takeIf(String::isNotBlank)
+        openMainConversation = intent.getBooleanExtra(
+            EtaAssistantOverlayService.EXTRA_OPEN_MAIN_CONVERSATION,
+            false,
+        )
     }
 
     private fun updateSystemBars(isDark: Boolean) {
