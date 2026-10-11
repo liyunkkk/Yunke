@@ -73,6 +73,13 @@ class TopBarOverflowMenuInteractiveModeTest {
         editor.commit()
     }
 
+    @Test fun autoCompressRemainsVisibleAtFullHeightWithoutChangingItsValue() {
+        render()
+        openMenu()
+        compose.onNodeWithText(label(R.string.action_auto_compress_context)).assertIsDisplayed()
+        compose.runOnIdle { assertEquals(0, autoCompressChanges) }
+    }
+
     @Test fun backgroundSettingIsNotOverwrittenByCompositionOrOpeningTheMenu() {
         render()
         assertStored(AgentTaskSurfaceMode.BACKGROUND)

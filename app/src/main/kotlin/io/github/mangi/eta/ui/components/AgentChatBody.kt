@@ -235,7 +235,7 @@ internal fun AgentChatBody(
     val uiMessages = frozenChatSnapshot?.first ?: messages
     val uiStreaming = frozenChatSnapshot?.second ?: isStreaming
     val uiPaused = frozenChatSnapshot?.third ?: isPaused
-    // 一盖住就停震动；打字机只在导航仍在动、聊天露出时继续。
+    // 输出震动与打字机使用相同的露出状态，停稳覆盖后停止。
     SideEffect {
         StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong())
         if (chatComposeStartedNs != 0L) {
@@ -318,7 +318,7 @@ internal fun AgentChatBody(
     )
 
     io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
-        enabled = !isPaused && !routeCovered,
+        enabled = !isPaused && followLiveTranscript,
         conversationId = collaborationConversationId,
     )
 
