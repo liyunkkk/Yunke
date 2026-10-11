@@ -23,6 +23,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import io.github.mangi.eta.ui.haptics.AppForeground
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowSettings
 import org.robolectric.annotation.Config
@@ -217,6 +219,9 @@ class AgentVirtualRunOverlayServiceTest {
     private fun withService(block: (AgentRuntimeService) -> Unit) {
         // 胶囊挂载需要悬浮窗权限（无障碍未注册时的回退路径），测试环境显式授予。
         ShadowSettings.setCanDrawOverlays(true)
+        // 胶囊现在会在「自身界面在前台」时自动隐藏。测试里装上 AppForeground 并保持无前台
+        // Activity，让 isForeground 为 false，从而验证胶囊窗口的装配本身。
+        AppForeground.install(RuntimeEnvironment.getApplication())
         val controller = Robolectric.buildService(AgentRuntimeService::class.java).create()
         try {
             val service = controller.get()

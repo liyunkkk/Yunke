@@ -60,6 +60,8 @@ internal object VirtualDisplayFloatingWindow {
     private var statusView: TextView? = null
     private var lastFrameBitmap: android.graphics.Bitmap? = null
     private var collapsed = false
+    /** 是否真正见过 running=true；用于区分「握手未完成」和「会话确实结束」。 */
+    private var sawRunning = false
     private var refresh: java.util.concurrent.ScheduledExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -184,6 +186,7 @@ internal object VirtualDisplayFloatingWindow {
         frameView = frame
         statusView = status
         collapsed = false
+        sawRunning = false
         status.text = appContext.getString(R.string.vd_float_none)
         startRefresh(appContext, manager)
         return true
@@ -206,6 +209,7 @@ internal object VirtualDisplayFloatingWindow {
         statusView = null
         lastFrameBitmap = null
         collapsed = false
+        sawRunning = false
     }
 
     /** 收起 / 展开：收起时贴到最近的一侧边缘，展开时贴回屏内。 */
@@ -355,8 +359,10 @@ internal object VirtualDisplayFloatingWindow {
         } else {
             context.getString(R.string.vd_float_none)
         }
-        // Agent 刚有活动时不取帧，避免和 observe_screen 抢 owner 的单条连接；收起成气泡时也不取帧。
-        val fetched = if (running && idleSeconds != 0L && !collapsed) {
+        if (running) sawRunning = true
+        // 运行中就取帧。原先用 idle_seconds != 0 当门控，Agent 一忙 idle 恒为 0，小窗就长期空白。
+        // 收起成气泡时不取帧，省掉一次 owner 连接占用。
+        val fetched = if (running && !collapsed) {
             runCatching { VirtualDisplaySession.viewerFrame() }.getOrNull()?.let { payload ->
                 val bytes = runCatching { Base64.decode(payload.optString("data"), Base64.DEFAULT) }.getOrNull()
                 bytes?.let {
@@ -375,8 +381,9 @@ internal object VirtualDisplayFloatingWindow {
             statusView?.text = label
             if (bitmap != null && !collapsed) frameView?.setImageBitmap(bitmap)
         }
-        // 会话已结束时把窗口自动收掉，避免留下过期小窗。
-        if (status != null && !running) {
+        // 只有「先前确实跑过、现在不再运行」才收窗；握手未完成时的瞬时 running=false 不再误杀小窗。
+        if (status != null && !running && sawRunning) {
+            sawRunning = false
             mainHandler.post { hide(context) }
         }
     }

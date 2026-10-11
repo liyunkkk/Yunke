@@ -1301,7 +1301,8 @@ internal object VirtualDisplaySession {
     /** 悬浮小窗开关（与设置页共用同一偏好）。 */
     private fun floatingWindowEnabled(context: Context): Boolean = runCatching {
         context.getSharedPreferences(AGENT_PREFERENCES, Context.MODE_PRIVATE)
-            .getBoolean(FLOATING_WINDOW_PREF, false)
+            // 默认开：副屏会话起时自动挂只读小窗，否则用户不手动去设置里开就永远看不到画面。
+            .getBoolean(FLOATING_WINDOW_PREF, true)
     }.getOrDefault(false)
 
     private fun idleTimeoutMs(context: Context): Long {

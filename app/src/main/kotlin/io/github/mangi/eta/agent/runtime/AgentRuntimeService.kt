@@ -39,6 +39,7 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayCapsule
 import io.github.mangi.eta.agent.overlay.AgentOverlayRunningSession
 import io.github.mangi.eta.agent.overlay.AgentResultCard
 import io.github.mangi.eta.ui.MainActivity
+import io.github.mangi.eta.ui.haptics.AppForeground
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
 import io.github.mangi.eta.agent.overlay.AgentOverlayState
@@ -104,6 +105,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     // 单元测试里把它置 false，可只验证窗口与字段装配而不触发重型 Compose 合成
     // （Robolectric 下真实合成 + 无限动画帧会让 idle() 卡数分钟直至超时）。
     @JvmField internal var renderOverlayContent: Boolean = true
+
+    /**
+     * 用户是否正看着 YUNKe 自己的界面。此时聊天页已经在显示进度与思维链，
+     * 再叠一层胶囊只会挡住自己，所以收掉；切走后再恢复常驻。
+     */
+    private val ownUiForegroundListener: (Boolean) -> Unit = { foreground ->
+        onOwnUiForegroundChanged(foreground)
+    }
     private var resultCardView: ComposeView? = null
     private var capsuleParams: WindowManager.LayoutParams? = null
     private var resultCardParams: WindowManager.LayoutParams? = null
@@ -156,6 +165,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         lifecycleScope.launch {
             AgentChildTaskGroups.revision.collect { stopIfRuntimeIdle() }
         }
+        AppForeground.addListener(ownUiForegroundListener)
+    }
+
+    /** 自身界面进出前台：进去就收掉胶囊（聊天页已有进度），出来再按会话恢复。 */
+    private fun onOwnUiForegroundChanged(foreground: Boolean) {
+        mainHandler.post {
+            if (foreground) {
+                removeAmbientWindows()
+            } else if (overlaySession != null || sessions.snapshot().any { !it.isTerminal }) {
+                ensureOverlayVisible()
+            }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -188,6 +209,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         // Losing the presentation/service is not consent to stop children. Keep their snapshots
         // and pending choices; a replacement service must not receive a deferred global stop.
         destroyed = true
+        AppForeground.removeListener(ownUiForegroundListener)
         val retiring = sessions.snapshot()
         retiring.forEach { it.signalStop() }
         // Service destruction also runs on Main. Drain accepted stop work independently of
@@ -1158,6 +1180,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun showOverlay() {
         if (capsuleView != null) return
+        // 自身界面在前台时不建胶囊窗：聊天页已显示进度与思维链，浮上去只会挡住自己。
+        if (AppForeground.isForeground) return
         // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
         if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) return
         val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
