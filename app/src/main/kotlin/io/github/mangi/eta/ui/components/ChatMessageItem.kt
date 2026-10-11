@@ -298,11 +298,14 @@ private fun rememberActivePulse(
     active: Boolean,
     label: String,
 ): () -> Float {
-    if (!active) return StaticPulseAlpha
+    // A settled, fully covered chat must not drive a frame clock behind another page.
+    // The cycle starts at the static value, so resuming on swipe-back never jumps.
+    val settledCover = isChatSettledCovered(LocalChatRouteCovered.current, LocalChatTransitionActive.current)
+    if (!active || settledCover) return StaticPulseAlpha
     val transition = rememberInfiniteTransition(label = label)
     val alpha = transition.animateFloat(
-        initialValue = 0.58f,
-        targetValue = 1f,
+        initialValue = 1f,
+        targetValue = 0.58f,
         animationSpec = infiniteRepeatable(
             animation = tween(820, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
