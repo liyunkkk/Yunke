@@ -325,6 +325,7 @@
   <string name="overlay_substatus_paused">Paused · tap to continue</string>
   <string name="overlay_substatus_finished">Completed</string>
   <string name="overlay_substatus_failed">Failed</string>
+  <string name="overlay_capsule_toggle">%1$s, tap to expand controls</string>
   <string name="overlay_pause">Pause</string>
   <string name="overlay_resume">Resume</string>
   <string name="overlay_dismiss">Dismiss</string>

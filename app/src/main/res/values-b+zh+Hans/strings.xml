@@ -342,6 +342,7 @@
   <string name="overlay_substatus_paused">已暂停，可点击继续</string>
   <string name="overlay_substatus_finished">已完成</string>
   <string name="overlay_substatus_failed">执行失败</string>
+  <string name="overlay_capsule_toggle">%1$s，点击展开控制</string>
   <string name="overlay_pause">暂停</string>
   <string name="overlay_resume">继续</string>
   <string name="overlay_dismiss">关闭</string>

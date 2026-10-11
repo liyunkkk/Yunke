@@ -6,30 +6,43 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
 /**
  * Decides when the system-level operation overlay should become visible.
  *
+ * 两类可见性要分开：
+ * - 胶囊窗口本体：只要有任务在跑（前台或后台副屏）就常驻，作为跨会话总控。
+ *   由 [allowsCapsule] 判定，副屏（BACKGROUND）同样允许。
+ * - 前台操作高亮 / 入口界面消隐 / 结果卡：只在前台模式、且正在驱动前台界面的工具
+ *   （点击/滑动/输入等）时才触发，避免后台副屏运行时去抢主屏。由 [allowsForegroundReveal]
+ *   判定，仅 FOREGROUND。
+ *
  * Chat, reasoning, shell diagnostics, file reads, skill reads and app search
- * all have good homes in the main conversation UI. The global overlay is
- * reserved for tools that actively inspect or drive the foreground Android
- * interface. Tool names alone cannot distinguish foreground and virtual runs;
- * runtime callers must also pass the originating session's frozen surface mode.
+ * all have good homes in the main conversation UI. Tool names alone cannot
+ * distinguish foreground and virtual runs; runtime callers must also pass the
+ * originating session's frozen surface mode.
  */
 internal object AgentOverlayVisibilityPolicy {
-    fun allowsOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
+    /** 胶囊窗口本体是否允许存在：前台与后台副屏都允许，只有显式关闭浮层才不显示。 */
+    fun allowsCapsule(taskSurfaceMode: AgentTaskSurfaceMode): Boolean = true
+
+    /** 前台操作高亮 / 结果卡 / 入口界面消隐是否允许：仅前台模式。 */
+    fun allowsForegroundReveal(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
         taskSurfaceMode == AgentTaskSurfaceMode.FOREGROUND
 
-    /** 运行开始时：前台，或还没选的“每次询问”（可能选前台），都先准备好悬浮窗状态。 */
-    fun mayUseOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
-        taskSurfaceMode != AgentTaskSurfaceMode.BACKGROUND
+    /** 兼容旧调用：等价于 [allowsForegroundReveal]。 */
+    fun allowsOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
+        allowsForegroundReveal(taskSurfaceMode)
+
+    /** 运行开始时：任何模式都先准备好胶囊状态（副屏也要常驻）。 */
+    fun mayUseOverlay(@Suppress("UNUSED_PARAMETER") taskSurfaceMode: AgentTaskSurfaceMode): Boolean = true
 
     fun shouldRevealFor(event: AgentEvent, taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
-        allowsOverlay(taskSurfaceMode) && shouldRevealFor(event)
+        allowsForegroundReveal(taskSurfaceMode) && shouldRevealFor(event)
 
     fun shouldDismissEntrySurfaceFor(event: AgentEvent, taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
-        allowsOverlay(taskSurfaceMode) && shouldDismissEntrySurfaceFor(event)
+        allowsForegroundReveal(taskSurfaceMode) && shouldDismissEntrySurfaceFor(event)
 
     fun shouldShowResultCard(
         taskSurfaceMode: AgentTaskSurfaceMode,
         hasExecutedForegroundTool: Boolean,
-    ): Boolean = allowsOverlay(taskSurfaceMode) && hasExecutedForegroundTool
+    ): Boolean = allowsForegroundReveal(taskSurfaceMode) && hasExecutedForegroundTool
 
     fun shouldRevealFor(event: AgentEvent): Boolean = when (event) {
         is AgentEvent.AssistantBlockStart ->
@@ -70,7 +83,7 @@ internal object AgentOverlayVisibilityPolicy {
         entrySurfaceReady: Boolean,
         taskSurfaceMode: AgentTaskSurfaceMode = AgentTaskSurfaceMode.FOREGROUND,
     ): Boolean =
-        allowsOverlay(taskSurfaceMode) &&
+        allowsForegroundReveal(taskSurfaceMode) &&
             entrySurfaceReady &&
             event is AgentEvent.ToolStarted &&
             event.name.isForegroundOperationTool()

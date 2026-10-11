@@ -336,6 +336,7 @@
   <string name="overlay_substatus_paused">已暫停，點按即可繼續</string>
   <string name="overlay_substatus_finished">已完成</string>
   <string name="overlay_substatus_failed">執行失敗</string>
+  <string name="overlay_capsule_toggle">%1$s，點擊展開控制</string>
   <string name="overlay_pause">暫停</string>
   <string name="overlay_resume">繼續</string>
   <string name="overlay_dismiss">關閉</string>

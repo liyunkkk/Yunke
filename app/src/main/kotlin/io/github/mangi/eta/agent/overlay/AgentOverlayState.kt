@@ -7,7 +7,17 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
 internal enum class AgentOverlayPhase { RUNNING, PAUSED, FINISHED, FAILED }
 
 /**
- * Agent 浮窗的渲染状态。由 [AgentEvent] 流累积而来，[AgentOverlayBubble] 直接消费。
+ * 悬浮胶囊展开后用于跳转的一条会话：running 表示还在跑，false 表示已完成但仍可点回去。
+ */
+internal data class AgentOverlayRunningSession(
+    val runId: String,
+    val conversationId: String,
+    val title: String,
+    val running: Boolean = true,
+)
+
+/**
+ * Agent 浮窗的渲染状态。由 [AgentEvent] 流累积而来，胶囊 [AgentOverlayCapsule] 直接消费。
  */
 @Immutable
 internal data class AgentOverlayState(
@@ -15,6 +25,19 @@ internal data class AgentOverlayState(
     val round: Int = 0,
     val status: AgentOverlayStatus = AgentOverlayStatus.Preparing,
     val detailText: String = "",
+    /**
+     * 胶囊第二行：思考时是模型最近一句可见推理。只保留尾部一小段，供用户扫一眼知道
+     * Agent 在想什么；完整推理仍在会话里。
+     */
+    val thought: String = "",
+    /** 胶囊展开后的会话列表：运行中的在前，其后是最近完成的（最多 3 条）。 */
+    val runningSessions: List<AgentOverlayRunningSession> = emptyList(),
+    /** 完成后还没看过的条数：收起态小胶囊右上角用 1、2、3… 显示（上限 9+）。 */
+    val finishedBadge: Int = 0,
+    /** 最近打开过的对话：面板最上面一栏，最多显示 3 条，多的折叠。 */
+    val recentOpenedSessions: List<AgentOverlayRunningSession> = emptyList(),
+    /** 完成但还没看过的会话：面板「最新回复」栏，点一条直接跳回去。 */
+    val unreadSessions: List<AgentOverlayRunningSession> = emptyList(),
 ) {
     companion object {
         val Initial = AgentOverlayState(status = AgentOverlayStatus.Received)
@@ -84,8 +107,8 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
     )
 
     is AgentEvent.AssistantBlockStart -> when (event.kind) {
-        AgentEvent.AssistantBlockKind.TEXT,
-        AgentEvent.AssistantBlockKind.THINKING -> this
+        AgentEvent.AssistantBlockKind.TEXT -> this
+        AgentEvent.AssistantBlockKind.THINKING -> copy(thought = "")
 
         AgentEvent.AssistantBlockKind.TOOL_CALL -> copy(
             phase = AgentOverlayPhase.RUNNING,
@@ -100,6 +123,7 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
             phase = AgentOverlayPhase.RUNNING,
             round = event.round,
             status = AgentOverlayStatus.Reasoning,
+            thought = appendThought(thought, event.delta),
         )
 
         AgentEvent.AssistantBlockKind.TOOL_CALL -> copy(
@@ -141,6 +165,7 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
         phase = AgentOverlayPhase.RUNNING,
         round = event.round,
         status = AgentOverlayStatus.ToolCompleted(event.name),
+        thought = "",
     )
 
     is AgentEvent.HostedToolStarted -> copy(
@@ -190,6 +215,13 @@ internal fun AgentOverlayState.applyEvent(event: AgentEvent): AgentOverlayState 
 }
 
 private const val MaxStreamingPreviewChars = 320
+private const val MaxThoughtChars = 96
+
+/** 合并空白并只保留尾部，胶囊里显示的是"刚刚想到哪"，不是整段推理。 */
+private fun appendThought(current: String, delta: String): String {
+    val merged = (current + delta).replace(Regex("\\s+"), " ").trimStart()
+    return if (merged.length <= MaxThoughtChars) merged else merged.takeLast(MaxThoughtChars).trimStart()
+}
 
 private fun AgentOverlayState.appendStreamingText(event: AgentEvent.AssistantBlockDelta): AgentOverlayState {
     val nextPreview = (detailText + event.delta)
