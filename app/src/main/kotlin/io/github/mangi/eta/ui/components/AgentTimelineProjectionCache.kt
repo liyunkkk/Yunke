@@ -4,7 +4,11 @@ import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentIncrementalList
 import io.github.mangi.eta.ui.model.incrementalSnapshot
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.canAppendAssistantAfterTerminalOrdering
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.ui.model.ThinkingMessageUi
+import io.github.mangi.eta.ui.model.ToolActivityMessageUi
+import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.isSteerSupplement
 
 /**
@@ -14,7 +18,8 @@ import io.github.mangi.eta.ui.model.isSteerSupplement
  * slot and ID, with every other source object unchanged. Terminal ordering reads
  * an assistant's ID/type, not its body or streaming flags, and assistants are
  * individual Message entries rather than work-group members. Every structural
- * change and every non-assistant replacement uses the original full projection.
+ * change uses the full projection except a certified unique assistant append
+ * that cannot reorder a terminal run. Non-assistant replacements stay authoritative.
  * Duplicate source IDs disable the fast path: ordering may select a later payload
  * or synthesize a notice ID, so a map keyed only by ID would be unsafe.
  */
@@ -24,10 +29,31 @@ internal class AgentTimelineProjectionCache(
     private var source: List<AgentChatMessageUi>? = null
     private var entries: List<AgentTimelineEntry> = emptyList()
     private var sourceToEntry: IntArray? = null
+    private var workSlots: Map<Int, WorkSlot>? = null
+
+    private class WorkSlot(val entry: Int, val member: Int)
 
     fun project(messages: List<AgentChatMessageUi>): List<AgentTimelineEntry> {
         val previous = source
         val mapping = sourceToEntry
+        // Appending cannot live inside the equal-size replacement branch. Keep
+        // authoritative terminal ordering for late bodies and ambiguous inputs.
+        if (previous != null && mapping != null && previous.size + 1 == messages.size) {
+            val appended = messages.last() as? AgentMessageUi
+            if (appended != null &&
+                previous.indices.all { previous[it] === messages[it] } &&
+                previous.none { it.id == appended.id } &&
+                previous.canAppendAssistantAfterTerminalOrdering(appended)
+            ) {
+                val projected = (entries + AgentTimelineEntry.Message(appended)).incrementalSnapshot()
+                val nextMapping = mapping.copyOf(messages.size)
+                nextMapping[previous.size] = entries.size
+                source = messages.incrementalSnapshot()
+                entries = projected
+                sourceToEntry = nextMapping
+                return projected
+            }
+        }
         if (previous != null && mapping != null && previous.size == messages.size) {
             val changed = (messages as? AgentIncrementalList<AgentChatMessageUi>)?.singleReplacementFrom(previous)
             if (changed != null) {
@@ -39,38 +65,62 @@ internal class AgentTimelineProjectionCache(
                     source = messages
                     return entries
                 }
-            }
-            if (changed == null && previous.size + 1 == messages.size &&
-                messages.last() is AgentMessageUi &&
-                previous.indices.all { previous[it] === messages[it] }
-            ) {
-                val input = messages.incrementalSnapshot()
-                val projected = (entries + AgentTimelineEntry.Message(messages.last())).incrementalSnapshot()
-                source = input
-                entries = projected
-                sourceToEntry = mapAssistantSlots(input, projected)
-                return projected
+                // Work payloads (thinking text, tool status) never feed terminal ordering or
+                // grouping: both read only IDs and types. Patch the member inside its group.
+                val slot = workSlots?.get(changed)
+                if (slot != null && old.id == current.id && old.isWorkPayloadOf(current)) {
+                    val group = entries[slot.entry] as? AgentTimelineEntry.WorkProcess
+                    if (group != null && group.messages.getOrNull(slot.member) === old) {
+                        val members = group.messages.toMutableList().also { it[slot.member] = current }
+                        entries = entries.incrementalSnapshot()
+                            .replacing(slot.entry, group.copy(messages = members))
+                        source = messages
+                        return entries
+                    }
+                }
             }
             if (changed == null) {
                 val changedIndices = ArrayList<Int>(1)
                 var compatible = true
+                val groupReplacements = HashMap<Int, MutableList<IntArray>>()
                 for (index in messages.indices) {
                     val old = previous[index]
                     val current = messages[index]
                     if (old === current) continue
-                    if (old !is AgentMessageUi || current !is AgentMessageUi ||
-                        old.id != current.id || mapping[index] < 0
-                    ) {
+                    if (old.id != current.id) {
                         compatible = false
                         break
                     }
-                    changedIndices += index
+                    if (old is AgentMessageUi && current is AgentMessageUi) {
+                        if (mapping[index] < 0) {
+                            compatible = false
+                            break
+                        }
+                        changedIndices += index
+                        continue
+                    }
+                    // Work payloads (thinking text, tool status) never feed terminal ordering or
+                    // grouping: both read only IDs and types. Patch the member inside its group.
+                    val slot = workSlots?.get(index) ?: run { compatible = false; null }
+                    if (slot == null || !old.isWorkPayloadOf(current)) {
+                        compatible = false
+                        break
+                    }
+                    groupReplacements.getOrPut(slot.entry) { ArrayList<IntArray>(2) }.add(intArrayOf(slot.member, index))
                 }
                 if (compatible) {
-                    if (changedIndices.isEmpty()) return entries
+                    if (changedIndices.isEmpty() && groupReplacements.isEmpty()) return entries
                     val updated = entries.toMutableList()
                     changedIndices.forEach { index ->
                         updated[mapping[index]] = AgentTimelineEntry.Message(messages[index])
+                    }
+                    groupReplacements.forEach { (entryIndex, slots) ->
+                        val group = updated[entryIndex] as AgentTimelineEntry.WorkProcess
+                        val members = group.messages.toMutableList()
+                        slots.forEach { slot ->
+                            if (slot[0] in members.indices) members[slot[0]] = messages[slot[1]]
+                        }
+                        updated[entryIndex] = group.copy(messages = members)
                     }
                     // Neither the old input snapshot nor any previously returned list
                     // is mutated. Also tolerate a caller reusing its list container.
@@ -86,7 +136,30 @@ internal class AgentTimelineProjectionCache(
         source = input
         entries = projected
         sourceToEntry = mapAssistantSlots(input, projected)
+        workSlots = if (sourceToEntry == null) null else mapWorkSlots(input, projected)
         return projected
+    }
+
+    /** Source slot -> (entry, member) of a work-group step; null when ambiguous. */
+    private fun mapWorkSlots(
+        input: List<AgentChatMessageUi>,
+        projected: List<AgentTimelineEntry>,
+    ): Map<Int, WorkSlot>? {
+        val byId = HashMap<String, Int>(input.size)
+        input.forEachIndexed { index, message ->
+            if (byId.put(message.id, index) != null) return null
+        }
+        val slots = HashMap<Int, WorkSlot>()
+        projected.forEachIndexed { entryIndex, entry ->
+            val group = entry as? AgentTimelineEntry.WorkProcess ?: return@forEachIndexed
+            group.messages.forEachIndexed { member, message ->
+                val sourceIndex = byId[message.id] ?: return null
+                if (input[sourceIndex] !== message || slots.put(sourceIndex, WorkSlot(entryIndex, member)) != null) {
+                    return null
+                }
+            }
+        }
+        return slots
     }
 
     private fun mapAssistantSlots(
@@ -132,25 +205,40 @@ internal class AgentSpeechPrefaceCache(
         val previous = source
         val dependent = ownerDependentSlots
         if (previous != null && dependent != null && previous.size == messages.size && finalIds == selectedIds) {
-            var compatible = true
-            for (index in messages.indices) {
-                val old = previous[index]
-                val current = messages[index]
-                if (old === current) continue
-                if (old !is AgentMessageUi || current !is AgentMessageUi || old.id != current.id ||
-                    !old.isStreaming || !current.isStreaming ||
-                    !current.content.startsWith(old.content) || dependent[index]
+            // A live transcript replaces one slot at a time. Without this hint the
+            // scan below and the snapshot copy both walk every historical message.
+            val single = (messages as? AgentIncrementalList<AgentChatMessageUi>)?.singleReplacementFrom(previous)
+            if (single != null) {
+                val old = previous[single]
+                val current = messages[single]
+                if (old !== current && old is AgentMessageUi && current is AgentMessageUi &&
+                    old.id == current.id && old.isStreaming && current.isStreaming &&
+                    current.content.startsWith(old.content) && !dependent[single]
                 ) {
-                    compatible = false
-                    break
+                    source = messages
+                    return prefaces
+                }
+            } else {
+                var compatible = true
+                for (index in messages.indices) {
+                    val old = previous[index]
+                    val current = messages[index]
+                    if (old === current) continue
+                    if (old !is AgentMessageUi || current !is AgentMessageUi || old.id != current.id ||
+                        !old.isStreaming || !current.isStreaming ||
+                        !current.content.startsWith(old.content) || dependent[index]
+                    ) {
+                        compatible = false
+                        break
+                    }
+                }
+                if (compatible) {
+                    source = messages.incrementalSnapshot()
+                    return prefaces
                 }
             }
-            if (compatible) {
-                source = messages.toList()
-                return prefaces
-            }
         }
-        val input = messages.toList()
+        val input = messages.incrementalSnapshot()
         val ids = selectedIds.toSet()
         val result = fullProjection(input, ids)
         source = input
@@ -185,3 +273,9 @@ internal class AgentSpeechPrefaceCache(
         return dependent
     }
 }
+
+/** Same class: resume/retry filtering and work classification see an identical kind. */
+private fun AgentChatMessageUi.isWorkPayloadOf(current: AgentChatMessageUi): Boolean =
+    (this is ThinkingMessageUi && current is ThinkingMessageUi) ||
+        (this is ToolActivityMessageUi && current is ToolActivityMessageUi) ||
+        (this is ToolSummaryMessageUi && current is ToolSummaryMessageUi)

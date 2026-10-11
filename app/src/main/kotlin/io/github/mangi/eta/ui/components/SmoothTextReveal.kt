@@ -10,6 +10,8 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
@@ -18,9 +20,11 @@ import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.invalidateMeasurement
+import androidx.compose.ui.node.requireGraphicsContext
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
 import java.text.BreakIterator
 import java.util.Locale
 import kotlin.math.ceil
@@ -48,6 +52,8 @@ internal class SmoothTextRevealCoordinator {
     private val drainedState = MutableStateFlow(true)
     private val startedState = MutableStateFlow<Set<RevealBlockKey>>(emptySet())
     private var animationsPaused = false
+    /** Settled and fully covered: park the clock without completing pending glyphs. */
+    private var animationsHeld = false
     private var restoredSourceLength = 0
 
     /** Layout nodes may attach after the parent's restore callback; those old blocks
@@ -70,11 +76,15 @@ internal class SmoothTextRevealCoordinator {
     val isAnimationPaused: Boolean
         get() = animationsPaused
 
+    val isAnimationHeld: Boolean
+        get() = animationsHeld
+
     /**
      * 页面不可见时帧时钟会停，但 Runtime 仍可能继续追加文本。此时直接追平当前目标，
      * 并让后续排版结果同样立即完成，避免回到页面后补播后台积压的显现动画。
      */
     fun pauseAnimationsAndCatchUp() {
+        animationsHeld = false
         animationsPaused = true
         records.values.forEach(::completeRecord)
         updateDrainedState()
@@ -82,6 +92,7 @@ internal class SmoothTextRevealCoordinator {
     }
 
     fun resumeAnimationsAfterCatchUp() {
+        animationsHeld = false
         records.values.forEach(::completeRecord)
         updateDrainedState()
         animationsPaused = false
@@ -90,8 +101,23 @@ internal class SmoothTextRevealCoordinator {
 
     /** 暂停会话后续写：已显示的字保持追平，之后新到的字重新走打字机。 */
     fun resumeAnimationsWithoutCatchingUp() {
+        animationsHeld = false
         animationsPaused = false
         updateDrainedState()
+        wakeups.trySend(Unit)
+    }
+
+    /**
+     * 停稳且完全盖住时停住显现。已显示的进度保留，不追平，
+     * 后续排版也不会把未显示的字一次性补完。横滑或回到聊天后再继续。
+     */
+    fun holdAnimations() {
+        if (animationsHeld && !animationsPaused) {
+            wakeups.trySend(Unit)
+            return
+        }
+        animationsPaused = false
+        animationsHeld = true
         wakeups.trySend(Unit)
     }
 
@@ -184,7 +210,7 @@ internal class SmoothTextRevealCoordinator {
 
     suspend fun runFrameClock() {
         while (currentCoroutineContext().isActive) {
-            val active = firstPendingRecord()
+            val active = if (animationsHeld) null else firstPendingRecord()
             if (active == null) {
                 updateDrainedState()
                 wakeups.receive()
@@ -194,8 +220,10 @@ internal class SmoothTextRevealCoordinator {
             drainedState.value = false
             var previousFrameNanos = withFrameNanos { it }
             while (currentCoroutineContext().isActive) {
+                if (animationsHeld) break
                 val record = firstPendingRecord() ?: break
                 val frameNanos = withFrameNanos { it }
+                if (animationsHeld) break
                 StreamPerformanceDiagnostics.record("reveal.frameGap", frameNanos - previousFrameNanos)
                 val elapsedSeconds = ((frameNanos - previousFrameNanos) / NANOS_PER_SECOND)
                     .coerceIn(0f, MAX_FRAME_DELTA_SECONDS)
@@ -354,6 +382,11 @@ internal class SmoothTextRevealNode(
     private var cachedFullPath: Path? = null
     private var cachedNextPath: Path? = null
     private var cachedVisibleHeight = -1
+    private var cachedSettledPicture: GraphicsLayer? = null
+    private var cachedSettledLine = -1
+    private var cachedSettledWidth = -1
+    private var cachedSettledPrefix = -1
+    private var cachedSettledLayout: TextLayoutResult? = null
 
     override fun onAttach() {
         state.attach(this)
@@ -361,6 +394,7 @@ internal class SmoothTextRevealNode(
     }
 
     override fun onDetach() {
+        releaseSettledLayer()
         state.detach(this)
         clearPathCache()
         cachedVisibleHeight = -1
@@ -368,6 +402,7 @@ internal class SmoothTextRevealNode(
 
     fun updateState(next: SmoothTextRevealState) {
         if (state === next) return
+        releaseSettledLayer()
         if (isAttached) state.detach(this)
         state = next
         clearPathCache()
@@ -423,43 +458,112 @@ internal class SmoothTextRevealNode(
     private fun ContentDrawScope.drawInsideMeasuredHeight() {
         val snapshot = state.drawSnapshot()
         if (snapshot == null) {
+            releaseSettledLayer()
             drawDiagnosticContent()
             return
         }
         val contentScope = this
         val targetCount = snapshot.boundaries.lastIndex
         if (targetCount <= 0 || snapshot.progress >= targetCount) {
+            releaseSettledLayer()
             drawDiagnosticContent()
             return
         }
 
         val fullCount = floor(snapshot.progress).toInt().coerceIn(0, targetCount)
-        ensurePaths(snapshot, fullCount)
-        cachedFullPath?.let { path ->
-            clipPath(path) { contentScope.drawDiagnosticContent() }
+        val layout = snapshot.layoutResult
+        val textLength = layout.layoutInput.text.length
+        val fullEnd = snapshot.boundaries[fullCount].coerceIn(0, textLength)
+        // Finished lines are recorded once into a layer. Scrolling blits that layer
+        // instead of repainting the whole prefix. The line still being typed, and the
+        // fading glyph, stay live. Line height is not frozen.
+        var typedLine = -1
+        if (fullEnd > 0 && layout.lineCount > 0) {
+            typedLine = layout.getLineForOffset((fullEnd - 1).coerceAtMost(textLength - 1))
+            val completedBottom = if (typedLine > 0) layout.getLineBottom(typedLine - 1) else 0f
+            if (completedBottom > 0f) {
+                drawSettledLines(layout, typedLine, completedBottom)
+            }
+            val cursor = layout.getHorizontalPosition(fullEnd, usePrimaryDirection = true).coerceAtLeast(0f)
+            if (cursor > 0f) {
+                clipRect(
+                    top = layout.getLineTop(typedLine),
+                    right = cursor,
+                    bottom = layout.getLineBottom(typedLine),
+                ) { contentScope.drawDiagnosticContent() }
+            }
         }
-
         val partialAlpha = (snapshot.progress - fullCount).coerceIn(0f, 1f)
-        if (partialAlpha > 0f) {
+        if (partialAlpha > 0f && fullCount < targetCount) {
+            ensurePaths(snapshot, fullCount)
             cachedNextPath?.let { path ->
                 clipPath(path) {
                     alphaPaint.alpha = partialAlpha
                     StreamPerformanceDiagnostics.measure("reveal.saveLayer") {
-                        drawContext.canvas.saveLayer(
-                            // Only the fading grapheme needs an offscreen alpha layer.
-                            // A paragraph-sized layer grows with the answer on every frame.
-                            path.getBounds(),
-                            alphaPaint,
-                        )
+                        contentScope.drawContext.canvas.saveLayer(path.getBounds(), alphaPaint)
                     }
                     try {
                         contentScope.drawDiagnosticContent()
                     } finally {
-                        drawContext.canvas.restore()
+                        contentScope.drawContext.canvas.restore()
                     }
                 }
             }
         }
+    }
+
+    private fun ContentDrawScope.drawSettledLines(
+        layout: TextLayoutResult,
+        currentLine: Int,
+        completedBottom: Float,
+    ) {
+        val widthPx = ceil(size.width).toInt()
+        val heightPx = ceil(completedBottom).toInt()
+        val prefix = if (currentLine in 0 until layout.lineCount) layout.getLineStart(currentLine) else 0
+        if (widthPx <= 0 || heightPx <= 0 || heightPx > 8192) {
+            releaseSettledLayer()
+            val contentScope = this
+            clipRect(right = size.width, bottom = completedBottom) { contentScope.drawDiagnosticContent() }
+            return
+        }
+        val reusable = cachedSettledPicture != null &&
+            cachedSettledLine == currentLine &&
+            cachedSettledWidth == widthPx &&
+            cachedSettledPrefix == prefix &&
+            cachedSettledLayout === layout
+        if (!reusable) {
+            releaseSettledLayer()
+            val layer = requireGraphicsContext().createGraphicsLayer()
+            val contentScope = this
+            // record(size) retargets this draw scope. The density overload would run on a
+            // fresh scope and could not draw the paragraph content.
+            layer.record(size = IntSize(widthPx, heightPx)) {
+                contentScope.clipRect(right = widthPx.toFloat(), bottom = completedBottom) {
+                    contentScope.drawDiagnosticContent()
+                }
+            }
+            cachedSettledPicture = layer
+            cachedSettledLine = currentLine
+            cachedSettledWidth = widthPx
+            cachedSettledPrefix = prefix
+            cachedSettledLayout = layout
+            if (StreamPerformanceDiagnostics.enabled) {
+                StreamPerformanceDiagnostics.record("reveal.settled.record")
+            }
+        } else if (StreamPerformanceDiagnostics.enabled) {
+            StreamPerformanceDiagnostics.record("reveal.settled.hit")
+        }
+        drawLayer(cachedSettledPicture!!)
+    }
+
+    private fun releaseSettledLayer() {
+        val layer = cachedSettledPicture ?: return
+        cachedSettledPicture = null
+        cachedSettledLine = -1
+        cachedSettledWidth = -1
+        cachedSettledPrefix = -1
+        cachedSettledLayout = null
+        if (isAttached) requireGraphicsContext().releaseGraphicsLayer(layer)
     }
 
     private fun ContentDrawScope.drawDiagnosticContent() {

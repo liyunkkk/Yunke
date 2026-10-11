@@ -81,6 +81,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -203,7 +204,6 @@ import org.intellij.markdown.flavours.gfm.GFMTokenTypes.CELL
 import org.intellij.markdown.flavours.gfm.GFMTokenTypes.CHECK_BOX
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TooltipBox
@@ -298,11 +298,14 @@ private fun rememberActivePulse(
     active: Boolean,
     label: String,
 ): () -> Float {
-    if (!active) return StaticPulseAlpha
+    // A settled, fully covered chat must not drive a frame clock behind another page.
+    // The cycle starts at the static value, so resuming on swipe-back never jumps.
+    val settledCover = isChatSettledCovered(LocalChatRouteCovered.current, LocalChatTransitionActive.current)
+    if (!active || settledCover) return StaticPulseAlpha
     val transition = rememberInfiniteTransition(label = label)
     val alpha = transition.animateFloat(
-        initialValue = 0.58f,
-        targetValue = 1f,
+        initialValue = 1f,
+        targetValue = 0.58f,
         animationSpec = infiniteRepeatable(
             animation = tween(820, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse,
@@ -737,15 +740,13 @@ private fun UserMessageBubble(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TooltipBox(text = stringResource(R.string.ui_copy_4edd1d), enabled = true) {
-                IconButton(
+                ChatIconAction(
                     onClick = {
                         TouchHaptics.click(view)
                         @Suppress("DEPRECATION")
                         clipboardManager.setText(AnnotatedString(copyText))
                         copied = true
                     },
-                    minWidth = 30.dp,
-                    minHeight = 30.dp,
                 ) {
                     Icon(
                         imageVector = if (copied) Icons.Rounded.Check else Icons.Rounded.ContentCopy,
@@ -762,14 +763,12 @@ private fun UserMessageBubble(
                 }
             }
             TooltipBox(text = stringResource(R.string.ui_edit_a7f814), enabled = actionsEnabled) {
-                IconButton(
+                ChatIconAction(
                     onClick = {
                         TouchHaptics.click(view)
                         onEdit()
                     },
                     enabled = actionsEnabled,
-                    minWidth = 30.dp,
-                    minHeight = 30.dp,
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Edit,
@@ -780,14 +779,12 @@ private fun UserMessageBubble(
                 }
             }
             TooltipBox(text = stringResource(R.string.ui_branch_conversation), enabled = branchEnabled) {
-                IconButton(
+                ChatIconAction(
                     onClick = {
                         TouchHaptics.click(view)
                         onBranch()
                     },
                     enabled = branchEnabled,
-                    minWidth = 30.dp,
-                    minHeight = 30.dp,
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.CallSplit,
@@ -798,14 +795,12 @@ private fun UserMessageBubble(
                 }
             }
             TooltipBox(text = stringResource(R.string.ui_delete_3755f5), enabled = actionsEnabled) {
-                IconButton(
+                ChatIconAction(
                     onClick = {
                         TouchHaptics.click(view)
                         onDelete()
                     },
                     enabled = actionsEnabled,
-                    minWidth = 30.dp,
-                    minHeight = 30.dp,
                 ) {
                     Icon(
                         imageVector = Icons.Rounded.Delete,
@@ -820,6 +815,15 @@ private fun UserMessageBubble(
 }
 
 // ── Agent 结果 ───────────────────────────────────────────────────────
+
+/** A pause belongs to the live run. A finished answer whose exact content has already
+ * revealed must not reparse its terminal document as streaming while another row pauses. */
+internal fun answerFollowsRunPause(
+    runPaused: Boolean,
+    messageStreaming: Boolean,
+    revealedContent: String?,
+    content: String,
+): Boolean = runPaused && (messageStreaming || revealedContent != content)
 
 @Composable
 private fun AgentMessageBlock(
@@ -886,9 +890,10 @@ private fun AgentMessageBlock(
                             isStreaming = message.isStreaming,
                             animateInitialContent = !message.isStreaming &&
                                 displayContent.isNotEmpty() &&
-                                streamingState.snapshot == null &&
+                                streamingState.documentState.snapshot == null &&
                                 streamingState.revealedContent == null,
-                            isPaused = isPaused,
+                            isPaused = answerFollowsRunPause(isPaused, message.isStreaming,
+                                retainedStreamingState?.revealedContent, message.content),
                             onRevealCompleteChange = { streamingRevealComplete = it },
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -937,8 +942,42 @@ private fun AgentMessageBlock(
 /** 当前点开的推理把分帧组合进度和 loading 回退记进同一个点击窗口。 */
 private val LocalToggleProbe = staticCompositionLocalOf<ToggleProbeRef?> { null }
 
+/** Both ordinary answers and thinking use upstream prepared-document rendering. */
 @Composable
 private fun StableMarkdown(
+    content: String, modifier: Modifier = Modifier,
+    tone: ChatMarkdownTone = ChatMarkdownTone.Answer,
+    progressive: Boolean = false,
+) {
+    val bodyTraceMount = remember { nextChatBodyTraceMount() }
+    SideEffect { traceChatBodyRun("md", bodyTraceMount) }
+    io.github.mangi.eta.ui.markdown.DocumentStaticMarkdown(
+        content, modifier,
+        if (tone == ChatMarkdownTone.Answer) io.github.mangi.eta.ui.markdown.MarkdownTone.Answer
+        else io.github.mangi.eta.ui.markdown.MarkdownTone.Thinking,
+    )
+}
+
+@Composable
+private fun StreamingMarkdown(
+    state: StreamingMarkdownState, content: String, isStreaming: Boolean,
+    animateInitialContent: Boolean = false, isPaused: Boolean = false,
+    onRevealCompleteChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier, tone: ChatMarkdownTone = ChatMarkdownTone.Answer,
+) {
+    io.github.mangi.eta.ui.markdown.DocumentStreamingMarkdown(
+        state = state.documentState, content = content, isStreaming = isStreaming,
+        animateInitialContent = animateInitialContent, isPaused = isPaused,
+        onRevealCompleteChange = onRevealCompleteChange, modifier = modifier,
+        tone = if (tone == ChatMarkdownTone.Answer) io.github.mangi.eta.ui.markdown.MarkdownTone.Answer
+            else io.github.mangi.eta.ui.markdown.MarkdownTone.Thinking,
+    )
+}
+
+// Legacy AST renderer is retained only for isolated compatibility tests during migration.
+// It is not called by AgentMessageBlock, ThinkingRow or either production wrapper above.
+@Composable
+private fun LegacyStableMarkdown(
     content: String,
     modifier: Modifier = Modifier,
     tone: ChatMarkdownTone = ChatMarkdownTone.Answer,
@@ -1003,6 +1042,7 @@ private fun StableMarkdown(
  */
 @Stable
 internal class StreamingMarkdownState {
+    val documentState = io.github.mangi.eta.ui.markdown.DocumentStreamingState()
     var revealedContent by mutableStateOf<String?>(null)
     val parserSession = StreamingGfmParserSession()
     val revealCoordinator = SmoothTextRevealCoordinator().apply { pauseAnimationsAndCatchUp() }
@@ -1010,10 +1050,12 @@ internal class StreamingMarkdownState {
     val parseTargets = Channel<StreamingMarkdownTarget>(Channel.CONFLATED)
     val acceptedContent = arrayOf("")
     var snapshot by mutableStateOf<StreamingGfmSnapshot?>(null)
+    var completedRevealSource by mutableStateOf<String?>(null)
+    val compositionProgress = ProgressiveMarkdownCompositionState()
 }
 
 @Composable
-private fun StreamingMarkdown(
+private fun LegacyStreamingMarkdown(
     state: StreamingMarkdownState,
     content: String,
     isStreaming: Boolean,
@@ -1041,6 +1083,7 @@ private fun StreamingMarkdown(
         PreparedMarkdownSpec(typography, inlineCode, typography.textLink, preparedListener, preparedAnnotator)
     }
     val revealCoordinator = state.revealCoordinator
+    val compositionProgress = state.compositionProgress
     val components = remember(revealCoordinator) {
         chatMarkdownComponents(
             revealCoordinator = revealCoordinator,
@@ -1059,16 +1102,33 @@ private fun StreamingMarkdown(
     val currentPaused by rememberUpdatedState(isPaused)
     val restoreGeneration = state.restoreState.generation
     val view = LocalView.current
-    val routeCoveredNow = rememberUpdatedState(LocalChatRouteCovered.current)
+    val routeCovered = LocalChatRouteCovered.current
+    val transitionActive = LocalChatTransitionActive.current
+    val routeCoveredNow = rememberUpdatedState(routeCovered)
+    val settledCover = isChatSettledCovered(routeCovered, transitionActive)
+    val settledCoverNow by rememberUpdatedState(settledCover)
+    // A lazy-row disposal is not an activity pause. Keep only unfinished output
+    // mounted so its parser, reveal clock and frame-coupled haptics survive a fling.
+    // The pin keeps composition, not the viewport position or measured height.
+    KeepActiveStreamingRow(
+        shouldKeepStreamingRow(
+            content = content,
+            isStreaming = isStreaming,
+            isPaused = isPaused,
+            completedRevealSource = state.completedRevealSource,
+        ),
+    )
 
     LifecycleResumeEffect(state) {
         val animateExisting = animateInitialContent && !currentPaused && currentContent.isNotEmpty()
-        if (state.restoreState.begin(
-                currentContent,
-                live = currentIsStreaming && !currentPaused,
-                animateExisting = animateExisting,
-            )
-        ) {
+        val animate = state.restoreState.begin(
+            currentContent,
+            live = currentIsStreaming && !currentPaused,
+            animateExisting = animateExisting,
+        )
+        if (settledCoverNow) {
+            revealCoordinator.holdAnimations()
+        } else if (animate) {
             // A new message may already contain a whole network batch when first composed,
             // including a batch whose block has already ended. Do not classify that first
             // batch as restored history and reveal it all at once.
@@ -1088,14 +1148,18 @@ private fun StreamingMarkdown(
         }
     }
 
-    val animationsAllowed = state.restoreState.animationsAllowed(isPaused) || routeCoveredNow.value
+    // 停稳且完全盖住才停住显现，而且不追平。横滑、松手回弹期间露出的边继续逐字打。
+    val animationsAllowed = !settledCover && (
+        state.restoreState.animationsAllowed(isPaused) || (routeCovered && transitionActive)
+    )
     // Content is deliberately not a key. A streaming delta must not re-run the gate decision:
     // while the restore baseline is still pending, animationsAllowed is false, and every delta
     // would catch the reveal up to the newest text. That drains the pending records, the frame
     // clock parks on its wakeup channel, and the typewriter plus its haptics stop for the rest
     // of the message. Only a real gate change may move the coordinator.
-    LaunchedEffect(revealCoordinator, animationsAllowed, isPaused) {
+    LaunchedEffect(revealCoordinator, animationsAllowed, isPaused, settledCover) {
         if (animationsAllowed) revealCoordinator.resumeAnimationsWithoutCatchingUp()
+        else if (settledCover) revealCoordinator.holdAnimations()
         else if (!isPaused) revealCoordinator.pauseAnimationsAndCatchUp()
     }
 
@@ -1173,6 +1237,7 @@ private fun StreamingMarkdown(
                     nextStreamingSnapshot(state.snapshot, parsed)?.let { published ->
                         StreamPerformanceDiagnostics.record("markdown.targetToPublish", System.nanoTime() - publishTarget.queuedAtNs)
                         StreamPerformanceDiagnostics.record("markdown.publish", value = published.originalSource.length.toLong())
+                        state.compositionProgress.acceptSource(published.originalSource)
                         state.snapshot = published
                     }
                 }
@@ -1184,7 +1249,7 @@ private fun StreamingMarkdown(
         }
     }
 
-    LaunchedEffect(content, parseAsStreaming, snapshot?.originalSource, snapshot?.isComplete, revealCoordinator) {
+    LaunchedEffect(content, parseAsStreaming, snapshot?.originalSource, snapshot?.isComplete, revealCoordinator, compositionProgress.publication) {
         val currentSnapshot = snapshot
         if (!isStreamingMarkdownTargetComplete(
                 content = content,
@@ -1197,11 +1262,19 @@ private fun StreamingMarkdown(
             return@LaunchedEffect
         }
 
-        // 等这一版 AST 完成组合与排版后，再等待尾部字符的透明度动画收口。
-        withFrameNanos { }
-        if (!revealCoordinator.drained.value) {
-            revealCoordinator.drained.filter { it }.first()
-        }
+        // Parsing alone is not composition. A terminal long document may still
+        // be admitted over several frames; no pin release before that frontier.
+        snapshotFlow { compositionProgress.composedSource }
+            .first { it == currentSnapshot?.originalSource }
+        // Drain can be momentarily true between two successive block layouts.
+        // Require another layout frame after each drain before declaring completion.
+        do {
+            withFrameNanos { }
+            if (!revealCoordinator.drained.value) {
+                revealCoordinator.drained.filter { it }.first()
+            }
+            withFrameNanos { }
+        } while (!revealCoordinator.drained.value)
         if (isStreamingMarkdownTargetComplete(
                 content = currentContent,
                 isStreaming = currentIsStreaming,
@@ -1209,12 +1282,16 @@ private fun StreamingMarkdown(
                 snapshotComplete = currentSnapshot?.isComplete == true,
             )
         ) {
+            // Release the lazy pin only after this exact terminal revision has
+            // parsed, laid out for a frame and drained. A transient drained=true
+            // before onTextLayout must never release a still-pending row.
+            state.completedRevealSource = currentContent
             currentRevealCompleteCallback(true)
         }
     }
 
     snapshot?.let { parsed ->
-        val imageTransformer = rememberStreamingMarkdownImageTransformer(parsed.state.content)
+        val imageTransformer = rememberStreamingMarkdownImageTransformer(parsed)
         Markdown(
             state = parsed.state,
             annotator = preparedAnnotator,
@@ -1234,7 +1311,7 @@ private fun StreamingMarkdown(
                         currentContent = currentContent,
                     )
                 ) {
-                    if (state.restoreState.animationsAllowed(currentPaused)) {
+                    if (!settledCoverNow && state.restoreState.animationsAllowed(currentPaused)) {
                         revealCoordinator.resumeAnimationsAfterCatchUp()
                     }
                 }
@@ -1245,6 +1322,9 @@ private fun StreamingMarkdown(
                     preparedBlocks = parsed.preparedBlocks.takeIf { parsed.renderSpec == renderSpec },
                     components = successComponents,
                     revealCoordinator = revealCoordinator,
+                    compositionProgress = compositionProgress,
+                    compositionSource = parsed.originalSource,
+                    compositionPublication = compositionProgress.publication,
                     modifier = successModifier,
                 )
             },
@@ -1262,6 +1342,9 @@ private fun StreamingGfmSuccess(
     preparedBlocks: List<PreparedMarkdownBlock>? = null,
     components: MarkdownComponents,
     revealCoordinator: SmoothTextRevealCoordinator,
+    compositionProgress: ProgressiveMarkdownCompositionState,
+    compositionSource: String,
+    compositionPublication: Int,
     modifier: Modifier = Modifier,
 ) {
     val activeRevealBlocks = remember(state.node) {
@@ -1277,6 +1360,9 @@ private fun StreamingGfmSuccess(
         preparedBlocks = preparedBlocks,
         components = components,
         revealCoordinator = revealCoordinator,
+        compositionProgress = compositionProgress,
+        compositionSource = compositionSource,
+        compositionPublication = compositionPublication,
         modifier = modifier,
     )
 }
@@ -1294,6 +1380,9 @@ private fun ChatMarkdownDocument(
     revealCoordinator: SmoothTextRevealCoordinator? = null,
     progressive: Boolean = false,
     preparedBlocks: List<PreparedMarkdownBlock>? = null,
+    compositionProgress: ProgressiveMarkdownCompositionState? = null,
+    compositionSource: String? = null,
+    compositionPublication: Int = 0,
 ) {
     val bodyTraceMount = remember { nextChatBodyTraceMount() }
     val diagnosticRow = LocalStreamDiagnosticRow.current
@@ -1304,17 +1393,28 @@ private fun ChatMarkdownDocument(
     // 用户点击展开长文档时，把整篇的组合与文字测量分摊到连续几帧，避免首帧一次性
     // 构建全部 AnnotatedString 并测量全文。只在进入组合时决定一次，历史滚入可视区
     // 的已展开内容仍一次到位，不会在滚动途中改变高度。
-    val progressiveAtEntry = remember { progressive && revealCoordinator == null }
+    // Streaming also spreads a long first composition. The reveal clock still
+    // shows only the current tail, so later blocks stay unmeasured until then.
+    val progressiveAtEntry = remember { progressive || revealCoordinator != null }
     val composedBlockLimit = if (progressiveAtEntry) {
+        val streamingReveal = revealCoordinator != null
+        val firstBudget = if (streamingReveal) STREAMING_PROGRESSIVE_FIRST_FRAME_CHARS else PROGRESSIVE_FIRST_FRAME_CHARS
+        val frameBudget = if (streamingReveal) STREAMING_PROGRESSIVE_FRAME_CHARS else PROGRESSIVE_FRAME_CHARS
         val lengths = remember(blocks) { blocks.map { (it.endOffset - it.startOffset).coerceAtLeast(0) } }
-        var limit by remember(blocks) {
-            // 点击那一帧已经要重组标题行、启动展开动画；超出预算时这一帧不纳入任何正文块。
+        // 不用 blocks 当 key。流式增量每次都是新列表，重新记住会把已显示的块清掉，看起来整页闪。
+        // 上限只增不减；新块到了，由下面的长度变化继续往前排。
+        // The owner survives lazy-row disposal. Restoring already composed blocks
+        // prevents a long history row shrinking to the first 480 chars on reentry.
+        // Only the block count is retained; width/font changes still remeasure.
+        var limit by remember(compositionProgress, compositionProgress?.generation) {
             mutableIntStateOf(
-                nextProgressiveBlockLimit(lengths, 0, PROGRESSIVE_FIRST_FRAME_CHARS, mustAdvance = false),
+                compositionProgress?.initialLimit(lengths, firstBudget, streamingReveal)
+                    ?: nextProgressiveBlockLimit(lengths, 0, firstBudget, mustAdvance = streamingReveal),
             )
         }
+        SideEffect { compositionProgress?.recordLimit(limit, lengths.size, compositionSource, compositionPublication) }
         val probeRef = LocalToggleProbe.current
-        LaunchedEffect(lengths) {
+        LaunchedEffect(lengths.size, compositionProgress?.generation) {
             probeRef?.let { ref ->
                 StreamPerformanceDiagnostics.probeEvent(
                     ref.token, "progressive", "blocks=$limit/${lengths.size} chars=${lengths.sum()}",
@@ -1322,7 +1422,7 @@ private fun ChatMarkdownDocument(
             }
             while (limit < lengths.size) {
                 withFrameNanos { }
-                limit = nextProgressiveBlockLimit(lengths, limit, PROGRESSIVE_FRAME_CHARS)
+                limit = nextProgressiveBlockLimit(lengths, limit, frameBudget)
                 probeRef?.let { ref ->
                     StreamPerformanceDiagnostics.probeEvent(ref.token, "progressive", "blocks=$limit/${lengths.size}")
                 }
@@ -1485,6 +1585,8 @@ internal fun shouldFreezeStreamingMarkdownBlock(
 private const val STREAMING_PARSE_PUBLISH_INTERVAL_MS = 90L
 private const val PROGRESSIVE_FIRST_FRAME_CHARS = 240
 private const val PROGRESSIVE_FRAME_CHARS = 400
+private const val STREAMING_PROGRESSIVE_FIRST_FRAME_CHARS = 480
+private const val STREAMING_PROGRESSIVE_FRAME_CHARS = 900
 
 /**
  * 从 [current] 开始按字符预算继续纳入顶层块；返回值不超过块数。
@@ -2197,7 +2299,7 @@ private fun ChatCodeBlock(
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.weight(1f),
             )
-            IconButton(
+            ChatIconAction(
                 onClick = {
                     @Suppress("DEPRECATION")
                     clipboardManager.setText(AnnotatedString(code))
@@ -2239,7 +2341,7 @@ private fun ChatCodeBlock(
             .let { base ->
                 if (revealState != null) base.smoothTextReveal(revealState) else base
             }
-        HapticSelectionContainer {
+        val codeText: @Composable () -> Unit = {
             Text(
                 text = code,
                 style = if (revealState != null) {
@@ -2254,6 +2356,9 @@ private fun ChatCodeBlock(
                 },
             )
         }
+        // Selection registers the whole code block on every layout. A growing
+        // fence does that on each publish, so it stays a plain Text until done.
+        if (revealState == null) HapticSelectionContainer { codeText() } else codeText()
     }
 }
 
@@ -2586,16 +2691,6 @@ private fun ThinkingRow(
         expanded = message.isStreaming
     }
 
-    // Markdown 状态在行级提前创建：行进入组合（工作过程展开或滚动到可视区）时就开始
-    // 后台解析，而不是等到首次点击展开。否则首帧只能测量 loading fallback 的纯文本高度，
-    // 解析完成后正文高度会再次变化；状态挂在行级还能在收起/展开循环中存活，
-    // 避免每次展开都重新走一遍异步解析。
-    val stableMarkdownState = if (!message.isStreaming) {
-        rememberCompletedMarkdownState(message.content)
-    } else {
-        null
-    }
-
     val pulseAlpha = rememberActivePulse(
         active = message.isStreaming && !isPaused,
         label = "thinking_pulse",
@@ -2697,7 +2792,7 @@ private fun ThinkingRow(
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
             HapticSelectionContainer(
-                modifier = completedContentDrawLayer(retainDrawLayerWhenIdle(), streamingState == null)
+                modifier = retainDrawLayerWhenIdle(enabled = streamingState == null)
                     .toggleProbe(toggleProbeRef, "content"),
             ) {
                 Column {
@@ -2733,7 +2828,6 @@ private fun ThinkingRow(
                             StableMarkdown(
                                 content = message.content,
                                 tone = ChatMarkdownTone.Thinking,
-                                markdownState = checkNotNull(stableMarkdownState),
                                 modifier = contentModifier,
                                 progressive = expandedByTap,
                             )
@@ -2764,19 +2858,20 @@ internal fun tailDetailsEnter(fromBottom: Boolean): androidx.compose.animation.E
  * 停在展开之后，把内容画进一张与屏幕同分辨率的离屏纹理。
  * 之后滑动只移动这张纹理，渲染线程不再重放正文的文字命令。
  * 文字、选择和流式更新都不变；内容变化时纹理会重画。
+ * enabled 同时承接内容完成条件，不能再在同一边界叠 completedContentDrawLayer。
  * 高于 [MAX_RETAINED_LAYER_HEIGHT_PX] 的内容不缓存，避免纹理被裁切。
  */
 private const val MAX_RETAINED_LAYER_HEIGHT_PX = 8192
 
 @Composable
-internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(): Modifier {
+internal fun AnimatedVisibilityScope.retainDrawLayerWhenIdle(enabled: Boolean = true): Modifier {
     val settled = transition.currentState == EnterExitState.Visible &&
         transition.targetState == EnterExitState.Visible
     // 带代码块的 graphicsLayer 每次重组都是新实例，Compose 会作废纹理并重录。
     // 工具行运行时整行都在重组，离屏纹理因此每帧失效。这里用稳定参数，内容不变就不重录。
     // 过高的内容超过纹理上限就会被裁切，宁可不缓存。
     var heightPx by remember { mutableIntStateOf(0) }
-    val cache = settled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
+    val cache = enabled && settled && heightPx in 1..MAX_RETAINED_LAYER_HEIGHT_PX
     return Modifier
         .onSizeChanged { heightPx = it.height }
         // 保留同一个绘制层节点，只切换合成策略；展开终态或高度越界时不插拔正文绘制层。
@@ -2995,8 +3090,10 @@ private fun ToolActivityInline(
             exit = tailDetailsExit(anchorBottom),
             modifier = Modifier.toggleProbe(toggleProbeRef, "visible"),
         ) {
+            // squircleSurface 已用自己的离屏层完成填充和遮罩；不要在外层再缓存相同正文。
+            // 遮罩层是视觉必需的（含动画期间），与仅停稳后启用的 retain 缓存层不同。
             Column(
-                modifier = retainDrawLayerWhenIdle()
+                modifier = Modifier
                     .toggleProbe(toggleProbeRef, "content")
                     .fillMaxWidth()
                     .padding(start = 27.dp, top = 2.dp, bottom = 6.dp)
@@ -3209,7 +3306,7 @@ private fun ToolCommandBlock(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            IconButton(
+            ChatIconAction(
                 onClick = {
                     @Suppress("DEPRECATION")
                     clipboardManager.setText(AnnotatedString(command))

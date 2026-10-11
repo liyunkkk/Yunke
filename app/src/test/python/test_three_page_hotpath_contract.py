@@ -6,7 +6,7 @@ MAIN = ROOT / 'app/src/main/kotlin/io/github/mangi/eta'
 class ThreePageHotpathContract(unittest.TestCase):
     def test_disabled_follow_does_not_read_layout_and_keeps_two_frame_drain(self):
         s = (MAIN / 'ui/components/AgentChatBody.kt').read_text()
-        gate = s.index('if (!shouldFollowBottom) return@snapshotFlow InactiveBottomFollowLayout')
+        gate = s.index('if (!shouldFollowBottom || pointerDown.value) return@snapshotFlow InactiveBottomFollowLayout')
         self.assertLess(gate, s.index('val layoutInfo = scrollState.layoutInfo', gate))
         settling = s[s.index('var isBottomSettling'):s.index('var initialBottomPositionPending')]
         self.assertEqual(2, settling.count('withFrameNanos { }'))
@@ -42,7 +42,9 @@ class ThreePageHotpathContract(unittest.TestCase):
     def test_manage_batch_keeps_latest_row_delete_callback(self):
         s = (MAIN / 'ui/screens/chat/ManageChatsScreen.kt').read_text()
         self.assertIn('items(ordered, key = { it.id }', s)
-        self.assertIn('remember(nextOrder, byId)', s)
+        self.assertIn('remember(nextOrder, rowItemsById)', s)
+        self.assertIn('val latestById by rememberUpdatedState(remember(conversations)', s)
+        self.assertIn('latestById[conversation.id]?.let(onDeleteConversation)', s)
         self.assertIn('val currentOnDelete by rememberUpdatedState(onDelete)', s)
         self.assertIn('currentOnDelete()', s)
 

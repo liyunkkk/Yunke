@@ -95,6 +95,25 @@ class StreamingHapticsGateTest {
     }
 
     @Test
+    fun coveredResumedHostStopsOutputImmediately() {
+        val owner = Owner().apply { resume() }
+        var onChat by mutableStateOf(true)
+        lateinit var view: android.view.View
+        compose.setContent {
+            CompositionLocalProvider(LocalLifecycleOwner provides owner) {
+                view = LocalView.current
+                StreamingHaptics.Observe(enabled = onChat, conversationId = "conv-current")
+            }
+        }
+        compose.runOnIdle { assertTrue(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
+        compose.runOnIdle { assertFalse(ticked { StreamingHaptics.noteBackgroundOutput(3, "conv-current") }) }
+        onChat = false
+        compose.waitForIdle()
+        compose.runOnIdle { assertFalse(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
+        compose.runOnIdle { assertFalse(ticked { StreamingHaptics.noteBackgroundOutput(8, "conv-current") }) }
+    }
+
+    @Test
     fun disabledObserverAndUnknownViewNeverTick() {
         val owner = Owner().apply { resume() }
         lateinit var view: android.view.View
@@ -107,5 +126,26 @@ class StreamingHapticsGateTest {
         compose.runOnIdle { assertFalse(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
         val other = android.view.View(org.robolectric.RuntimeEnvironment.getApplication())
         compose.runOnIdle { assertFalse(ticked { StreamingHaptics.onVisibleAdvance(other) }) }
+    }
+
+    @Test
+    fun scrolledAwayReplyKeepsOutputWhileTheChatPageStaysOpen() {
+        val owner = Owner().apply { resume() }
+        var messageVisible by mutableStateOf(true)
+        lateinit var view: android.view.View
+        compose.setContent {
+            CompositionLocalProvider(LocalLifecycleOwner provides owner) {
+                view = LocalView.current
+                StreamingHaptics.Observe(
+                    enabled = true,
+                    conversationId = "conv-current",
+                    visibleReveal = messageVisible,
+                )
+            }
+        }
+        compose.runOnIdle { assertTrue(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
+        messageVisible = false
+        compose.waitForIdle()
+        compose.runOnIdle { assertTrue(ticked { StreamingHaptics.noteBackgroundOutput(3, "conv-current") }) }
     }
 }

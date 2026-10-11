@@ -229,17 +229,18 @@ internal fun AgentChatBody(
 ) {
     val chatComposeStartedNs = if (StreamPerformanceDiagnostics.enabled) System.nanoTime() else 0L
     val chatUiActive = LocalChatUiActive.current
-    // 还露在屏幕上时继续用实时消息。冻结会把字停在入栈那一帧。
-    val frozenChatSnapshot = remember(chatUiActive) {
-        if (chatUiActive) null else Triple(messages, isStreaming, isPaused)
+    val routeCovered = LocalChatRouteCovered.current
+    val transitionActive = LocalChatTransitionActive.current
+    // 停稳且完全盖住时保留当前快照，避免设置页和管理页跟着重排。
+    // 横滑手势和回弹期间露出的部分必须继续走正常打字机，不能追平、不能停住。
+    val followLiveTranscript = chatUiActive && !isChatSettledCovered(routeCovered, transitionActive)
+    val frozenChatSnapshot = remember(followLiveTranscript) {
+        if (followLiveTranscript) null else Triple(messages, isStreaming, isPaused)
     }
     val uiMessages = frozenChatSnapshot?.first ?: messages
     val uiStreaming = frozenChatSnapshot?.second ?: isStreaming
     val uiPaused = frozenChatSnapshot?.third ?: isPaused
-    io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
-        enabled = chatUiActive && !isPaused,
-        conversationId = collaborationConversationId,
-    )
+    // 一盖住就停震动；打字机只在导航仍在动、聊天露出时继续。
     SideEffect {
         StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong())
         if (chatComposeStartedNs != 0L) {
@@ -255,8 +256,10 @@ internal fun AgentChatBody(
     val context = LocalContext.current
     val voiceState by voiceController.state.collectAsState()
     val density = LocalDensity.current
-    val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val isKeyboardVisible = imeBottomPx > 0
+    val imeInsets = WindowInsets.ime
+    val isKeyboardVisible by remember(imeInsets, density) {
+        derivedStateOf { imeInsets.getBottom(density) > 0 }
+    }
     val browserShortcut by remember {
         AgentBrowserSession.snapshots
             .map { snapshot ->
@@ -296,12 +299,13 @@ internal fun AgentChatBody(
     val timelineEntries = remember(visibleMessages) {
         StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) { timelineProjection.project(visibleMessages) }
     }
-    val initialBottomItemIndex = remember(visibleMessages, isCompressingContext, isWaitingForCompression, childContexts) {
+    val hasCompactingChildContext = remember(childContexts) { childContexts.any { it.isCompacting } }
+    val initialBottomItemIndex = remember(timelineEntries.size, isCompressingContext, isWaitingForCompression, hasCompactingChildContext) {
         initialTimelineItemIndex(
             timelineEntries = timelineEntries,
             isCompressingContext = isCompressingContext,
             isWaitingForCompression = isWaitingForCompression,
-            hasCompactingChildContext = childContexts.any { it.isCompacting },
+            hasCompactingChildContext = hasCompactingChildContext,
         )
     }
     // A default one-item prefetch is too shallow for mixed short tool rows and tall Markdown.
@@ -317,6 +321,12 @@ internal fun AgentChatBody(
         cacheWindow = chatCacheWindow,
         initialFirstVisibleItemIndex = initialBottomItemIndex,
     )
+
+    io.github.mangi.eta.ui.haptics.StreamingHaptics.Observe(
+        enabled = !isPaused && !routeCovered,
+        conversationId = collaborationConversationId,
+    )
+
     val currentBrowserMessageId = remember(
         visibleMessages,
         browserShortcut,
@@ -685,10 +695,12 @@ internal fun AgentConversationMessages(
     // AgentChatBody supplies this projection so the initial tail anchor and the
     // rendered rows share one remembered full-list derivation. The standalone voice
     // panel still computes it here when it calls this renderer directly.
-    val standaloneTimelineProjection = remember { AgentTimelineProjectionCache() }
-    val projectedTimelineEntries = timelineEntries ?: remember(visibleMessages) {
-        StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) {
-            standaloneTimelineProjection.project(visibleMessages)
+    val projectedTimelineEntries = timelineEntries ?: run {
+        val standaloneTimelineProjection = remember { AgentTimelineProjectionCache() }
+        remember(visibleMessages) {
+            StreamPerformanceDiagnostics.measure("timeline.project", visibleMessages.size.toLong()) {
+                standaloneTimelineProjection.project(visibleMessages)
+            }
         }
     }
     val expansionSaver = remember {
@@ -734,9 +746,12 @@ internal fun AgentConversationMessages(
     }
     val retainedWorkSteps = workAnimations.mapValues { it.value.retainedStepKeys }
     val timelineRowsProjection = remember { AgentTimelineRowsCache() }
-    val timelineRows = remember(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps) {
+    // Run state still drives footers/reveal below. Row projection only reads it
+    // for the trailing work default; ordinary message rows do not depend on it.
+    val rowStreamingDefault = projectedTimelineEntries.streamingWorkDefault(workExpansionOverrides, isStreaming)
+    val timelineRows = remember(projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps) {
         StreamPerformanceDiagnostics.measure("timeline.project", projectedTimelineEntries.size.toLong()) {
-            timelineRowsProjection.project(projectedTimelineEntries, workExpansionOverrides, isStreaming, retainedWorkSteps)
+            timelineRowsProjection.project(projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps)
         }
     }
     LaunchedEffect(scrollToMessageId, timelineRows) {
@@ -788,11 +803,10 @@ internal fun AgentConversationMessages(
     val streamingMarkdownStates = LocalStreamingMarkdownStates.current ?: fallbackStreamingStates
     // Messages already on screen before this live run must not replay. A text block that
     // arrives and ends in one snapshot is absent from this set, so it still gets a typewriter.
-    val settledMessageIds = remember { mutableSetOf<String>() }
-    var seededSettledMessages by remember { mutableStateOf(false) }
-    if (!seededSettledMessages) {
-        seededSettledMessages = true
-        if (isStreaming || isPaused) visibleMessages.forEach { settledMessageIds.add(it.id) }
+    val settledMessageIds = remember {
+        mutableSetOf<String>().apply {
+            if (isStreaming || isPaused) visibleMessages.forEach { add(it.id) }
+        }
     }
     SideEffect {
         if (!isStreaming && !isPaused) {
@@ -824,7 +838,8 @@ internal fun AgentConversationMessages(
     // Observe user motion synchronously, before the asynchronous drag collector
     // and before another scheduled follow frame can mutate the list position.
     // 手指是否按在列表上。只观察、不消费事件。
-    val pointerDown = remember { BooleanArray(1) }
+    val pointerDown = remember { mutableStateOf(false) }
+    var heldLeadingGapPx by remember { mutableIntStateOf(0) }
     var programmaticUserScrolls by remember { mutableIntStateOf(0) }
     val userScrollConnection = remember(scrollState, directionTracker) {
         object : NestedScrollConnection {
@@ -833,7 +848,7 @@ internal fun AgentConversationMessages(
                     // 有些滚动也用 UserInput 来源，但手指根本没按下：把某块内容带进可视区
                     // （BringIntoView，例如取得焦点的选区）、无障碍滚动。它们不算用户滑动，
                     // 不能关掉跟底；否则快速输出时跟底一断，已经落后的那截一帧画进输入框。
-                    if (!isUserScrollGesture(pointerDown[0])) {
+                    if (!isUserScrollGesture(pointerDown.value)) {
                         if (StreamPerformanceDiagnostics.enabled && programmaticUserScrolls < 6) {
                             programmaticUserScrolls++
                             val frames = Throwable().stackTrace
@@ -930,21 +945,35 @@ internal fun AgentConversationMessages(
 
     var initialBottomPositionPending by remember(scrollState) { mutableStateOf(true) }
     val currentScrollTarget by rememberUpdatedState(scrollToMessageId)
+    val markdownTransitionActive = LocalChatTransitionActive.current
+    val routeCovered = LocalChatRouteCovered.current
+    val settledCover = isChatSettledCovered(routeCovered, markdownTransitionActive)
+    val settledCoverNow by rememberUpdatedState(settledCover)
+    // Freezing the transcript retains isStreaming=true. Explicitly park the controller too,
+    // or queued overflow and reveal drain still call scrollBy behind the settled page.
     val shouldFollowBottom by rememberUpdatedState(
         resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
             isUserDragging = initialBottomPositionPending || isUserScrolling || messageNavigationJob != null,
             isBottomSettling = isBottomSettling,
+            settledCover = settledCover,
         )
     )
     // 跟底时上提让尾部一直停在静止线上：列表变高多少，同一帧就上提多少，下沿不动。
     // 以前点开最底部一行时先暂停上提，让内容从上沿往下长过静止线、再由跟底滚动追回来，
     // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
     // 上提照常，标签随动画一帧一帧往上让开。
-    val shouldLiftTail = shouldFollowBottom
+    // Keep the last lift layer/geometry mounted while hidden. Parking the scroll clock must
+    // not remove the lift and move the already-revealed text on the first swipe-back frame.
+    val shouldLiftTail = resolveBottomFollowEnabled(
+        isStreaming = isStreaming,
+        keepBottomAnchored = keepBottomAnchored,
+        isUserDragging = initialBottomPositionPending || isUserScrolling || messageNavigationJob != null,
+        isBottomSettling = isBottomSettling,
+    )
+    val markdownViewport = remember { io.github.mangi.eta.ui.markdown.MarkdownDrawViewport() }
     // 被盖住但仍露在屏幕上时不走整列离屏裁剪。完全打开时仍按原来的条件。
-    val routeCovered = LocalChatRouteCovered.current
     val shouldClipTail = shouldClipChatTail(
         isStreaming = isStreaming,
         isBottomSettling = isBottomSettling,
@@ -954,11 +983,16 @@ internal fun AgentConversationMessages(
         navigationActive = messageNavigationJob != null || scrollToMessageId != null,
         routeCovered = routeCovered,
     )
+    SideEffect {
+        markdownViewport.updateEnabled(
+            !shouldLiftTail && !shouldClipTail && !routeCovered && !markdownTransitionActive,
+        )
+    }
     // 附件、输入框换行和 IME 改的是实际尾部留白，不是新消息增长。
     // 静态时没有跟底控制器接手；只在仍锚定且视口静止线确实变化时重新停靠。
     AnchorChatTailOnViewportChange(scrollState, bottomItemIndex) {
-        currentAnchor.value && !currentStreaming.value && !isBottomSettling &&
-            !initialBottomPositionPending && !pointerDown[0] && !currentDragging.value &&
+        !settledCoverNow && currentAnchor.value && !currentStreaming.value && !isBottomSettling &&
+            !initialBottomPositionPending && !pointerDown.value && !currentDragging.value &&
             !isUserScrolling && messageNavigationJob == null && currentScrollTarget == null
     }
     SideEffect {
@@ -1118,10 +1152,10 @@ internal fun AgentConversationMessages(
     }
     val canOwnWorkExpansionViewport: () -> Boolean = remember(scrollState) {
         {
-            resolveWorkExpansionViewportOwnership(
+            !settledCoverNow && resolveWorkExpansionViewportOwnership(
                 keepBottomAnchored = currentAnchor.value,
                 initialBottomPositionPending = initialBottomPositionPending,
-                pointerDown = pointerDown[0],
+                pointerDown = pointerDown.value,
                 isUserDragging = currentDragging.value,
                 isUserScrolling = isUserScrolling,
                 navigationActive = messageNavigationJob != null || currentScrollTarget != null,
@@ -1163,7 +1197,7 @@ internal fun AgentConversationMessages(
     LaunchedEffect(scrollState) {
         snapshotFlow {
             // Preserve the existing gate; disabling must still send a zero target.
-            if (!shouldFollowBottom) return@snapshotFlow InactiveBottomFollowLayout
+            if (!shouldFollowBottom || pointerDown.value) return@snapshotFlow InactiveBottomFollowLayout
             val layoutInfo = scrollState.layoutInfo
             val sentinel = layoutInfo.visibleItemsInfo.firstOrNull { item ->
                 item.key == ChatBottomSentinelKey
@@ -1226,7 +1260,7 @@ internal fun AgentConversationMessages(
             while (true) {
                 accept(bottomFollowDecisions.tryReceive().getOrNull() ?: break)
             }
-            if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null) {
+            if (!shouldFollowBottom || pointerDown.value || isUserScrolling || messageNavigationJob != null) {
                 reset()
                 continue
             }
@@ -1239,7 +1273,7 @@ internal fun AgentConversationMessages(
             while (true) {
                 accept(bottomFollowDecisions.tryReceive().getOrNull() ?: break)
             }
-            if (!shouldFollowBottom || isUserScrolling || messageNavigationJob != null) {
+            if (!shouldFollowBottom || pointerDown.value || isUserScrolling || messageNavigationJob != null) {
                 reset()
                 continue
             }
@@ -1279,7 +1313,7 @@ internal fun AgentConversationMessages(
             var consumedStep = 0f
             try {
                 scrollState.scroll {
-                    if (!isUserScrolling && messageNavigationJob == null && shouldFollowBottom) {
+                    if (!pointerDown.value && !isUserScrolling && messageNavigationJob == null && shouldFollowBottom) {
                         // Post-layout expansion recovery may already have consumed this target.
                         // Recheck fresh geometry inside the scroll owner, not the queued decision.
                         val currentStep = resolveFollowScrollStepAfterRecovery(
@@ -1340,6 +1374,7 @@ internal fun AgentConversationMessages(
     }
     Box(
         modifier = modifier
+            .onGloballyPositioned(markdownViewport::updateCoordinates)
             .clipToBounds()
             // clipRect 和普通 clip 都裁不到子级 graphicsLayer（跟底上提、思考卡片的离屏纹理）。
             // 先把整列画进一张按静止线裁切的离屏纹理，文字才不会露进输入框。
@@ -1386,9 +1421,12 @@ internal fun AgentConversationMessages(
             // Commit count only (ns=0): proves this content lambda was applied, not its cost.
             StreamPerformanceDiagnostics.record("chat.content.commit", value = 1)
         }
+        androidx.compose.runtime.CompositionLocalProvider(
+            io.github.mangi.eta.ui.markdown.LocalMarkdownDrawViewport provides markdownViewport,
+        ) {
         LazyColumn(
             state = scrollState,
-            verticalArrangement = if (shouldPinConversationToBottom(isStreaming, streamFilledViewport)) {
+            verticalArrangement = if (!pointerDown.value && shouldPinConversationToBottom(isStreaming, streamFilledViewport)) {
                 Arrangement.Bottom
             } else {
                 Arrangement.Top
@@ -1397,21 +1435,21 @@ internal fun AgentConversationMessages(
                 .streamDiagnosticMeasure("list.measure", diagnosticListAttribution)
                 .streamDiagnosticPlacement("list.place", diagnosticListAttribution)
                 .fillMaxSize()
-                .graphicsLayer {
-                    // 不跟底时不读滚动位置。滑动中读取会让这一层每帧失效，子内容的离屏纹理被整列重录。
-                    translationY = if (shouldLiftTail) {
+                // 层本身就会在滑动时整列重录。只有跟底上提才挂上；手指滑动时列表直接滚动，
+                // 已完成块的离屏纹理可以复用。打字机和振动不在这里停。
+                .then(if (shouldLiftTail) {
+                    Modifier.graphicsLayer {
                         val overflow = scrollState.followTailOverflow()
-                        // 与滚动步长同一套整像素。这一帧量不到尾部时沿用上一帧，避免底边掉下去再弹回。
-                        -nextHeldTailLift(
+                        translationY = -nextHeldTailLift(
                             shouldLift = true,
                             overflowPx = overflow,
                             heldPx = heldTailLift[0],
+                            pointerDown = pointerDown.value,
                         ).also { heldTailLift[0] = it }.toFloat()
-                    } else {
-                        heldTailLift[0] = 0
-                        0f
                     }
-                }
+                } else {
+                    Modifier.also { heldTailLift[0] = 0 }
+                })
                 .onGloballyPositioned {
                     StreamPerformanceDiagnostics.recordListGeometry(diagnosticList, scrollState, visibleMessages.size)
                     // Post-layout, before draw: pinned work insertion preserves a measured
@@ -1429,11 +1467,25 @@ internal fun AgentConversationMessages(
                     }
                 }
                 .pointerInput(Unit) {
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            pointerDown[0] = event.changes.any { it.pressed }
+                    try {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val pressed = event.changes.any { it.pressed }
+                                if (pointerDown.value != pressed) {
+                                    // Preserve short-list bottom alignment as real leading space.
+                                    // Otherwise tail growth moves the first row before scrollBy runs.
+                                    heldLeadingGapPx = if (pressed && !scrollState.canScrollBackward && !scrollState.canScrollForward) {
+                                        scrollState.layoutInfo.visibleItemsInfo.firstOrNull()
+                                            ?.takeIf { it.index == 0 }?.offset?.coerceAtLeast(0) ?: 0
+                                    } else 0
+                                    pointerDown.value = pressed
+                                }
+                            }
                         }
+                    } finally {
+                        pointerDown.value = false
+                        heldLeadingGapPx = 0
                     }
                 }
                 .nestedScroll(userScrollConnection)
@@ -1442,7 +1494,7 @@ internal fun AgentConversationMessages(
                 .overScrollVertical(),
             // 最后一条静止时停在输入框上方 14dp；手动滑动时内容可以滚到输入框后面。
             contentPadding = PaddingValues(
-                top = 14.dp,
+                top = 14.dp + with(LocalDensity.current) { heldLeadingGapPx.toDp() },
                 bottom = ConversationComposerGap + bottomInset,
             ),
             overscrollEffect = null,
@@ -1514,7 +1566,7 @@ internal fun AgentConversationMessages(
                         val message = entry.message
                         ChatMessageItem(
                             message = message,
-                            speechPreface = (message as? AgentMessageUi)?.let { speechPrefaces[it.id] }.orEmpty(),
+                            speechPreface = "",
                             retainedStreamingState = (message as? AgentMessageUi)
                                 ?.takeIf { agentMessage ->
                                     agentMessage.isStreaming ||
@@ -1534,13 +1586,13 @@ internal fun AgentConversationMessages(
                             showBrowserShortcut = message is ToolActivityMessageUi &&
                                 message.toolName == "browser_use" &&
                                 message.id == currentBrowserMessageId,
-                            enableLivePreview = !isStreaming,
+                            enableLivePreview = message is ToolActivityMessageUi && !isStreaming,
                             // UserMessageBubble ignores these switches; its toolbar is unchanged.
                             showCopyAction = false,
                             showMessageActions = false,
-                            messageActionsEnabled = messageActionsEnabled && !isStreaming && !isPaused,
-                            branchEnabled = branchEnabled,
-                            isEditing = message.id == editTargetMessageId,
+                            messageActionsEnabled = message is UserMessageUi && messageActionsEnabled && !isStreaming && !isPaused,
+                            branchEnabled = message is UserMessageUi && branchEnabled,
+                            isEditing = message is UserMessageUi && message.id == editTargetMessageId,
                             isPaused = isPaused,
                             onThinkingToggle = if (message is ThinkingMessageUi) {
                                 { _, willExpand -> onThinkingRowToggle(entry.key, willExpand) }
@@ -1669,7 +1721,7 @@ internal fun AgentConversationMessages(
                                 retainedStreamingState = retainedState,
                                 showBrowserShortcut = message is ToolActivityMessageUi &&
                                     message.id == currentBrowserMessageId,
-                                enableLivePreview = !isStreaming,
+                                enableLivePreview = message is ToolActivityMessageUi && !isStreaming,
                                 compact = true,
                                 isPaused = isPaused,
                                 onThinkingToggle = if (message is ThinkingMessageUi) {
@@ -1732,6 +1784,8 @@ internal fun AgentConversationMessages(
                         .height(1.dp),
                 )
             }
+        }
+
         }
 
         fun navigateUserMessage(toEdge: Boolean) {
@@ -2128,7 +2182,8 @@ internal fun resolveBottomFollowEnabled(
     keepBottomAnchored: Boolean,
     isUserDragging: Boolean,
     isBottomSettling: Boolean = false,
-): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
+    settledCover: Boolean = false,
+): Boolean = !settledCover && (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
 
 /** 尾部留白负责静态停靠；整宽裁剪只负责输出及布局追平前的防溢出。 */
 internal fun shouldClipChatTail(
@@ -2331,8 +2386,9 @@ internal fun resolveFollowTailLag(following: Boolean, tailOverflowPx: Int?): Fol
 }
 
 /** 测量暂时缺失时保留上一帧上提，避免卡片底边在输入框附近来回跳。 */
-internal fun nextHeldTailLift(shouldLift: Boolean, overflowPx: Int?, heldPx: Int): Int = when {
+internal fun nextHeldTailLift(shouldLift: Boolean, overflowPx: Int?, heldPx: Int, pointerDown: Boolean = false): Int = when {
     !shouldLift -> 0
+    pointerDown -> heldPx.coerceAtLeast(0)
     overflowPx == null -> heldPx.coerceAtLeast(0)
     else -> overflowPx.coerceAtLeast(0)
 }

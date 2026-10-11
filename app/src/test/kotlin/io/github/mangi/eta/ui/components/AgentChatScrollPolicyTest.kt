@@ -8,6 +8,37 @@ import org.junit.Test
 
 class AgentChatScrollPolicyTest {
     @Test
+    fun settledCoveredStreamingAndRevealDrainDoNotFollowBottom() {
+        listOf(true, false).forEach { streaming ->
+            assertFalse(resolveBottomFollowEnabled(
+                isStreaming = streaming,
+                keepBottomAnchored = true,
+                isUserDragging = false,
+                isBottomSettling = true,
+                settledCover = isChatSettledCovered(routeCovered = true, transitionActive = false),
+            ))
+        }
+    }
+
+    @Test
+    fun movingCoveredRouteAndReturnKeepNormalFollowPolicy() {
+        listOf(true to true, false to false).forEach { (covered, moving) ->
+            assertTrue(resolveBottomFollowEnabled(
+                isStreaming = true,
+                keepBottomAnchored = true,
+                isUserDragging = false,
+                settledCover = isChatSettledCovered(covered, moving),
+            ))
+            assertFalse(resolveBottomFollowEnabled(
+                isStreaming = true,
+                keepBottomAnchored = false,
+                isUserDragging = false,
+                settledCover = isChatSettledCovered(covered, moving),
+            ))
+        }
+    }
+
+    @Test
     fun networkCompletionKeepsFollowingUntilRenderedTailSettles() {
         assertTrue(
             resolveBottomFollowEnabled(

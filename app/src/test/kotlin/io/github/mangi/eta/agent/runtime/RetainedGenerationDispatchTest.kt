@@ -76,7 +76,7 @@ class RetainedGenerationDispatchTest {
         }
     }
 
-    @Test fun successFrozenHistoricalTaskDoesNotBlockFreshOrdinaryDispatchOrChangeItsIdentity() {
+    @Test fun successRunningHistoricalTaskDoesNotBlockFreshOrdinaryDispatchOrChangeItsIdentity() {
         val owner = UUID.randomUUID().toString()
         val oldRun = UUID.randomUUID().toString()
         val session = AgentRuntimeSession(oldRun)
@@ -103,7 +103,8 @@ class RetainedGenerationDispatchTest {
                 set(task, "workspaceOwnershipVerified", true)
                 AgentChildRunControl.terminate(session, AgentChildControlPolicy.Reason.SUCCESS)
                 registry.detach(old.generation)
-                await { old.get(id).optString("status") == "awaiting_decision" }
+                assertEquals("running", old.get(id).getString("status"))
+                assertFalse(old.get(id).getBoolean("pause_requested"))
                 assertTrue(AgentChildRunControl.pendingSelections.value.none { it.runId == oldRun })
                 val before = old.get(id)
                 val oldTarget = old.target()
@@ -134,12 +135,12 @@ class RetainedGenerationDispatchTest {
                     assertTrue(after.isNull("successor_task_id"))
                     assertEquals("REPLACEMENT_NOT_ALLOWED", current.execute("delegate_task", JSONObject()
                         .put("task", "not authorized").put("replace_task_id", id)).getString("code"))
-                    // A delayed old finally may pause its own group, never this run's coordinator.
+                    // An explicit old-group control may pause its own group, never the new run.
                     registry.pause(oldTarget)
                     registry.detach(old.generation)
                     val another = current.delegate()
                     assertTrue(another.toString(), another.optBoolean("ok"))
-                    assertEquals("awaiting_decision", current.get(id).getString("status"))
+                    await { current.get(id).getString("status") == "awaiting_decision" }
                 }
             }
         } finally {
@@ -170,9 +171,22 @@ class RetainedGenerationDispatchTest {
                     assertTrue(registry.stopRun(old.run))
                     assertTrue(current.delegate().optBoolean("ok"))
                     assertEquals(count + 1, current.coordinator.taskIds().size)
+                    val archivedId = current.coordinator.taskIds().first()
                     assertTrue(registry.stop(target))
                     assertEquals("RUN_CLOSED", current.delegate().getString("code"))
+                    // Exercise the other side of the stop/retire race deterministically:
+                    // archived tasks remain readable, but ordinary admission stays closed.
+                    await {
+                        // The fixture has no Android task-change callback; a real result
+                        // read also drives the registry's end/onTaskChanged retirement.
+                        current.get(archivedId)
+                        synchronized(registry) { field(current.group, "coordinator") == null }
+                    }
+                    assertEquals("RUN_CLOSED", current.delegate().getString("code"))
                     assertEquals(count + 1, current.coordinator.taskIds().size)
+                    assertTrue(current.get(archivedId).optBoolean("archived"))
+                    assertEquals("TASK_FINISHED", current.execute("continue_task",
+                        JSONObject().put("task_id", archivedId)).getString("code"))
                 }
             }
         } finally { release.countDown() }

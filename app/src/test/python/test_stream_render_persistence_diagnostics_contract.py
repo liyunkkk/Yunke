@@ -144,7 +144,12 @@ class StreamRenderPersistenceDiagnosticsContract(unittest.TestCase):
             self.assertNotIn("withContext", synchronous_body)
             self.assertNotIn("delay(", synchronous_body)
         body = between(reveal, "private fun ContentDrawScope.drawInsideMeasuredHeight", "private fun ensurePaths")
-        self.assertEqual(body.count("drawDiagnosticContent()"), 5)  # Four original calls plus declaration.
+        # Null, complete, settled fallback, settled record, current line, fading glyph,
+        # plus the wrapper declaration.
+        self.assertEqual(body.count("drawDiagnosticContent()"), 7)
+        self.assertIn("layer.record(size = IntSize(", body)
+        self.assertIn("drawLayer(", body)
+        self.assertIn("releaseGraphicsLayer(layer)", body)
         self.assertEqual(body.count("drawContent()"), 1)  # The wrapper alone owns the actual call.
         self.assertEqual(body.count("drawContext.canvas.saveLayer("), 1)
         self.assertEqual(body.count("drawContext.canvas.restore()"), 1)

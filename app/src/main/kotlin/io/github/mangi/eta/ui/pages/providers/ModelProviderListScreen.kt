@@ -83,8 +83,10 @@ internal fun ModelProviderListScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
-    val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
-    val storedProviderId by RuntimeConfigRepository.selectedProviderIdFlow().collectAsState(initial = null)
+    // These factories create cold mapped flows; recollecting on each emission/search edit
+    // needlessly repeats the database/model mapping during the page's first frames.
+    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
+    val storedProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }.collectAsState(initial = null)
     val selectedProviderId = currentProviderId?.takeIf { it.isNotBlank() } ?: storedProviderId
     var searchQuery by remember { mutableStateOf("") }
     var selectionMode by remember { mutableStateOf(false) }

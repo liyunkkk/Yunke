@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+    id("eta.compose-semantics-cache")
 }
 
 val keystoreProperties = Properties().apply {
@@ -43,8 +44,8 @@ android {
         minSdk = 34
         targetSdk = 36
         // versionCode 规则：yyyyMMdd + 两位当日序号（01 起），发版时随 versionName 一起手动递增。
-        versionCode = 2026100801
-        versionName = "5.3.3"
+        versionCode = 2026101106
+        versionName = "5.3.9"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }

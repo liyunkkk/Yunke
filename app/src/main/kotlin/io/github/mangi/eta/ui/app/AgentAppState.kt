@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.app
 
+import android.content.BroadcastReceiver
 import android.content.ComponentName
+import android.content.IntentFilter
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.agent.runtime.AgentChildTaskGroups
@@ -316,7 +318,18 @@ internal class AgentAppState(
     private var skillNoticeSequence = 0L
     private var pendingSkillZipUri: Uri? = null
     private var pendingSkillZipSha256: String? = null
-    private var selectionProviders: List<io.github.mangi.eta.data.model.ProviderSetting> = emptyList()
+    @Volatile private var selectionProviders: List<io.github.mangi.eta.data.model.ProviderSetting> = emptyList()
+
+    /** In-memory memo keyed by the provider snapshot identity plus binding ids.
+     * Not a data class so no generated toString can expose provider credentials. */
+    private class ContextRouteSignatureEntry(
+        val providers: List<io.github.mangi.eta.data.model.ProviderSetting>,
+        val providerId: String,
+        val modelId: String,
+        val signature: String?,
+    )
+
+    @Volatile private var contextRouteSignatureEntry: ContextRouteSignatureEntry? = null
     private var defaultProviderId: String? = null
     private var defaultModelId: String? = null
     private var modelBindingGeneration = 0L
@@ -578,18 +591,22 @@ internal class AgentAppState(
 
     /** 严格路由签名：customHeaders/customBody/sessionGatewayJson 一律 fail closed，
      * 凭据内容从不参与任何持久化比较。 */
-    private fun strictRouteSignature(state: AgentChatHomeUiState): String? {
-        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
-        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
-        return RequestOverheadCalibration.routeSignature(provider, model).takeIf { it.isNotBlank() }
-    }
+    private fun strictRouteSignature(
+        provider: io.github.mangi.eta.data.model.ProviderSetting,
+        model: io.github.mangi.eta.data.model.Model,
+    ): String? = RequestOverheadCalibration.routeSignature(provider, model).takeIf { it.isNotBlank() }
 
     /** Actual receipts need a verifiable local scope even when custom routing forbids learning.
-     * Only a digest is checkpointed; custom configuration is never a calibration scope. */
-    private fun contextRouteSignature(state: AgentChatHomeUiState): String? {
-        val provider = selectionProviders.firstOrNull { it.id == state.providerId && it.isEnabled } ?: return null
-        val model = provider.models.firstOrNull { it.id == state.modelId && it.isEnabled } ?: return null
-        strictRouteSignature(state)?.let { return it }
+     * Only a digest is checkpointed; custom configuration is never a calibration scope.
+     * Uncached: computed from one captured provider snapshot. */
+    private fun contextRouteSignature(
+        providers: List<io.github.mangi.eta.data.model.ProviderSetting>,
+        providerId: String,
+        modelId: String,
+    ): String? {
+        val provider = providers.firstOrNull { it.id == providerId && it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == modelId && it.isEnabled } ?: return null
+        strictRouteSignature(provider, model)?.let { return it }
         val endpoint = when (provider) {
             is io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting -> provider.endpointMode
             is io.github.mangi.eta.data.model.CustomProviderSetting -> provider.endpointMode
@@ -605,6 +622,20 @@ internal class AgentAppState(
                 model.copy(createdAt = 0, displayName = "", sortOrder = 0)))
         return "actual-local-v1:" + java.security.MessageDigest.getInstance("SHA-256")
             .digest(fields.toString().toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    /** Memoized [contextRouteSignature] for the current snapshot and binding. */
+    private fun contextRouteSignature(state: AgentChatHomeUiState): String? {
+        // Streaming deltas re-check the route on every publish; the inputs are only the
+        // provider snapshot (replaced, never mutated) and the two binding ids.
+        val providers = selectionProviders
+        contextRouteSignatureEntry?.let { cached ->
+            if (cached.providers === providers && cached.providerId == state.providerId &&
+                cached.modelId == state.modelId) return cached.signature
+        }
+        val signature = contextRouteSignature(providers, state.providerId, state.modelId)
+        contextRouteSignatureEntry = ContextRouteSignatureEntry(providers, state.providerId, state.modelId, signature)
+        return signature
     }
 
     /** UI 侧同一个“有效实测”：InputBar 只有在它为 null（真未知）时才因为本地估算解除发送禁用，
@@ -646,6 +677,7 @@ internal class AgentAppState(
 
     init {
         refreshConversationSummaries()
+        observeConversationSummaryDates()
         observeRuntimeSelection()
         observeAutoCompressEnabled()
         scope.launch(Dispatchers.Main.immediate) {
@@ -6316,6 +6348,32 @@ internal class AgentAppState(
         }
     }
 
+    private fun observeConversationSummaryDates() {
+        scope.launch(Dispatchers.Main.immediate) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    // Summary labels are cached; invalidate even when no conversation changes.
+                    refreshConversationSummaries()
+                }
+            }
+            appContext.registerReceiver(
+                receiver,
+                IntentFilter().apply {
+                    addAction(Intent.ACTION_DATE_CHANGED)
+                    addAction(Intent.ACTION_TIME_CHANGED)
+                    addAction(Intent.ACTION_TIMEZONE_CHANGED)
+                    addAction(Intent.ACTION_LOCALE_CHANGED)
+                },
+                Context.RECEIVER_NOT_EXPORTED,
+            )
+            try {
+                kotlinx.coroutines.awaitCancellation()
+            } finally {
+                appContext.unregisterReceiver(receiver)
+            }
+        }
+    }
+
     private fun refreshConversationSummaries() {
         if (runReplayBatch.isActive) return
         StreamUiEventDiagnostics.measure("ui.summaries.refresh", conversationsById.size.toLong()) {
@@ -6332,7 +6390,8 @@ internal class AgentAppState(
         val locale = appContext.resources.configuration.locales[0]
         val use24HourClock = DateFormat.is24HourFormat(appContext)
         val environment = ConversationSummaryEnvironment(
-            configuration = appContext.resources.configuration.toString(),
+            // Only the locale affects labels; orientation/uiMode must not invalidate the cache.
+            configuration = appContext.resources.configuration.locales.toLanguageTags(),
             localDay = java.time.Instant.ofEpochMilli(nowMillis).atZone(timeZone.toZoneId()).toLocalDate().toEpochDay(),
             timeZone = timeZone,
             use24HourClock = use24HourClock,
@@ -6359,7 +6418,15 @@ internal class AgentAppState(
                     folderId = conversationFolderIds[id],
                     environment = environment,
                 )
-                conversationSummaryCache.getOrBuild(id, key) {
+                // The open conversation's preview changes on every token. Keep the last
+                // summary while it is streaming so the manage list is not rebuilt per delta,
+                // but never keep its old day/locale/zone after the label environment changes.
+                val cached = if (state.isStreaming && id == selectedConversationId) {
+                    conversationSummaryCache.current(id, environment)
+                } else {
+                    null
+                }
+                cached ?: conversationSummaryCache.getOrBuild(id, key) {
                     ConversationSummaryUi(
                         id = id,
                         title = conversationTitles[id].orEmpty().ifBlank {
@@ -6412,6 +6479,11 @@ internal class AgentAppState(
                         isActiveRun = state.isStreaming,
                         hasCompletionMarker = id in conversationCompletionMarkers,
                         folderId = conversationFolderIds[id],
+                        isToday = ConversationTimeLabels.isToday(
+                            timestampMillis = conversationCreatedAt[id] ?: conversationUpdatedAt[id] ?: 0L,
+                            nowMillis = nowMillis,
+                            timeZone = timeZone,
+                        ),
                     )
                 }
             }
@@ -7446,6 +7518,9 @@ internal data class ConversationSummaryKey(
 internal class ConversationSummaryCache {
     private data class Entry(val key: ConversationSummaryKey, val summary: ConversationSummaryUi)
     private val entries = mutableMapOf<String, Entry>()
+
+    fun current(id: String, environment: ConversationSummaryEnvironment): ConversationSummaryUi? =
+        entries[id]?.takeIf { it.key.environment == environment }?.summary
 
     fun retain(ids: Set<String>) {
         entries.keys.retainAll(ids)

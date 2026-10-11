@@ -16,6 +16,7 @@ internal object StreamingHaptics {
         val lifecycle: Lifecycle,
         val conversationId: String?,
         val enabled: () -> Boolean,
+        val visibleReveal: () -> Boolean,
     )
 
     /**
@@ -80,7 +81,12 @@ internal object StreamingHaptics {
 
     fun noteBackgroundOutput(graphemes: Int, conversationId: String? = null, reasoning: Boolean = false) {
         if (graphemes <= 0 || !backgroundAllowed(reasoning)) return
-        // 当前页还在打字时由可见打字机震动。离开页面、展开侧栏或退到后台仍补震，直到换成另一条会话。
+        // 应用内切到其它页面要马上停，不能把已经排上的补震放完。
+        // 退到后台时页面不再 RESUMED，仍按后台震动设置补震。
+        if (coveredWhileResumed(conversationId)) {
+            cancelBackgroundTicks()
+            return
+        }
         val view = currentConversationView(conversationId) ?: return
         if (foregroundGate(view)) return
         allowedAdvances++
@@ -130,9 +136,20 @@ internal object StreamingHaptics {
         mainHandler.postDelayed(backgroundTick, BACKGROUND_TICK_INTERVAL_MS)
     }
 
-    private fun foregroundGate(view: View): Boolean = synchronized(gates) {
+    /** 聊天还在前台组合里，但这个会话的震动已经关掉。用于设置页、管理页等盖住聊天的情况。 */
+    private fun coveredWhileResumed(conversationId: String?): Boolean = synchronized(gates) {
+        if (conversationId.isNullOrBlank()) return false
         gates.any { gate ->
-            gate.view === view && gate.enabled() &&
+            gate.conversationId == conversationId && !gate.enabled() &&
+                gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        }
+    }
+
+    private fun foregroundGate(view: View): Boolean = synchronized(gates) {
+        // 划出当前这条后，打字机节点卸掉，visibleReveal 变 false。
+        // 聊天页还开着时不能因此停震：可见推进仍走前台，离开组合的字走补震。
+        gates.any { gate ->
+            gate.view === view && gate.enabled() && gate.visibleReveal() &&
                 gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         }
     }
@@ -142,11 +159,11 @@ internal object StreamingHaptics {
         val ownsView = view === foregroundView || view === backgroundView ||
             gates.any { it.view === view && it.conversationId == id }
         if (!ownsView) return false
-        val visible = gates.any { gate ->
-            gate.conversationId == id && gate.enabled() &&
+        val pageOpen = gates.any { gate ->
+            gate.conversationId == id && gate.enabled() && gate.visibleReveal() &&
                 gate.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
         }
-        !visible
+        !pageOpen
     }
 
     private fun cancelBackgroundTicks() {
@@ -158,12 +175,26 @@ internal object StreamingHaptics {
     }
 
     @Composable
-    fun Observe(enabled: Boolean, conversationId: String? = null) {
+    fun Observe(
+        enabled: Boolean,
+        conversationId: String? = null,
+        visibleReveal: Boolean = enabled,
+    ) {
         val view = LocalView.current
         val lifecycle = LocalLifecycleOwner.current.lifecycle
         val active by rememberUpdatedState(enabled)
+        val revealing by rememberUpdatedState(visibleReveal)
+        SideEffect {
+            if (!active && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                synchronized(gates) {
+                    if (conversationId == null || conversationId == foregroundConversationId) {
+                        cancelBackgroundTicks()
+                    }
+                }
+            }
+        }
         DisposableEffect(view, lifecycle, conversationId) {
-            val gate = Gate(view, lifecycle, conversationId) { active }
+            val gate = Gate(view, lifecycle, conversationId, { active }, { revealing })
             val observer = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     synchronized(gates) { claimForeground(conversationId, view) }

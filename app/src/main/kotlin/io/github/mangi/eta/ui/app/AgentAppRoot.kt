@@ -4,6 +4,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import io.github.mangi.eta.ui.components.StreamingMarkdownCache
 import io.github.mangi.eta.ui.components.LocalStreamingMarkdownStates
 import io.github.mangi.eta.ui.components.LocalChatRouteCovered
+import io.github.mangi.eta.ui.components.LocalChatTransitionActive
 import io.github.mangi.eta.ui.components.LocalChatUiActive
 import android.Manifest
 import android.app.Activity
@@ -76,7 +77,6 @@ import io.github.mangi.eta.ui.model.AgentSkillsAction
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import io.github.mangi.eta.ui.model.AgentToolsAction
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
-import io.github.mangi.eta.ui.model.conversationTokenUsage
 import io.github.mangi.eta.ui.model.PermissionHealthAction
 import io.github.mangi.eta.ui.navigation.AgentNavigator
 import io.github.mangi.eta.ui.navigation.AppRoute
@@ -152,6 +152,7 @@ fun AgentAppRoot(
     val recordedUsage = recordedUsageState?.takeIf { it.first == usageConversationId }?.second
     // 输出中每条增量都会换成新的 homeState。侧边栏只需要压缩状态、子任务和累计用量，
     // 这些没变时不能跟着消息重组。
+    val shellTokenUsage = remember { io.github.mangi.eta.ui.model.ConversationTokenUsageProjection() }
     val shellHomeState by remember {
         derivedStateOf {
             val state = agentState.homeState
@@ -165,7 +166,7 @@ fun AgentAppRoot(
                 modelId = state.modelId,
                 assistantId = state.assistantId,
                 pendingConversationMentions = state.pendingConversationMentions,
-                tokenUsage = conversationTokenUsage(state.messages),
+                tokenUsage = shellTokenUsage.project(state.messages),
             )
         }
     }
@@ -437,8 +438,8 @@ fun AgentAppRoot(
         content: @Composable () -> Unit,
     ) {
         CompositionLocalProvider(
-            // 半遮住时页面还在组合里。保持实时消息，让露出的字继续长；
-            // 完全盖住后导航会把这一页移出组合，不再绘制。
+            // Covered entries can stay composed for swipe-back. Keep the exposed chat live
+            // during motion; settled coverage parks chat UI clocks without disposing its state.
             LocalChatUiActive provides true,
             LocalChatRouteCovered provides (backStack.lastOrNull() != route),
         ) {
@@ -580,13 +581,26 @@ fun AgentAppRoot(
     // 副屏恢复进行中不能被滑走；其余时间任务偏好页跟其他设置页一样可以横滑返回。
     var taskRecoveryWorking by remember { mutableStateOf(false) }
     val taskPreferenceSwipeDismiss = if (taskRecoveryWorking) NavSwipeDirection.None else swipeDismiss
+    // Draw-phase atomics only. The boolean is published on a later frame, and only when it changes,
+    // so a swipe cannot write snapshot state from the graphics layer on every sampled frame.
+    val navigationActive = remember { mutableStateOf(false) }
+    val navigationTransition = remember {
+        chatNavigationActivityTransition { active ->
+            if (navigationActive.value != active) navigationActive.value = active
+        }
+    }
+    DisposableEffect(navigationTransition) {
+        onDispose { navigationTransition.cancel() }
+    }
     CompositionLocalProvider(
         io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor provides subAgentEditor,
+        LocalChatTransitionActive provides navigationActive.value,
     ) {
     Box(modifier = Modifier.fillMaxSize()) {
     NavDisplay(
         backStack = backStack,
         onBack = { popRoute() },
+        transition = navigationTransition.transition,
         effects = NavDisplayEffects(
             cornerClipRadius = rememberNavSystemCornerRadius(),
         ),
@@ -594,7 +608,7 @@ fun AgentAppRoot(
             entry<AppRoute.Home>(swipeDismiss = swipeDismiss) {
                 RoutedShell(route = AppRoute.Home) {
                     AgentHomeScreen(
-                        state = agentState.homeState,
+                        stateProvider = { agentState.homeState },
                         conversationMentions = io.github.mangi.eta.ui.model.ConversationMentionInputUi(
                             conversations = agentState.conversationPaneState.historyConversations,
                             currentConversationId = agentState.conversationPaneState.selectedConversationId,
@@ -605,7 +619,7 @@ fun AgentAppRoot(
                         modelPickerState = agentState.modelPickerState,
                         autoCompressEnabled = agentState.autoCompressEnabled,
                         requestOverheadTokens = agentState.requestOverheadTokens,
-                        measuredContextTokens = agentState.measuredContextTokens,
+                        measuredContextTokens = { agentState.measuredContextTokens },
                         billedOverheadTokens = agentState.billedOverheadTokens,
                         conversationKey = agentState.conversationPaneState.selectedConversationId,
                         draftField = agentState.currentDraftField(),
@@ -666,7 +680,7 @@ fun AgentAppRoot(
             entry<AppRoute.Chat>(swipeDismiss = swipeDismiss) {
                 RoutedShell(route = AppRoute.Chat) {
                     AgentChatScreen(
-                        state = agentState.homeState,
+                        stateProvider = { agentState.homeState },
                         conversationMentions = io.github.mangi.eta.ui.model.ConversationMentionInputUi(
                             conversations = agentState.conversationPaneState.historyConversations,
                             currentConversationId = agentState.conversationPaneState.selectedConversationId,
@@ -677,7 +691,7 @@ fun AgentAppRoot(
                         modelPickerState = agentState.modelPickerState,
                         autoCompressEnabled = agentState.autoCompressEnabled,
                         requestOverheadTokens = agentState.requestOverheadTokens,
-                        measuredContextTokens = agentState.measuredContextTokens,
+                        measuredContextTokens = { agentState.measuredContextTokens },
                         billedOverheadTokens = agentState.billedOverheadTokens,
                         conversationKey = agentState.conversationPaneState.selectedConversationId,
                         draftField = agentState.currentDraftField(),
