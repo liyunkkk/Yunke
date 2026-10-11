@@ -140,14 +140,16 @@ internal object VirtualDisplaySession {
                 if (data == null) {
                     false
                 } else {
-                    val retained = ids(data.optJSONArray("retainedTaskIds"))?.size ?: 0
                     val live = ids(data.optJSONArray("liveTaskIds"))?.size ?: 0
-                    // 上面还有任务就绝不丢：那是用户可能还要取回的东西。
-                    retained == 0 && live == 0 && (
-                        data.optBoolean("finishing", false) ||
-                            data.optBoolean("releaseAttempted", false) ||
-                            data.optBoolean("mutationUncertain", false)
-                        )
+                    val sourceEmpty = data.optBoolean("sourceEmpty", false)
+                    val closing = data.optBoolean("finishing", false) ||
+                        data.optBoolean("releaseAttempted", false) ||
+                        data.optBoolean("mutationUncertain", false)
+                    // 判据只看「副屏上还有没有东西」：没有在跑的任务、也没有源应用，
+                    // 且 owner 自己正在收尾。retainedTaskIds 可能仍留着已经被移走的旧 id
+                    // （用户机上就是 retained=[770] 而 live=[]、gone=[770]），不能拿它当阻拦条件，
+                    // 否则空壳残留永远清不掉、只能重启设备。
+                    live == 0 && sourceEmpty && closing
                 }
             } finally {
                 runCatching { c.close() }
@@ -399,6 +401,11 @@ internal object VirtualDisplaySession {
                 s.handoffBudget.reset()
                 return reply(true).put("recovered", true).put("cleanup_only", true).put("phase", s.phase)
             }
+        }
+        // 记录里的残留如果只是「副屏已空 + owner 正在收尾」的空壳，先就地清掉再往下走：
+        // 否则本轮会被它挡成 recovered/cleanup_only，用户得再开一次（以前甚至只能重启设备）。
+        if (leftoverOwnerIsAbandonable(context)) {
+            runCatching { recoveryPrefs(context).edit().clear().commit() }
         }
         var recoveryStage = "record_read"
         var lastOwnerStatus: OwnerResponse? = null
