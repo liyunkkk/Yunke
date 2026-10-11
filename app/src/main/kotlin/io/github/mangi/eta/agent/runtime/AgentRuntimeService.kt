@@ -101,6 +101,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private var windowManager: WindowManager? = null
     private var capsuleView: ComposeView? = null
+    // 单元测试里把它置 false，可只验证窗口与字段装配而不触发重型 Compose 合成
+    // （Robolectric 下真实合成 + 无限动画帧会让 idle() 卡数分钟直至超时）。
+    @JvmField internal var renderOverlayContent: Boolean = true
     private var resultCardView: ComposeView? = null
     private var capsuleParams: WindowManager.LayoutParams? = null
     private var resultCardParams: WindowManager.LayoutParams? = null
@@ -1498,6 +1501,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         ComposeView(overlayContext()).apply {
             setViewTreeLifecycleOwner(this@AgentRuntimeService)
             setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
+            if (!renderOverlayContent) return@apply
             setContent {
                 MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
                     // 部分 ROM 会给 TYPE_ACCESSIBILITY_OVERLAY 分配软件 Canvas；Miuix 的

@@ -219,7 +219,11 @@ class AgentVirtualRunOverlayServiceTest {
         ShadowSettings.setCanDrawOverlays(true)
         val controller = Robolectric.buildService(AgentRuntimeService::class.java).create()
         try {
-            block(controller.get())
+            val service = controller.get()
+            // 只验证窗口装配与可见性逻辑，不在 Robolectric 下真实合成胶囊 Compose 内容
+            // （含无限动画，会让 idle() 持续泵帧直到 CI 20 分钟超时）。
+            service.renderOverlayContent = false
+            block(service)
         } finally {
             controller.destroy()
         }
