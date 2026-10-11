@@ -199,20 +199,22 @@ internal fun AgentOverlayCapsule(
             // 展开态窗口是全屏的：把面板摆在小胶囊原来待的位置，
             // 展开/收起动画都在原地播放，不会先在屏幕中间停一下再弹回去。
             // 面板宽度与位置全部夹在屏幕内：贴边、拖到角落都不会有边跑到屏幕外。
-            val panelWidth = minOf(
-                capsuleWidth,
-                with(LocalDensity.current) {
-                    (LocalConfiguration.current.screenWidthDp - 32).dp
-                },
+            // 面板外面还包着一层 12dp 水平内边距（见下面 Column 的 padding + width），
+            // 所以它实际占位宽度是 panelWidth + 24dp。夹紧与居中都必须按这个「外宽」算，
+            // 否则展开态会被挤到贴住右边缘：左边留 28dp、右边只剩 4dp，看着像被切掉。
+            val panelPadPx = with(LocalDensity.current) { 12.dp.toPx() }
+            val panelWidthPx = minOf(
+                with(LocalDensity.current) { capsuleWidth.toPx() },
+                // 再留 8px 余量：面板永远完整落在窗口内，不会被边缘裁掉。
+                (constraints.maxWidth - panelPadPx * 2f - 16f).coerceAtLeast(0f),
             )
+            val panelWidth = with(LocalDensity.current) { panelWidthPx.toDp() }
+            val panelOuterWidthPx = panelWidthPx + panelPadPx * 2f
             // 面板本体与屏幕四边保持对称留白，靠边也不贴死。
             val panelEdgePx = with(LocalDensity.current) { 16.dp.toPx() }
+            // 展开态水平居中：面板比胶囊宽得多，沿用胶囊左边缘会整体偏到一侧。
             val panelStartX = if (fullScreen) {
-                val widthPx = with(LocalDensity.current) { panelWidth.toPx() }
-                collapsedX.toFloat().coerceIn(
-                    panelEdgePx,
-                    (constraints.maxWidth - widthPx - panelEdgePx).coerceAtLeast(panelEdgePx),
-                )
+                ((constraints.maxWidth - panelOuterWidthPx) / 2f).coerceAtLeast(0f)
             } else {
                 0f
             }
@@ -228,14 +230,13 @@ internal fun AgentOverlayCapsule(
             } else {
                 0f
             }
-            // 拖动后的实际位置：四边都留同样的 16dp，拖到哪都不会贴死屏幕。
-            val panelWidthPx = with(LocalDensity.current) { panelWidth.toPx() }
+            // 拖动后的实际位置：按外宽夹紧，左右留白对称，拖到哪都不会贴死或被切。
             val panelMaxHeightPx = with(LocalDensity.current) {
                 (LocalConfiguration.current.screenHeightDp * 0.30f).dp.toPx()
             }
             val panelX = (panelStartX + panelDrag.x).coerceIn(
-                panelEdgePx,
-                (constraints.maxWidth - panelWidthPx - panelEdgePx).coerceAtLeast(panelEdgePx),
+                0f,
+                (constraints.maxWidth - panelOuterWidthPx).coerceAtLeast(0f),
             )
             val panelY = (panelStartY + panelDrag.y).coerceIn(
                 panelEdgePx,
