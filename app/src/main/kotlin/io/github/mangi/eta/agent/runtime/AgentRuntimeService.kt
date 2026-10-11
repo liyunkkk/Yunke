@@ -107,6 +107,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     @JvmField internal var renderOverlayContent: Boolean = true
 
     /**
+     * 自身界面是否在前台。抽成可注入的函数，测试直接给 false，
+     * 不去改 AppForeground 的全局安装状态（那会污染同 JVM 的其它测试）。
+     */
+    @JvmField internal var ownUiForeground: () -> Boolean = { AppForeground.isForeground }
+
+    /**
      * 用户是否正看着 YUNKe 自己的界面。此时聊天页已经在显示进度与思维链，
      * 再叠一层胶囊只会挡住自己，所以收掉；切走后再恢复常驻。
      */
@@ -1181,7 +1187,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun showOverlay() {
         if (capsuleView != null) return
         // 自身界面在前台时不建胶囊窗：聊天页已显示进度与思维链，浮上去只会挡住自己。
-        if (AppForeground.isForeground) return
+        if (ownUiForeground()) return
         // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
         if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) return
         val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
