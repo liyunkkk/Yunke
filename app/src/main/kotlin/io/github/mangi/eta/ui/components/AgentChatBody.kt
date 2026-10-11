@@ -228,14 +228,14 @@ internal fun AgentChatBody(
     val transitionActive = LocalChatTransitionActive.current
     // 停稳且完全盖住时保留当前快照，避免设置页和管理页跟着重排。
     // 横滑手势和回弹期间露出的部分必须继续走正常打字机，不能追平、不能停住。
-    val followLiveTranscript = chatUiActive && (!routeCovered || transitionActive)
+    val followLiveTranscript = chatUiActive && !isChatSettledCovered(routeCovered, transitionActive)
     val frozenChatSnapshot = remember(followLiveTranscript) {
         if (followLiveTranscript) null else Triple(messages, isStreaming, isPaused)
     }
     val uiMessages = frozenChatSnapshot?.first ?: messages
     val uiStreaming = frozenChatSnapshot?.second ?: isStreaming
     val uiPaused = frozenChatSnapshot?.third ?: isPaused
-    // 一盖住就停，不等横滑停稳。打字机可以继续，震动不行。
+    // 一盖住就停震动；打字机只在导航仍在动、聊天露出时继续。
     SideEffect {
         StreamPerformanceDiagnostics.record("chat.compose", value = messages.size.toLong())
         if (chatComposeStartedNs != 0L) {
@@ -940,23 +940,35 @@ internal fun AgentConversationMessages(
 
     var initialBottomPositionPending by remember(scrollState) { mutableStateOf(true) }
     val currentScrollTarget by rememberUpdatedState(scrollToMessageId)
+    val markdownTransitionActive = LocalChatTransitionActive.current
+    val routeCovered = LocalChatRouteCovered.current
+    val settledCover = isChatSettledCovered(routeCovered, markdownTransitionActive)
+    val settledCoverNow by rememberUpdatedState(settledCover)
+    // Freezing the transcript retains isStreaming=true. Explicitly park the controller too,
+    // or queued overflow and reveal drain still call scrollBy behind the settled page.
     val shouldFollowBottom by rememberUpdatedState(
         resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
             isUserDragging = initialBottomPositionPending || isUserScrolling || messageNavigationJob != null,
             isBottomSettling = isBottomSettling,
+            settledCover = settledCover,
         )
     )
     // 跟底时上提让尾部一直停在静止线上：列表变高多少，同一帧就上提多少，下沿不动。
     // 以前点开最底部一行时先暂停上提，让内容从上沿往下长过静止线、再由跟底滚动追回来，
     // 标签会先不动、再被推上去，看起来像折了两次。现在展开从下沿长出（见 tailDetailsEnter），
     // 上提照常，标签随动画一帧一帧往上让开。
-    val shouldLiftTail = shouldFollowBottom
+    // Keep the last lift layer/geometry mounted while hidden. Parking the scroll clock must
+    // not remove the lift and move the already-revealed text on the first swipe-back frame.
+    val shouldLiftTail = resolveBottomFollowEnabled(
+        isStreaming = isStreaming,
+        keepBottomAnchored = keepBottomAnchored,
+        isUserDragging = initialBottomPositionPending || isUserScrolling || messageNavigationJob != null,
+        isBottomSettling = isBottomSettling,
+    )
     val markdownViewport = remember { io.github.mangi.eta.ui.markdown.MarkdownDrawViewport() }
-    val markdownTransitionActive = LocalChatTransitionActive.current
     // 被盖住但仍露在屏幕上时不走整列离屏裁剪。完全打开时仍按原来的条件。
-    val routeCovered = LocalChatRouteCovered.current
     val shouldClipTail = shouldClipChatTail(
         isStreaming = isStreaming,
         isBottomSettling = isBottomSettling,
@@ -974,7 +986,7 @@ internal fun AgentConversationMessages(
     // 附件、输入框换行和 IME 改的是实际尾部留白，不是新消息增长。
     // 静态时没有跟底控制器接手；只在仍锚定且视口静止线确实变化时重新停靠。
     AnchorChatTailOnViewportChange(scrollState, bottomItemIndex) {
-        currentAnchor.value && !currentStreaming.value && !isBottomSettling &&
+        !settledCoverNow && currentAnchor.value && !currentStreaming.value && !isBottomSettling &&
             !initialBottomPositionPending && !pointerDown.value && !currentDragging.value &&
             !isUserScrolling && messageNavigationJob == null && currentScrollTarget == null
     }
@@ -1135,7 +1147,7 @@ internal fun AgentConversationMessages(
     }
     val canOwnWorkExpansionViewport: () -> Boolean = remember(scrollState) {
         {
-            resolveWorkExpansionViewportOwnership(
+            !settledCoverNow && resolveWorkExpansionViewportOwnership(
                 keepBottomAnchored = currentAnchor.value,
                 initialBottomPositionPending = initialBottomPositionPending,
                 pointerDown = pointerDown.value,
@@ -2161,7 +2173,8 @@ internal fun resolveBottomFollowEnabled(
     keepBottomAnchored: Boolean,
     isUserDragging: Boolean,
     isBottomSettling: Boolean = false,
-): Boolean = (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
+    settledCover: Boolean = false,
+): Boolean = !settledCover && (isStreaming || isBottomSettling) && keepBottomAnchored && !isUserDragging
 
 /** 尾部留白负责静态停靠；整宽裁剪只负责输出及布局追平前的防溢出。 */
 internal fun shouldClipChatTail(

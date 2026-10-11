@@ -13,6 +13,7 @@ import io.github.mangi.eta.ui.components.shouldKeepStreamingRow
 import io.github.mangi.eta.ui.components.StreamingMarkdownRestoreState
 import io.github.mangi.eta.ui.components.LocalChatRouteCovered
 import io.github.mangi.eta.ui.components.LocalChatTransitionActive
+import io.github.mangi.eta.ui.components.isChatSettledCovered
 import io.github.mangi.eta.ui.components.isStreamingMarkdownTargetComplete
 import io.github.mangi.eta.ui.haptics.StreamingHaptics
 import kotlinx.coroutines.Dispatchers
@@ -137,7 +138,7 @@ internal fun DocumentStreamingMarkdown(
     val routeCovered = LocalChatRouteCovered.current
     val transitionActive = LocalChatTransitionActive.current
     val routeCoveredNow = rememberUpdatedState(routeCovered)
-    val settledCover = routeCovered && !transitionActive
+    val settledCover = isChatSettledCovered(routeCovered, transitionActive)
     val settledCoverNow by rememberUpdatedState(settledCover)
     val generation = state.restoreState.generation
     val view = LocalView.current

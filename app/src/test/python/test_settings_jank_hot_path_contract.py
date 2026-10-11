@@ -62,7 +62,7 @@ class SettingsJankHotPathContract(unittest.TestCase):
         self.assertIn('val LocalChatUiActive', helper)
         self.assertIn('val LocalChatRouteCovered = compositionLocalOf { false }', helper)
         root = (ROOT / 'app/AgentAppRoot.kt').read_text()
-        # 半遮住时聊天还在组合里，继续用实时消息；完全盖住后导航移出组合。
+        # The routed subtree stays mounted for swipe-back; settled coverage parks its clocks.
         self.assertIn('LocalChatUiActive provides true', root)
         self.assertIn('LocalChatRouteCovered provides (backStack.lastOrNull() != route)', root)
         self.assertNotIn('if (isCurrentRoute) {\n                    AgentHomeScreen', root)
@@ -71,7 +71,7 @@ class SettingsJankHotPathContract(unittest.TestCase):
         end = body.index('internal fun AgentChatScaffold(')
         host = body[start:end]
         self.assertIn('val chatUiActive = LocalChatUiActive.current', host)
-        self.assertIn('val followLiveTranscript = chatUiActive && (!routeCovered || transitionActive)', host)
+        self.assertIn('val followLiveTranscript = chatUiActive && !isChatSettledCovered(routeCovered, transitionActive)', host)
         self.assertIn('remember(followLiveTranscript)', host)
         self.assertIn('visibleMessagesCache.project(uiMessages', host)
         self.assertIn('isStreaming = uiStreaming', host)
@@ -103,8 +103,10 @@ class SettingsJankHotPathContract(unittest.TestCase):
         item = (ROOT / 'components/ChatMessageItem.kt').read_text()
         self.assertNotIn('revealClockAllowed', item)
         self.assertNotIn('navigationInProgressNow', item)
-        # Stopgap restores covered-hold behavior, not hidden-page optimization.
-        self.assertIn('val settledCover = routeCovered && !transitionActive', item)
+        self.assertIn('val settledCover = isChatSettledCovered(routeCovered, transitionActive)', item)
+        self.assertIn('if (!settledCoverNow && state.restoreState.animationsAllowed(currentPaused))', item)
+        document = (ROOT / 'markdown/DocumentStreamingMarkdown.kt').read_text()
+        self.assertIn('val settledCover = isChatSettledCovered(routeCovered, transitionActive)', document)
         self.assertIn('state.restoreState.animationsAllowed(isPaused) || (routeCovered && transitionActive)', item)
         self.assertIn('else if (settledCover) revealCoordinator.holdAnimations()', item)
         self.assertNotIn('animationsAllowed(isPaused) || routeCoveredNow.value', item)
@@ -114,7 +116,10 @@ class SettingsJankHotPathContract(unittest.TestCase):
         # 横滑期间露出的聊天必须继续正常打字机，不能追平或停掉显现。
         # 停稳且完全盖住只停时钟，不走追平。
         body = (ROOT / 'components/AgentChatBody.kt').read_text()
-        self.assertIn('!routeCovered || transitionActive', body)
+        self.assertIn('!isChatSettledCovered(routeCovered, transitionActive)', body)
+        self.assertIn('settledCover = settledCover', body)
+        self.assertIn('!settledCover && (isStreaming || isBottomSettling)', body)
+        self.assertIn('!settledCoverNow && resolveWorkExpansionViewportOwnership', body)
         self.assertNotIn('pauseAnimationsAndCatchUp', body)
         self.assertNotIn('holdAnimations', body)
 

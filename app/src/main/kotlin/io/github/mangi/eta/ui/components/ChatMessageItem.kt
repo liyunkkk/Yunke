@@ -1102,6 +1102,8 @@ private fun LegacyStreamingMarkdown(
     val routeCovered = LocalChatRouteCovered.current
     val transitionActive = LocalChatTransitionActive.current
     val routeCoveredNow = rememberUpdatedState(routeCovered)
+    val settledCover = isChatSettledCovered(routeCovered, transitionActive)
+    val settledCoverNow by rememberUpdatedState(settledCover)
     // A lazy-row disposal is not an activity pause. Keep only unfinished output
     // mounted so its parser, reveal clock and frame-coupled haptics survive a fling.
     // The pin keeps composition, not the viewport position or measured height.
@@ -1116,12 +1118,14 @@ private fun LegacyStreamingMarkdown(
 
     LifecycleResumeEffect(state) {
         val animateExisting = animateInitialContent && !currentPaused && currentContent.isNotEmpty()
-        if (state.restoreState.begin(
-                currentContent,
-                live = currentIsStreaming && !currentPaused,
-                animateExisting = animateExisting,
-            )
-        ) {
+        val animate = state.restoreState.begin(
+            currentContent,
+            live = currentIsStreaming && !currentPaused,
+            animateExisting = animateExisting,
+        )
+        if (settledCoverNow) {
+            revealCoordinator.holdAnimations()
+        } else if (animate) {
             // A new message may already contain a whole network batch when first composed,
             // including a batch whose block has already ended. Do not classify that first
             // batch as restored history and reveal it all at once.
@@ -1142,7 +1146,6 @@ private fun LegacyStreamingMarkdown(
     }
 
     // 停稳且完全盖住才停住显现，而且不追平。横滑、松手回弹期间露出的边继续逐字打。
-    val settledCover = routeCovered && !transitionActive
     val animationsAllowed = !settledCover && (
         state.restoreState.animationsAllowed(isPaused) || (routeCovered && transitionActive)
     )
@@ -1305,7 +1308,7 @@ private fun LegacyStreamingMarkdown(
                         currentContent = currentContent,
                     )
                 ) {
-                    if (state.restoreState.animationsAllowed(currentPaused)) {
+                    if (!settledCoverNow && state.restoreState.animationsAllowed(currentPaused)) {
                         revealCoordinator.resumeAnimationsAfterCatchUp()
                     }
                 }

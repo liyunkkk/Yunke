@@ -396,8 +396,8 @@ fun AgentAppRoot(
         content: @Composable () -> Unit,
     ) {
         CompositionLocalProvider(
-            // 半遮住时页面还在组合里。保持实时消息，让露出的字继续长；
-            // 完全盖住后导航会把这一页移出组合，不再绘制。
+            // Covered entries can stay composed for swipe-back. Keep the exposed chat live
+            // during motion; settled coverage parks chat UI clocks without disposing its state.
             LocalChatUiActive provides true,
             LocalChatRouteCovered provides (backStack.lastOrNull() != route),
         ) {
