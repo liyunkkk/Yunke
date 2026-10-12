@@ -795,11 +795,11 @@ internal fun ThinkingEffortChip(
                         Modifier
                     }
                 ),
-            tint = if (pickerEnabled || canLongPressSpeed) {
-                displayedColor
-            } else {
-                displayedColor.copy(alpha = 0.38f)
-            },
+            tint = gptSpeedChipTint(
+                displayedColor,
+                if (gptSpeedSupported) gptSpeedMode else GptSpeedMode.NORMAL,
+                enabled = pickerEnabled || canLongPressSpeed,
+            ),
         )
     }
     ThinkingEffortPickerDialog(

@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Dp
@@ -37,15 +38,22 @@ fun MiuixScaffoldPage(
     listState: LazyListState = rememberLazyListState(),
     topBarModifier: Modifier = Modifier,
     listModifier: Modifier = Modifier,
+    editorScrollIsolation: EditorScrollIsolation? = null,
     content: LazyListScope.() -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
+    val pageScrollConnection = remember(scrollBehavior, editorScrollIsolation) {
+        editorScrollIsolation?.gate(scrollBehavior.nestedScrollConnection) ?: scrollBehavior.nestedScrollConnection
+    }
+    val editorOwnsGesture = editorScrollIsolation?.editorOwnsGesture == true
+    val pageGestures = editorScrollIsolation?.let { Modifier.editorPageGestures(it) } ?: Modifier
+    val pageScrollEffects = if (editorOwnsGesture) Modifier else Modifier.scrollEndHaptic().overScrollVertical()
     val backdrop = rememberTopBarBackdrop()
     val topBarColor = topBarContainerColor(backdrop)
 
     WithoutPressRipple {
     Scaffold(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize().then(pageGestures),
         topBar = {
             TopBarBackdrop(backdrop) {
                 AdaptiveTopAppBar(
@@ -67,9 +75,8 @@ fun MiuixScaffoldPage(
                     .fillMaxSize()
                     .horizontalCutoutPadding()
                     .captureForTopBar(backdrop)
-                    .scrollEndHaptic()
-                    .overScrollVertical()
-                    .nestedScroll(scrollBehavior.nestedScrollConnection),
+                    .then(pageScrollEffects)
+                    .nestedScroll(pageScrollConnection),
                 contentPadding = PaddingValues(
                     start = sidePadding,
                     top = innerPadding.calculateTopPadding(),

@@ -35,6 +35,7 @@ import top.yukonga.miuix.kmp.theme.lightColorScheme
 class AgentChatSpeedChipGestureTest {
     @get:Rule val compose = createComposeRule()
 
+    private val enabled = mutableStateOf(true)
     private val gptSupported = mutableStateOf(true)
     private val options = mutableStateOf<List<ReasoningEffort>>(emptyList())
     private val mode = mutableStateOf(GptSpeedMode.NORMAL)
@@ -50,7 +51,7 @@ class AgentChatSpeedChipGestureTest {
                 ThinkingEffortChip(
                     effort = ReasoningEffort.HIGH,
                     options = options.value,
-                    enabled = true,
+                    enabled = enabled.value,
                     gptSpeedMode = mode.value,
                     gptSpeedSupported = gptSupported.value,
                     onCycleGptSpeedMode = {
@@ -201,6 +202,22 @@ class AgentChatSpeedChipGestureTest {
             assertEquals(2, cycles)
             assertEquals(GptSpeedMode.FAST, mode.value)
             assertEquals(0, effortChanges)
+        }
+    }
+
+    @Test
+    fun disabledUltraFastStillCannotCycleSpeedOrOpenPicker() {
+        enabled.value = false
+        mode.value = GptSpeedMode.ULTRA_FAST
+        options.value = listOf(ReasoningEffort.OFF, ReasoningEffort.HIGH)
+        render()
+        assertFalse(chip().fetchSemanticsNode().config.contains(SemanticsActions.OnLongClick))
+        chip().performTouchInput { click() }
+        chip().performTouchInput { longClick() }
+        compose.runOnIdle {
+            assertEquals(0, cycles)
+            assertEquals(0, effortChanges)
+            assertEquals(GptSpeedMode.ULTRA_FAST, mode.value)
         }
     }
 

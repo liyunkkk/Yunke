@@ -39,7 +39,8 @@ class SettingsJankHotPathContract(unittest.TestCase):
             for suffix in ('measure','place','draw'): self.assertIn(f'"{prefix}.{suffix}"',labels)
         self.assertIn('modifier = topBarModifier', scaffold)
         self.assertIn('modifier = listModifier', scaffold)
-        chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.scrollEndHaptic()', '.overScrollVertical()', '.nestedScroll(scrollBehavior.nestedScrollConnection)']
+        chain = ['.fillMaxSize()', '.horizontalCutoutPadding()', '.captureForTopBar(backdrop)', '.then(pageScrollEffects)', '.nestedScroll(pageScrollConnection)']
+        self.assertIn('if (editorOwnsGesture) Modifier else Modifier.scrollEndHaptic().overScrollVertical()', scaffold)
         lazy = scaffold.split('LazyColumn(', 1)[1]
         self.assertEqual(sorted(lazy.index(item) for item in chain), [lazy.index(item) for item in chain])
         backdrop = (ROOT / 'components/TopBarBackdrop.kt').read_text()
