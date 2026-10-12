@@ -20,6 +20,7 @@ import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.ui.haptics.SelectionTestMagnifier
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -34,7 +35,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.lightColorScheme
 
 @RunWith(RobolectricTestRunner::class)
-@Config(application = io.github.mangi.eta.EtaApp::class, sdk = [36], qualifiers = "w411dp-h891dp")
+@Config(application = io.github.mangi.eta.EtaApp::class, sdk = [36], qualifiers = "w411dp-h891dp", shadows = [SelectionTestMagnifier::class])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class EditorScrollIsolationGestureTest {
     @get:Rule val compose = createComposeRule()
