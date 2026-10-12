@@ -683,6 +683,24 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     "Agent runtime archive persistence failed: type=${throwable.safeLogType()}"
                 )
             }
+        if (request.handoff?.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+            ConversationCompletionNotice.confirmed(result)
+        ) {
+            runCatching {
+                val conversationId = AgentUiHandoffPayload.from(request.handoff.payload).conversationId
+                val metadata = kotlinx.coroutines.runBlocking {
+                    io.github.mangi.eta.data.db.EtaDatabase.get(applicationContext)
+                        .conversationDao().conversationMetadata(conversationId)
+                }
+                metadata?.let {
+                    ConversationCompletionNotice.show(applicationContext, result.runId, it.title, result)
+                }
+            }.onFailure { throwable ->
+                AndroidAgentLogger.warnThrottled("runtime_completion_notice_failed") {
+                    "Conversation completion notice failed: type=${throwable.safeLogType()}"
+                }
+            }
+        }
     }
 
     private fun postTerminalOverlay(

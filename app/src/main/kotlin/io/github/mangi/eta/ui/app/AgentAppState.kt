@@ -19,6 +19,7 @@ import android.view.Choreographer
 import android.provider.Settings
 import android.text.format.DateFormat
 import android.widget.Toast
+import io.github.mangi.eta.agent.runtime.ConversationCompletionNotice
 import kotlin.jvm.Volatile
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -1405,8 +1406,9 @@ internal class AgentAppState(
                         )) {
                         markConversationCompleted(conversationId)
                     }
-                    if (!recovery.alreadyApplied && VirtualCompletionNotice.confirmed(result)) {
-                        Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+                    if (!recovery.alreadyApplied) {
+                        ConversationCompletionNotice.show(appContext, runId,
+                            conversationTitles[conversationId].orEmpty(), result)
                     }
                 }
                 acknowledgeAfterSave += runId
@@ -3610,6 +3612,8 @@ internal class AgentAppState(
         refreshConversationSummaries()
         persistConversations()
         if (conversationId != null) {
+            ConversationCompletionNotice.show(appContext, runId,
+                conversationTitles[conversationId].orEmpty(), AgentRuntimeWire.RunResult(runId, true, content))
             val petTitle = conversationTitles[conversationId].orEmpty()
             val petContext = appContext
             scope.launch(Dispatchers.IO) {
@@ -5774,6 +5778,9 @@ internal class AgentAppState(
         acknowledgeRuntimeResult: Boolean = false,
         petReaction: Boolean = false,
     ) {
+        val completionConversationId = conversationIdForRun(runId)
+        val completionAlreadyApplied = completionConversationId?.let(::conversationState)
+            ?.let { AgentRuntimeHistoryReducer.wasApplied(it, runId) } == true
         val stoppedDuringRetry = stoppingRuns.remove(runId)
         cancelStopSealWatchdog(runId)
         mainStopReasons.remove(runId)
@@ -5807,8 +5814,11 @@ internal class AgentAppState(
         }
         if (stoppedDuringRetry == null) {
             updateMessages(runId) { VirtualCompletionNotice.append(it, runId, result) }
-            if (acknowledgeRuntimeResult && VirtualCompletionNotice.confirmed(result)) {
-                Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+            if (acknowledgeRuntimeResult && !completionAlreadyApplied) {
+                completionConversationId?.let { conversationId ->
+                    ConversationCompletionNotice.show(appContext, runId,
+                        conversationTitles[conversationId].orEmpty(), result)
+                }
             }
         }
         // A stop/failure without this round's receipt still keeps the latest actual from this epoch.
