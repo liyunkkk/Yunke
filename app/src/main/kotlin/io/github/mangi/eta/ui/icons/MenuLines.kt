@@ -7,21 +7,21 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
-/** 三条等长横线。线条用黑色占位，实际颜色由调用处的 tint 决定。 */
+/** 三条左对齐、从上到下变短的横线。线条用黑色占位，实际颜色由调用处的 tint 决定。 */
 internal val MenuLines: ImageVector by lazy {
     ImageVector.Builder("MenuLines", 24.dp, 24.dp, 24f, 24f).apply {
         path(
             fill = null,
             stroke = SolidColor(Color.Black),
-            strokeLineWidth = 2f,
+            strokeLineWidth = 1.8f,
             strokeLineCap = StrokeCap.Round,
         ) {
-            moveTo(4f, 7f)
-            lineTo(20f, 7f)
+            moveTo(4f, 8f)
+            lineTo(20f, 8f)
             moveTo(4f, 12f)
-            lineTo(20f, 12f)
-            moveTo(4f, 17f)
-            lineTo(20f, 17f)
+            lineTo(14.5f, 12f)
+            moveTo(4f, 16f)
+            lineTo(9f, 16f)
         }
     }.build()
 }

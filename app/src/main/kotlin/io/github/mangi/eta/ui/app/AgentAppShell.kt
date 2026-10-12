@@ -281,7 +281,7 @@ private fun AgentTopBar(
                 onOpenConversationPane()
             }) {
                 Icon(
-                    // 三条等长横线，沿用顶栏的着色，不套圆角端点和右端竖线。
+                    // 三条左对齐、从上到下变短的横线，沿用顶栏的着色。
                     imageVector = MenuLines,
                     contentDescription = stringResource(R.string.action_conversation_history),
                 )
