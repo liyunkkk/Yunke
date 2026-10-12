@@ -58,6 +58,8 @@ import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionRequest
 import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectStatus
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
 import io.github.mangi.eta.agent.runtime.AgentRunArchiveStore
@@ -2011,6 +2013,7 @@ internal class AgentAppState(
                         Triple(usage, messageCount, heatmap.toMap())
                     }
                     check(conversationsById === source && conversationUpdatedAt === timestamps) { "会话已变化，请重试" }
+                    ids.forEach(::cancelConversationExecution)
                     // Commit before deleting drafts/images or changing UI. Once committed,
                     // cancellation must not leave UI representing rows that no longer exist.
                     withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
@@ -2063,6 +2066,7 @@ internal class AgentAppState(
 
     fun deleteConversation(conversationId: String) {
         if (rejectConversationArchiveMutation()) return
+        cancelConversationExecution(conversationId)
         val wasSelected = selectedConversationId == conversationId
         conversationState(conversationId)?.let { state ->
             retainDeletedConversation(state.messages, conversationUpdatedAt[conversationId])
@@ -4219,6 +4223,44 @@ internal class AgentAppState(
         )
     }
 
+    /** Dropping a conversation must also drop its foreground execution lease.
+     *  Unbind before cancelling so the stop result cannot write the conversation back. */
+    private fun cancelConversationExecution(conversationId: String) {
+        val runId = runIdForConversation(conversationId)
+        if (runId != null) releaseConversationRun(conversationId, runId)
+        // The UI binding can already be gone while Runtime still holds the execution lease.
+        scope.launch(Dispatchers.IO) {
+            val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
+            if (runId != null) client.cancelRun(runId)
+            client.cancelConversation(conversationId)
+        }
+    }
+
+    private fun releaseConversationRun(conversationId: String, runId: String) {
+        directMediaRuns.cancel(runId)
+        imageGenerationRunIds.remove(runId)
+        runJobs.remove(runId)?.cancel()
+        io.github.mangi.eta.agent.runtime.AgentExecutionService.release("prepare:$runId")
+        discardQueuedRunEvents(runId)
+        runMessageProjector.clearRun(runId)
+        runMessageProjector.seal(runId)
+        runGeneratedAtMillis.remove(runId)
+        branchRequestBoundaries.remove(runId)
+        runConversationIds.remove(runId)
+        runUsageOwners.remove(runId)
+        runUsageRoutes.remove(runId)
+        runRequestRounds.remove(runId)
+        runUsageResumeRounds.remove(runId)
+        invalidatedUsageRuns.remove(runId)
+        runOverheadTokens.remove(runId)
+        runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
+        runCompressedDuringRun.remove(runId)
+        contextBudgetBlockedRuns.remove(runId)
+        if (contextBudgetPrompt?.runId == runId) contextBudgetPrompt = null
+        if (usageRunByConversation[conversationId] == runId) usageRunByConversation.remove(conversationId)
+    }
+
     private fun abortConversationRun(conversationId: String?, startPendingCompress: Boolean) {
         contextBudgetBlockedRuns.entries.removeAll { it.value.conversationId == conversationId }
         if (contextBudgetPrompt?.conversationId == conversationId) contextBudgetPrompt = null
@@ -4315,6 +4357,13 @@ internal class AgentAppState(
         val continuedHistory = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(committed)
         val prompt = RESUME_AFTER_COMPRESS_PROMPT
         val runId = "run-${UUID.randomUUID()}"
+        state.messages.filterIsInstance<ErrorReconnectMessageUi>()
+            .lastOrNull { it.status == ErrorReconnectStatus.Stopped }
+            ?.let { runMessageProjector.claimStoppedReconnect(runId, it.id) }
+        val resumeMessage = UserMessageUi(
+            id = "user-$runId-supplement-resume",
+            content = prompt,
+        )
         launchConversationRun(
             conversationId = conversationId,
             runId = runId,
@@ -4325,7 +4374,7 @@ internal class AgentAppState(
                 role = "user",
                 content = prompt,
             ),
-            messages = state.messages,
+            messages = state.messages + resumeMessage,
             state = state,
             reasoningEffort = state.reasoningEffort,
             skipAutoCompress = true,
