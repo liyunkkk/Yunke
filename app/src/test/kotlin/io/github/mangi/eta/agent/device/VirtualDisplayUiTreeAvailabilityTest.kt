@@ -135,4 +135,42 @@ class VirtualDisplayUiTreeAvailabilityTest {
         assertTrue(observe(windowId = null, ownerPackage = "pkg", hasNodes = false))
         assertTrue(policy.unavailable())
     }
+
+    @Test
+    fun unattributedObservationDoesNotClearPreviouslyTriggeredUnavailable() {
+        observe(hasNodes = false)
+        now += 600
+        observe(hasNodes = false)
+        now += 1200
+        assertTrue(observe(hasNodes = false))
+        assertTrue(policy.unavailable())
+
+        // 随后出现一次无法归因的空观察，不应把已触发的 unavailable 抹成 false
+        now += 600
+        assertTrue(observe(windowId = null, ownerPackage = "", hasNodes = false))
+        assertTrue(policy.unavailable())
+    }
+
+    @Test
+    fun alternatingWindowIdAndNullDoesNotResetPrimaryEvidence() {
+        // windowId 在具体值与 null 之间交替，不应反复清空主计数
+        observe(windowId = 1, ownerPackage = "pkg", hasNodes = false)
+        now += 600
+        observe(windowId = null, ownerPackage = "pkg", hasNodes = false)
+        now += 1000
+        // 第 3 次应累计成功并触发不可用
+        assertTrue(observe(windowId = 1, ownerPackage = "pkg", hasNodes = false))
+        assertTrue(policy.unavailable())
+    }
+
+    @Test
+    fun distinctNonNullWindowIdsResetPrimaryEvidenceEvenWithNullInterleaved() {
+        observe(windowId = 1, ownerPackage = "pkg", hasNodes = false)
+        now += 600
+        observe(windowId = null, ownerPackage = "pkg", hasNodes = false)
+        now += 600
+        // 出现新的具体窗口 windowId=2：应清空主计数
+        assertFalse(observe(windowId = 2, ownerPackage = "pkg", hasNodes = false))
+        assertFalse(policy.unavailable())
+    }
 }

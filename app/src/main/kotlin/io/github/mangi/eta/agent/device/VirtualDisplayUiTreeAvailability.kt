@@ -9,7 +9,7 @@ import android.os.SystemClock
  * 1. hasNodes 为 true -> 清空全部证据，恢复可用，返回 false。
  * 2. windowId == null && ownerPackage.isBlank() -> 完全无从归因（既无窗口也无 owner 包名），
  *    清空主证据，递增独立的"无法归因"计数；该计数连续达到 8 次且跨度 >= 8 秒触发安全阀，判定 unavailable = true。
- * 3. windowId != null 且与上次不同 -> 窗口变化，清空主证据后按规则 4 重新累计。
+ * 3. windowId != null && lastWindowId != null 且两者不同 -> 窗口变化，清空主证据后按规则 4 重新累计。
  * 4. 否则按主规则累计空树：连续 3 次且跨度 >= 1.5 秒判定 unavailable = true。
  *
  * 作用域仍为 (runId, displayId, packageName)；updateScope 变化时清空全部证据（含新计数）。
@@ -65,21 +65,23 @@ internal class VirtualDisplayUiTreeAvailability(
                 lastUnattributedAt = now
                 unattributedAttempts++
             }
-            unavailable = unattributedAttempts >= MIN_UNATTRIBUTED_ATTEMPTS &&
-                now - first >= UNATTRIBUTED_GRACE_MS
+            unavailable = unavailable || (unattributedAttempts >= MIN_UNATTRIBUTED_ATTEMPTS &&
+                now - first >= UNATTRIBUTED_GRACE_MS)
             return unavailable
         }
 
         // 有归因证据，清空无法归因安全阀计数
         clearUnattributedEvidence()
 
-        // 3. windowId != null 且与上次不同：清空主证据，再按 4 计数
-        if (windowId != null && windowId != lastWindowId) {
+        // 3. windowId != null && lastWindowId != null 且两者不同：清空主证据，再按 4 计数
+        if (windowId != null && lastWindowId != null && windowId != lastWindowId) {
             clearPrimaryEvidence()
         }
 
         // 4. 按主规则累计空树
-        lastWindowId = windowId
+        if (windowId != null) {
+            lastWindowId = windowId
+        }
         val now = elapsedRealtime()
         val first = firstEmptyAt ?: now.also { firstEmptyAt = it }
         val previous = lastEmptyAt

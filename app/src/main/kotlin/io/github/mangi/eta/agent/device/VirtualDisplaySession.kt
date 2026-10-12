@@ -164,6 +164,11 @@ internal object VirtualDisplaySession {
     }.getOrNull()
     private fun reply(ok: Boolean, code: String = "", detail: String = "") =
         JSONObject().put("ok",ok).put("error",code).put("message",detail)
+    private fun progressPausedReply(guard: VirtualDisplayProgressGuard): JSONObject {
+        val replyJson = reply(false, VirtualDisplayProgressGuard.ERROR_CODE, guard.pausedErrorMessage())
+        guard.pauseReason()?.let { replyJson.put("pause_reason", it) }
+        return replyJson
+    }
     private fun body(response: OwnerResponse): JSONObject = response.json ?: reply(false,response.errorCode)
     private fun ids(value: JSONArray?): Set<Int>? = value?.let {
         VirtualDisplayRecoveryPolicy.taskIds((0 until it.length()).map(it::opt))
@@ -1008,7 +1013,7 @@ internal object VirtualDisplaySession {
         s.previewExcludedPackages.addAll(excludedPackages)
         if(s.phase!="active" || s.cleanupOnly || !s.persisted)return text(reply(false,"SESSION_NOT_ACTIVE"))
         if (tool !in setOf("observe_screen", "wait", "launch_app") && s.progressGuard.isPaused()) {
-            return text(reply(false, VirtualDisplayProgressGuard.ERROR_CODE, VirtualDisplayProgressGuard.ERROR_MESSAGE))
+            return text(progressPausedReply(s.progressGuard))
         }
         val c=s.client!!
         try {
@@ -1167,11 +1172,12 @@ internal object VirtualDisplaySession {
                 }
                 val index = if (args.has("index")) args.optInt("index",-1).takeIf { it >= 0 } else null
                 val textTarget = VirtualDisplayProgressGuard.ActionTarget.Text(mode, index, value)
-                // submit 时把动作后回读推迟到回车之后：写入与回车之间只取一次节点，省一次 60 节点取树与 350ms 等待。
+                // submit 时把动作后回读推迟到回车之后：写入与回车之间只取一次节点，省一次 60 节点取树与 120ms 等待。
                 val submit = tool == "type_text" && args.optBoolean("submit",false)
                 val payload = writeVirtualText(context, s, c, c.displayId, mode, index, value, deferAfterAction = submit)
+                val nodeBased = VirtualDisplayProgressGuard.isNodeBased(tool)
                 if (!payload.optBoolean("ok")) {
-                    s.progressGuard.recordAction(tool, textTarget, null)
+                    s.progressGuard.recordAction(tool, textTarget, null, nodeBased = nodeBased)
                     return text(payload)
                 }
                 if (submit) {
@@ -1182,9 +1188,9 @@ internal object VirtualDisplaySession {
                     Thread.sleep(AFTER_ACTION_SETTLE_MS)
                     val summary = afterActionSummary(context, s, c.displayId, s.observation.publishedObservation())
                     payload.put("after_action", summary)
-                    s.progressGuard.recordAction(tool, textTarget, summary)
+                    s.progressGuard.recordAction(tool, textTarget, summary, nodeBased = nodeBased)
                 } else {
-                    s.progressGuard.recordAction(tool, textTarget, payload.optJSONObject("after_action"))
+                    s.progressGuard.recordAction(tool, textTarget, payload.optJSONObject("after_action"), nodeBased = nodeBased)
                 }
                 return text(payload)
             }
@@ -1279,7 +1285,7 @@ internal object VirtualDisplaySession {
                 else -> return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY","不会回退到主屏操作"))
             }
             if (s.progressGuard.isPaused()) {
-                return text(reply(false, VirtualDisplayProgressGuard.ERROR_CODE, VirtualDisplayProgressGuard.ERROR_MESSAGE))
+                return text(progressPausedReply(s.progressGuard))
             }
             // 动作后回读：先留一份动作前节点，成功动作才附带新界面（只取节点，不取截图）。
             val beforeAction = s.observation.publishedObservation()
@@ -1287,13 +1293,14 @@ internal object VirtualDisplaySession {
             if (input.errorCode in setOf("VIRTUAL_FRAME_CHANGED", "VIRTUAL_FRAME_UNKNOWN")) s.observation.invalidate()
             val result = body(input)
             s.recordTrace(tool, fields["kind"]?.toString().orEmpty(), fields.toString(), input.ok)
+            val nodeBased = VirtualDisplayProgressGuard.isNodeBased(tool)
             if (input.ok) {
                 Thread.sleep(AFTER_ACTION_SETTLE_MS)
                 val summary = afterActionSummary(context, s, c.displayId, beforeAction)
                 result.put("after_action", summary)
-                s.progressGuard.recordAction(tool, target, summary)
+                s.progressGuard.recordAction(tool, target, summary, nodeBased = nodeBased)
             } else {
-                s.progressGuard.recordAction(tool, target, null)
+                s.progressGuard.recordAction(tool, target, null, nodeBased = nodeBased)
             }
             return text(result)
         }catch(e:VirtualDisplayCoordinateRejection){return text(reply(false,e.code,e.message.orEmpty()))}
