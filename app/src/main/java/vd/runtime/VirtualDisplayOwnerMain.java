@@ -1,5 +1,8 @@
 package vd.runtime;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 import java.security.SecureRandom;
 
 import android.os.Handler;
@@ -34,6 +37,8 @@ public final class VirtualDisplayOwnerMain {
     private static final String READY_PREFIX = "VD_OWNER_READY";
     private static final String ERROR_PREFIX = "VD_OWNER_ERROR";
     private static final String STOPPED_PREFIX = "VD_OWNER_STOPPED";
+    /** How often the owner checks that the app process which started it is still alive. */
+    private static final long PARENT_POLL_MS = 2_000L;
 
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -117,11 +122,89 @@ public final class VirtualDisplayOwnerMain {
                 + " uniqueId=" + owner.uniqueId());
         server.start();
 
+        // The app process owns this helper. An owner that outlives the app keeps a virtual display
+        // alive until the device is rebooted, and nothing can ever drive or deliver that display
+        // again. Exit with the app instead: process death releases the display.
+        if (parsed.parentPid > 0L) {
+            watchParent(parsed.parentPid, parsed.allowUid, owner);
+        }
+
         // The main looper prepared above cannot be quit, so this never returns. The session ends
         // from the stop callback, which calls System.exit(0) once the release has been verified.
         Looper.loop();
         // Not reached: the stop callback exits the process.
         return 0;
+    }
+
+    /**
+     * Ends the helper once the app process that started it is gone.
+     *
+     * <p>This deliberately does not use the release gate: that gate refuses to end the process
+     * while tasks remain, because a caller may still hand them off. With the app gone there is no
+     * caller left, so lingering would only strand the display for the next boot.
+     */
+    private static void watchParent(final long pid, final int allowUid, final VirtualDisplayOwner owner) {
+        Thread watchdog = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (true) {
+                    try {
+                        Thread.sleep(PARENT_POLL_MS);
+                    } catch (InterruptedException interrupted) {
+                        return;
+                    }
+                    if (parentAlive(pid, allowUid)) {
+                        continue;
+                    }
+                    try {
+                        print(STOPPED_PREFIX + " displayId=" + owner.displayId()
+                                + " released=false reason=parent_gone");
+                    } catch (Throwable ignored) {
+                        // Reporting must never keep an orphaned owner alive.
+                    }
+                    System.exit(0);
+                }
+            }
+        }, "eta-vd-owner-parent");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    /**
+     * True while the recorded pid exists and still belongs to the app uid. Checking the uid keeps a
+     * reused pid from being mistaken for the app that started this owner.
+     */
+    private static boolean parentAlive(long pid, int allowUid) {
+        if (pid <= 0L) {
+            return true;
+        }
+        BufferedReader reader = null;
+        try {
+            reader = new BufferedReader(new FileReader("/proc/" + pid + "/status"));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (!line.startsWith("Uid:")) {
+                    continue;
+                }
+                String[] parts = line.substring(4).trim().split("\\s+");
+                if (parts.length == 0) {
+                    return false;
+                }
+                return Integer.parseInt(parts[0]) == allowUid;
+            }
+            return false;
+        } catch (Throwable gone) {
+            // Missing or unreadable status means the process is gone.
+            return false;
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (IOException ignored) {
+                    // Nothing to do: the descriptor dies with this process anyway.
+                }
+            }
+        }
     }
 
     private static void print(String line) {
@@ -132,7 +215,7 @@ public final class VirtualDisplayOwnerMain {
     private static void printUsage() {
         print("usage: app_process /system/bin vd.runtime.VirtualDisplayOwner "
                 + "--socket <abstract-name> --allow-uid <uid> "
-                + "[--width W] [--height H] [--density DPI] [--name NAME]");
+                + "[--width W] [--height H] [--density DPI] [--name NAME] [--parent-pid PID]");
     }
 
     private static String newToken() {
@@ -156,9 +239,11 @@ public final class VirtualDisplayOwnerMain {
         final String name;
         final boolean allowScreenOff;
         final boolean help;
+        /** App process that owns this helper; 0 disables the liveness check. */
+        final long parentPid;
 
         private Args(String socket, int allowUid, Integer width, Integer height, Integer densityDpi,
-                String name, boolean allowScreenOff, boolean help) {
+                String name, boolean allowScreenOff, boolean help, long parentPid) {
             this.socket = socket;
             this.allowUid = allowUid;
             this.width = width;
@@ -167,6 +252,7 @@ public final class VirtualDisplayOwnerMain {
             this.name = name;
             this.allowScreenOff = allowScreenOff;
             this.help = help;
+            this.parentPid = parentPid;
         }
 
         static Args parse(String[] args) {
@@ -178,6 +264,7 @@ public final class VirtualDisplayOwnerMain {
             String name = null;
             boolean allowScreenOff = false;
             boolean help = false;
+            long parentPid = 0L;
             if (args != null) {
                 for (int i = 0; i < args.length; i++) {
                     String arg = args[i];
@@ -197,13 +284,15 @@ public final class VirtualDisplayOwnerMain {
                         name = value(args, ++i, arg);
                     } else if ("--allow-screen-off".equals(arg)) {
                         allowScreenOff = true;
+                    } else if ("--parent-pid".equals(arg)) {
+                        parentPid = positive(args, ++i, arg);
                     } else {
                         throw new IllegalArgumentException("unknown arg");
                     }
                 }
             }
             if (help) {
-                return new Args(null, 0, null, null, null, null, false, true);
+                return new Args(null, 0, null, null, null, null, false, true, 0L);
             }
             if (socket == null || socket.isEmpty()) {
                 throw new IllegalArgumentException("socket required");
@@ -214,7 +303,7 @@ public final class VirtualDisplayOwnerMain {
             if (allowUid == null || allowUid.intValue() <= 0) {
                 throw new IllegalArgumentException("allow-uid required");
             }
-            return new Args(socket, allowUid.intValue(), width, height, density, name, allowScreenOff, false);
+            return new Args(socket, allowUid.intValue(), width, height, density, name, allowScreenOff, false, parentPid);
         }
 
         private static String value(String[] args, int index, String flag) {
