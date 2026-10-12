@@ -24,8 +24,8 @@ internal object VirtualDisplaySession {
     private const val NODE_LIMIT = 60
     /** 动作后回读的节点上限：只取节点、不取截图，控制每步附带观察的开销。 */
     private const val AFTER_ACTION_NODE_LIMIT = 40
-    /** 动作后回读前的稳定等待：给副屏一次渲染机会，避免读到动作前的旧树。 */
-    private const val AFTER_ACTION_SETTLE_MS = 350L
+    /** 替代一次额外模型往返的本地沉降：给副屏一次渲染机会，避免读到动作前的旧树。 */
+    private const val AFTER_ACTION_SETTLE_MS = 120L
     /** 副屏 replace_text / clear_text 的文本上限，与主屏一致。 */
     private const val MAX_TEXT_CHARS = 4_000
     /** 空闲巡检间隔与默认空闲上限（分钟，0=永不）。 */
@@ -43,6 +43,7 @@ internal object VirtualDisplaySession {
         val packages = linkedMapOf<String, Set<Int>>()
         val observation = VirtualDisplayObservation()
         val uiTreeAvailability = VirtualDisplayUiTreeAvailability()
+        val progressGuard = VirtualDisplayProgressGuard()
         val previewExcludedPackages = linkedSetOf<String>()
         var closedRun = false
         var cleanupOnly = false
@@ -1006,6 +1007,9 @@ internal object VirtualDisplaySession {
         ensureIdleMonitor(context)
         s.previewExcludedPackages.addAll(excludedPackages)
         if(s.phase!="active" || s.cleanupOnly || !s.persisted)return text(reply(false,"SESSION_NOT_ACTIVE"))
+        if (tool !in setOf("observe_screen", "wait", "launch_app") && s.progressGuard.isPaused()) {
+            return text(reply(false, VirtualDisplayProgressGuard.ERROR_CODE, VirtualDisplayProgressGuard.ERROR_MESSAGE))
+        }
         val c=s.client!!
         try {
             if(tool=="observe_screen") {
@@ -1026,7 +1030,15 @@ internal object VirtualDisplaySession {
                 }
                 s.observation.record(capture.contract)
                 // 副屏节点来自 App 自身的无障碍服务（按 display 取树）；取不到时保持纯截图模式，坐标契约不变。
-                val vdNodeSnapshot = captureVirtualNodes(context, s, NODE_LIMIT, c.displayId)
+                var vdNodeSnapshot = captureVirtualNodes(context, s, NODE_LIMIT, c.displayId)
+                if (!s.uiTreeAvailability.unavailable()) {
+                    var retryCount = 0
+                    while (vdNodeSnapshot != null && vdNodeSnapshot.nodes.isEmpty() && retryCount < 2) {
+                        Thread.sleep(250L)
+                        retryCount++
+                        vdNodeSnapshot = captureVirtualNodes(context, s, NODE_LIMIT, c.displayId)
+                    }
+                }
                 val elementObservation = vdNodeSnapshot?.let { snapshot ->
                     RootShellDeviceController.ElementObservation(
                         id = snapshot.id,
@@ -1038,13 +1050,25 @@ internal object VirtualDisplaySession {
                         truncated = snapshot.truncated,
                     )
                 }
+                val ownerPackage = (0 until packages.length())
+                    .map { packages.optString(it, "") }
+                    .firstOrNull { it.isNotBlank() }
+                    .orEmpty()
                 s.uiTreeAvailability.updateScope(runId, c.displayId, elementObservation?.packageName.orEmpty())
-                val nodesUnavailable = s.uiTreeAvailability.record(elementObservation?.nodes.orEmpty().isNotEmpty())
+                val nodesUnavailable = s.uiTreeAvailability.record(
+                    elementObservation?.windowId,
+                    ownerPackage,
+                    elementObservation?.nodes.orEmpty().isNotEmpty(),
+                )
                 if (nodesUnavailable) {
                     s.observation.recordNodes(null, null)
                 } else {
                     s.observation.recordNodes(elementObservation, vdNodeSnapshot)
                 }
+                s.progressGuard.onObservation(
+                    elementObservation?.packageName.orEmpty(),
+                    elementObservation?.nodes.orEmpty(),
+                )
                 data.remove("data");data.remove("width");data.remove("height");data.remove("bytes");data.remove("format")
                 return AgentModelClient.ToolResult(
                     data.put("tool",tool)
@@ -1093,6 +1117,7 @@ internal object VirtualDisplaySession {
                                 val takenBody=body(taken)
                                 val takenId=takenBody.optInt("taskId",0)
                                 if(takenId>0) s.takenOver[pkg]=takenId
+                                s.progressGuard.onScopeChanged(pkg)
                                 // 画面已换成被接管的那个应用：坐标必须重新观察。
                                 s.observation.invalidate()
                                 s.recordTrace("launch_app","takeover",pkg,true)
@@ -1115,6 +1140,7 @@ internal object VirtualDisplaySession {
                     }
                 }
                 if(launched.ok) {
+                    s.progressGuard.onScopeChanged(pkg)
                     val payload=body(launched)
                     // reused=true switches back to this session's existing task. current-prior is
                     // empty, so do not replace the package's recorded task ids with that diff.
@@ -1140,18 +1166,25 @@ internal object VirtualDisplaySession {
                     else -> "append"
                 }
                 val index = if (args.has("index")) args.optInt("index",-1).takeIf { it >= 0 } else null
+                val textTarget = VirtualDisplayProgressGuard.ActionTarget.Text(mode, index, value)
                 // submit 时把动作后回读推迟到回车之后：写入与回车之间只取一次节点，省一次 60 节点取树与 350ms 等待。
                 val submit = tool == "type_text" && args.optBoolean("submit",false)
                 val payload = writeVirtualText(context, s, c, c.displayId, mode, index, value, deferAfterAction = submit)
-                if (!payload.optBoolean("ok")) return text(payload)
+                if (!payload.optBoolean("ok")) {
+                    s.progressGuard.recordAction(tool, textTarget, null)
+                    return text(payload)
+                }
                 if (submit) {
                     val enter = c.input(mapOf("kind" to "key","keyCode" to 66))
                     payload.put("submit",enter.ok)
                     if (!enter.ok) payload.put("submit_error",enter.errorCode)
                     // 回车成功与否都只在这里回读一次：写入路径已按 deferAfterAction 跳过自己的回读。
                     Thread.sleep(AFTER_ACTION_SETTLE_MS)
-                    afterActionSummary(context, s, c.displayId, s.observation.publishedObservation())
-                        ?.let { payload.put("after_action",it) }
+                    val summary = afterActionSummary(context, s, c.displayId, s.observation.publishedObservation())
+                    payload.put("after_action", summary)
+                    s.progressGuard.recordAction(tool, textTarget, summary)
+                } else {
+                    s.progressGuard.recordAction(tool, textTarget, payload.optJSONObject("after_action"))
                 }
                 return text(payload)
             }
@@ -1169,7 +1202,7 @@ internal object VirtualDisplaySession {
             }
             val fields=linkedMapOf<String,Any?>()
             val space=args.optString("coordinate_space").takeIf { it.isNotBlank() }
-            when(tool) {
+            val target: VirtualDisplayProgressGuard.ActionTarget = when(tool) {
                 "tap","tap_area" -> {
                     val point=if(tool=="tap") {
                         s.observation.resolve(space,args.getInt("x"),args.getInt("y"))
@@ -1178,17 +1211,25 @@ internal object VirtualDisplaySession {
                         s.observation.resolveArea(space,args.getInt("x1"),args.getInt("y1"),args.getInt("x2"),args.getInt("y2"))
                     }
                     fields.putAll(mapOf("kind" to "tap","x" to point.x,"y" to point.y))
+                    VirtualDisplayProgressGuard.ActionTarget.Point(point.x, point.y)
                 }
                 "swipe","long_press" -> {
                     val x1Key=if(tool=="swipe")"x1" else "x";val y1Key=if(tool=="swipe")"y1" else "y"
                     val first=s.observation.resolve(space,args.getInt(x1Key),args.getInt(y1Key))
                     val second=if(tool=="swipe") s.observation.resolve(space,args.getInt("x2"),args.getInt("y2")) else first
                     fields.putAll(mapOf("kind" to "swipe","x1" to first.x,"y1" to first.y,"x2" to second.x,"y2" to second.y,"durationMs" to args.optInt("duration_ms",500).coerceIn(100,3000)))
+                    if (tool == "swipe") {
+                        VirtualDisplayProgressGuard.ActionTarget.Area(first.x, first.y, second.x, second.y)
+                    } else {
+                        VirtualDisplayProgressGuard.ActionTarget.Point(first.x, first.y)
+                    }
                 }
                 "press_key" -> {
-                    val key=mapOf("BACK" to 4,"ENTER" to 66,"PASTE" to 279)[args.getString("button")]
+                    val button = args.getString("button")
+                    val key=mapOf("BACK" to 4,"ENTER" to 66,"PASTE" to 279)[button]
                         ?:return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
                     fields.putAll(mapOf("kind" to "key","keyCode" to key))
+                    VirtualDisplayProgressGuard.ActionTarget.Key(button)
                 }
                 "tap_element","long_press_element" -> {
                     if (s.uiTreeAvailability.unavailable()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","该应用窗口暂无可访问节点，请用截图+坐标操作"))
@@ -1202,6 +1243,7 @@ internal object VirtualDisplaySession {
                         fields.putAll(mapOf("kind" to "swipe","x1" to point.x,"y1" to point.y,"x2" to point.x,"y2" to point.y,
                             "durationMs" to args.optInt("duration_ms",800).coerceIn(300,3000)))
                     }
+                    VirtualDisplayProgressGuard.ActionTarget.Element(index)
                 }
                 "scroll","scroll_element" -> {
                     if (s.uiTreeAvailability.unavailable()) return text(reply(false,"VIRTUAL_NODES_UNAVAILABLE","该应用窗口暂无可访问节点，请用截图+坐标操作"))
@@ -1232,8 +1274,12 @@ internal object VirtualDisplaySession {
                     val second=s.observation.resolve("screen",ex,ey)
                     fields.putAll(mapOf("kind" to "swipe","x1" to first.x,"y1" to first.y,"x2" to second.x,"y2" to second.y,
                         "durationMs" to args.optInt("duration_ms",400).coerceIn(100,3000)))
+                    VirtualDisplayProgressGuard.ActionTarget.Scroll(direction, node?.index)
                 }
                 else -> return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY","不会回退到主屏操作"))
+            }
+            if (s.progressGuard.isPaused()) {
+                return text(reply(false, VirtualDisplayProgressGuard.ERROR_CODE, VirtualDisplayProgressGuard.ERROR_MESSAGE))
             }
             // 动作后回读：先留一份动作前节点，成功动作才附带新界面（只取节点，不取截图）。
             val beforeAction = s.observation.publishedObservation()
@@ -1243,7 +1289,11 @@ internal object VirtualDisplaySession {
             s.recordTrace(tool, fields["kind"]?.toString().orEmpty(), fields.toString(), input.ok)
             if (input.ok) {
                 Thread.sleep(AFTER_ACTION_SETTLE_MS)
-                afterActionSummary(context, s, c.displayId, beforeAction)?.let { result.put("after_action", it) }
+                val summary = afterActionSummary(context, s, c.displayId, beforeAction)
+                result.put("after_action", summary)
+                s.progressGuard.recordAction(tool, target, summary)
+            } else {
+                s.progressGuard.recordAction(tool, target, null)
             }
             return text(result)
         }catch(e:VirtualDisplayCoordinateRejection){return text(reply(false,e.code,e.message.orEmpty()))}
@@ -1477,8 +1527,13 @@ internal object VirtualDisplaySession {
         }.getOrNull()
     }
 
+    private fun afterActionFallback(): JSONObject =
+        JSONObject()
+            .put("requires_observation", true)
+            .put("note", "动作后观察暂不可用；请重新观察并核对结果，勿直接重复操作。")
+
     /**
-     * 动作后回读：只取节点，不取截图；取不到就返回 null，绝不改变动作本身的结果。
+     * 动作后回读：只取节点，不取截图；取不到或失败时返回显式 fallback 标记，绝不改变动作本身的结果。
      * 同时把新节点发布给本次会话，模型可直接用新索引继续，不必再 observe_screen。
      */
     private fun afterActionSummary(
@@ -1486,9 +1541,9 @@ internal object VirtualDisplaySession {
         s: Session,
         displayId: Int,
         before: RootShellDeviceController.ElementObservation?,
-    ): JSONObject? {
-        if (s.uiTreeAvailability.unavailable()) return null
-        val snapshot = captureVirtualNodes(context, s, AFTER_ACTION_NODE_LIMIT, displayId) ?: return null
+    ): JSONObject {
+        if (s.uiTreeAvailability.unavailable()) return afterActionFallback()
+        val snapshot = captureVirtualNodes(context, s, AFTER_ACTION_NODE_LIMIT, displayId) ?: return afterActionFallback()
         val after = RootShellDeviceController.ElementObservation(
             id = snapshot.id,
             source = RootShellDeviceController.ElementSource.ACCESSIBILITY,
@@ -1498,7 +1553,7 @@ internal object VirtualDisplaySession {
             maxNodes = AFTER_ACTION_NODE_LIMIT,
             truncated = snapshot.truncated,
         )
-        val summary = runCatching { AgentAfterActionSummary.build(before, after) }.getOrNull() ?: return null
+        val summary = runCatching { AgentAfterActionSummary.build(before, after) }.getOrNull() ?: return afterActionFallback()
         summary.put("coordinate_space_hint","ui_nodes 的 center 是副屏像素坐标；坐标操作请显式传 coordinate_space=screen")
         if (after.nodes.isNotEmpty()) s.observation.recordNodes(after, snapshot)
         return summary

@@ -8,10 +8,17 @@ class VirtualDisplayUiTreeAvailabilityTest {
     private var now = 0L
     private val policy = VirtualDisplayUiTreeAvailability { now }
 
-    private fun observe(runId: String = "run", displayId: Int = 2, packageName: String = "pkg", hasNodes: Boolean) =
+    private fun observe(
+        runId: String = "run",
+        displayId: Int = 2,
+        packageName: String = "pkg",
+        windowId: Int? = 1,
+        ownerPackage: String = "pkg",
+        hasNodes: Boolean,
+    ) =
         policy.let {
             it.updateScope(runId, displayId, packageName)
-            it.record(hasNodes)
+            it.record(windowId, ownerPackage, hasNodes)
         }
 
     @Test
@@ -60,7 +67,7 @@ class VirtualDisplayUiTreeAvailabilityTest {
         now += 1200
         assertTrue(observe(hasNodes = false))
         // 换应用后重新计数
-        assertFalse(observe(packageName = "other", hasNodes = false))
+        assertFalse(observe(packageName = "other", ownerPackage = "other", hasNodes = false))
         assertFalse(policy.unavailable())
     }
 
@@ -75,5 +82,57 @@ class VirtualDisplayUiTreeAvailabilityTest {
         // 只有第一次和这次计入次数，仍未到 3 次
         assertFalse(observe(hasNodes = false))
         assertFalse(policy.unavailable())
+    }
+
+    @Test
+    fun windowIdChangeResetsPrimaryEvidence() {
+        observe(windowId = 1, hasNodes = false)
+        now += 600
+        observe(windowId = 1, hasNodes = false)
+        now += 600
+        // 换到新窗口 windowId=2：清空主证据后重新累计为第 1 次，不应禁用
+        assertFalse(observe(windowId = 2, hasNodes = false))
+        assertFalse(policy.unavailable())
+        now += 600
+        observe(windowId = 2, hasNodes = false)
+        now += 1000
+        // windowId=2 累计达到 3 次且跨度 >= 1.5s，触发禁用
+        assertTrue(observe(windowId = 2, hasNodes = false))
+        assertTrue(policy.unavailable())
+    }
+
+    @Test
+    fun unattributedObservationsSafetyValve() {
+        // windowId 为 null 且 ownerPackage 为空：无法归因
+        for (i in 0 until 7) {
+            assertFalse(observe(windowId = null, ownerPackage = "", hasNodes = false))
+            assertFalse(policy.unavailable())
+            now += 1200
+        }
+        // 第 8 次，跨度达到 7 * 1200 = 8400ms >= 8000ms，触发安全阀
+        assertTrue(observe(windowId = null, ownerPackage = "", hasNodes = false))
+        assertTrue(policy.unavailable())
+    }
+
+    @Test
+    fun unattributedResetWhenValidWindowAppears() {
+        for (i in 0 until 5) {
+            observe(windowId = null, ownerPackage = "", hasNodes = false)
+            now += 1200
+        }
+        // 出现有效归因，安全阀计数清空
+        assertFalse(observe(windowId = 1, ownerPackage = "pkg", hasNodes = false))
+        assertFalse(policy.unavailable())
+    }
+
+    @Test
+    fun ownerPackagePresentWithoutWindowIdAccumulatesPrimary() {
+        // windowId 为 null，但 ownerPackage 不为空，按真实证据走主规则
+        observe(windowId = null, ownerPackage = "pkg", hasNodes = false)
+        now += 600
+        observe(windowId = null, ownerPackage = "pkg", hasNodes = false)
+        now += 1000
+        assertTrue(observe(windowId = null, ownerPackage = "pkg", hasNodes = false))
+        assertTrue(policy.unavailable())
     }
 }
