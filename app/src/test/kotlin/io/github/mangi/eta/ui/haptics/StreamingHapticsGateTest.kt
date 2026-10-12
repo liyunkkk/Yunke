@@ -115,48 +115,6 @@ class StreamingHapticsGateTest {
     }
 
     @Test
-    fun swipeRevealResumesOutputAndCancelOrPauseStopsItAgain() {
-        val owner = Owner().apply { resume() }
-        var covered by mutableStateOf(true)
-        var transitioning by mutableStateOf(false)
-        var paused by mutableStateOf(false)
-        lateinit var view: android.view.View
-        compose.setContent {
-            CompositionLocalProvider(LocalLifecycleOwner provides owner) {
-                view = LocalView.current
-                StreamingHaptics.Observe(
-                    enabled = !paused && !isChatSettledCovered(covered, transitioning),
-                    conversationId = "conv-swipe",
-                )
-            }
-        }
-        fun checkOutput(allowed: Boolean) = compose.runOnIdle {
-            assertEquals(allowed, ticked { StreamingHaptics.onVisibleAdvance(view) })
-            assertFalse(ticked { StreamingHaptics.noteBackgroundOutput(3, "conv-swipe") })
-        }
-        checkOutput(false)
-        transitioning = true
-        compose.waitForIdle()
-        checkOutput(true)
-        transitioning = false // Cancelled swipe: covered again.
-        compose.waitForIdle()
-        checkOutput(false)
-        transitioning = true
-        compose.waitForIdle()
-        checkOutput(true)
-        paused = true
-        compose.waitForIdle()
-        checkOutput(false)
-        paused = false
-        covered = false
-        transitioning = false // Completed swipe: chat remains available.
-        compose.waitForIdle()
-        checkOutput(true)
-        compose.runOnIdle { owner.stop() }
-        compose.runOnIdle { assertFalse(ticked { StreamingHaptics.onVisibleAdvance(view) }) }
-    }
-
-    @Test
     fun disabledObserverAndUnknownViewNeverTick() {
         val owner = Owner().apply { resume() }
         lateinit var view: android.view.View

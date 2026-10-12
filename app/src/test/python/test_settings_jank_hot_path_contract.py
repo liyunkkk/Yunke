@@ -77,7 +77,7 @@ class SettingsJankHotPathContract(unittest.TestCase):
         self.assertIn('isStreaming = uiStreaming', host)
         self.assertIn('isPaused = uiPaused', host)
         self.assertIn('LaunchedEffect(messages, isStreaming)', host)
-        self.assertIn('enabled = !isPaused && followLiveTranscript', host)
+        self.assertIn('enabled = !isPaused && !routeCovered', host)
         self.assertNotIn('visibleReveal = followLiveTranscript', host)
 
     def test_navigation_does_not_write_root_state_from_a_graphics_layer(self):
