@@ -46,6 +46,7 @@ internal class AgentRuntimeRunExecutor(
     private val currentPermissions: () -> AgentRuntimePolicy.Permissions,
     private val snapshotRequest: (AgentRuntimeWire.RunRequest) -> AgentRuntimeWire.RunRequest,
     private val onAcceptedEvent: (AgentEvent, EntrySurfaceGuard?) -> Unit,
+    private val onSelfAppOverlayChanged: () -> Unit,
     private val persistArtifacts: (AgentRuntimeWire.RunRequest, AgentRuntimeWire.RunResult, List<AgentEvent>) -> Unit,
 ) {
     data class Outcome(
@@ -164,6 +165,14 @@ internal class AgentRuntimeRunExecutor(
                 deviceSensitiveActionToolsEnabled = { allowSensitiveAction && currentPermissions().deviceSensitiveActionTools },
                 memoryToolsEnabled = { AssistantRepository.currentProfile(assistant.id)?.memoryEnabled == true },
                 screenshotExcludedPackages = { entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty() },
+                onSelfAppSurfaceChanged = { toolName, active ->
+                    if (session.setSelfAppOverlayActive(active)) {
+                        onSelfAppOverlayChanged()
+                        if (active) {
+                            onAcceptedEvent(foregroundReplay.startedEvent(toolName), entrySurfaceGuard)
+                        }
+                    }
+                },
                 beforeToolExecution = { toolName ->
                     val requiresAccessibility = AgentToolRequirements.requiresAccessibility(toolName)
                     if (!requiresAccessibility && !AgentOverlayVisibilityPolicy.requiresEntrySurfaceDismissal(toolName)) {

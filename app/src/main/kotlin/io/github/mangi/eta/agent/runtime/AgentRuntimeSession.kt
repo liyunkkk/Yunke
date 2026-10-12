@@ -39,6 +39,22 @@ internal class AgentRuntimeSession(
     var taskSurfaceMode: AgentTaskSurfaceMode = taskSurfaceMode
         private set
 
+    @Volatile
+    var selfAppOverlayActive: Boolean = false
+        private set
+
+    val acceptsOverlayEvents: Boolean
+        get() = state == State.RUNNING && !stopSignalled
+
+    val overlaySurfaceMode: AgentTaskSurfaceMode
+        get() = if (selfAppOverlayActive) AgentTaskSurfaceMode.FOREGROUND else taskSurfaceMode
+
+    fun setSelfAppOverlayActive(active: Boolean): Boolean = withSessionLock {
+        if (active && (state != State.RUNNING || stopSignalled)) return@withSessionLock false
+        selfAppOverlayActive = active
+        true
+    }
+
     private val surfaceLock = Any()
 
     fun resolveTaskSurface(mode: AgentTaskSurfaceMode): Boolean = synchronized(surfaceLock) {

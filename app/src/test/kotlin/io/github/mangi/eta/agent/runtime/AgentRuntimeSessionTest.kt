@@ -11,6 +11,50 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRuntimeSessionTest {
+    @Test fun selfAppOverlayDoesNotResolveAskOrChangeBackgroundRouting() {
+        val modes = io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.entries
+        for (mode in modes) {
+            val session = AgentRuntimeSession("self-$mode", taskSurfaceMode = mode)
+            assertEquals(mode, session.overlaySurfaceMode)
+            session.setSelfAppOverlayActive(true)
+            assertEquals(mode, session.taskSurfaceMode)
+            assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND, session.overlaySurfaceMode)
+            assertTrue(io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy.shouldRevealFor(
+                AgentEvent.ToolStarted(1, "self", "launch_app", ""), session.overlaySurfaceMode,
+            ))
+            session.setSelfAppOverlayActive(false)
+            assertEquals(mode, session.taskSurfaceMode)
+            assertEquals(mode, session.overlaySurfaceMode)
+        }
+    }
+
+    @Test fun stoppedOrTerminalSelfAppCannotReactivateOverlay() {
+        val background = io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND
+        val stopped = AgentRuntimeSession("self-stop", taskSurfaceMode = background)
+        stopped.signalStop()
+        assertFalse(stopped.setSelfAppOverlayActive(true))
+        assertEquals(background, stopped.overlaySurfaceMode)
+        val finished = AgentRuntimeSession("self-finished", taskSurfaceMode = background)
+        finished.complete(AgentRuntimeWire.RunResult("self-finished", true, "done"))
+        assertFalse(finished.setSelfAppOverlayActive(true))
+        assertEquals(background, finished.overlaySurfaceMode)
+    }
+
+    @Test fun selfAppOverlayDoesNotLeakToOtherSessionsAndKeepsAskUnresolved() {
+        val ask = io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.ASK
+        val first = AgentRuntimeSession("self-a", taskSurfaceMode = ask)
+        val other = AgentRuntimeSession("self-b", taskSurfaceMode = ask)
+        first.setSelfAppOverlayActive(true)
+        assertEquals(ask, other.overlaySurfaceMode)
+        assertTrue(first.resolveTaskSurface(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND))
+        assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND, first.overlaySurfaceMode)
+        first.setSelfAppOverlayActive(false)
+        assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND, first.overlaySurfaceMode)
+        assertFalse(io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy.shouldRevealFor(
+            AgentEvent.ToolStarted(1, "background", "launch_app", ""), first.overlaySurfaceMode,
+        ))
+    }
+
     @Test fun historyQueriesAreFrozenBoundedAndDoNotStopOrSubscribe() {
         val session = AgentRuntimeSession("run")
         val history = mutableListOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage("user", "task", turnId = "run"))

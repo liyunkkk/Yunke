@@ -522,7 +522,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         sessions.put(session)
         if (overlayRunId == request.runId) {
             // ASK 选前台后才会用悬浮窗，先按前台保留入口；选后台时后续事件不会再显示。
-            if (AgentOverlayVisibilityPolicy.mayUseOverlay(session.taskSurfaceMode)) {
+            if (AgentOverlayVisibilityPolicy.mayUseOverlay(session.overlaySurfaceMode)) {
                 overlaySession = session
             } else {
                 // Only retire the replaced run's windows, never another foreground run's.
@@ -539,7 +539,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 "Agent runtime keep-alive start failed: type=${throwable.safeLogType()}"
             }
         }
-        if (AgentOverlayVisibilityPolicy.mayUseOverlay(session.taskSurfaceMode)) {
+        if (AgentOverlayVisibilityPolicy.mayUseOverlay(session.overlaySurfaceMode)) {
             mainHandler.removeCallbacksAndMessages(hideToken)
             state.value = AgentOverlayState.Initial
             collapsed.value = true
@@ -595,6 +595,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             onAcceptedEvent = { event, entrySurfaceGuard ->
                 handleAcceptedRunEvent(session, event, entrySurfaceGuard)
             },
+            onSelfAppOverlayChanged = {
+                mainHandler.post {
+                    if (sessions.contains(session) && overlaySession === session &&
+                        !AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)
+                    ) {
+                        dismissAndStop()
+                    }
+                }
+            },
             persistArtifacts = ::persistRunArtifacts,
         ).execute(session, request)
         if (!outcome.shouldUpdateHost) return
@@ -619,31 +628,29 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         entrySurfaceGuard: EntrySurfaceGuard?,
     ) {
         if (!sessions.contains(session)) return
-        if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)) return
+        if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)) return
         val revealsForegroundOperation =
-            AgentOverlayVisibilityPolicy.shouldRevealFor(event, session.taskSurfaceMode)
+            AgentOverlayVisibilityPolicy.shouldRevealFor(event, session.overlaySurfaceMode)
         val requiresEntrySurfaceDismissal =
-            AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event, session.taskSurfaceMode)
+            AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event, session.overlaySurfaceMode)
         val entrySurfaceReady = if (requiresEntrySurfaceDismissal && entrySurfaceGuard != null) {
             runCatching { entrySurfaceGuard.dismissOnce() }.getOrDefault(false)
         } else {
             true
         }
         mainHandler.post {
-            if (!sessions.contains(session)) return@post
-            if (
-                AgentOverlayVisibilityPolicy.shouldRecordForegroundExecution(
-                    event,
-                    entrySurfaceReady,
-                    session.taskSurfaceMode,
-                )
-            ) {
-                hasExecutedForegroundTool = true
-            }
-            if (session.isTerminal) return@post
+            if (!sessions.contains(session) ||
+                !AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)
+            ) return@post
+            if (!session.acceptsOverlayEvents) return@post
             runCatching {
                 val ownsOverlay = claimOverlay(session, revealsForegroundOperation && entrySurfaceReady)
                 if (ownsOverlay) {
+                    if (AgentOverlayVisibilityPolicy.shouldRecordForegroundExecution(
+                            event, entrySurfaceReady, session.overlaySurfaceMode,
+                        )) {
+                        hasExecutedForegroundTool = true
+                    }
                     state.value = state.value.applyControlledEvent(event, session.controller.isPaused)
                 }
                 if (revealsForegroundOperation && entrySurfaceReady && ownsOverlay) {
@@ -690,7 +697,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             if (!sessions.remove(session)) return@post
             synchronized(supplementsLock) { supplementsByRunId.remove(session.runId) }
             if (
-                !AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode) ||
+                !AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode) ||
                 overlaySession !== session
             ) {
                 if (sessions.isEmpty() && pendingStartRequests.isEmpty() && !AgentChildTaskGroups.hasAnyActive() &&
@@ -1059,8 +1066,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             }) return
         val targetSession = sessions.get(targetRunId)
         val updatesOverlay = targetSession?.let {
-            AgentOverlayVisibilityPolicy.allowsOverlay(it.taskSurfaceMode)
-        } ?: true
+            overlaySession === it && AgentOverlayVisibilityPolicy.allowsOverlay(it.overlaySurfaceMode)
+        } ?: (targetRunId == overlayRunId)
         if (updatesOverlay) setBubbleInputMode(focusable = false)
         targetSession?.let { session ->
             val event = session.steer(supplementText, imagesJson) {
@@ -1126,7 +1133,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun showOverlay() {
         val session = overlaySession ?: return
-        if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)) return
+        if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)) return
         if (orbView != null) return
         // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
         if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) return
@@ -1179,7 +1186,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun showBubble(wm: WindowManager) {
         val session = overlaySession ?: return
-        if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)) return
+        if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)) return
         if (bubbleView != null) return
         val bubble = createOverlayComposeView {
             AgentOverlayBubble(
@@ -1210,7 +1217,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun showResultCard(wm: WindowManager, session: AgentRuntimeSession) {
         if (overlaySession !== session ||
             !AgentOverlayVisibilityPolicy.shouldShowResultCard(
-                session.taskSurfaceMode, hasExecutedForegroundTool,
+                session.overlaySurfaceMode, hasExecutedForegroundTool,
             )
         ) return
         if (resultCardView != null) return
@@ -1408,11 +1415,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         session: AgentRuntimeSession,
     ) {
         if (overlaySession !== session ||
-            !AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)
+            !AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)
         ) return
         state.value = finalState
 
-        if (AgentOverlayVisibilityPolicy.shouldShowResultCard(session.taskSurfaceMode, hasExecutedForegroundTool)) {
+        if (AgentOverlayVisibilityPolicy.shouldShowResultCard(session.overlaySurfaceMode, hasExecutedForegroundTool)) {
             // 撤掉光球和小气泡，改显半屏结果卡片，不自动关闭，用户手动关闭
             collapsed.value = true
             removeAmbientWindows()
@@ -1504,14 +1511,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun claimOverlay(session: AgentRuntimeSession, wantsOverlay: Boolean): Boolean {
-        if (!sessions.contains(session) ||
-            !AgentOverlayVisibilityPolicy.allowsOverlay(session.taskSurfaceMode)
+        if (!sessions.contains(session) || !session.acceptsOverlayEvents ||
+            !AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)
         ) return false
         val current = overlaySession
         if (current === session) return true
         if (!wantsOverlay) return current == null
         if (current != null && sessions.contains(current) && !current.isTerminal) return false
         overlaySession = session
+        state.value = AgentOverlayState.Initial
+        collapsed.value = true
+        hasExecutedForegroundTool = false
         return true
     }
 

@@ -113,6 +113,7 @@ internal class AgentLocalTools(
      * toolName 是触发选择的工具；cancelled 是本工具执行器自己的关闭状态，等待期间要一起检查。
      */
     private val chooseSurface: ((toolName: String, cancelled: () -> Boolean) -> io.github.mangi.eta.agent.device.AgentTaskSurfaceMode?)? = null,
+    private val onSelfAppSurfaceChanged: (String, Boolean) -> Unit = { _, _ -> },
     private val selfForegroundPackage: () -> String? = {
         AgentAccessibilityService.current()?.currentMainDisplayPackageName()
     },
@@ -246,11 +247,13 @@ internal class AgentLocalTools(
             }
             val prepared = if (toolCall.name == "launch_app") runCatching { prepareLaunchApp(args) }.getOrElse {
                 selfSurface.leave()
+                notifySelfAppSurface(toolCall.name, false)
                 publishedObservation.set(PublishedObservation())
                 return textResult(errorResult("APP_RESOLUTION_FAILED", "应用目标解析失败，本次未启动"))
             } else null
             if (prepared?.error != null) {
                 selfSurface.leave()
+                notifySelfAppSurface(toolCall.name, false)
                 publishedObservation.set(PublishedObservation())
                 return textResult(prepared.error)
             }
@@ -265,6 +268,9 @@ internal class AgentLocalTools(
             )
             if (wasSelf != selfSurface.active || toolCall.name == "launch_app") {
                 publishedObservation.set(PublishedObservation())
+            }
+            if (route != AgentSelfAppSurface.Route.SELF_GUI) {
+                notifySelfAppSurface(toolCall.name, false)
             }
             var chosenNow: io.github.mangi.eta.agent.device.AgentTaskSurfaceMode? = null
             if (route == AgentSelfAppSurface.Route.BASE &&
@@ -291,11 +297,13 @@ internal class AgentLocalTools(
             val result = executeOnSurface(resolvedCall, route, prepared)
             if (route == AgentSelfAppSurface.Route.SELF_LAUNCH) {
                 selfSurface.launchedSelf(runCatching { JSONObject(result.content).optBoolean("ok") }.getOrDefault(false))
+                notifySelfAppSurface(toolCall.name, selfSurface.active)
             }
             if (route != AgentSelfAppSurface.Route.BASE) {
                 // An action may navigate away. Never replay it on another display.
                 if (route == AgentSelfAppSurface.Route.SELF_GUI &&
                     !selfSurface.validateForeground(runCatching(selfForegroundPackage).getOrNull())) {
+                    notifySelfAppSurface(toolCall.name, false)
                     publishedObservation.set(PublishedObservation())
                 }
                 val note = runCatching {
@@ -344,6 +352,12 @@ internal class AgentLocalTools(
         val note = runCatching { JSONObject(result.content).put("task_surface", surface).put("task_surface_scope", "ordinary_run").toString() }
             .getOrElse { "{\"task_surface\":\"$surface\"}\n" + result.content }
         return result.copy(content = note)
+    }
+
+    private fun notifySelfAppSurface(toolName: String, active: Boolean) {
+        runCatching { onSelfAppSurfaceChanged(toolName, active) }.onFailure { throwable ->
+            logger.warn("Self-app overlay update failed: type=${throwable.javaClass.simpleName}")
+        }
     }
 
     private fun executeOnSurface(
@@ -427,10 +441,15 @@ internal class AgentLocalTools(
             if (route == AgentSelfAppSurface.Route.SELF_GUI &&
                 !selfSurface.validateForeground(runCatching(selfForegroundPackage).getOrNull())) {
                 publishedObservation.set(PublishedObservation())
+                notifySelfAppSurface(toolCall.name, false)
                 return@runCatching textResult(errorResult(
                     "SELF_APP_TARGET_LOST",
                     "未确认主屏焦点仍为代鱼自身，本次未执行；请重新打开代鱼，或按原偏好打开其它应用并重新观察，勿重放旧坐标",
                 ))
+            }
+            if (closed.get()) return@runCatching textResult(errorResult("RUN_CLOSED", "任务已关闭"))
+            if (route == AgentSelfAppSurface.Route.SELF_GUI) {
+                notifySelfAppSurface(toolCall.name, true)
             }
             when (toolCall.name) {
                 "get_current_context" -> textResult(DeviceContextTool.current(context))
