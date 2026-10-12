@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Menu
+import io.github.mangi.eta.ui.icons.MenuLines
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -281,7 +281,8 @@ private fun AgentTopBar(
                 onOpenConversationPane()
             }) {
                 Icon(
-                    imageVector = Icons.Rounded.Menu,
+                    // 三条等长横线，沿用顶栏的着色，不套圆角端点和右端竖线。
+                    imageVector = MenuLines,
                     contentDescription = stringResource(R.string.action_conversation_history),
                 )
             }
