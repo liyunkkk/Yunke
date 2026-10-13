@@ -146,6 +146,23 @@ internal class AgentLocalTools(
     private fun virtualRouted(name: String, route: AgentSelfAppSurface.Route) = backgroundSurface &&
         (name in virtualLifecycle || (route == AgentSelfAppSurface.Route.BASE &&
             io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(name)))
+
+    /**
+     * 虚拟屏新架构（VirtualScreen）路由判定。Phase 0 地基。
+     *
+     * 语义：开关开 && 旧 virtualRouted 命中 → 走新路径；否则走旧
+     * `VirtualDisplaySession.executeGui`。旧分支代码一行不动。
+     *
+     * 注意：
+     * - 用 [io.github.mangi.eta.agent.display.VirtualScreenNextgenSettingsStore.isEnabledSync]
+     *   同步读开关：`Prefs.isEnabled()` 是 SharedPreferences 同步读，热路径无协程开销；
+     *   `Prefs` 未初始化时回退默认值 false（fail-closed）。
+     * - `nextgenRouted(name, route) == true` 蕴含 `virtualRouted(name, route) == true`，
+     *   因此前台门禁跳过逻辑无需改动。
+     */
+    private fun nextgenRouted(name: String, route: AgentSelfAppSurface.Route): Boolean =
+        virtualRouted(name, route) &&
+            io.github.mangi.eta.agent.display.VirtualScreenNextgenSettingsStore.isEnabledSync()
     private val closed = AtomicBoolean(false)
     private val deviceController = RootShellDeviceController(logger, {
         val excluded = screenshotExcludedPackages()
