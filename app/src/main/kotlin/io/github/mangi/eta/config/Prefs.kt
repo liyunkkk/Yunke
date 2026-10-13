@@ -75,6 +75,12 @@ internal object Prefs {
         const val AGENT_VOICE_DOUBAO_INSTRUCTIONS = "agent_voice_doubao_instructions"
         /** Kimi Web UI 是否优先使用内置浏览器打开，而不是交给系统浏览器。 */
         const val KIMI_WEB_USE_BUILTIN_BROWSER = "kimi_web_use_builtin_browser"
+        /** 虚拟屏新架构（VirtualScreen）实验性开关；默认关闭，走旧 VirtualDisplay 路径。 */
+        const val VIRTUAL_SCREEN_NEXTGEN_ENABLED = "virtual_screen_nextgen_enabled"
+        /** 虚拟屏新架构空闲回收超时（分钟）；默认 20。 */
+        const val VIRTUAL_SCREEN_NEXTGEN_IDLE_MINUTES = "virtual_screen_nextgen_idle_minutes"
+        /** 虚拟屏新架构熄屏执行许可；默认关闭（需 WAKE_LOCK，单独开关）。 */
+        const val VIRTUAL_SCREEN_NEXTGEN_OFF_ENABLED = "virtual_screen_nextgen_off_enabled"
         const val HAPTIC_TOUCH_FEEDBACK = "haptic_touch_feedback"
         const val HAPTIC_MESSAGE_GENERATION = "haptic_message_generation"
         const val HAPTIC_BACKGROUND = "haptic_background"
@@ -107,6 +113,8 @@ internal object Prefs {
             HAPTIC_MESSAGE_GENERATION to true,
             HAPTIC_BACKGROUND to true,
             HAPTIC_BACKGROUND_REASONING to true,
+            VIRTUAL_SCREEN_NEXTGEN_ENABLED to false,
+            VIRTUAL_SCREEN_NEXTGEN_OFF_ENABLED to false,
         )
 
         /** 由 Eta Runtime 最终裁决、不要求 Xposed 框架在线的开关。 */
@@ -126,6 +134,8 @@ internal object Prefs {
             HAPTIC_MESSAGE_GENERATION,
             HAPTIC_BACKGROUND,
             HAPTIC_BACKGROUND_REASONING,
+            VIRTUAL_SCREEN_NEXTGEN_ENABLED,
+            VIRTUAL_SCREEN_NEXTGEN_OFF_ENABLED,
         )
     }
 

@@ -552,6 +552,14 @@ internal fun SettingsScreen(
                         key = Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER,
                         icon = Icons.Rounded.Language,
                     )
+                    SwitchPref(
+                        context = context,
+                        prefs = agentPrefs,
+                        title = "虚拟屏（新架构·实验性）",
+                        summary = "启用基于节点树的虚拟屏实现；关闭则使用旧的纯截图副屏。默认关闭，开启后后台 GUI 工具走新路径。",
+                        key = Prefs.Keys.VIRTUAL_SCREEN_NEXTGEN_ENABLED,
+                        icon = Icons.Rounded.Layers,
+                    )
 
                     WindowSpinnerPreference(
                         title = "Kimi 授权模式",
