@@ -3,7 +3,7 @@ package io.github.mangi.eta.agent.dsh
 import android.content.Context
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.terminal.LinuxEnvironmentPaths
-import io.github.mangi.eta.agent.terminal.LinuxEnvironmentSettingsRepository
+import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import io.github.mangi.eta.agent.terminal.RootShellTerminalController
 import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.agent.terminal.terminalEnvironment
