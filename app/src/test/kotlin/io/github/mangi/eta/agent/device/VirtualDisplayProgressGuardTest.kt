@@ -258,4 +258,24 @@ class VirtualDisplayProgressGuardTest {
         guard.onObservation("com.test.app", listOf(sampleNode(1, "B")))
         assertFalse(guard.isPaused())
     }
+    @Test
+    fun observationResetsStrictAccumulatedCounter() {
+        val guard = VirtualDisplayProgressGuard()
+        val noChangeSummary = JSONObject().put("screen_changed", false).put("package", "com.test.app")
+
+        // 严格分支（节点类动作 + 明确回读）：每次动作前都有一次观察。
+        // 「累计动作」计数被观察归零，因此远超 6 次也不得熔断。
+        // 旧实现按列表长度计数、观察不清列表，这里会在第 6 次熔断——本用例用于锁死新语义。
+        for (i in 1..10) {
+            guard.onObservation("com.test.app", listOf(sampleNode(1, "A")))
+            guard.recordAction(
+                "tap_element",
+                VirtualDisplayProgressGuard.ActionTarget.Element(i),
+                noChangeSummary,
+                nodeBased = true,
+            )
+            assertFalse(guard.isPaused())
+        }
+    }
+
 }

@@ -16,8 +16,10 @@ import kotlin.math.abs
  *    - 一律改用宽松阈值：同一目标重复 >= 8 次或自上次观察以来累计动作 >= 12 次才熔断，
  *      防止误杀内容恒定界面（画布、视频、游戏、图标网格等）下的正常坐标操作。
  * 3. 严格与宽松模式各自独立计数，互不清空；同一目标重复计数在整个停滞窗口内保留。
- * 4. 「累计动作」只统计自上次观察以来的连续动作数——一次 observe_screen 即归零，
- *    避免坐标模式下节点树恒定不变时把正常任务判死。
+ * 4. 「累计动作」只统计自上次观察以来的连续动作数——一次 observe_screen 即归零。
+ *    因此该规则的实际口径是「连续 N 次动作之间没有任何观察」；同一目标重复计数不受观察影响。
+ *    这避免坐标模式下节点树恒定不变时把正常任务判死。
+ * 5. 熔断后的逃逸口：launch_app 成功会无条件重置守卫（视为一次有意的重新开始）。
  *
  * 熔断后该会话后续副屏动作返回明确错误码 VIRTUAL_NO_PROGRESS_PAUSED，阻止进一步重复操作。
  * 界面变化、包名变化、作用域变化或新 run 时重置守卫。
@@ -102,14 +104,19 @@ internal class VirtualDisplayProgressGuard {
         blindSinceObservation = 0
     }
 
-    /** 作用域变化（包名变了、换应用等）时重置。 */
+    /**
+     * 启动/接管应用时重置。
+     *
+     * 这里**无条件**重置（不再要求包名变化）：启动应用是一次有意的重新开始，
+     * 同时这也给熔断提供了应用内逃逸口——熔断后仍放行 launch_app，
+     * 因此模型/用户可以靠重新打开应用解除误判，而不必换应用或重开会话。
+     */
     @Synchronized
     fun onScopeChanged(packageName: String = "") {
-        if (packageName.isNotBlank() && packageName != lastPackageName) {
-            lastPackageName = packageName
-            lastTreeSignature = null
-            reset()
-        }
+        if (packageName.isBlank()) return
+        lastPackageName = packageName
+        lastTreeSignature = null
+        reset()
     }
 
     /**
@@ -149,7 +156,8 @@ internal class VirtualDisplayProgressGuard {
      *    - 回读含 screen_changed 且为 false -> 严格阈值（同一目标 >= 3 或自上次观察以来累计 >= 6）；
      *    - 回读不含 screen_changed -> 宽松阈值（同一目标 >= 8 或自上次观察以来累计 >= 12）。
      * 3. 严格与宽松模式各自独立计数，互不清空；同一目标重复计数在整个停滞窗口内保留。
-     * 4. 「累计动作」只统计自上次观察以来的连续动作数，一次 observe_screen 即归零。
+     * 4. 「累计动作」只统计自上次观察以来的连续动作数（一次 observe_screen 即归零），
+     *    实际口径是「连续 N 次动作之间没有任何观察」；同一目标重复计数不受观察影响。
      */
     @Synchronized
     fun recordAction(
