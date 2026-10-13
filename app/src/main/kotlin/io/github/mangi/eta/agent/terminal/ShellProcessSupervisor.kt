@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.terminal
 
 import io.github.mangi.eta.agent.device.RootSu
+import io.github.mangi.eta.core.AndroidAgentLogger
 
 import java.io.File
 import java.util.UUID
@@ -14,10 +15,14 @@ internal class ShellProcessSupervisor(
     private val rootAvailable: () -> Boolean = { TerminalRuntime.rootAvailable },
     private val userPtyExecutable: () -> File? = { TerminalRuntime.nativeExecutable("libeta_pty.so") },
     private val skillsDirectoryProvider: () -> File? = TerminalRuntime::visibleSkillsDirectory,
+    private val startupOwnershipWaitMs: Long = PROCESS_OWNERSHIP_WAIT_MS,
 ) {
     private companion object {
         const val PROCESS_REAP_TIMEOUT_MS = 1_000L
-        const val PROCESS_OWNERSHIP_WAIT_MS = 500L
+        const val PROCESS_OWNERSHIP_WAIT_MS = 10_000L
+        const val PROCESS_OWNERSHIP_POLL_MS = 10L
+        const val PROCESS_CLEANUP_OWNERSHIP_WAIT_MS = 500L
+        const val START_FAILURE_STDERR_MAX_BYTES = 4_096
         const val PROCESS_SIGNAL_TIMEOUT_MS = 1_000L
         const val DEFAULT_PTY_COLS = 120
         const val DEFAULT_PTY_ROWS = 40
@@ -49,20 +54,32 @@ internal class ShellProcessSupervisor(
         pty: Boolean = false,
         ptyCols: Int = DEFAULT_PTY_COLS,
         ptyRows: Int = DEFAULT_PTY_ROWS,
+        onStartFailure: (String) -> Unit = {},
     ): Process? {
-        if (isClosing) return null
+        val startNanos = System.nanoTime()
+        var stderrCategory: String? = null
+        fun failed(stage: String, failure: Throwable? = null): Process? {
+            // Only controlled stages and exception types: never command, token, path or exception message.
+            val summary = "stage=$stage" + (failure?.let { " type=${it.javaClass.simpleName}" } ?: "") +
+                " elapsedMs=${TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos)}" +
+                (stderrCategory?.let { " reason=$it" } ?: "")
+            runCatching { AndroidAgentLogger.warn("Shell start failed $summary") }
+            runCatching { onStartFailure(summary) }
+            return null
+        }
+        if (isClosing) return failed("closing")
         require(identity == "root" || identity == "user") { "identity 仅支持 root/user" }
         require(!environment.isLinux || identity == "root" || LinuxEnvironmentPaths.backendOf(linuxRootfsPath) == LinuxExecutionBackend.PROOT) {
             "Linux 工具环境仅支持 root identity"
         }
-        if (environment.isLinux && identity == "root" && LinuxEnvironmentPaths.backendOf(linuxRootfsPath) == LinuxExecutionBackend.PROOT) return null
-        if (identity == "root" && !rootAvailable()) return null
+        if (environment.isLinux && identity == "root" && LinuxEnvironmentPaths.backendOf(linuxRootfsPath) == LinuxExecutionBackend.PROOT) return failed("root_proot_rejected")
+        if (identity == "root" && !rootAvailable()) return failed("root_unavailable")
         val ownershipFile = runCatching {
             File.createTempFile("eta-terminal-", ".owner")
-        }.getOrNull() ?: return null
+        }.getOrElse { return failed("ownership_file", it) }
         val ownershipToken = UUID.randomUUID().toString().replace("-", "")
         val prepared = try { LongShellCommand.prepare(command, environment, linuxRootfsPath) }
-        catch (_: Exception) { ownershipFile.delete(); return null }
+        catch (failure: Exception) { ownershipFile.delete(); return failed("prepare_command", failure) }
         val launcher = try {
             buildTrackedShellLauncher(
                 ownershipFile = ownershipFile,
@@ -76,14 +93,10 @@ internal class ShellProcessSupervisor(
                 ptyCols = ptyCols,
                 ptyRows = ptyRows,
             )
-        } catch (_: IllegalArgumentException) {
+        } catch (failure: Exception) {
             ownershipFile.delete()
             prepared.file?.delete()
-            return null
-        } catch (_: java.io.IOException) {
-            ownershipFile.delete()
-            prepared.file?.delete()
-            return null
+            return failed("build_launcher", failure)
         }
         val process = runCatching {
             val builder = if (identity == "root") {
@@ -98,7 +111,7 @@ internal class ShellProcessSupervisor(
         }.getOrElse {
             ownershipFile.delete()
             prepared.file?.delete()
-            return null
+            return failed("process_start", it)
         }
         val metadata = ProcessMetadata(identity, ownershipFile, ownershipToken, prepared.file)
         val accepted = synchronized(activeProcesses) {
@@ -111,19 +124,33 @@ internal class ShellProcessSupervisor(
             }
         }
         if (!accepted) {
+            stderrCategory = classifyStartupStderr(process, mergeStderr)
             terminateAndReap(process, metadata)
             metadata.ownershipFile.delete()
             metadata.commandFile?.delete()
-            return null
+            return failed("closing")
         }
-        val ownership = resolveProcessOwnership(metadata)
+        var ownershipFailure = "ownership_timeout"
+        val ownership = try {
+            resolveProcessOwnership(metadata, process, waitForStartup = true) { ownershipFailure = it }
+        } catch (failure: InterruptedException) {
+            try {
+                stderrCategory = classifyStartupStderr(process, mergeStderr)
+                terminateAndReap(process, metadata)
+                unregisterProcess(process)
+                return failed("ownership_interrupted", failure)
+            } finally {
+                Thread.currentThread().interrupt()
+            }
+        }
         val stillAccepted = synchronized(activeProcesses) {
             processMetadata[process] === metadata && !isClosing
         }
         if (ownership == null || !stillAccepted) {
+            stderrCategory = classifyStartupStderr(process, mergeStderr)
             terminateAndReap(process, metadata)
             unregisterProcess(process)
-            return null
+            return failed(if (!stillAccepted) "closing" else ownershipFailure)
         }
         return process
     }
@@ -158,7 +185,13 @@ internal class ShellProcessSupervisor(
         runCatching { process.outputStream.close() }
         runCatching { process.inputStream.close() }
         runCatching { process.errorStream.close() }
-        runCatching { process.waitFor(PROCESS_REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+        try {
+            process.waitFor(PROCESS_REAP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (_: Exception) {
+            // Best-effort reap; streams are already closed.
+        }
     }
 
     fun unregisterProcess(process: Process) {
@@ -423,40 +456,114 @@ internal class ShellProcessSupervisor(
         metadataOverride: ProcessMetadata?,
     ) {
         val metadata = metadataOverride ?: synchronized(activeProcesses) { processMetadata[process] }
-        val ownership = metadata?.let(::resolveProcessOwnership)
-        if (metadata != null && ownership != null) {
-            if (ownership.isolatedGroup) {
-                signalProcessGroup(metadata, ownership)
-            } else {
-                signalProcessTree(metadata, ownership)
+        // Cleanup never inherits the startup budget, even while admission is waiting.
+        try {
+            val ownership = metadata?.let { resolveProcessOwnership(it, process, waitForStartup = false) }
+            if (metadata != null && ownership != null) {
+                if (ownership.isolatedGroup) {
+                    signalProcessGroup(metadata, ownership)
+                } else {
+                    signalProcessTree(metadata, ownership)
+                }
             }
+        } finally {
+            runCatching { if (process.isAlive) process.destroy() }
+            runCatching { if (process.isAlive) process.destroyForcibly() }
         }
-        runCatching { if (process.isAlive) process.destroy() }
-        runCatching { if (process.isAlive) process.destroyForcibly() }
     }
 
     private fun terminateAndReap(
         process: Process,
         metadataOverride: ProcessMetadata?,
     ) {
-        terminateProcessTree(process, metadataOverride)
-        reapProcess(process)
+        try {
+            terminateProcessTree(process, metadataOverride)
+        } finally {
+            reapProcess(process)
+        }
     }
 
-    private fun resolveProcessOwnership(metadata: ProcessMetadata): ProcessOwnership? {
-        metadata.ownership?.let { ownership -> return ownership }
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(PROCESS_OWNERSHIP_WAIT_MS)
+    // Called only after rejection; never compete with readers of an accepted process.
+    private fun classifyStartupStderr(process: Process, mergeStderr: Boolean): String? = runCatching {
+        val input = if (mergeStderr) process.inputStream else process.errorStream
+        val count = input.available().coerceIn(0, START_FAILURE_STDERR_MAX_BYTES)
+        if (count == 0) return@runCatching null
+        val bytes = ByteArray(count)
+        val read = input.read(bytes)
+        if (read <= 0) return@runCatching null
+        val text = String(bytes, 0, read, Charsets.UTF_8).lowercase(java.util.Locale.ROOT)
+        when {
+            "permission denied" in text -> "permission_denied"
+            "not found" in text || "no such file or directory" in text -> "not_found"
+            "operation not permitted" in text -> "operation_not_permitted"
+            else -> "stderr_present"
+        }
+    }.getOrNull()
+
+    private fun resolveProcessOwnership(
+        metadata: ProcessMetadata,
+        process: Process,
+        waitForStartup: Boolean,
+        onFailure: (String) -> Unit = {},
+    ): ProcessOwnership? {
+        val waitMs = if (waitForStartup) startupOwnershipWaitMs else PROCESS_CLEANUP_OWNERSHIP_WAIT_MS
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMs)
+        fun readOwner(): String? = try {
+            metadata.ownershipFile.readText().trim()
+        } catch (failure: Exception) {
+            onFailure("ownership_read type=${failure.javaClass.simpleName}")
+            null
+        }
         do {
-            metadata.ownership?.let { ownership -> return ownership }
-            val content = runCatching { metadata.ownershipFile.readText().trim() }.getOrNull().orEmpty()
+            if (waitForStartup) {
+                if (Thread.interrupted()) throw InterruptedException()
+                if (isClosing) {
+                    onFailure("closing")
+                    return null
+                }
+            }
+            metadata.ownership?.let { return it }
+            val content = readOwner()
+            // Another admission/cleanup reader may already have cached and deleted the file.
+            metadata.ownership?.let { return it }
+            if (content == null) return null
             if (content.isNotEmpty()) {
-                val ownership = parseProcessOwnership(content) ?: return null
+                val ownership = parseProcessOwnership(content)
+                if (ownership == null) {
+                    onFailure("ownership_invalid")
+                    return null
+                }
                 metadata.ownership = ownership
                 metadata.ownershipFile.delete()
                 return ownership
             }
-            if (System.nanoTime() >= deadline) return null
-            Thread.sleep(10)
+            // Cleanup still allows a late owner during closing, within its own short budget.
+            // Read ownership first: a valid fast command may have already exited.
+            if (!process.isAlive) {
+                // Close the race between the first file read and launcher exit.
+                val finalContent = readOwner()
+                metadata.ownership?.let { return it }
+                if (finalContent == null) return null
+                val ownership = parseProcessOwnership(finalContent)
+                if (ownership != null) {
+                    metadata.ownership = ownership
+                    metadata.ownershipFile.delete()
+                    return ownership
+                }
+                onFailure(if (finalContent.isEmpty()) "launcher_exited exitCode=${process.exitValue()}" else "ownership_invalid")
+                return null
+            }
+            if (System.nanoTime() >= deadline) {
+                onFailure("ownership_timeout")
+                return null
+            }
+            try {
+                Thread.sleep(PROCESS_OWNERSHIP_POLL_MS)
+            } catch (failure: InterruptedException) {
+                if (waitForStartup) throw failure
+                Thread.currentThread().interrupt()
+                return null
+            }
         } while (true)
     }
 
@@ -524,9 +631,14 @@ internal class ShellProcessSupervisor(
                 .start()
         }.getOrNull() ?: return
         runCatching { process.outputStream.close() }
-        val finished = runCatching {
+        val finished = try {
             process.waitFor(PROCESS_SIGNAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        }.getOrDefault(false)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        } catch (_: Exception) {
+            false
+        }
         if (!finished) runCatching { process.destroyForcibly() }
     }
 
@@ -591,6 +703,7 @@ internal fun runOneShotShell(
     linuxRootfsPath: String? = null,
     linuxSharedMounts: List<SharedFolderMount> = emptyList(),
 ): OneShotShellResult {
+    var startFailure: String? = null
     val process = processSupervisor.startShellProcess(
         identity = identity,
         command = command,
@@ -598,10 +711,13 @@ internal fun runOneShotShell(
         environment = environment,
         linuxRootfsPath = linuxRootfsPath,
         linuxSharedMounts = linuxSharedMounts,
+        onStartFailure = { startFailure = it },
     ) ?: return OneShotShellResult(
-        if (processSupervisor.isClosing) -3 else -1,
+        if (processSupervisor.isClosing || Thread.currentThread().isInterrupted) -3 else -1,
         ByteArray(0),
-        if (processSupervisor.isClosing) "操作已取消".toByteArray() else "无法启动进程".toByteArray(),
+        if (processSupervisor.isClosing || Thread.currentThread().isInterrupted)
+            "操作已取消 (${startFailure ?: "stage=closing"})".toByteArray()
+        else "无法启动进程 (${startFailure ?: "stage=unknown"})".toByteArray(),
     )
 
     try {
