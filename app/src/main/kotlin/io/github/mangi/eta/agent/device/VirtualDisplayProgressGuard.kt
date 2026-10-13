@@ -11,11 +11,13 @@ import kotlin.math.abs
  * 1. 节点类动作（tap_element、long_press_element、scroll_element）且回读包含 screen_changed：
  *    - 若 screen_changed == true -> 界面发生可见变化，立即 reset() 清空停滞窗口；
  *    - 若 screen_changed == false -> 界面无变化，同一目标（index 相同等）
- *      重复 >= 3 次熔断，或停滞窗口内累计动作 >= 6 次熔断。
+ *      重复 >= 3 次熔断，或自上次观察以来累计动作 >= 6 次熔断。
  * 2. 坐标类动作（tap、tap_area、swipe、long_press、scroll、press_key）或回读不可用时：
- *    - 一律改用宽松阈值：同一目标重复 >= 8 次或累计动作 >= 12 次才熔断，
+ *    - 一律改用宽松阈值：同一目标重复 >= 8 次或自上次观察以来累计动作 >= 12 次才熔断，
  *      防止误杀内容恒定界面（画布、视频、游戏、图标网格等）下的正常坐标操作。
- * 3. 严格与宽松模式各自独立计数，相互切换时清空对方计数。
+ * 3. 严格与宽松模式各自独立计数，互不清空；同一目标重复计数在整个停滞窗口内保留。
+ * 4. 「累计动作」只统计自上次观察以来的连续动作数——一次 observe_screen 即归零，
+ *    避免坐标模式下节点树恒定不变时把正常任务判死。
  *
  * 熔断后该会话后续副屏动作返回明确错误码 VIRTUAL_NO_PROGRESS_PAUSED，阻止进一步重复操作。
  * 界面变化、包名变化、作用域变化或新 run 时重置守卫。
@@ -75,6 +77,10 @@ internal class VirtualDisplayProgressGuard {
     private val stalledActions = mutableListOf<ActionRecord>()
     private val blindActions = mutableListOf<ActionRecord>()
 
+    /** 自上次观察以来的连续无进展动作数；一次 observe_screen 即归零。 */
+    private var stalledSinceObservation = 0
+    private var blindSinceObservation = 0
+
     @Synchronized
     fun isPaused(): Boolean = paused
 
@@ -92,6 +98,8 @@ internal class VirtualDisplayProgressGuard {
         pauseReason = null
         stalledActions.clear()
         blindActions.clear()
+        stalledSinceObservation = 0
+        blindSinceObservation = 0
     }
 
     /** 作用域变化（包名变了、换应用等）时重置。 */
@@ -125,18 +133,23 @@ internal class VirtualDisplayProgressGuard {
             reset()
         }
         lastTreeSignature = currentSignature
+        // 一次观察视为重新接地：累计动作计数归零；
+        // 但不清空列表本身——同一目标重复计数必须保留，否则 observe→tap→observe→tap 的循环会漏判。
+        stalledSinceObservation = 0
+        blindSinceObservation = 0
     }
 
     /**
      * 动作执行完成且拿到回读（afterActionSummary）后调用。
      * 区分判定阈值：
      * 1. 坐标类动作（tap、tap_area、swipe、long_press、scroll、press_key）或回读不可用：
-     *    一律走宽松阈值（同一目标 >= 8 或累计 >= 12），避免误杀内容恒定界面下的正常操作；
+     *    一律走宽松阈值（同一目标 >= 8 或自上次观察以来累计 >= 12），避免误杀内容恒定界面下的正常操作；
      * 2. 节点类动作（tap_element、long_press_element、scroll_element）：
      *    - 回读含 screen_changed 且为 true -> 界面有变化，清空停滞窗口；
-     *    - 回读含 screen_changed 且为 false -> 严格阈值（同一目标 >= 3 或累计 >= 6）；
-     *    - 回读不含 screen_changed -> 宽松阈值（同一目标 >= 8 或累计 >= 12）。
-     * 3. 严格与宽松模式各自独立计数，相互切换时清空对方计数。
+     *    - 回读含 screen_changed 且为 false -> 严格阈值（同一目标 >= 3 或自上次观察以来累计 >= 6）；
+     *    - 回读不含 screen_changed -> 宽松阈值（同一目标 >= 8 或自上次观察以来累计 >= 12）。
+     * 3. 严格与宽松模式各自独立计数，互不清空；同一目标重复计数在整个停滞窗口内保留。
+     * 4. 「累计动作」只统计自上次观察以来的连续动作数，一次 observe_screen 即归零。
      */
     @Synchronized
     fun recordAction(
@@ -167,8 +180,8 @@ internal class VirtualDisplayProgressGuard {
         val hasScreenChanged = summary != null && summary.has("screen_changed")
         if (nodeBased && hasScreenChanged) {
             // 节点类动作且有明确回读（screen_changed == false）：走严格判定（>= 3 或 >= 6）
-            blindActions.clear()
             stalledActions.add(ActionRecord(tool, target))
+            stalledSinceObservation++
 
             val sameCount = stalledActions.count { it.tool == tool && it.target.matches(target) }
             if (sameCount >= MAX_SAME_TARGET_ATTEMPTS) {
@@ -177,15 +190,15 @@ internal class VirtualDisplayProgressGuard {
                 return
             }
 
-            if (stalledActions.size >= MAX_STALLED_ACTIONS) {
+            if (stalledSinceObservation >= MAX_STALLED_ACTIONS) {
                 paused = true
-                pauseReason = "当前停滞窗口内累计动作达到 ${stalledActions.size} 次且无进展"
+                pauseReason = "自上次观察以来累计动作达到 $stalledSinceObservation 次且无进展"
                 return
             }
         } else {
             // 坐标类动作或回读不可用：一律走宽松判定（>= 8 或 >= 12）
-            stalledActions.clear()
             blindActions.add(ActionRecord(tool, target))
+            blindSinceObservation++
 
             val sameCount = blindActions.count { it.tool == tool && it.target.matches(target) }
             if (sameCount >= MAX_BLIND_SAME_TARGET_ATTEMPTS) {
@@ -194,9 +207,9 @@ internal class VirtualDisplayProgressGuard {
                 return
             }
 
-            if (blindActions.size >= MAX_BLIND_STALLED_ACTIONS) {
+            if (blindSinceObservation >= MAX_BLIND_STALLED_ACTIONS) {
                 paused = true
-                pauseReason = "坐标模式下累计动作达到 ${blindActions.size} 次且无进展"
+                pauseReason = "坐标模式下自上次观察以来累计动作达到 $blindSinceObservation 次且无进展"
                 return
             }
         }

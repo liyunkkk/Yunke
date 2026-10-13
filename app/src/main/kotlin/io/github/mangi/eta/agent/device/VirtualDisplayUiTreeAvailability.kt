@@ -89,7 +89,8 @@ internal class VirtualDisplayUiTreeAvailability(
             lastEmptyAt = now
             emptyAttempts++
         }
-        unavailable = emptyAttempts >= MIN_EMPTY_ATTEMPTS && now - first >= EMPTY_GRACE_MS
+        unavailable = unavailable ||
+            (emptyAttempts >= MIN_EMPTY_ATTEMPTS && now - first >= EMPTY_GRACE_MS)
         return unavailable
     }
 

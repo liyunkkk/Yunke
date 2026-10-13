@@ -139,7 +139,7 @@ class VirtualDisplayProgressGuardTest {
         // 第 6 次不同目标无进展动作
         guard.recordAction("tap_element", VirtualDisplayProgressGuard.ActionTarget.Element(6), noChangeSummary, nodeBased = true)
         assertTrue(guard.isPaused())
-        assertEquals("当前停滞窗口内累计动作达到 6 次且无进展", guard.pauseReason())
+        assertEquals("自上次观察以来累计动作达到 6 次且无进展", guard.pauseReason())
     }
 
     @Test
@@ -152,26 +152,52 @@ class VirtualDisplayProgressGuardTest {
         }
         guard.recordAction("tap", VirtualDisplayProgressGuard.ActionTarget.Point(1200, 1200), noChangeSummary, nodeBased = false)
         assertTrue(guard.isPaused())
-        assertEquals("坐标模式下累计动作达到 12 次且无进展", guard.pauseReason())
+        assertEquals("坐标模式下自上次观察以来累计动作达到 12 次且无进展", guard.pauseReason())
     }
 
     @Test
-    fun switchingBetweenNodeAndCoordinateClearsOppositeCounters() {
+    fun switchingBetweenNodeAndCoordinateStillAccumulates() {
         val guard = VirtualDisplayProgressGuard()
         val noChangeSummary = JSONObject().put("screen_changed", false).put("package", "com.test.app")
 
-        // 2 次节点动作（严格计数达到 2）
-        guard.recordAction("tap_element", VirtualDisplayProgressGuard.ActionTarget.Element(1), noChangeSummary, nodeBased = true)
-        guard.recordAction("tap_element", VirtualDisplayProgressGuard.ActionTarget.Element(1), noChangeSummary, nodeBased = true)
-        assertFalse(guard.isPaused())
+        // 同一卡死界面上交替「节点动作 / 坐标动作」：两条计数互不清空，应最终熔断。
+        // 这是修复「交替时熔断不可达」的回归保护。
+        for (i in 1..5) {
+            guard.recordAction("tap", VirtualDisplayProgressGuard.ActionTarget.Point(i * 100, i * 100), noChangeSummary, nodeBased = false)
+            guard.recordAction("tap_element", VirtualDisplayProgressGuard.ActionTarget.Element(i), noChangeSummary, nodeBased = true)
+            assertFalse(guard.isPaused())
+        }
+        // 第 6 次节点动作：严格累计达到 6，熔断
+        guard.recordAction("tap_element", VirtualDisplayProgressGuard.ActionTarget.Element(6), noChangeSummary, nodeBased = true)
+        assertTrue(guard.isPaused())
+    }
 
-        // 切换到 1 次坐标动作：应清空严格计数
-        guard.recordAction("tap", VirtualDisplayProgressGuard.ActionTarget.Point(100, 100), noChangeSummary, nodeBased = false)
-        assertFalse(guard.isPaused())
+    @Test
+    fun observationResetsAccumulatedActionCounter() {
+        val guard = VirtualDisplayProgressGuard()
+        val noChangeSummary = JSONObject().put("screen_changed", false).put("package", "com.test.app")
 
-        // 再次进行之前的节点动作：因严格计数已被清空，此时累计为 1 次，不应熔断
-        guard.recordAction("tap_element", VirtualDisplayProgressGuard.ActionTarget.Element(1), noChangeSummary, nodeBased = true)
-        assertFalse(guard.isPaused())
+        // 坐标模式下节点树恒定不变；每次动作前都有一次观察（界面无变化）。
+        // 累计动作计数应被观察归零，因此即使远超 12 次也不得熔断。
+        for (i in 1..14) {
+            guard.onObservation("com.test.app", listOf(sampleNode(1, "A")))
+            guard.recordAction("tap", VirtualDisplayProgressGuard.ActionTarget.Point(i * 100, i * 100), noChangeSummary, nodeBased = false)
+            assertFalse(guard.isPaused())
+        }
+    }
+
+    @Test
+    fun sameTargetRepetitionStillTripsAcrossObservations() {
+        val guard = VirtualDisplayProgressGuard()
+        val noChangeSummary = JSONObject().put("screen_changed", false).put("package", "com.test.app")
+
+        // 同一目标重复计数必须保留（观察只归零「累计」计数），否则 observe→tap→observe→tap 的循环会漏判。
+        for (i in 1..8) {
+            guard.onObservation("com.test.app", listOf(sampleNode(1, "A")))
+            guard.recordAction("tap", VirtualDisplayProgressGuard.ActionTarget.Point(100, 100), noChangeSummary, nodeBased = false)
+        }
+        assertTrue(guard.isPaused())
+        assertEquals("坐标模式下同一目标重复操作达到 8 次且无进展", guard.pauseReason())
     }
 
     @Test
