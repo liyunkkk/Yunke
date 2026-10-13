@@ -15,6 +15,7 @@ import io.github.mangi.eta.agent.device.DeviceControlUnavailableException
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.device.RootShellDeviceController
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
+import io.github.mangi.eta.agent.dsh.DshSubagentTool
 import io.github.mangi.eta.agent.kimi.SupervisorKimiDaemonGateway
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentScreenObservationContract
@@ -213,6 +214,11 @@ internal class AgentLocalTools(
         context = context,
         terminalController = terminalController,
         gateway = SupervisorKimiDaemonGateway(context, detachedTaskSupervisor),
+        conversationId = conversationId,
+    )
+    private val dshSubagentTool = DshSubagentTool(
+        context = context,
+        terminalController = terminalController,
         conversationId = conversationId,
     )
     private val publishedObservation = AtomicReference(PublishedObservation())
@@ -492,6 +498,7 @@ internal class AgentLocalTools(
                 "keep_virtual_result" -> textResult(keepVirtualResult(args))
                 "open_uri" -> textResult(openUri(args))
                 "delegate_to_kimi_code" -> textResult(kimiCodeSubagentTool.delegate(args))
+                "delegate_to_dsh" -> textResult(dshSubagentTool.delegate(args))
                 "browser_use" -> browserUse(args, toolCall.id)
                 "observe_screen" -> observeScreen(args)
                 "tap" -> textResult(tap(args))

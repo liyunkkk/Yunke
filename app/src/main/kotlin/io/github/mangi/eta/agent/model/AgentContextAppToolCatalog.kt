@@ -224,6 +224,53 @@ internal object AgentContextAppToolCatalog {
             )
             .put(
                 AgentToolSchema.function(
+                    name = "delegate_to_dsh",
+                    description = "把复杂编码/重构/多文件修改任务委派给 dsh（DeepSeek Harness）子代理，它在隔离的 Linux 工作区里就地改代码、跑测试并汇报变更。适用于多文件代码修改、逻辑重构、写脚本与运行验证等重型编码任务。只在需要就地改代码并验证（编译/跑测试/跑命令）时使用；需要多路并行调查、审查、总结或生成媒体时，改用 delegate_task。同一份任务不要同时派给两边。",
+                    parameters = JSONObject()
+                        .put("type", "object")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put(
+                                    "task",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "具体的重构或编码任务描述与指令")
+                                )
+                                .put(
+                                    "project_path",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "工作目录绝对路径，默认 /workspace")
+                                )
+                                .put(
+                                    "timeout_seconds",
+                                    JSONObject()
+                                        .put("type", "integer")
+                                        .put("description", "执行超时时间（秒），默认 180，范围 10 到 600")
+                                )
+                                .put(
+                                    "conversation_id",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put(
+                                            "description",
+                                            "会话绑定键，同一对话的多轮委派复用同一个 dsh 会话上下文；" +
+                                                "通常无需填写，由运行时自动注入当前对话 id"
+                                        )
+                                )
+                                .put(
+                                    "conversation_title",
+                                    JSONObject()
+                                        .put("type", "string")
+                                        .put("description", "dsh 会话标题；缺省用工作目录名")
+                                )
+                        )
+                        .put("required", JSONArray().put("task"))
+                )
+            )
+            .put(
+                AgentToolSchema.function(
                     name = "get_assistant_config",
                     description = "获取YUNKe自身当前的运行状态、模型配置与功能开关（已自动进行脱敏保护）。当用户询问当前使用的是什么模型、中转站/服务商、思考模式开关或自身设置时调用此工具直接静默读取，严禁操控屏幕去设置界面翻找。",
                     parameters = JSONObject()
