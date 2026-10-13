@@ -107,7 +107,7 @@ private fun BoundSubAgentGptSpeedButton(
         animationSpec = tween(durationMillis = GptSpeedAnimationDurationMillis),
         label = "sub_agent_gpt_speed_color",
     )
-    val displayedColor = if (usable) contentColor else contentColor.copy(alpha = 0.38f)
+    val displayedColor = gptSpeedChipTint(contentColor, mode, enabled = usable)
 
     Row(
         modifier = modifier

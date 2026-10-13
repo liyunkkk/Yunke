@@ -19,6 +19,7 @@ import android.view.Choreographer
 import android.provider.Settings
 import android.text.format.DateFormat
 import android.widget.Toast
+import io.github.mangi.eta.agent.runtime.ConversationCompletionNotice
 import kotlin.jvm.Volatile
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +59,8 @@ import io.github.mangi.eta.agent.question.AgentQuestionCodec
 import io.github.mangi.eta.agent.question.AgentQuestionRequest
 import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectMessageUi
+import io.github.mangi.eta.ui.model.ErrorReconnectStatus
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
 import io.github.mangi.eta.agent.runtime.AgentNotificationTrampolineActivity
@@ -1468,8 +1471,9 @@ internal class AgentAppState(
                         )) {
                         markConversationCompleted(conversationId)
                     }
-                    if (!recovery.alreadyApplied && VirtualCompletionNotice.confirmed(result)) {
-                        Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+                    if (!recovery.alreadyApplied) {
+                        ConversationCompletionNotice.show(appContext, runId,
+                            conversationTitles[conversationId].orEmpty(), result)
                     }
                 }
                 acknowledgeAfterSave += runId
@@ -2076,6 +2080,7 @@ internal class AgentAppState(
                         Triple(usage, messageCount, heatmap.toMap())
                     }
                     check(conversationsById === source && conversationUpdatedAt === timestamps) { "会话已变化，请重试" }
+                    ids.forEach(::cancelConversationExecution)
                     // Commit before deleting drafts/images or changing UI. Once committed,
                     // cancellation must not leave UI representing rows that no longer exist.
                     withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
@@ -2128,6 +2133,7 @@ internal class AgentAppState(
 
     fun deleteConversation(conversationId: String) {
         if (rejectConversationArchiveMutation()) return
+        cancelConversationExecution(conversationId)
         val wasSelected = selectedConversationId == conversationId
         conversationState(conversationId)?.let { state ->
             retainDeletedConversation(state.messages, conversationUpdatedAt[conversationId])
@@ -3048,7 +3054,7 @@ internal class AgentAppState(
                 if (cut <= 0 || cut >= working.size) return@runInterruptible working
                 val boundArchive = archive ?: error("缺少会话身份，无法保存压缩原文")
                 val prefix = working.take(cut)
-                val id = boundArchive.save(prefix)
+                val id = boundArchive.savePreservingRevisionChain(prefix)
                 boundArchive.record(id, "started")
                 boundArchive.canAttach(id, prefix.size.coerceAtLeast(working.size - cut + 1), working.size - cut)
                 try {
@@ -3687,6 +3693,8 @@ internal class AgentAppState(
         refreshConversationSummaries()
         persistConversations()
         if (conversationId != null) {
+            ConversationCompletionNotice.show(appContext, runId,
+                conversationTitles[conversationId].orEmpty(), AgentRuntimeWire.RunResult(runId, true, content))
             val petTitle = conversationTitles[conversationId].orEmpty()
             val petContext = appContext
             scope.launch(Dispatchers.IO) {
@@ -4300,6 +4308,44 @@ internal class AgentAppState(
         )
     }
 
+    /** Dropping a conversation must also drop its foreground execution lease.
+     *  Unbind before cancelling so the stop result cannot write the conversation back. */
+    private fun cancelConversationExecution(conversationId: String) {
+        val runId = runIdForConversation(conversationId)
+        if (runId != null) releaseConversationRun(conversationId, runId)
+        // The UI binding can already be gone while Runtime still holds the execution lease.
+        scope.launch(Dispatchers.IO) {
+            val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
+            if (runId != null) client.cancelRun(runId)
+            client.cancelConversation(conversationId)
+        }
+    }
+
+    private fun releaseConversationRun(conversationId: String, runId: String) {
+        directMediaRuns.cancel(runId)
+        imageGenerationRunIds.remove(runId)
+        runJobs.remove(runId)?.cancel()
+        io.github.mangi.eta.agent.runtime.AgentExecutionService.release("prepare:$runId")
+        discardQueuedRunEvents(runId)
+        runMessageProjector.clearRun(runId)
+        runMessageProjector.seal(runId)
+        runGeneratedAtMillis.remove(runId)
+        branchRequestBoundaries.remove(runId)
+        runConversationIds.remove(runId)
+        runUsageOwners.remove(runId)
+        runUsageRoutes.remove(runId)
+        runRequestRounds.remove(runId)
+        runUsageResumeRounds.remove(runId)
+        invalidatedUsageRuns.remove(runId)
+        runOverheadTokens.remove(runId)
+        runContextWindows.remove(runId)
+        contextEstimateDiagnostics.clear(runId)
+        runCompressedDuringRun.remove(runId)
+        contextBudgetBlockedRuns.remove(runId)
+        if (contextBudgetPrompt?.runId == runId) contextBudgetPrompt = null
+        if (usageRunByConversation[conversationId] == runId) usageRunByConversation.remove(conversationId)
+    }
+
     private fun abortConversationRun(conversationId: String?, startPendingCompress: Boolean) {
         contextBudgetBlockedRuns.entries.removeAll { it.value.conversationId == conversationId }
         if (contextBudgetPrompt?.conversationId == conversationId) contextBudgetPrompt = null
@@ -4396,6 +4442,13 @@ internal class AgentAppState(
         val continuedHistory = io.github.mangi.eta.agent.model.AgentTurnIdentity.migrate(committed)
         val prompt = RESUME_AFTER_COMPRESS_PROMPT
         val runId = "run-${UUID.randomUUID()}"
+        state.messages.filterIsInstance<ErrorReconnectMessageUi>()
+            .lastOrNull { it.status == ErrorReconnectStatus.Stopped }
+            ?.let { runMessageProjector.claimStoppedReconnect(runId, it.id) }
+        val resumeMessage = UserMessageUi(
+            id = "user-$runId-supplement-resume",
+            content = prompt,
+        )
         launchConversationRun(
             conversationId = conversationId,
             runId = runId,
@@ -4406,7 +4459,7 @@ internal class AgentAppState(
                 role = "user",
                 content = prompt,
             ),
-            messages = state.messages,
+            messages = state.messages + resumeMessage,
             state = state,
             reasoningEffort = state.reasoningEffort,
             skipAutoCompress = true,
@@ -5806,6 +5859,9 @@ internal class AgentAppState(
         acknowledgeRuntimeResult: Boolean = false,
         petReaction: Boolean = false,
     ) {
+        val completionConversationId = conversationIdForRun(runId)
+        val completionAlreadyApplied = completionConversationId?.let(::conversationState)
+            ?.let { AgentRuntimeHistoryReducer.wasApplied(it, runId) } == true
         val stoppedDuringRetry = stoppingRuns.remove(runId)
         cancelStopSealWatchdog(runId)
         mainStopReasons.remove(runId)
@@ -5839,8 +5895,11 @@ internal class AgentAppState(
         }
         if (stoppedDuringRetry == null) {
             updateMessages(runId) { VirtualCompletionNotice.append(it, runId, result) }
-            if (acknowledgeRuntimeResult && VirtualCompletionNotice.confirmed(result)) {
-                Toast.makeText(appContext, "任务完成", Toast.LENGTH_SHORT).show()
+            if (acknowledgeRuntimeResult && !completionAlreadyApplied) {
+                completionConversationId?.let { conversationId ->
+                    ConversationCompletionNotice.show(appContext, runId,
+                        conversationTitles[conversationId].orEmpty(), result)
+                }
             }
         }
         // A stop/failure without this round's receipt still keeps the latest actual from this epoch.

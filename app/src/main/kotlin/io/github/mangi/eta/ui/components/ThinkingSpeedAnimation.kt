@@ -39,6 +39,10 @@ internal fun gptSpeedChipColor(mode: GptSpeedMode, normalColor: Color): Color = 
     else -> normalColor
 }
 
+/** 极速色也用于标识当前档位，禁用交互时仍保留酒红。 */
+internal fun gptSpeedChipTint(color: Color, mode: GptSpeedMode, enabled: Boolean): Color =
+    if (enabled || mode == GptSpeedMode.ULTRA_FAST) color else color.copy(alpha = 0.38f)
+
 /** 动画进度映射出的旋转角度，进度会被夹取到 0..1。 */
 internal fun gptSpeedRotationDegrees(progress: Float): Float =
     GptSpeedRotationDegreesPerCycle * progress.coerceIn(0f, 1f)

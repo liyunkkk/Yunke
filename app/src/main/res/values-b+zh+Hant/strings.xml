@@ -1580,4 +1580,5 @@
   <string name="whale_maid_satiety_peckish">不餓，但是不介意吃多點</string>
   <string name="whale_maid_satiety_full">飽腹滿足</string>
   <string name="whale_maid_satiety_stuffed">吃得有點撐了</string>
+    <string name="provider_oauth_renderer_gone">登入網頁已關閉，請重新發起登入。</string>
 </resources>

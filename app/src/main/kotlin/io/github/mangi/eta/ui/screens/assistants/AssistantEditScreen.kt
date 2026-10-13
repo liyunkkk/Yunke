@@ -33,6 +33,8 @@ import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AgentMemoryStore
 import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.ui.components.EditorScrollIsolation
+import io.github.mangi.eta.ui.components.isolateEditorScroll
 import io.github.mangi.eta.ui.components.AssistantAvatar
 import io.github.mangi.eta.ui.components.rememberAssistantAvatarBitmap
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -55,6 +57,7 @@ internal fun AssistantEditScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val editorScrollIsolation = remember(assistantId) { EditorScrollIsolation() }
     val original = remember(assistantId) { AssistantRepository.profile(assistantId) }
     if (original == null) {
         LaunchedEffect(assistantId) { onBack() }
@@ -150,6 +153,7 @@ internal fun AssistantEditScreen(
 
     MiuixScaffoldPage(
         title = stringResource(R.string.assistant_edit_title),
+        editorScrollIsolation = editorScrollIsolation,
         onBack = onBack,
         actions = {
             Text(
@@ -234,7 +238,8 @@ internal fun AssistantEditScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp)
-                        .height(240.dp),
+                        .height(240.dp)
+                        .isolateEditorScroll(editorScrollIsolation),
                     singleLine = false,
                 )
             }
@@ -268,7 +273,7 @@ internal fun AssistantEditScreen(
                         minLines = 6,
                         maxLines = 12,
                         textStyle = MiuixTheme.textStyles.body2.copy(fontFamily = FontFamily.Monospace),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().isolateEditorScroll(editorScrollIsolation),
                     )
                     if (memoryOverLimit) {
                         Text(

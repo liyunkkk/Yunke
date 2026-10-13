@@ -1,6 +1,9 @@
 package io.github.mangi.eta.ui.components
 
+import android.graphics.Rect
 import android.os.SystemClock
+import android.view.View
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloat
@@ -19,9 +22,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -36,6 +41,7 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
@@ -124,6 +130,11 @@ internal fun EtaDropdownMenu(
     val offsetXPx = with(density) { offset.x.roundToPx() }
     val offsetYPx = with(density) { offset.y.roundToPx() }
     val screenMarginPx = with(density) { MenuScreenMargin.roundToPx() }
+    val visibleHeightPx = rememberMenuVisibleHeight()
+    val availableHeight = with(density) {
+        (visibleHeightPx - screenMarginPx * 2).coerceAtLeast(0).toDp()
+    }
+    val effectiveMaxHeight = maxHeight?.coerceAtMost(availableHeight) ?: availableHeight
     val positionProvider = remember(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx) {
         EtaMenuPositionProvider(offsetXPx, offsetYPx, alignEnd, preferAbove, centerOnAnchor, screenMarginPx)
     }
@@ -196,7 +207,7 @@ internal fun EtaDropdownMenu(
                     .then(modifier)
                     .width(IntrinsicSize.Max)
                     .widthIn(min = minWidth, max = maxWidth)
-                    .then(if (maxHeight != null) Modifier.heightIn(max = maxHeight) else Modifier)
+                    .heightIn(max = effectiveMaxHeight)
                     .etaMenuClipReveal(
                         fractionProgress = {
                             if (visibleState.targetState) fraction.value else 1f
@@ -228,6 +239,29 @@ internal fun EtaDropdownMenu(
             )
         }
     }
+}
+
+// Popup fixes its window size after measurement. Observe the host frame so IME
+// dismissal also invalidates content constraints when the top-bar anchor stays put.
+@Composable
+internal fun rememberMenuVisibleHeight(view: View = LocalView.current): Int {
+    val frame = remember(view) { Rect() }
+    fun readHeight(): Int {
+        view.getWindowVisibleDisplayFrame(frame)
+        return frame.height().coerceAtLeast(0)
+    }
+    var height by remember(view) { mutableIntStateOf(readHeight()) }
+    DisposableEffect(view) {
+        val observer = view.viewTreeObserver
+        val listener = ViewTreeObserver.OnGlobalLayoutListener { height = readHeight() }
+        observer.addOnGlobalLayoutListener(listener)
+        height = readHeight()
+        onDispose {
+            val currentObserver = if (observer.isAlive) observer else view.viewTreeObserver
+            if (currentObserver.isAlive) currentObserver.removeOnGlobalLayoutListener(listener)
+        }
+    }
+    return height
 }
 
 private fun Modifier.etaMenuClipReveal(

@@ -24,6 +24,17 @@ class ThinkingSpeedAnimationTest {
     }
 
     @Test
+    fun disabledUltraFastKeepsWineRedWhileOtherModesKeepDisabledFeedback() {
+        for (enabled in listOf(true, false)) {
+            assertEquals(GptSpeedUltraFastColor, gptSpeedChipTint(GptSpeedUltraFastColor, GptSpeedMode.ULTRA_FAST, enabled))
+        }
+        assertEquals(GptSpeedFastColor.copy(alpha = 0.38f), gptSpeedChipTint(GptSpeedFastColor, GptSpeedMode.FAST, false))
+        val ownerColor = Color(0xFF123456)
+        assertEquals(ownerColor.copy(alpha = 0.38f), gptSpeedChipTint(ownerColor, GptSpeedMode.NORMAL, false))
+        assertEquals(GptSpeedFastColor, gptSpeedChipTint(GptSpeedFastColor, GptSpeedMode.FAST, true))
+    }
+
+    @Test
     fun oneAcceptedLongPressIsExactlyOneFullTurn() {
         assertEquals(0f, gptSpeedRotationDegrees(0f), 0f)
         assertEquals(360f, gptSpeedRotationDegrees(1f), 0f)

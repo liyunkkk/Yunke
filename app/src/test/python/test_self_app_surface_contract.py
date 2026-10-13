@@ -73,3 +73,37 @@ class SelfAppSurfaceContractTest(unittest.TestCase):
                 self.assertIn(part, background)
             for key in ['agent_task_surface_prompt_message', 'agent_task_preference_mode_hint_ask']:
                 self.assertIn(language[3], texts[key])
+
+
+class SelfAppOverlayContractTest(unittest.TestCase):
+    def test_admitted_self_callback_is_after_all_execution_gates(self):
+        s = (BASE / "agent/tool/AgentLocalTools.kt").read_text()
+        internal = s.split("private fun executeInternal(", 1)[1].split("private fun deviceToolPermissionError", 1)[0]
+        callback = internal.index('notifySelfAppSurface(toolCall.name, true)')
+        self.assertGreater(callback, internal.index('beforeToolExecution(toolCall.name)'))
+        self.assertGreater(callback, internal.index('"SELF_APP_TARGET_LOST"'))
+        self.assertGreater(callback, internal.index('deviceToolPermissionError(toolCall.name)'))
+        on_surface = s.split("private fun executeOnSurface(", 1)[1].split("private fun foregroundAdmissionError", 1)[0]
+        self.assertIn('ForegroundExclusiveGate.acquire(browserRunId)', on_surface)
+        execute = s.split("override fun execute(", 1)[1].split("private fun resolveAskedSurface", 1)[0]
+        self.assertIn('route == AgentSelfAppSurface.Route.BASE', execute)
+        self.assertIn('notifySelfAppSurface(toolCall.name, false)', execute)
+        self.assertIn('notifySelfAppSurface(toolCall.name, selfSurface.active)', execute)
+
+    def test_self_replay_is_internal_and_presentation_mode_does_not_route_tools(self):
+        executor = (BASE / "agent/runtime/AgentRuntimeRunExecutor.kt").read_text()
+        callback = executor.split('onSelfAppSurfaceChanged =', 1)[1].split('beforeToolExecution =', 1)[0]
+        self.assertIn('session.setSelfAppOverlayActive(active)', callback)
+        self.assertIn('onAcceptedEvent(foregroundReplay.startedEvent(toolName)', callback)
+        self.assertNotIn('acceptEvent(', callback)
+        self.assertNotIn('resolveTaskSurface', callback)
+        self.assertIn('session.taskSurfaceMode ==', executor)
+        service = (BASE / "agent/runtime/AgentRuntimeService.kt").read_text()
+        self.assertNotIn('session.taskSurfaceMode', service)
+        self.assertIn('overlaySession === session &&', service)
+        self.assertIn('!AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)', service)
+        handling = service.split('private fun handleAcceptedRunEvent(', 1)[1].split('private fun persistRunArtifacts', 1)[0]
+        self.assertLess(handling.index('claimOverlay('), handling.index('hasExecutedForegroundTool = true'))
+        self.assertIn('session.overlaySurfaceMode', handling.split('mainHandler.post', 1)[1])
+        self.assertIn('!session.acceptsOverlayEvents', handling)
+        self.assertIn('overlaySession === it && AgentOverlayVisibilityPolicy.allowsOverlay', service)

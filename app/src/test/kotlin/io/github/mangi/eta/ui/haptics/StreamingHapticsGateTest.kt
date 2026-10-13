@@ -1,5 +1,6 @@
 package io.github.mangi.eta.ui.haptics
 
+import io.github.mangi.eta.ui.components.isChatSettledCovered
 import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf

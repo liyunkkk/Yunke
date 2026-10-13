@@ -47,6 +47,7 @@ internal class AgentRuntimeRunExecutor(
     private val currentPermissions: () -> AgentRuntimePolicy.Permissions,
     private val snapshotRequest: (AgentRuntimeWire.RunRequest) -> AgentRuntimeWire.RunRequest,
     private val onAcceptedEvent: (AgentEvent, EntrySurfaceGuard?) -> Unit,
+    private val onSelfAppOverlayChanged: () -> Unit,
     private val persistArtifacts: (AgentRuntimeWire.RunRequest, AgentRuntimeWire.RunResult, List<AgentEvent>) -> Unit,
 ) {
     data class Outcome(
@@ -166,6 +167,14 @@ internal class AgentRuntimeRunExecutor(
                 deviceSensitiveActionToolsEnabled = { allowSensitiveAction && currentPermissions().deviceSensitiveActionTools },
                 memoryToolsEnabled = { AssistantRepository.currentProfile(assistant.id)?.memoryEnabled == true },
                 screenshotExcludedPackages = { entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty() },
+                onSelfAppSurfaceChanged = { toolName, active ->
+                    if (session.setSelfAppOverlayActive(active)) {
+                        onSelfAppOverlayChanged()
+                        if (active) {
+                            onAcceptedEvent(foregroundReplay.startedEvent(toolName), entrySurfaceGuard)
+                        }
+                    }
+                },
                 beforeToolExecution = { toolName ->
                     val requiresAccessibility = AgentToolRequirements.requiresAccessibility(toolName)
                     if (!requiresAccessibility && !AgentOverlayVisibilityPolicy.requiresEntrySurfaceDismissal(toolName)) {
@@ -199,7 +208,7 @@ internal class AgentRuntimeRunExecutor(
             val ownerKey = SubAgentConfigKey.Conversation(request.effectiveModelSessionId)
             val childConfig = ConversationSubAgentPreferences().snapshot(ownerKey)
             val childCandidates = runBlocking { ChildWorkerConfigResolver.resolve(childSessionId, childConfig, parentConfig = request.config) }
-            val childDispatchPlan = AgentChildTaskGroups.ordinaryDispatchPlan(childSessionId, childCandidates)
+            val childDispatchPlan = ChildTaskOrdinaryDispatchSelection.plan(childCandidates)
             val workspaceEnvironment = LinuxEnvironmentSettingsRepository.current(appContext).wireName
             val childWorkspace = if (allowTerminal && currentPermissions().terminalTools) SubAgentWorkspace(
                 appContext, executor, ownerId = childSessionId, initialEnvironment = workspaceEnvironment,
@@ -300,8 +309,8 @@ internal class AgentRuntimeRunExecutor(
                     }
                 }
             }
-            // Frozen configuration does not imply historical execution ownership: ordinary work
-            // gets a fresh coordinator. Only explicit replacement may use current user settings.
+            // New tasks use this run's current settings and coordinator. Existing task IDs still
+            // route to their original groups; replacement keeps its separate authorization checks.
             groupGeneration = createChildGroup(childDispatchPlan.ordinary)
             replacementGeneration = if (childDispatchPlan.ordinary === childDispatchPlan.replacement) groupGeneration
                 else createChildGroup(childDispatchPlan.replacement)

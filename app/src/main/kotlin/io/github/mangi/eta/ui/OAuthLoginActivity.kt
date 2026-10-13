@@ -12,6 +12,7 @@ import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -74,6 +75,15 @@ class OAuthLoginActivity : Activity() {
         val defaultUa = WebSettings.getDefaultUserAgent(this)
         web.settings.userAgentString = defaultUa.replace("; wv", "").replace(" Version/4.0", "")
         web.webViewClient = object : WebViewClient() {
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (webView !== view) return true
+                webView = null
+                (view.parent as? ViewGroup)?.removeView(view)
+                view.destroy()
+                fail(IllegalStateException(getString(R.string.provider_oauth_renderer_gone)))
+                return true
+            }
+
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 return handleUri(request.url)
             }
@@ -135,11 +145,13 @@ class OAuthLoginActivity : Activity() {
     }
 
     override fun onDestroy() {
-        webView?.apply {
-            stopLoading()
-            destroy()
-        }
+        val view = webView
         webView = null
+        view?.let {
+            (it.parent as? ViewGroup)?.removeView(it)
+            it.stopLoading()
+            it.destroy()
+        }
         if (!finished) {
             pending?.completeExceptionally(IllegalStateException(getString(R.string.provider_oauth_cancelled)))
             pending = null
