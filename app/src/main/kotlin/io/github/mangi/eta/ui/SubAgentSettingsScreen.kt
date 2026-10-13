@@ -46,7 +46,13 @@ import io.github.mangi.eta.ui.components.SubAgentProfileConfigDialog
 import io.github.mangi.eta.ui.components.WithoutPressRipple
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.ui.layout.horizontalCutoutPadding
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import io.github.mangi.eta.agent.dsh.DshKeyFileManager
+import io.github.mangi.eta.agent.dsh.DshProvisioner
+import io.github.mangi.eta.agent.dsh.DshSettings
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.DropdownItem
 
@@ -186,6 +192,87 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { kimiDefaultModel = KimiSubAgentStatusAccess.defaultModel(context) }
     }
+    val dshCoroutineScope = rememberCoroutineScope()
+    val initialDshSettings = remember { DshSettings.load(context) }
+    var dshEndpoint by remember { mutableStateOf(initialDshSettings.endpoint) }
+    var dshModel by remember { mutableStateOf(initialDshSettings.model) }
+    var dshEffort by remember { mutableStateOf(initialDshSettings.effort) }
+    var dshApiKey by remember { mutableStateOf(DshKeyFileManager.readApiKey(context)) }
+    var dshApiKeyVisible by remember { mutableStateOf(false) }
+
+    var dshStatusLoading by remember { mutableStateOf(true) }
+    var dshInstalled by remember { mutableStateOf(false) }
+    var dshVersion by remember { mutableStateOf<String?>(null) }
+    var dshInstalling by remember { mutableStateOf(false) }
+    var dshInstallFeedback by remember { mutableStateOf<String?>(null) }
+    var dshInstallSuccess by remember { mutableStateOf(false) }
+
+    val dshProvisioner = remember(context) { DshProvisioner(context) }
+
+    fun refreshDshStatus() {
+        dshStatusLoading = true
+        dshCoroutineScope.launch(Dispatchers.IO) {
+            val status = runCatching { dshProvisioner.status() }.getOrNull()
+            withContext(Dispatchers.Main) {
+                dshStatusLoading = false
+                if (status != null && status.ok) {
+                    dshInstalled = status.installed
+                    dshVersion = status.version
+                } else {
+                    dshInstalled = false
+                    dshVersion = null
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshDshStatus()
+    }
+
+    fun runDshInstall() {
+        if (dshInstalling) return
+        dshInstalling = true
+        dshInstallFeedback = null
+        dshCoroutineScope.launch(Dispatchers.IO) {
+            val res = runCatching {
+                dshProvisioner.install(force = true, timeoutMs = 900_000)
+            }.getOrNull()
+            withContext(Dispatchers.Main) {
+                dshInstalling = false
+                if (res != null && res.ok) {
+                    dshInstallSuccess = true
+                    dshInstallFeedback = if (res.alreadyInstalled) {
+                        "运行时已就绪（${res.version ?: "未知版本"}）"
+                    } else {
+                        "安装成功（${res.version ?: "未知版本"}）"
+                    }
+                    dshInstalled = true
+                    dshVersion = res.version
+                } else {
+                    dshInstallSuccess = false
+                    val err = res?.errorMessage ?: res?.errorCode ?: "安装执行异常"
+                    dshInstallFeedback = "安装失败：$err"
+                }
+                refreshDshStatus()
+            }
+        }
+    }
+
+    fun persistDshConfig(
+        newEndpoint: String = dshEndpoint,
+        newModel: String = dshModel,
+        newEffort: String = dshEffort,
+        newApiKey: String = dshApiKey,
+    ) {
+        DshSettings.save(
+            context = context,
+            endpoint = newEndpoint,
+            model = newModel,
+            effort = newEffort,
+            apiKey = newApiKey,
+        )
+    }
     val view = LocalView.current
     LaunchedEffect(editor, editable) { if (!editable) { rename = null; delete = null } }
     CompositionLocalProvider(LocalRippleConfiguration provides null) {
@@ -265,6 +352,132 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                                 Text(kimiDefaultModel?.takeIf { it.isNotBlank() } ?: "未启动",
                                     style = MaterialTheme.typography.bodyMedium)
                             }
+                        }
+                        item {
+                            Column(Modifier.fillMaxWidth().padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("DeepSeek Harness (dsh)", style = MaterialTheme.typography.titleMedium)
+                                Text("基于 ACP 协议的标准子代理；需在容器内就绪 Python3 运行时与密钥。",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("运行时状态", style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        text = when {
+                                            dshStatusLoading -> "正在检查状态…"
+                                            dshInstalled -> "运行时已安装（${dshVersion ?: "未知版本"}）"
+                                            else -> "未安装"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (dshInstalled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                    )
+                                }
+                                if (dshStatusLoading) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                }
+                            }
+                            Button(
+                                onClick = { runDshInstall() },
+                                enabled = !dshInstalling,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            ) {
+                                if (dshInstalling) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        strokeWidth = 2.dp,
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("正在安装/修复运行时（下载与解压可能需数分钟）…", style = MaterialTheme.typography.bodyMedium)
+                                } else {
+                                    Icon(Icons.Rounded.Build, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("安装 / 修复运行时", style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                            if (dshInstallFeedback != null) {
+                                Text(
+                                    text = dshInstallFeedback!!,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (dshInstallSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+                                )
+                            }
+                            val effortChoices = listOf("high", "medium", "low")
+                            WindowSpinnerPreference(
+                                title = "推理档位",
+                                summary = "思考强度档位（high / medium / low）。",
+                                items = effortChoices.map { DropdownItem(text = it) },
+                                selectedIndex = effortChoices.indexOf(dshEffort).coerceAtLeast(0),
+                                onSelectedIndexChange = { index ->
+                                    val mode = effortChoices.getOrNull(index) ?: return@WindowSpinnerPreference
+                                    dshEffort = mode
+                                    persistDshConfig(newEffort = mode)
+                                },
+                                startAction = { PreferenceIcon(icon = Icons.Rounded.Psychology) },
+                            )
+                            val standardModels = listOf("deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner")
+                            val modelDropdownItems = standardModels + listOf("自定义")
+                            val selectedModelIndex = if (standardModels.contains(dshModel)) {
+                                standardModels.indexOf(dshModel)
+                            } else {
+                                standardModels.size
+                            }
+                            WindowSpinnerPreference(
+                                title = "模型",
+                                summary = "当前选用模型：$dshModel",
+                                items = modelDropdownItems.map { DropdownItem(text = it) },
+                                selectedIndex = selectedModelIndex,
+                                onSelectedIndexChange = { index ->
+                                    if (index in standardModels.indices) {
+                                        val selected = standardModels[index]
+                                        dshModel = selected
+                                        persistDshConfig(newModel = selected)
+                                    }
+                                },
+                                startAction = { PreferenceIcon(icon = Icons.Rounded.SmartToy) },
+                            )
+                            if (selectedModelIndex >= standardModels.size) {
+                                OutlinedTextField(
+                                    value = dshModel,
+                                    onValueChange = {
+                                        dshModel = it
+                                        persistDshConfig(newModel = it)
+                                    },
+                                    label = { Text("自定义模型名称") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                )
+                            }
+                            OutlinedTextField(
+                                value = dshEndpoint,
+                                onValueChange = {
+                                    dshEndpoint = it
+                                    persistDshConfig(newEndpoint = it)
+                                },
+                                label = { Text("端点（Base URL）") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            )
+                            OutlinedTextField(
+                                value = dshApiKey,
+                                onValueChange = {
+                                    dshApiKey = it
+                                    persistDshConfig(newApiKey = it)
+                                },
+                                label = { Text("API Key") },
+                                singleLine = true,
+                                visualTransformation = if (dshApiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                trailingIcon = {
+                                    IconButton(onClick = { dshApiKeyVisible = !dshApiKeyVisible }) {
+                                        Icon(
+                                            imageVector = if (dshApiKeyVisible) Icons.Rounded.Visibility else Icons.Rounded.VisibilityOff,
+                                            contentDescription = if (dshApiKeyVisible) "隐藏 API Key" else "显示 API Key",
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            )
                         }
                         // Editing a preset does not change its saved automatic-delegation value.
                         items(profiles, key = { it.id }) { profile ->
