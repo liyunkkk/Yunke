@@ -151,8 +151,53 @@ open class AgentAccessibilityService : AccessibilityService() {
      * 避免其他运行或 wait_for_text 的临时观察改写 index 含义。
      */
     fun captureNodeSnapshot(maxNodes: Int): NodeSnapshot? = runOnMainSync {
-        val startedAt = SystemClock.elapsedRealtime()
         val root = rootInActiveWindow ?: return@runOnMainSync null
+        captureFromRoot(maxNodes, root, android.view.Display.DEFAULT_DISPLAY)
+    }
+
+    /**
+     * 虚拟屏新架构专用：按 displayId 采集节点树（仿 lejw0925/Eta-vivo VirtualScreen 做法）。
+     *
+     * - displayId 来自 VirtualScreenSession 创建的虚拟屏；调用方（VirtualScreenSession）
+     *   负责校验返回快照的 `displayId` 与期望一致、且 `packageName` 为本轮启动的包。
+     * - 找不到窗口/无 root 时返回 null，调用方按空树状态机降级为截图兜底。
+     * - 传 DEFAULT_DISPLAY 时退化为等价旧行为（走 rootInActiveWindow），避免绕过
+     *   `currentMainDisplayPackageName()` 的主屏授权语义。
+     */
+    fun captureNodeSnapshot(
+        maxNodes: Int,
+        displayId: Int,
+        packageName: String? = null,
+    ): NodeSnapshot? = runOnMainSync {
+        val root = if (displayId == android.view.Display.DEFAULT_DISPLAY) {
+            rootInActiveWindow
+        } else {
+            findDisplayRoot(displayId, packageName)
+        } ?: return@runOnMainSync null
+        captureFromRoot(maxNodes, root, displayId)
+    }
+
+    /** 按 displayId（+可选包名）找目标窗口的根节点。 */
+    private fun findDisplayRoot(displayId: Int, packageName: String?): AccessibilityNodeInfo? {
+        val candidates = windows.orEmpty().filter { window ->
+            window.displayId == displayId &&
+                window.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                (packageName.isNullOrBlank() ||
+                    window.root?.packageName?.toString() == packageName)
+        }
+        val target = candidates.firstOrNull { it.isFocused }
+            ?: candidates.firstOrNull { it.isActive }
+            ?: candidates.firstOrNull()
+        return target?.root
+    }
+
+    /** 原 captureNodeSnapshot(maxNodes) 的函数体整体下沉，仅 root/displayId 参数化。 */
+    private fun captureFromRoot(
+        maxNodes: Int,
+        root: AccessibilityNodeInfo,
+        displayId: Int,
+    ): NodeSnapshot? {
+        val startedAt = SystemClock.elapsedRealtime()
         val nodeLimit = maxNodes.coerceIn(1, 120)
         val indexedNodes = mutableListOf<IndexedNode>()
         val traversal = NodeTraversalState(
@@ -175,9 +220,11 @@ open class AgentAccessibilityService : AccessibilityService() {
             capturedAtElapsedMs = startedAt,
             truncated = traversal.truncated,
             indexedNodes = indexedNodes.toList(),
+            displayId = displayId,
         ).also { snapshot ->
             AndroidAgentLogger.debug {
                 "Agent accessibility action=observe_tree observation=${snapshot.id} " +
+                    "display=${snapshot.displayId} " +
                     "nodes=${snapshot.nodes.size} visited=${traversal.visitedNodes} " +
                     "truncated=${traversal.truncated} " +
                     "elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
@@ -2110,6 +2157,8 @@ open class AgentAccessibilityService : AccessibilityService() {
         val capturedAtElapsedMs: Long,
         val truncated: Boolean,
         internal val indexedNodes: List<IndexedNode>,
+        /** 快照所属 display；默认主屏，老调用方无需改动。 */
+        val displayId: Int = android.view.Display.DEFAULT_DISPLAY,
     ) {
         val nodes: List<UiNode> = indexedNodes.map(IndexedNode::toUiNode)
 
