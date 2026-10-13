@@ -424,8 +424,7 @@ internal object VirtualScreenSession {
                     Base64.decode(encoded, Base64.DEFAULT).size,
                     result.optInt("width", current.width),
                     result.optInt("height", current.height),
-                    "virtual_display",
-                    true
+                    "virtual_display"
                 )
             ) else emptyList()
             val toolResult = AgentModelClient.ToolResult(result.toString(), images, sensitive = true)
