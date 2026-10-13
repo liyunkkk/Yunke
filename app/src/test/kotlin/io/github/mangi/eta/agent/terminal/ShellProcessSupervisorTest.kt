@@ -123,7 +123,12 @@ class ShellProcessSupervisorTest {
     @Test
     fun cleanupDoesNotReuseStartupBudgetWhileOwnershipIsMissing() {
         pendingAdmission { supervisor, worker, failure ->
-            val processes = supervisor.takeRemainingProcesses()
+            val registrationDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            var processes = supervisor.takeRemainingProcesses()
+            while (processes.isEmpty() && worker.isAlive && System.nanoTime() < registrationDeadline) {
+                Thread.sleep(10)
+                processes = supervisor.takeRemainingProcesses()
+            }
             assertEquals(1, processes.size)
             val started = System.nanoTime()
             processes.forEach { supervisor.terminateAndReap(it) }
