@@ -175,9 +175,10 @@ internal object AntigravityRequestBuilder {
         if (rawRequired != null) {
             val properties = result.optJSONObject("properties")
             val kept = JSONArray()
+            val seen = linkedSetOf<String>()
             for (index in 0 until rawRequired.length()) {
                 val name = rawRequired.optString(index)
-                if (name.isBlank() || properties?.has(name) != true || kept.contains(name)) continue
+                if (name.isBlank() || properties?.has(name) != true || !seen.add(name)) continue
                 kept.put(name)
             }
             if (kept.length() > 0) result.put("required", kept)
