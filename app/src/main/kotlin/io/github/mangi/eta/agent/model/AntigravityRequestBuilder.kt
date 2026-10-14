@@ -37,7 +37,14 @@ internal object AntigravityRequestBuilder {
                             val id = call.optString("id").ifBlank { "tool_call_$i" }
                             callNames[id] = name
                             val args = runCatching { JSONObject(fn.optString("arguments").ifBlank { "{}" }) }.getOrDefault(JSONObject())
-                            parts.put(JSONObject().put("functionCall", JSONObject().put("name", name).put("args", args)))
+                            val callPart = JSONObject()
+                                .put("functionCall", JSONObject().put("name", name).put("args", args))
+                            // 签名只随 model 角色的 functionCall 回传；缺了 Gemini 3.x 会拒整条请求。
+                            call.optString("thought_signature")
+                                .ifBlank { call.optString("thoughtSignature") }
+                                .takeIf { it.isNotBlank() }
+                                ?.let { callPart.put("thoughtSignature", it) }
+                            parts.put(callPart)
                         }
                     }
                     if (parts.length() > 0) contents.put(JSONObject().put("role", "model").put("parts", parts))

@@ -129,7 +129,11 @@ internal object AntigravityProvider : AgentProviderClient {
                 }
                 val id = "call_" + UUID.randomUUID().toString().take(8)
                 val index = nextIndex++
-                toolCalls[id] = StreamingTool(id, name, argsText, index)
+                // Gemini 3.x 要求 functionCall 原样带回 thoughtSignature，否则续轮 400
+                // （Function call is missing a thought_signature in functionCall parts）。
+                val signature = part.optString("thoughtSignature")
+                    .ifBlank { part.optString("thought_signature") }
+                toolCalls[id] = StreamingTool(id, name, argsText, index, signature)
                 onEvent(ProviderEvent.BlockStart(AssistantBlockKind.TOOL_CALL, index))
                 onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.TOOL_CALL, index, argsText))
             }
@@ -153,15 +157,28 @@ internal object AntigravityProvider : AgentProviderClient {
                 if (toolCalls.isNotEmpty()) {
                     message.put("tool_calls", JSONArray().also { array ->
                         toolCalls.values.forEach { call ->
-                            array.put(JSONObject().put("id", call.id).put("type", "function")
-                                .put("function", JSONObject().put("name", call.name).put("arguments", call.args)))
+                            array.put(
+                                JSONObject().put("id", call.id).put("type", "function")
+                                    .put("function", JSONObject().put("name", call.name).put("arguments", call.args))
+                                    .also { entry ->
+                                        if (call.signature.isNotBlank()) {
+                                            entry.put("thought_signature", call.signature)
+                                        }
+                                    },
+                            )
                         }
                     })
                 }
             }
     }
 
-    private data class StreamingTool(val id: String, val name: String, val args: String, val index: Int)
+    private data class StreamingTool(
+        val id: String,
+        val name: String,
+        val args: String,
+        val index: Int,
+        val signature: String = "",
+    )
 
     private fun openGoogleValidation(error: Throwable) {
         val body = error.message.orEmpty()

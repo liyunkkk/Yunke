@@ -24,11 +24,12 @@ class AgentNotificationTrampolineActivity : Activity() {
             val conversationKey = intent
                 .getStringExtra(EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY)
                 ?.takeIf(String::isNotBlank)
+            val softInput = intent.getBooleanExtra(EtaAssistantOverlayService.EXTRA_SOFT_INPUT, false)
             if (source == SOURCE_OVERLAY) {
-                // 浮窗发起的任务：回到浮窗。这里不指定入口态——面板的语音态只能靠
-                // 唤出时的默认语义进入（entryInVoiceMode = true 仅此一处），
-                // 一旦强制成输入态，语音态就再也唤不出来了。
-                EtaAssistantOverlayService.show(this)
+                // 浮窗发起的任务：回到浮窗。用"软切换"而不是强制入口态——强制 input 会
+                // 同时关掉语音态（entryInVoiceMode = true 仅此一处），软切换则本次落输入态、
+                // 重新唤出仍是语音态。
+                EtaAssistantOverlayService.show(this, softInput)
             } else {
                 val mainIntent = Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)

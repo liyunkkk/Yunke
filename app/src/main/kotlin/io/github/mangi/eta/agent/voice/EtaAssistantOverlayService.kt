@@ -158,6 +158,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     // 浮窗语音态标志：不能用 messages.isEmpty() 判定（我方唤出会异步载入上次会话）。
     // 外部（ShortX 等）通过 EXTRA_ENTRY_MODE 指定本次唤起的入口态；null 表示沿用默认语义。
     private var pendingEntryMode: String? = null
+    // 软切换：本次唤出后落到输入态，但不改变默认语义（重新唤出仍是语音态）。
+    private var pendingSoftInput = false
     private var entryInVoiceMode by mutableStateOf(false)
     private var voiceNotice by mutableStateOf<String?>(null)
     private var uiState by mutableStateOf(EtaVoiceUiState())
@@ -178,6 +180,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // 每次唤起都刷新：带参数则按参数进态，不带参数置 null 走默认语义。
         pendingEntryMode = intent?.getStringExtra(EXTRA_ENTRY_MODE)
+        pendingSoftInput = intent?.getBooleanExtra(EXTRA_SOFT_INPUT, false) == true
         when (intent?.action) {
             ACTION_SHOW -> showEntry()
             ACTION_HANDOFF_READY -> finishHandoff()
@@ -334,6 +337,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         // 外部可用 EXTRA_ENTRY_MODE=voice/input 强制指定；voice 在无录音权限时仍退回提示 + 键盘。
         val requestedEntryMode = pendingEntryMode
         pendingEntryMode = null
+        val requestedSoftInput = pendingSoftInput
+        pendingSoftInput = false
         val hasAudioPermission =
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         when {
@@ -354,6 +359,12 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 voiceNotice = getString(R.string.voice_audio_permission)
                 showKeyboard()
             }
+        }
+        // 从"输入态发起的任务"点通知回来时，按默认语义先进语音态，再软切到输入态：
+        // 这样本次落在输入态，而重新唤出（胶囊等）依然是语音态，不会把语音态掐断。
+        if (requestedSoftInput && entryInVoiceMode) {
+            entryInVoiceMode = false
+            showKeyboard()
         }
     }
 
@@ -1008,6 +1019,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                             isError = !result.ok,
                             source = AgentNotificationTrampolineActivity.SOURCE_OVERLAY,
                             conversationKey = conversationKey,
+                            softInput = !entryInVoiceMode,
                         )
                     }
                 }
@@ -1951,6 +1963,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         const val ACTION_OPEN_CONVERSATION = "io.github.mangi.eta.agent.voice.OPEN_CONVERSATION"
         const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.agent.voice.extra.CONVERSATION_KEY"
         /** 外部指定入口态：voice=直接语音聆听，input=直接输入态。缺省时沿用录音权限判定。 */
+        const val EXTRA_SOFT_INPUT = "io.github.mangi.eta.agent.voice.extra.SOFT_INPUT"
         const val EXTRA_ENTRY_MODE = "io.github.mangi.eta.agent.voice.extra.ENTRY_MODE"
         const val ENTRY_MODE_VOICE = "voice"
         const val ENTRY_MODE_INPUT = "input"
@@ -2008,10 +2021,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             }
         }
 
-        fun show(context: Context) {
+        fun show(context: Context, softInput: Boolean = false) {
             context.applicationContext.startService(
                 Intent(context.applicationContext, EtaAssistantOverlayService::class.java)
-                    .setAction(ACTION_SHOW),
+                    .setAction(ACTION_SHOW)
+                    .apply { if (softInput) putExtra(EXTRA_SOFT_INPUT, true) },
             )
         }
 
