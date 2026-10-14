@@ -452,6 +452,27 @@ internal class AgentLoop(
                 accumulatedReasoning.append(assistantReasoning)
             }
 
+            // 移植上游 62d69026：拒答或内容过滤会在流中途截断回复，半截正文、思考块与
+            // 工具调用都不能进入上下文。带着被截断的签名块继续请求，会被上游判定为改动了
+            // thinking 块，同一会话随后每轮都会 400。因此不写历史、不执行工具，直接结束。
+            if (providerResponse.stopReason == AssistantStopReason.CONTENT_FILTER) {
+                val explanation = assistantMessage.optJSONObject("stop_details")
+                    ?.let { details ->
+                        details.optString("explanation").takeUnless { details.isNull("explanation") }
+                    }
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                throw AgentModelFailure(
+                    "MODEL_CONTENT_FILTER",
+                    false,
+                    buildString {
+                        append("模型服务商拦截了本次回复，未完成的内容已丢弃。")
+                        explanation?.let { append("服务商说明：").append(it) }
+                        append("请修改或删除触发拦截的请求后重试，或换用其他模型。")
+                    },
+                )
+            }
+
             val pausedInterrupt = runController.consumePausedInterrupt()
             val completeToolCallsOnResume = pausedInterrupt &&
                 toolCalls.isNotEmpty() &&
