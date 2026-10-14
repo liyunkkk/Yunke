@@ -3,6 +3,7 @@ package io.github.mangi.eta.agent.model
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.ResponseBody.Companion.asResponseBody
 import java.util.concurrent.TimeUnit
 
@@ -35,6 +36,19 @@ internal object AgentHttpClient {
     }
 
     val modelClient: OkHttpClient by lazy { client }
+
+    /**
+     * Antigravity / Cloud Code Assist 专用：强制 HTTP/1.1 单连接。
+     *
+     * 意图：原生 Antigravity 客户端以 HTTP/1.1 串行请求，Cloud Code 网关据此判定客户端身份；
+     * 指纹集对齐 CLIProxyAPI（PR #1257 同源）。
+     * 不这么做后果：HTTP/2 多路复用与原生指纹不符，长会话续轮更易被上游拒绝。
+     */
+    val antigravityClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .protocols(listOf(Protocol.HTTP_1_1))
+            .build()
+    }
 }
 
 private object ProviderRequestInterceptor : Interceptor {

@@ -7,6 +7,7 @@ import java.net.SocketException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.sse.EventSource
@@ -28,6 +29,7 @@ internal object AgentSseClient {
         onEvent: SseStream.(id: String?, type: String?, data: String) -> Unit,
         shouldIgnoreFailure: () -> Boolean = { false },
         inspectHttpErrorBody: (String) -> Unit = {},
+        client: OkHttpClient = AgentHttpClient.modelClient,
     ) {
         runController.throwIfCancelled()
         val timingId = java.util.UUID.randomUUID().toString().take(8)
@@ -174,7 +176,7 @@ internal object AgentSseClient {
             request
         }
         val eventSource = EventSources
-            .createFactory(AgentHttpClient.modelClient)
+            .createFactory(client)
             .newEventSource(sseRequest, listener)
         eventSourceRef.set(eventSource)
         // finish() 先标记 completed 并唤醒 collect，再 cancel EventSource。

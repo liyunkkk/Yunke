@@ -50,14 +50,19 @@ internal object AntigravityRequestBuilder {
                 }
             }
         }
+        val isImageModel = config.model.contains("image", ignoreCase = true)
         val request = JSONObject()
         if (projectId.isNotBlank()) request.put("project", projectId)
-        request.put("model", config.model)
+        request.put("model", AntigravityModelRouting.runtimeModelId(config.model))
         request.put("userAgent", "antigravity")
-        request.put("requestType", "agent")
-        request.put("requestId", "agent-" + java.util.UUID.randomUUID().toString())
+        request.put("requestType", if (isImageModel) "image_gen" else "agent")
+        request.put("requestId", if (isImageModel) {
+            "image_gen/" + System.currentTimeMillis() + "/" + java.util.UUID.randomUUID() + "/12"
+        } else {
+            "agent-" + java.util.UUID.randomUUID().toString()
+        })
         val inner = JSONObject().put("contents", contents)
-        if (sessionId.isNotBlank()) inner.put("sessionId", sessionId)
+        if (!isImageModel) inner.put("sessionId", deriveSessionId(contents, sessionId))
         if (systemParts.length() > 0) inner.put("systemInstruction", JSONObject().put("parts", systemParts))
         val declarations = functionDeclarations(tools)
         if (declarations.length() > 0) {
@@ -71,6 +76,34 @@ internal object AntigravityRequestBuilder {
         if (generation.length() > 0) inner.put("generationConfig", generation)
         request.put("request", inner)
         return request
+    }
+
+    /**
+     * 原生会话指纹：由首条用户消息派生稳定的负数会话 id。
+     *
+     * 意图：Cloud Code 按负数 sessionId 把多轮请求归并为同一会话。
+     * 不这么做后果：随机或通用会话 id 无法被上游关联，长上下文续轮会被当成新会话而断链。
+     * 来源：与 CLIProxyAPI / PR #1257 的指纹集对齐。
+     */
+    internal fun deriveSessionId(contents: JSONArray, fallback: String = ""): String {
+        for (index in 0 until contents.length()) {
+            val content = contents.optJSONObject(index) ?: continue
+            if (content.optString("role") != "user") continue
+            val parts = content.optJSONArray("parts") ?: continue
+            for (partIndex in 0 until parts.length()) {
+                val text = parts.optJSONObject(partIndex)?.optString("text").orEmpty()
+                if (text.isBlank()) continue
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.toByteArray(Charsets.UTF_8))
+                var value = 0L
+                for (byteIndex in 0 until 8) {
+                    value = (value shl 8) or (digest[byteIndex].toLong() and 0xFFL)
+                }
+                return "-" + (value and 0x7FFFFFFFFFFFFFFFL)
+            }
+        }
+        return fallback.takeIf { it.isNotBlank() }
+            ?: ("-" + (java.security.SecureRandom().nextLong() and 0x7FFFFFFFFFFFFFFFL))
     }
 
     private fun userParts(message: JSONObject): JSONArray {
