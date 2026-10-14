@@ -26,7 +26,10 @@ internal object ProviderRequestHeaders {
             builder.set("User-Agent", "Yunke")
         }
         CustomHeaderFilter.mergeInto(builder, customHeaders)
-        if (sessionId.isNotBlank()) {
+        // Cloud Code 原生客户端不发送会话头，只靠请求体里的负数 sessionId 归并会话；
+        // 多送会话头会偏离原生指纹（表头集合对齐 PR #1257）。
+        val cloudCode = host?.contains("cloudcode-pa") == true
+        if (sessionId.isNotBlank() && !cloudCode) {
             builder.set("session-id", sessionId)
             builder.set("thread-id", sessionId)
         }
