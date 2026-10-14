@@ -317,6 +317,8 @@ internal object AgentConversationCodec {
                             is String -> arguments.ifBlank { "{}" }
                             else -> "{}"
                         },
+                        thoughtSignature = rawCall.optString("thought_signature")
+                            .ifBlank { rawCall.optString("thoughtSignature") },
                     )
                 )
             }
@@ -327,6 +329,9 @@ internal object AgentConversationCodec {
         JSONObject()
             .put("id", id)
             .put("type", "function")
+            // 签名必须原样回到历史里：运行时会用 ToolCall 重建 tool_calls，
+            // 不在这里写回就等于每轮续传都丢掉签名（CCA 报 thought_signature 缺失）。
+            .also { call -> if (thoughtSignature.isNotBlank()) call.put("thought_signature", thoughtSignature) }
             .put(
                 "function",
                 JSONObject()

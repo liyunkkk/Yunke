@@ -373,7 +373,9 @@ internal object AgentModelClient {
     data class ToolCall(
         val id: String,
         val name: String,
-        val argumentsJson: String
+        val argumentsJson: String,
+        /** Gemini 3.x 的 functionCall 签名。缺失时续轮会被 CCA 判 400，必须原样往返。 */
+        val thoughtSignature: String = "",
     )
 
     data class ToolResult(
