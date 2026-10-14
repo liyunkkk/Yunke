@@ -22,13 +22,13 @@ enum class ErrorReconnectPolicy(
 
     companion object {
         /** Applied at the settings boundary, never as a model catch-path override. */
-        val DEFAULT: ErrorReconnectPolicy = CONTINUOUS
-        const val STORAGE_VERSION = 1
+        val DEFAULT: ErrorReconnectPolicy = NONE
+        const val STORAGE_VERSION = 2
 
-        /** Old auto-written "none" is indistinguishable from an explicit selection. */
+        /** Reset legacy defaults (including version 1 auto-migrated continuous) back to safe NONE. */
         fun fromStoredSettings(value: String?, version: Int?): ErrorReconnectPolicy {
             if (version != null && version > STORAGE_VERSION) return NONE
-            if ((version ?: 0) < STORAGE_VERSION && (value == null || value == NONE.persistedValue)) {
+            if ((version ?: 0) < STORAGE_VERSION && (value == null || value == CONTINUOUS.persistedValue || value == NONE.persistedValue)) {
                 return DEFAULT
             }
             return if (value == null) DEFAULT else fromPersistedValue(value)

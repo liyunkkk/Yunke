@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
  */
 internal object AgentHttpClient {
 
-    private const val CONNECT_TIMEOUT_MS = 20_000L
+    private const val CONNECT_TIMEOUT_MS = 60_000L
     private const val READ_TIMEOUT_MS = 600_000L
     private const val WRITE_TIMEOUT_MS = 120_000L
     const val MODEL_READ_TIMEOUT_MS = READ_TIMEOUT_MS
@@ -27,7 +27,7 @@ internal object AgentHttpClient {
             .writeTimeout(WRITE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
-            .retryOnConnectionFailure(false)
+            .retryOnConnectionFailure(true)
             .addInterceptor(ProviderRequestInterceptor)
             .addNetworkInterceptor(JsonContentTypeInterceptor)
             .addNetworkInterceptor(SseContentTypeInterceptor)

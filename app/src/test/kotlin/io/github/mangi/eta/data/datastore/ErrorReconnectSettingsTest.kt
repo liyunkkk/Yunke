@@ -49,7 +49,7 @@ class ErrorReconnectSettingsTest {
     }
 
     @Test
-    fun missingPreferencesDefaultToContinuousButUnknownPreferencesFailClosed() = runBlocking {
+    fun missingPreferencesDefaultToNoneButUnknownPreferencesFailClosed() = runBlocking {
         val before = SettingsDataStore.settings()
         val key = stringPreferencesKey("error_reconnect_policy")
         // Exercise the actual Preferences decoder without adding a production test-only API.
@@ -58,7 +58,7 @@ class ErrorReconnectSettingsTest {
         val store = field.get(SettingsDataStore) as DataStore<Preferences>
         try {
             store.edit { it.remove(key) }
-            assertEquals(ErrorReconnectPolicy.CONTINUOUS, SettingsDataStore.errorReconnectPolicyFlow().first())
+            assertEquals(ErrorReconnectPolicy.NONE, SettingsDataStore.errorReconnectPolicyFlow().first())
             store.edit { it[key] = "future_policy" }
             assertEquals(ErrorReconnectPolicy.NONE, SettingsDataStore.settings().errorReconnectPolicy)
             SettingsDataStore.setMemoryEnabled(false)
@@ -83,15 +83,15 @@ class ErrorReconnectSettingsTest {
             SettingsDataStore.setMemoryEnabled(false)
             val persisted = store.data.first()
             assertEquals("continuous", persisted[ERROR_RECONNECT_POLICY])
-            assertEquals(2, persisted[ERROR_RECONNECT_POLICY_VERSION])
+            assertEquals(3, persisted[ERROR_RECONNECT_POLICY_VERSION])
             val backup = SettingsDataStore.backupSnapshot()
             assertEquals("continuous", backup.errorReconnectPolicy)
-            assertEquals(2, backup.errorReconnectPolicyVersion)
+            assertEquals(3, backup.errorReconnectPolicyVersion)
             try { SettingsDataStore.restoreBackup(backup); org.junit.Assert.fail("future schema") }
             catch (_: IllegalArgumentException) { }
             SettingsDataStore.setErrorReconnectPolicy(ErrorReconnectPolicy.NONE)
             assertEquals("none", store.data.first()[ERROR_RECONNECT_POLICY])
-            assertEquals(1, store.data.first()[ERROR_RECONNECT_POLICY_VERSION])
+            assertEquals(ErrorReconnectPolicy.STORAGE_VERSION, store.data.first()[ERROR_RECONNECT_POLICY_VERSION])
         } finally { SettingsDataStore.restoreBackup(before) }
     }
 
@@ -103,7 +103,7 @@ class ErrorReconnectSettingsTest {
                 SettingsDataStore.setErrorReconnectPolicy(policy)
                 val backup = SettingsDataStore.backupSnapshot()
                 assertEquals(policy.persistedValue, backup.errorReconnectPolicy)
-                assertEquals(1, backup.errorReconnectPolicyVersion)
+                assertEquals(ErrorReconnectPolicy.STORAGE_VERSION, backup.errorReconnectPolicyVersion)
                 val decoded = Json.decodeFromString<EtaSettingsBackup>(Json.encodeToString(backup))
                 SettingsDataStore.setErrorReconnectPolicy(ErrorReconnectPolicy.NONE)
                 SettingsDataStore.restoreBackup(decoded)
@@ -118,7 +118,7 @@ class ErrorReconnectSettingsTest {
     fun futureBackupVersionDoesNotAlterCurrentSettings() = runBlocking {
         val before = SettingsDataStore.backupSnapshot()
         try {
-            SettingsDataStore.restoreBackup(before.copy(errorReconnectPolicyVersion = 2))
+            SettingsDataStore.restoreBackup(before.copy(errorReconnectPolicyVersion = ErrorReconnectPolicy.STORAGE_VERSION + 1))
             org.junit.Assert.fail("future version must not be applied")
         } catch (_: IllegalArgumentException) {
             assertEquals(before, SettingsDataStore.backupSnapshot())
@@ -129,10 +129,11 @@ class ErrorReconnectSettingsTest {
     fun oldDefaultsUpgradeButExplicitNewNoneAndUnknownBackupsStayOff() = runBlocking {
         val before = SettingsDataStore.backupSnapshot()
         val compatibleBackups = listOf(
-            Json.decodeFromString<EtaSettingsBackup>("{}") to ErrorReconnectPolicy.CONTINUOUS,
-            Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":null}""") to ErrorReconnectPolicy.CONTINUOUS,
-            Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":"none"}""") to ErrorReconnectPolicy.CONTINUOUS,
-            Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":"none","errorReconnectPolicyVersion":1}""") to ErrorReconnectPolicy.NONE,
+            Json.decodeFromString<EtaSettingsBackup>("{}") to ErrorReconnectPolicy.NONE,
+            Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":null}""") to ErrorReconnectPolicy.NONE,
+            Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":"none"}""") to ErrorReconnectPolicy.NONE,
+            Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":"continuous","errorReconnectPolicyVersion":1}""") to ErrorReconnectPolicy.NONE,
+            Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":"none","errorReconnectPolicyVersion":2}""") to ErrorReconnectPolicy.NONE,
             Json.decodeFromString<EtaSettingsBackup>("""{"errorReconnectPolicy":"future_policy"}""") to ErrorReconnectPolicy.NONE,
         )
         try {
@@ -141,7 +142,7 @@ class ErrorReconnectSettingsTest {
                 SettingsDataStore.restoreBackup(backup)
                 assertEquals(expected, SettingsDataStore.settings().errorReconnectPolicy)
                 assertEquals(expected.persistedValue, SettingsDataStore.backupSnapshot().errorReconnectPolicy)
-                assertEquals(1, SettingsDataStore.backupSnapshot().errorReconnectPolicyVersion)
+                assertEquals(ErrorReconnectPolicy.STORAGE_VERSION, SettingsDataStore.backupSnapshot().errorReconnectPolicyVersion)
             }
         } finally {
             SettingsDataStore.restoreBackup(before)
