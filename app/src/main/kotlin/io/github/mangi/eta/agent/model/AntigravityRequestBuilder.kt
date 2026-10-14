@@ -23,7 +23,13 @@ internal object AntigravityRequestBuilder {
                     val text = message.optString("content")
                     if (text.isNotBlank()) systemParts.put(JSONObject().put("text", text))
                 }
-                "user" -> contents.put(JSONObject().put("role", "user").put("parts", userParts(message)))
+                "user" -> {
+                    val userTurnParts = userParts(message)
+                    // 空 parts 的 user turn 会被 CCA 判参数无效；没有内容就不入列。
+                    if (userTurnParts.length() > 0) {
+                        contents.put(JSONObject().put("role", "user").put("parts", userTurnParts))
+                    }
+                }
                 "assistant" -> {
                     val parts = JSONArray()
                     val text = message.optString("content")
