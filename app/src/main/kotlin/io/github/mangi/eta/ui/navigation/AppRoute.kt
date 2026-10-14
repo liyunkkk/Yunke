@@ -128,4 +128,4 @@ sealed interface AppRoute : NavKey {
 }
 
 @Serializable
-enum class NewProviderType { OpenAiCompatible, Anthropic, DoubaoSpeech, CompatibleSpeech }
+enum class NewProviderType { OpenAiCompatible, Anthropic, Antigravity, DoubaoSpeech, CompatibleSpeech }

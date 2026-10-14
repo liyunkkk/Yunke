@@ -110,7 +110,15 @@ internal fun ModelProviderDetailScreen(
     }
     val draft = remember(newType, authMode) {
         when (newType) {
-            NewProviderType.OpenAiCompatible -> if (ProviderAuthMode.isOAuth(authMode)) {
+            NewProviderType.OpenAiCompatible -> if (ProviderAuthMode.isAntigravity(authMode)) {
+                CustomProviderSetting(
+                    id = ProviderRepository.newId(),
+                    name = GoogleAntigravityOAuth.DEFAULT_NAME,
+                    baseUrl = GoogleAntigravityOAuth.BASE_URL,
+                    endpointMode = GoogleAntigravityOAuth.defaultEndpointMode(),
+                    authMode = ProviderAuthMode.OAUTH_ANTIGRAVITY,
+                )
+            } else if (ProviderAuthMode.isOAuth(authMode)) {
                 CustomProviderSetting(
                     id = ProviderRepository.newId(),
                     name = OpenAiCodexOAuth.DEFAULT_NAME,
@@ -126,6 +134,13 @@ internal fun ModelProviderDetailScreen(
                     endpointMode = OpenAiEndpointMode.CHAT_COMPLETIONS,
                 )
             }
+            NewProviderType.Antigravity -> CustomProviderSetting(
+                id = ProviderRepository.newId(),
+                name = GoogleAntigravityOAuth.DEFAULT_NAME,
+                baseUrl = GoogleAntigravityOAuth.BASE_URL,
+                endpointMode = GoogleAntigravityOAuth.defaultEndpointMode(),
+                authMode = ProviderAuthMode.OAUTH_ANTIGRAVITY,
+            )
             NewProviderType.Anthropic -> AnthropicProviderSetting(
                 id = "",
                 name = "",
@@ -299,6 +314,7 @@ private fun ProviderConfigTab(
                             providerId = provider.id,
                             signedIn = draft.apiKey.isNotBlank(),
                             enabled = !isWorking,
+                            antigravity = GoogleAntigravityOAuth.usesBackend(draft),
                             onToken = { token -> onDraftChange(draft.copy(apiKey = token)) },
                             onBusy = { isWorking = it },
                             onStatus = { status = it },
@@ -761,6 +777,7 @@ private fun ProviderOAuthLoginRow(
     providerId: String,
     signedIn: Boolean,
     enabled: Boolean,
+    antigravity: Boolean = false,
     onToken: (String) -> Unit,
     onBusy: (Boolean) -> Unit,
     onStatus: (String?) -> Unit,
@@ -775,7 +792,8 @@ private fun ProviderOAuthLoginRow(
             )
         } else {
             context.getString(
-                R.string.provider_oauth_sign_in,
+                if (antigravity) R.string.provider_auth_oauth_antigravity_summary
+                else R.string.provider_oauth_sign_in,
             )
         },
         enabled = enabled,
@@ -786,7 +804,8 @@ private fun ProviderOAuthLoginRow(
             onStatus(null)
             scope.launch {
                 try {
-                    val token = OpenAiCodexOAuth.login(context, id)
+                    val token = if (antigravity) GoogleAntigravityOAuth.login(context, id)
+                    else OpenAiCodexOAuth.login(context, id)
                     onToken(token)
                     onStatus(context.getString(R.string.provider_oauth_sign_in_ok))
                 } catch (cancelled: CancellationException) {

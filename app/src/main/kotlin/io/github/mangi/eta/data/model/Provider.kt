@@ -28,6 +28,7 @@ internal object ProviderSourceTypes {
     const val STEPFUN = "stepfun"
     const val SILICONFLOW = "siliconflow"
     const val OPENROUTER = "openrouter"
+    const val ANTIGRAVITY = "antigravity"
     const val DOUBAO_SPEECH = "doubao_speech"
     const val COMPATIBLE_SPEECH = "compatible_speech"
 }
