@@ -49,6 +49,9 @@ import io.github.mangi.eta.agent.question.AgentQuestionStatus
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.ui.app.AgentQuestionProjection
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
+import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
+import io.github.mangi.eta.ui.components.ConversationSubAgentEditor
+import io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
@@ -366,7 +369,21 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             ) {
                 // ColorOS 在 Overlay 窗口切换期间可能短暂使用软件画布；RuntimeShader
                 // 无法在该画布绘制，因此浮窗统一使用 Miuix 的圆角回退路径。
-                CompositionLocalProvider(LocalSquircleEnabled provides false) {
+                // 浮窗不经过本体根节点，拿不到 LocalConversationSubAgentEditor；模型按钮
+                // 会因 owner == null 直接 return（表现为点了没反应）。这里按同一 owner 语义
+                // 补上，编辑能力仍交给本体（canEdit = false）。
+                val panelSubAgentEditor = remember(uiState.conversationId) {
+                    uiState.conversationId?.takeIf(String::isNotBlank)?.let { id ->
+                        ConversationSubAgentEditor(
+                            io.github.mangi.eta.data.model.SubAgentConfigKey.Conversation(id),
+                            ConversationSubAgentPreferences(),
+                        ) { false }
+                    }
+                }
+                CompositionLocalProvider(
+                    LocalConversationSubAgentEditor provides panelSubAgentEditor,
+                    LocalSquircleEnabled provides false,
+                ) {
                     val activeAssistantId by AssistantRepository.activeId.collectAsState()
                     EtaVoicePanel(
                         state = uiState,
