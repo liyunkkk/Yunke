@@ -60,21 +60,6 @@ internal fun ProviderAuthMethodScreen(
                         )
                     },
                 )
-                ArrowPreference(
-                    title = stringResource(R.string.provider_auth_oauth_antigravity),
-                    summary = stringResource(R.string.provider_auth_oauth_antigravity_summary),
-                    startAction = {
-                        PreferenceIcon(icon = Icons.Rounded.Person)
-                    },
-                    onClick = {
-                        onNavigate(
-                            AppRoute.ModelProviderNew(
-                                providerType = providerType,
-                                authMode = ProviderAuthMode.OAUTH_ANTIGRAVITY,
-                            ),
-                        )
-                    },
-                )
             }
         }
         item(key = "note") {
