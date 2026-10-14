@@ -16,8 +16,8 @@ class SettingsTest {
     }
 
     @Test
-    fun errorReconnectContinuesByDefault() {
-        assertEquals(ErrorReconnectPolicy.CONTINUOUS, Settings().errorReconnectPolicy)
+    fun errorReconnectStaysOffByDefault() {
+        assertEquals(ErrorReconnectPolicy.NONE, Settings().errorReconnectPolicy)
     }
 
     @Test

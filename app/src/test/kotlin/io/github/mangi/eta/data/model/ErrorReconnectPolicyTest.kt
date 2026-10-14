@@ -33,7 +33,7 @@ class ErrorReconnectPolicyTest {
 
     @Test
     fun oldSettingsAndUnknownSerializedPolicyUseSafeDefault() {
-        assertEquals(ErrorReconnectPolicy.CONTINUOUS, Json.decodeFromString<Settings>("{}").errorReconnectPolicy)
+        assertEquals(ErrorReconnectPolicy.NONE, Json.decodeFromString<Settings>("{}").errorReconnectPolicy)
         assertEquals(
             ErrorReconnectPolicy.NONE,
             Json.decodeFromString<Settings>("""{"errorReconnectPolicy":"future_policy"}""").errorReconnectPolicy,
@@ -42,15 +42,24 @@ class ErrorReconnectPolicyTest {
 
     @Test
     fun legacyDefaultsUpgradeOnceWithoutChangingSelectedWindows() {
-        assertEquals(ErrorReconnectPolicy.CONTINUOUS, ErrorReconnectPolicy.fromStoredSettings(null, null))
-        assertEquals(ErrorReconnectPolicy.CONTINUOUS, ErrorReconnectPolicy.fromStoredSettings("none", null))
+        // 旧默认（缺失或 none）与 v1 被强制写入的 continuous 一律回退到安全的 NONE。
+        assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings(null, null))
+        assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings("none", null))
         assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings("none", 1))
+        assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings("continuous", 1))
         assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings("future_policy", null))
         assertEquals(ErrorReconnectPolicy.NONE, ErrorReconnectPolicy.fromStoredSettings(null, 2))
-        ErrorReconnectPolicy.entries.filterNot { it == ErrorReconnectPolicy.NONE }.forEach { policy ->
+        // 显式选择的时间窗档位在各版本间保持不变；升级后显式选的 continuous 也保留。
+        listOf(
+            ErrorReconnectPolicy.WINDOW_30S,
+            ErrorReconnectPolicy.WINDOW_1M,
+            ErrorReconnectPolicy.WINDOW_5M,
+        ).forEach { policy ->
             assertEquals(policy, ErrorReconnectPolicy.fromStoredSettings(policy.persistedValue, null))
             assertEquals(policy, ErrorReconnectPolicy.fromStoredSettings(policy.persistedValue, 1))
+            assertEquals(policy, ErrorReconnectPolicy.fromStoredSettings(policy.persistedValue, 2))
         }
+        assertEquals(ErrorReconnectPolicy.CONTINUOUS, ErrorReconnectPolicy.fromStoredSettings("continuous", 2))
     }
 
     @Test

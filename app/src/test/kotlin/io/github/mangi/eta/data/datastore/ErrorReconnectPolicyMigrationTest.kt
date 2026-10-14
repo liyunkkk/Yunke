@@ -36,9 +36,9 @@ class ErrorReconnectPolicyMigrationTest {
                 this[stringPreferencesKey("unrelated")] = "preserved"
             }
             val result = migration.migrate(old)
-            val expected = if (raw == null || raw == "none") "continuous" else raw
+            val expected = if (raw == null || raw == "none" || raw == "continuous") "none" else raw
             assertEquals(expected, result[ERROR_RECONNECT_POLICY])
-            assertEquals(1, result[ERROR_RECONNECT_POLICY_VERSION])
+            assertEquals(ErrorReconnectPolicy.STORAGE_VERSION, result[ERROR_RECONNECT_POLICY_VERSION])
             assertEquals("preserved", result[stringPreferencesKey("unrelated")])
             assertNull(old[ERROR_RECONNECT_POLICY_VERSION])
             assertFalse(migration.shouldMigrate(result))
@@ -56,7 +56,7 @@ class ErrorReconnectPolicyMigrationTest {
         val first = PreferenceDataStoreFactory.create(migrations = listOf(ErrorReconnectPolicyMigration()),
             scope = CoroutineScope(firstJob + Dispatchers.IO)) { file }
         try {
-            assertEquals("continuous", first.data.first()[ERROR_RECONNECT_POLICY])
+            assertEquals("none", first.data.first()[ERROR_RECONNECT_POLICY])
             first.edit { it[ERROR_RECONNECT_POLICY] = "none" }
         } finally { firstJob.cancelAndJoin() }
         val restartJob = SupervisorJob()
@@ -64,7 +64,7 @@ class ErrorReconnectPolicyMigrationTest {
             scope = CoroutineScope(restartJob + Dispatchers.IO)) { file }
         try {
             assertEquals("none", restarted.data.first()[ERROR_RECONNECT_POLICY])
-            assertEquals(1, restarted.data.first()[ERROR_RECONNECT_POLICY_VERSION])
+            assertEquals(ErrorReconnectPolicy.STORAGE_VERSION, restarted.data.first()[ERROR_RECONNECT_POLICY_VERSION])
         } finally { restartJob.cancelAndJoin() }
     }
 
@@ -102,8 +102,8 @@ class ErrorReconnectPolicyMigrationTest {
         val retry = DataStoreFactory.create(serializer = JsonPreferencesSerializer(),
             migrations = listOf(ErrorReconnectPolicyMigration()), scope = CoroutineScope(retryJob + Dispatchers.IO)) { file }
         try {
-            assertEquals("continuous", retry.data.first()[ERROR_RECONNECT_POLICY])
-            assertEquals(1, retry.data.first()[ERROR_RECONNECT_POLICY_VERSION])
+            assertEquals("none", retry.data.first()[ERROR_RECONNECT_POLICY])
+            assertEquals(ErrorReconnectPolicy.STORAGE_VERSION, retry.data.first()[ERROR_RECONNECT_POLICY_VERSION])
         } finally { retryJob.cancelAndJoin() }
     }
 
@@ -125,8 +125,8 @@ class ErrorReconnectPolicyMigrationTest {
             ErrorReconnectPolicyMigration(), UsageLedgerRollbackMigration(ledger, archive = { _, _ -> }),
         ), scope = CoroutineScope(retryJob + Dispatchers.IO)) { file }
         try {
-            assertEquals("continuous", retry.data.first()[ERROR_RECONNECT_POLICY])
-            assertEquals(1, retry.data.first()[ERROR_RECONNECT_POLICY_VERSION])
+            assertEquals("none", retry.data.first()[ERROR_RECONNECT_POLICY])
+            assertEquals(ErrorReconnectPolicy.STORAGE_VERSION, retry.data.first()[ERROR_RECONNECT_POLICY_VERSION])
             assertEquals("{}", retry.data.first()[MODEL_USAGE_JSON])
         } finally { retryJob.cancelAndJoin() }
     }
