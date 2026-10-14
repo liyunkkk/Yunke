@@ -353,6 +353,57 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                                     style = MaterialTheme.typography.bodyMedium)
                             }
                         }
+                        // Editing a preset does not change its saved automatic-delegation value.
+                        items(profiles, key = { it.id }) { profile ->
+                            Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp).alpha(if (editable) 1f else 0.38f)) {
+                                Column(Modifier.padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Icon(when (profile.role) {
+                                            "review" -> Icons.Rounded.FactCheck
+                                            "image_generation" -> Icons.Rounded.Image
+                                            "video_generation" -> Icons.Rounded.Videocam
+                                            else -> Icons.Rounded.AccountTree
+                                        }, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurface)
+                                        Text(profile.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                        Box(Modifier.requiredSize(36.dp, 22.dp).wrapContentSize(unbounded = true)
+                                            .semantics { contentDescription = "启用${profile.name}" }, contentAlignment = Alignment.Center) {
+                                            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+                                                Switch(profile.enabled, enabled = editable, onCheckedChange = { active ->
+                                                    if (editor?.enabled == true) { TouchHaptics.click(view); editor.updateProfile(profile.id) { it.copy(enabled = active) } }
+                                                }, modifier = Modifier.scale(0.7f))
+                                            }
+                                        }
+                                        var expanded by remember(editor, profile.id) { mutableStateOf(false) }
+                                        LaunchedEffect(editable) { if (!editable) expanded = false }
+                                        Box {
+                                            IconButton(enabled = editable, onClick = { if (editor?.enabled == true) { TouchHaptics.click(view); expanded = true } }) {
+                                                Icon(Icons.Rounded.MoreVert, "${profile.name}更多操作")
+                                            }
+                                            if (editable) SubAgentDropdownMenu(expanded, { expanded = false }) {
+                                                DropdownMenuItem(text = { Text("配置") }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
+                                                    onClick = {
+                                                        if (editor.enabled) SubAgentProfileDraftSession.open(editor, profile)?.let {
+                                                            TouchHaptics.click(view)
+                                                            addedDraft = it
+                                                        }
+                                                        expanded = false
+                                                    })
+                                                DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) },
+                                                    onClick = { if (editor?.enabled == true) { name = profile.name; rename = profile }; expanded = false })
+                                                DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                                    leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
+                                                    onClick = { if (editor?.enabled == true) delete = profile; expanded = false })
+                                            }
+                                        }
+                                    }
+                                    SubAgentProfileRow(profile, providers, enabled = editable, settings = true, draftAllowed = true)
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+                            }
+                        }
+                        // 预设详情页的 LazyColumn 只组合可见条目，dsh 卡片较长，若排在 profiles 之前会把 profiles 的控件挤出组合窗口，破坏 SubAgentPresetSettingsTest 的无滚动断言；因此 dsh 配置必须排在 profiles 之后。
                         item {
                             Column(Modifier.fillMaxWidth().padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("DeepSeek Harness (dsh)", style = MaterialTheme.typography.titleMedium)
@@ -478,56 +529,6 @@ private fun SubAgentPresetDetail(editor: ConversationSubAgentEditor, groupName: 
                                 },
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             )
-                        }
-                        // Editing a preset does not change its saved automatic-delegation value.
-                        items(profiles, key = { it.id }) { profile ->
-                            Column(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp).alpha(if (editable) 1f else 0.38f)) {
-                                Column(Modifier.padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Icon(when (profile.role) {
-                                            "review" -> Icons.Rounded.FactCheck
-                                            "image_generation" -> Icons.Rounded.Image
-                                            "video_generation" -> Icons.Rounded.Videocam
-                                            else -> Icons.Rounded.AccountTree
-                                        }, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onSurface)
-                                        Text(profile.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
-                                            maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        Box(Modifier.requiredSize(36.dp, 22.dp).wrapContentSize(unbounded = true)
-                                            .semantics { contentDescription = "启用${profile.name}" }, contentAlignment = Alignment.Center) {
-                                            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
-                                                Switch(profile.enabled, enabled = editable, onCheckedChange = { active ->
-                                                    if (editor?.enabled == true) { TouchHaptics.click(view); editor.updateProfile(profile.id) { it.copy(enabled = active) } }
-                                                }, modifier = Modifier.scale(0.7f))
-                                            }
-                                        }
-                                        var expanded by remember(editor, profile.id) { mutableStateOf(false) }
-                                        LaunchedEffect(editable) { if (!editable) expanded = false }
-                                        Box {
-                                            IconButton(enabled = editable, onClick = { if (editor?.enabled == true) { TouchHaptics.click(view); expanded = true } }) {
-                                                Icon(Icons.Rounded.MoreVert, "${profile.name}更多操作")
-                                            }
-                                            if (editable) SubAgentDropdownMenu(expanded, { expanded = false }) {
-                                                DropdownMenuItem(text = { Text("配置") }, leadingIcon = { Icon(Icons.Rounded.Tune, null) },
-                                                    onClick = {
-                                                        if (editor.enabled) SubAgentProfileDraftSession.open(editor, profile)?.let {
-                                                            TouchHaptics.click(view)
-                                                            addedDraft = it
-                                                        }
-                                                        expanded = false
-                                                    })
-                                                DropdownMenuItem(text = { Text("重命名") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) },
-                                                    onClick = { if (editor?.enabled == true) { name = profile.name; rename = profile }; expanded = false })
-                                                DropdownMenuItem(text = { Text("删除", color = MaterialTheme.colorScheme.error) },
-                                                    leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
-                                                    onClick = { if (editor?.enabled == true) delete = profile; expanded = false })
-                                            }
-                                        }
-                                    }
-                                    SubAgentProfileRow(profile, providers, enabled = editable, settings = true, draftAllowed = true)
-                                }
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                            }
                         }
                     }
                 }
