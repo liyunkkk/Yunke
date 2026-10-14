@@ -141,15 +141,37 @@ internal object GoogleAntigravityOAuth {
         val collected = mutableListOf<Model>()
         val modelsObject = root.optJSONObject("models")
         if (modelsObject != null) {
-            val keys = modelsObject.keys()
+            // `models` 是 CCA 的内部全量目录，混着 chat_*/tab_*_preview 这类内部 id。
+            // 原生客户端（以及 CLIProxyAPI）只列 agentModelSorts + tieredModelIds.flash
+            // + imageGenerationModelIds 声明的那部分，这里照做；三个字段都缺失时才退回全量。
+            val declared = linkedSetOf<String>()
+            root.optJSONArray("agentModelSorts")?.let { sorts ->
+                for (sort in 0 until sorts.length()) {
+                    val groups = sorts.optJSONObject(sort)?.optJSONArray("groups") ?: continue
+                    for (group in 0 until groups.length()) {
+                        val ids = groups.optJSONObject(group)?.optJSONArray("modelIds") ?: continue
+                        for (index in 0 until ids.length()) {
+                            ids.optString(index).trim().takeIf { it.isNotBlank() }?.let(declared::add)
+                        }
+                    }
+                }
+            }
+            root.optJSONObject("tieredModelIds")?.optJSONArray("flash")?.let { flash ->
+                for (index in 0 until flash.length()) {
+                    flash.optString(index).trim().takeIf { it.isNotBlank() }?.let(declared::add)
+                }
+            }
+            root.optJSONArray("imageGenerationModelIds")?.let { images ->
+                for (index in 0 until images.length()) {
+                    if (images.optString(index) == "gemini-3.1-flash-image") declared.add("gemini-3.1-flash-image")
+                }
+            }
+            val source = if (declared.isNotEmpty()) declared.toList() else modelsObject.keys().asSequence().toList()
             var order = 0
-            while (keys.hasNext()) {
-                val key = keys.next()
-                val item = modelsObject.optJSONObject(key)
-                // The object key is the callable ID. `model` may be Google's internal
-                // MODEL_PLACEHOLDER_* enum, not an endpoint model name (same as CPA).
-                val modelId = key.trim()
-                val display = item?.optString("displayName")?.ifBlank { null } ?: modelId
+            source.forEach { rawId ->
+                val modelId = rawId.trim()
+                if (modelId.isBlank()) return@forEach
+                val display = modelsObject.optJSONObject(modelId)?.optString("displayName")?.ifBlank { null } ?: modelId
                 addCatalogModel(collected, modelId, display, order++)
             }
         }
