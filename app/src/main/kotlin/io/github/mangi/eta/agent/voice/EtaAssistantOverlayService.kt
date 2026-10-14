@@ -991,7 +991,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                             isError = !result.ok,
                             source = AgentNotificationTrampolineActivity.SOURCE_OVERLAY,
                             conversationKey = conversationKey,
-                            entryMode = if (entryInVoiceMode) ENTRY_MODE_VOICE else ENTRY_MODE_INPUT,
                         )
                     }
                 }
@@ -1992,11 +1991,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             }
         }
 
-        fun show(context: Context, entryMode: String? = null) {
+        fun show(context: Context) {
             context.applicationContext.startService(
                 Intent(context.applicationContext, EtaAssistantOverlayService::class.java)
-                    .setAction(ACTION_SHOW)
-                    .apply { if (!entryMode.isNullOrBlank()) putExtra(EXTRA_ENTRY_MODE, entryMode) },
+                    .setAction(ACTION_SHOW),
             )
         }
 

@@ -24,10 +24,11 @@ class AgentNotificationTrampolineActivity : Activity() {
             val conversationKey = intent
                 .getStringExtra(EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY)
                 ?.takeIf(String::isNotBlank)
-            val entryMode = intent.getStringExtra(EtaAssistantOverlayService.EXTRA_ENTRY_MODE)
             if (source == SOURCE_OVERLAY) {
-                // 浮窗发起的任务：回到浮窗，并沿用发起时的入口态（语音态 / 输入态）。
-                EtaAssistantOverlayService.show(this, entryMode)
+                // 浮窗发起的任务：回到浮窗。这里不指定入口态——面板的语音态只能靠
+                // 唤出时的默认语义进入（entryInVoiceMode = true 仅此一处），
+                // 一旦强制成输入态，语音态就再也唤不出来了。
+                EtaAssistantOverlayService.show(this)
             } else {
                 val mainIntent = Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)

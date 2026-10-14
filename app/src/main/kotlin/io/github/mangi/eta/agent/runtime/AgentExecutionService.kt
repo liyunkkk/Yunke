@@ -292,7 +292,6 @@ internal class AgentExecutionService : Service() {
             isError: Boolean = false,
             source: String = AgentNotificationTrampolineActivity.SOURCE_MAIN,
             conversationKey: String? = null,
-            entryMode: String? = null,
         ) {
             val manager = context.getSystemService(NotificationManager::class.java) ?: return
             ensureChannels(context, manager)
@@ -300,7 +299,6 @@ internal class AgentExecutionService : Service() {
                 putExtra(AgentNotificationTrampolineActivity.EXTRA_SOURCE, source)
                 // 带上会话与入口态：否则点通知只能把应用打开，落回上次停留的界面。
                 if (!conversationKey.isNullOrBlank()) putExtra(io.github.mangi.eta.agent.voice.EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY, conversationKey)
-                if (!entryMode.isNullOrBlank()) putExtra(io.github.mangi.eta.agent.voice.EtaAssistantOverlayService.EXTRA_ENTRY_MODE, entryMode)
             }
             val open = PendingIntent.getActivity(
                 context,
