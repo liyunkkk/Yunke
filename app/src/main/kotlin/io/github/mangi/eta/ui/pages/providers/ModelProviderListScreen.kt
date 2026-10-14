@@ -191,18 +191,6 @@ internal fun ModelProviderListScreen(
                         )
 
                         ArrowPreference(
-                            title = stringResource(R.string.provider_auth_oauth_antigravity),
-                            summary = stringResource(R.string.provider_auth_oauth_antigravity_summary),
-                            startAction = {
-                                ProviderBrandIcon(ProviderSourceTypes.ANTIGRAVITY)
-                            },
-                            onClick = {
-                                TouchHaptics.click(view)
-                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.Antigravity))
-                            },
-                        )
-
-                        ArrowPreference(
                             title = stringResource(R.string.ui_new_anthropic_db6098),
                             summary = stringResource(R.string.ui_support_anthropic_claude_official_or_compatible_api_de3f80),
                             startAction = {
@@ -211,6 +199,18 @@ internal fun ModelProviderListScreen(
                             onClick = {
                                 TouchHaptics.click(view)
                                 onNavigate(AppRoute.ModelProviderNew(NewProviderType.Anthropic))
+                            },
+                        )
+
+                        ArrowPreference(
+                            title = stringResource(R.string.ui_new_antigravity),
+                            summary = stringResource(R.string.ui_new_antigravity_summary),
+                            startAction = {
+                                ProviderBrandIcon(ProviderSourceTypes.ANTIGRAVITY)
+                            },
+                            onClick = {
+                                TouchHaptics.click(view)
+                                onNavigate(AppRoute.ModelProviderNew(NewProviderType.Antigravity))
                             },
                         )
 

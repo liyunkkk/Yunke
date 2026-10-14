@@ -158,12 +158,29 @@ internal object AntigravityRequestBuilder {
 
     private fun sanitizeObject(source: JSONObject): JSONObject {
         val result = JSONObject()
+        val rawRequired = source.optJSONArray("required")
         source.keys().forEach { key ->
             if (key in DROPPED_SCHEMA_KEYS) return@forEach
+            // required 单独处理：见下方悬空名字裁剪。
+            if (key == "required") return@forEach
             result.put(key, sanitizeSchema(source.opt(key)))
         }
-        if (!result.has("type") && (result.has("properties") || result.has("required"))) {
+        if (!result.has("type") && (result.has("properties") || rawRequired != null)) {
             result.put("type", "object")
+        }
+        // CCA/Gemini 要求 required 里的每个名字都在 properties 中有定义，否则整条请求被拒：
+        // "GenerateContentRequest.tools[i].function_declarations[j].parameters.required[k]:
+        //  property is not defined"。工具 schema 可能带悬空名字（典型来源是定义在
+        // 被裁掉的 oneOf/anyOf/allOf 分支里的属性），这里裁掉；裁空则整个 required 不再发送。
+        if (rawRequired != null) {
+            val properties = result.optJSONObject("properties")
+            val kept = JSONArray()
+            for (index in 0 until rawRequired.length()) {
+                val name = rawRequired.optString(index)
+                if (name.isBlank() || properties?.has(name) != true || kept.contains(name)) continue
+                kept.put(name)
+            }
+            if (kept.length() > 0) result.put("required", kept)
         }
         return result
     }
