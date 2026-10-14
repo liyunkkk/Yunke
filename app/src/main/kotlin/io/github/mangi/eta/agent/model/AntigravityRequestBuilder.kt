@@ -163,6 +163,16 @@ internal object AntigravityRequestBuilder {
             if (key in DROPPED_SCHEMA_KEYS) return@forEach
             // required 单独处理：见下方悬空名字裁剪。
             if (key == "required") return@forEach
+            // properties 的键是参数名而不是 schema 关键字，不能按关键字丢弃：
+            // 丢掉会让该参数对模型不可见，且 required 里的名字随即变成悬空。
+            if (key == "properties") {
+                val properties = source.optJSONObject(key)
+                result.put(
+                    key,
+                    if (properties == null) sanitizeSchema(source.opt(key)) else sanitizeProperties(properties),
+                )
+                return@forEach
+            }
             result.put(key, sanitizeSchema(source.opt(key)))
         }
         if (!result.has("type") && (result.has("properties") || rawRequired != null)) {
@@ -183,6 +193,13 @@ internal object AntigravityRequestBuilder {
             }
             if (kept.length() > 0) result.put("required", kept)
         }
+        return result
+    }
+
+    /** properties 映射：键是参数名，值才是子 schema，因此键不做关键字过滤。 */
+    private fun sanitizeProperties(source: JSONObject): JSONObject {
+        val result = JSONObject()
+        source.keys().forEach { name -> result.put(name, sanitizeSchema(source.opt(name))) }
         return result
     }
 

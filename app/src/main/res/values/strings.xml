@@ -499,7 +499,7 @@
   <string name="provider_auto_vision_supported">Auto: supports vision</string>
   <string name="provider_auto_vision_unknown">Auto: unsupported or unknown</string>
   <string name="ui_new_anthropic_db6098">Add Anthropic provider</string>
-  <string name="ui_new_antigravity">Add Google Antigravity provider</string>
+  <string name="ui_new_antigravity">Add Antigravity</string>
   <string name="ui_new_antigravity_summary">Sign in with a Google account</string>
   <string name="ui_new_doubao_speech">Add Doubao Voice</string>
   <string name="ui_new_doubao_speech_summary">Speech only. Use the Doubao Voice API key, not the Ark chat key.</string>
