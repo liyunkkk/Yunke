@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.data.model.ReasoningEffort
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -11,8 +12,12 @@ internal object AntigravityRequestBuilder {
         if (config.systemPrompt.isNotBlank()) {
             systemParts.put(JSONObject().put("text", config.systemPrompt))
         }
+        // 并行的工具结果必须并进同一个 user turn：CCA 要求 user/model 交替出现，
+        // 连续同角色的 turn 会被整条请求拒掉（multi-turn requests alternate）。
+        var toolTurn: JSONObject? = null
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("role") != "tool") toolTurn = null
             when (message.optString("role")) {
                 "system", "developer" -> {
                     val text = message.optString("content")
@@ -41,12 +46,15 @@ internal object AntigravityRequestBuilder {
                     val callId = message.optString("tool_call_id")
                     val name = callNames[callId] ?: callId.ifBlank { "tool" }
                     val response = JSONObject().put("result", message.optString("content"))
-                    contents.put(
-                        JSONObject().put("role", "user").put(
-                            "parts",
-                            JSONArray().put(JSONObject().put("functionResponse", JSONObject().put("name", name).put("response", response))),
-                        ),
+                    val part = JSONObject().put(
+                        "functionResponse",
+                        JSONObject().put("name", name).put("response", response),
                     )
+                    val turn = toolTurn ?: JSONObject().put("role", "user").put("parts", JSONArray()).also {
+                        contents.put(it)
+                        toolTurn = it
+                    }
+                    turn.getJSONArray("parts").put(part)
                 }
             }
         }
@@ -67,11 +75,26 @@ internal object AntigravityRequestBuilder {
         val declarations = functionDeclarations(tools)
         if (declarations.length() > 0) {
             inner.put("tools", JSONArray().put(JSONObject().put("functionDeclarations", declarations)))
+            // Claude 走 CCA 时必须声明 VALIDATED，否则工具调用被拒或静默失效。
+            if (AntigravityModelRouting.runtimeModelId(config.model).startsWith("claude")) {
+                inner.put(
+                    "toolConfig",
+                    JSONObject().put("functionCallingConfig", JSONObject().put("mode", "VALIDATED")),
+                )
+            }
         }
         val generation = JSONObject()
         config.summaryOutputLimit?.let { generation.put("maxOutputTokens", it) }
-        if (config.effectiveReasoningEffort.enablesReasoning) {
-            generation.put("thinkingConfig", JSONObject().put("includeThoughts", true).put("thinkingBudget", 8192))
+        // CCA 的 thinkingConfig 只认 thinkingLevel(low/medium/high)；thinkingBudget 与
+        // includeThoughts 属 Gemini 通用字段，直接发会被判参数无效。
+        when (config.effectiveReasoningEffort) {
+            ReasoningEffort.MINIMAL, ReasoningEffort.LOW ->
+                generation.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
+            ReasoningEffort.MEDIUM ->
+                generation.put("thinkingConfig", JSONObject().put("thinkingLevel", "medium"))
+            ReasoningEffort.HIGH, ReasoningEffort.XHIGH, ReasoningEffort.MAX ->
+                generation.put("thinkingConfig", JSONObject().put("thinkingLevel", "high"))
+            ReasoningEffort.OFF, ReasoningEffort.DEFAULT -> Unit
         }
         if (generation.length() > 0) inner.put("generationConfig", generation)
         request.put("request", inner)
