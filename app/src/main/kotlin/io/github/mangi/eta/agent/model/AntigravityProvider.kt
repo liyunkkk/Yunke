@@ -83,6 +83,10 @@ internal object AntigravityProvider : AgentProviderClient {
         var nextIndex = 0
         var active: Pair<AssistantBlockKind, Int>? = null
         var finish: String? = null
+        // Gemini 3.x 的 thoughtSignature 随响应"第一个 part"返回：一轮里常是
+        // [思考 part][functionCall part]，签名挂在思考 part 上，只从 functionCall
+        // 那个 part 读会读空。这里整轮跟踪，最后兜底回填。
+        var turnSignature = ""
         var saw = false
         fun finishBlock() {
             val block = active ?: return
@@ -113,6 +117,9 @@ internal object AntigravityProvider : AgentProviderClient {
             val parts = candidate.optJSONObject("content")?.optJSONArray("parts") ?: return@sse
             for (i in 0 until parts.length()) {
                 val part = parts.optJSONObject(i) ?: continue
+                val partSignature = part.optString("thoughtSignature")
+                    .ifBlank { part.optString("thought_signature") }
+                if (partSignature.isNotBlank()) turnSignature = partSignature
                 val thought = part.optBoolean("thought") || part.has("thought") && part.opt("thought") == true
                 if (part.has("text")) {
                     val text = part.optString("text")
@@ -120,6 +127,14 @@ internal object AntigravityProvider : AgentProviderClient {
                     else { content.append(text); append(AssistantBlockKind.TEXT, text) }
                 }
                 val call = part.optJSONObject("functionCall") ?: continue
+                // 诊断：只记键名与签名长度，不记内容。若 CCA 把签名放在别的字段名上，
+                // 这一行能直接看出来，省掉一轮猜测。
+                runCatching {
+                    io.github.mangi.eta.core.AndroidAgentLogger.info(
+                        "Antigravity functionCall keys=" + part.keys().asSequence().joinToString(",") +
+                            " turnSignatureChars=" + turnSignature.length,
+                    )
+                }
                 finishBlock()
                 val name = call.optString("name")
                 val args = call.opt("args")
@@ -131,9 +146,10 @@ internal object AntigravityProvider : AgentProviderClient {
                 val index = nextIndex++
                 // Gemini 3.x 要求 functionCall 原样带回 thoughtSignature，否则续轮 400
                 // （Function call is missing a thought_signature in functionCall parts）。
-                val signature = part.optString("thoughtSignature")
-                    .ifBlank { part.optString("thought_signature") }
-                toolCalls[id] = StreamingTool(id, name, argsText, index, signature)
+                toolCalls[id] = StreamingTool(
+                    id, name, argsText, index,
+                    signature = partSignature.ifBlank { turnSignature },
+                )
                 onEvent(ProviderEvent.BlockStart(AssistantBlockKind.TOOL_CALL, index))
                 onEvent(ProviderEvent.BlockDelta(AssistantBlockKind.TOOL_CALL, index, argsText))
             }
@@ -161,8 +177,9 @@ internal object AntigravityProvider : AgentProviderClient {
                                 JSONObject().put("id", call.id).put("type", "function")
                                     .put("function", JSONObject().put("name", call.name).put("arguments", call.args))
                                     .also { entry ->
-                                        if (call.signature.isNotBlank()) {
-                                            entry.put("thought_signature", call.signature)
+                                        val signature = call.signature.ifBlank { turnSignature }
+                                        if (signature.isNotBlank()) {
+                                            entry.put("thought_signature", signature)
                                         }
                                     },
                             )
