@@ -19,6 +19,7 @@ internal object ProviderSourceRegistry {
         ProviderSourceTypes.STEPFUN,
         ProviderSourceTypes.SILICONFLOW,
         ProviderSourceTypes.OPENROUTER,
+        ProviderSourceTypes.ANTIGRAVITY,
         ProviderSourceTypes.DOUBAO_SPEECH,
         ProviderSourceTypes.COMPATIBLE_SPEECH,
     )

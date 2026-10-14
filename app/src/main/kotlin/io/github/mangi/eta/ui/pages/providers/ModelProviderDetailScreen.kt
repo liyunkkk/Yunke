@@ -117,6 +117,7 @@ internal fun ModelProviderDetailScreen(
                     baseUrl = GoogleAntigravityOAuth.BASE_URL,
                     endpointMode = GoogleAntigravityOAuth.defaultEndpointMode(),
                     authMode = ProviderAuthMode.OAUTH_ANTIGRAVITY,
+                    sourceType = ProviderSourceTypes.ANTIGRAVITY,
                 )
             } else if (ProviderAuthMode.isOAuth(authMode)) {
                 CustomProviderSetting(
@@ -140,6 +141,7 @@ internal fun ModelProviderDetailScreen(
                 baseUrl = GoogleAntigravityOAuth.BASE_URL,
                 endpointMode = GoogleAntigravityOAuth.defaultEndpointMode(),
                 authMode = ProviderAuthMode.OAUTH_ANTIGRAVITY,
+                sourceType = ProviderSourceTypes.ANTIGRAVITY,
             )
             NewProviderType.Anthropic -> AnthropicProviderSetting(
                 id = "",

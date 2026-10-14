@@ -504,7 +504,7 @@
   <string name="provider_auto_vision_supported">自動：支援視覺</string>
   <string name="provider_auto_vision_unknown">自動：不支援或未知</string>
   <string name="ui_new_anthropic_db6098">新增 Anthropic</string>
-  <string name="ui_new_antigravity">新增反重力</string>
+  <string name="ui_new_antigravity">新增 Antigravity</string>
   <string name="ui_new_antigravity_summary">使用 Google 帳號登入</string>
   <string name="ui_new_doubao_speech">新增豆包語音</string>
   <string name="ui_new_doubao_speech_summary">僅用於朗讀。填寫語音控制台 API Key，不是方舟聊天 Key。</string>
