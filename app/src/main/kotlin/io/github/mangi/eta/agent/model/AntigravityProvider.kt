@@ -143,7 +143,10 @@ internal object AntigravityProvider : AgentProviderClient {
         toolCalls.values.forEach { call ->
             onEvent(ProviderEvent.BlockEnd(kind = AssistantBlockKind.TOOL_CALL, index = call.index, blockId = call.id, name = call.name, content = call.args))
         }
-        if (finish.isNullOrBlank()) finish = if (toolCalls.isNotEmpty()) "tool_calls" else "stop"
+        // 带工具调用就必须报 tool_calls：CCA 在 END_TURN 等终止态下仍可能带回
+        // functionCall，若原样报成 end_turn/stop，运行时会判 UNEXPECTED_TOOL_CALL
+        // 并丢弃整批调用（与 AnthropicMessagesProvider 的取值口径一致）。
+        finish = if (toolCalls.isNotEmpty()) "tool_calls" else finish ?: "stop"
         return JSONObject().put("role", "assistant").put("content", content.toString())
             .put("reasoning_content", reasoning.toString()).put("finish_reason", finish)
             .also { message ->
