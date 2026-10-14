@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicReference
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.asResponseBody
@@ -35,6 +36,7 @@ internal object AgentSseClient {
         onJson: (String) -> Unit = { throw AgentModelFailure.unexpectedResponse(null, "application/json", "") },
         shouldIgnoreFailure: () -> Boolean = { false },
         inspectHttpErrorBody: (String) -> Unit = {},
+        client: OkHttpClient = AgentHttpClient.modelClient,
     ) {
         runController.throwIfCancelled()
         val timingId = java.util.UUID.randomUUID().toString().take(8)
@@ -168,7 +170,7 @@ internal object AgentSseClient {
         // cancellation even while sniffing/reading JSON; no generation request is replayed.
         val callFactory = object : Call.Factory {
             override fun newCall(request: Request): Call {
-                val call = AgentHttpClient.modelClient.newCall(request)
+                val call = client.newCall(request)
                 return object : Call by call {
                     override fun enqueue(responseCallback: Callback) {
                         call.enqueue(object : Callback {

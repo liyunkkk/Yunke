@@ -99,7 +99,7 @@ internal object AntigravityProvider : AgentProviderClient {
             }
             onEvent(ProviderEvent.BlockDelta(kind, active!!.second, delta))
         }
-        AgentSseClient.collect(request, runController, onOpen = { onEvent(ProviderEvent.ResponseHeaders(it)) }, onEvent = sse@{ _, _, data ->
+        AgentSseClient.collect(request, runController, client = AgentHttpClient.antigravityClient, onOpen = { onEvent(ProviderEvent.ResponseHeaders(it)) }, onEvent = sse@{ _, _, data ->
             val payload = data.trim()
             if (payload.isBlank() || payload == "[DONE]") return@sse
             saw = true
