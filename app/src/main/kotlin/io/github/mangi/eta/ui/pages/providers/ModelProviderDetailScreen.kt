@@ -314,7 +314,10 @@ private fun ProviderConfigTab(
                             providerId = provider.id,
                             signedIn = draft.apiKey.isNotBlank(),
                             enabled = !isWorking,
-                            antigravity = GoogleAntigravityOAuth.usesBackend(draft),
+                            // draft 是 ProviderConfigDraft 而非 ProviderSetting，按同一判据就地判断：
+                            // 认证方式已声明反重力，或 Base URL 指向 cloudcode-pa。
+                            antigravity = ProviderAuthMode.isAntigravity(draft.authMode) ||
+                                GoogleAntigravityOAuth.isAntigravityEndpoint(draft.baseUrl),
                             onToken = { token -> onDraftChange(draft.copy(apiKey = token)) },
                             onBusy = { isWorking = it },
                             onStatus = { status = it },
