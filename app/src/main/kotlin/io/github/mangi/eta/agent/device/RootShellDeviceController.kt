@@ -179,11 +179,10 @@ internal class RootShellDeviceController(
                 "coordinate_contract",
                 if (coordinateSpace == null) {
                     JSONObject()
-                        .put("default_coordinate_space", "screen")
-                        .put("note", "未附加截图，坐标工具使用真实设备屏幕坐标")
+                        .put("note", "坐标工具必须显式填写 coordinate_space：ui_nodes 的 center/bounds 用 screen；本次未附图")
                 } else {
                     JSONObject()
-                        .put("default_coordinate_space", "screenshot")
+                        .put("recommended_coordinate_space", "normalized")
                         .put(
                             "screenshot",
                             JSONObject()

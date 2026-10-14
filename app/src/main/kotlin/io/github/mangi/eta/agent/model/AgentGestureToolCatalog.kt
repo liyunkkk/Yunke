@@ -10,7 +10,7 @@ internal object AgentGestureToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "tap",
-                    description = "点击坐标。默认使用最近一次 observe_screen 截图里的像素坐标；如果坐标来自 ui_nodes 的 center，请设置 coordinate_space=screen。",
+                    description = "点击坐标。能用节点时优先 tap_element；看截图定位时用 coordinate_space=normalized（0–999），坐标来自 ui_nodes 时用 screen。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -20,7 +20,7 @@ internal object AgentGestureToolCatalog {
                                 .put("y", JSONObject().put("type", "integer"))
                                 .put("coordinate_space", AgentToolSchema.coordinateSpace())
                         )
-                        .put("required", JSONArray().put("x").put("y"))
+                        .put("required", JSONArray().put("x").put("y").put("coordinate_space"))
                 )
             )
             .put(
@@ -85,7 +85,7 @@ internal object AgentGestureToolCatalog {
                                 )
                                 .put("coordinate_space", AgentToolSchema.coordinateSpace())
                         )
-                        .put("required", JSONArray().put("x").put("y"))
+                        .put("required", JSONArray().put("x").put("y").put("coordinate_space"))
                 )
             )
             .put(

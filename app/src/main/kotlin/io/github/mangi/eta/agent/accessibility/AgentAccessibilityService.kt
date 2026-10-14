@@ -806,7 +806,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             return@runNodeActionOnMainSync error
         }
         val plan = TextEditPlanner.insertAtSelection(
-            currentText = node.text?.toString().orEmpty(),
+            currentText = node.realText(),
             insertedText = text,
             selectionStart = node.textSelectionStart,
             selectionEnd = node.textSelectionEnd,
@@ -854,7 +854,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             return@runNodeActionOnMainSync error
         }
         val plan = TextEditPlanner.insertAtSelection(
-            currentText = node.text?.toString().orEmpty(),
+            currentText = node.realText(),
             insertedText = text,
             selectionStart = node.textSelectionStart,
             selectionEnd = node.textSelectionEnd,
@@ -1275,6 +1275,13 @@ open class AgentAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * 输入框的真实内容。空框显示提示文字时 text 返回的是提示语，若当作已有内容，
+     * 追加输入会把提示拼进结果，清空后读回校验也会误报失败。（移植上游 c6283e59）
+     */
+    private fun AccessibilityNodeInfo.realText(): String =
+        if (isShowingHintText) "" else text?.toString().orEmpty()
+
     private fun setNodeText(
         node: AccessibilityNodeInfo,
         text: String,
@@ -1293,7 +1300,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         }
         val refreshed = runCatching { node.refresh() }.getOrDefault(false)
         // 空输入框的 node.text 为 null；按空字符串比较，否则 clear_text 永远只能报 OUTCOME_UNKNOWN。
-        val actualText = node.text?.toString().orEmpty()
+        val actualText = node.realText()
         if (!node.isPassword && (!refreshed || actualText != text)) {
             return NodeActionResult.outcomeUnknown()
         }
@@ -1547,7 +1554,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     append('|')
                     append(node.viewIdResourceName.orEmpty())
                     append('|')
-                    append(node.text?.toString().orEmpty().take(80))
+                    append(node.realText().take(80))
                     append('|')
                     append(node.contentDescription?.toString().orEmpty().take(80))
                 }
@@ -1748,7 +1755,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             if (depth > 0 && !visible) return
 
             val bounds = node.bounds()
-            val text = node.text?.toString().orEmpty().take(120)
+            val text = node.realText().take(120)
             val desc = node.contentDescription?.toString().orEmpty().take(120)
             val clickable = node.isClickable
             val longClickable = node.isLongClickable
@@ -2291,7 +2298,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 packageName = node.packageName?.toString().orEmpty(),
                 className = node.className?.toString().orEmpty(),
                 viewId = node.viewIdResourceName.orEmpty(),
-                text = node.text?.toString().orEmpty().take(120),
+                text = node.realText().take(120),
                 description = node.contentDescription?.toString().orEmpty().take(120),
                 password = node.isPassword,
             )
@@ -2315,7 +2322,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     packageName = node.packageName?.toString().orEmpty(),
                     className = node.className?.toString().orEmpty(),
                     viewId = node.viewIdResourceName.orEmpty(),
-                    text = node.text?.toString().orEmpty().take(120),
+                    text = node.realText().take(120),
                     description = node.contentDescription?.toString().orEmpty().take(120),
                     password = node.isPassword,
                 ),
