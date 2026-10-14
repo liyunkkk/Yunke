@@ -26,6 +26,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -50,6 +51,7 @@ import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.ui.app.AgentQuestionProjection
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
+import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
 import io.github.mangi.eta.ui.components.ConversationSubAgentEditor
 import io.github.mangi.eta.ui.components.LocalConversationSubAgentEditor
 import io.github.mangi.eta.agent.runtime.AgentEvent
@@ -386,7 +388,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 val panelSubAgentEditor = remember(uiState.conversationId) {
                     uiState.conversationId?.takeIf(String::isNotBlank)?.let { id ->
                         ConversationSubAgentEditor(
-                            io.github.mangi.eta.data.model.SubAgentConfigKey.Conversation(id),
+                            SubAgentConfigKey.Conversation(id),
                             ConversationSubAgentPreferences(),
                         ) { false }
                     }
