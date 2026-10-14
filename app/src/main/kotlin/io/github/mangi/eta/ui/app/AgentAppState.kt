@@ -3466,6 +3466,7 @@ internal class AgentAppState(
                         content = content,
                         isError = !result.ok,
                         source = AgentNotificationTrampolineActivity.SOURCE_MAIN,
+                        conversationKey = conversationId,
                     )
                 }
             }

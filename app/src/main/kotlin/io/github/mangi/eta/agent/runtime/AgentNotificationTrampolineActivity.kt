@@ -21,11 +21,21 @@ class AgentNotificationTrampolineActivity : Activity() {
             // 劫持进语音浮窗；浮窗在没有 activeRunId 时会清空上下文并直接进入语音录音态，
             // 表现就是"点完成通知跳到了语音态，而不是任务界面"。
             // 从浮窗发起的任务已经会带 SOURCE_OVERLAY，无需再靠 Service 存活与否来兜底。
+            val conversationKey = intent
+                .getStringExtra(EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY)
+                ?.takeIf(String::isNotBlank)
+            val entryMode = intent.getStringExtra(EtaAssistantOverlayService.EXTRA_ENTRY_MODE)
             if (source == SOURCE_OVERLAY) {
-                EtaAssistantOverlayService.show(this)
+                // 浮窗发起的任务：回到浮窗，并沿用发起时的入口态（语音态 / 输入态）。
+                EtaAssistantOverlayService.show(this, entryMode)
             } else {
                 val mainIntent = Intent(this, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    // 用与浮窗交回主界面相同的 action 与会话键，MainActivity 才能定位到那一次会话。
+                    if (conversationKey != null) {
+                        action = EtaAssistantOverlayService.ACTION_OPEN_CONVERSATION
+                        putExtra(EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY, conversationKey)
+                    }
                 }
                 startActivity(mainIntent)
             }
