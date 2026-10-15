@@ -26,6 +26,7 @@ import kotlinx.serialization.json.contentOrNull
 import okio.Buffer
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -50,8 +51,10 @@ internal object ProviderBalanceFetcher {
     private val json = Json { ignoreUnknownKeys = true }
     private val binaryExpr = Regex("""^(.+?)\s+([+\-*/])\s+(.+)$""")
 
-    private val balanceClient: OkHttpClient by lazy {
+    internal val balanceClient: OkHttpClient by lazy {
         AgentHttpClient.client.newBuilder()
+            // 连接配置沿用共享客户端；调度队列独立，避免余额查询排在模型请求后面。
+            .dispatcher(Dispatcher())
             .callTimeout(TOTAL_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .build()
     }

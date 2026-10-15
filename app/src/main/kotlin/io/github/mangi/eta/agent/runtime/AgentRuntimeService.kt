@@ -88,6 +88,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private val stopWorker = AgentRuntimeStopWorker { failure ->
         AndroidAgentLogger.warn("Runtime stop failed: type=${failure.safeLogType()}")
     }
+    // 结果的落库与清理不再占用主线程：大结果集在主线程做整表替换会直接卡住界面。
+    private val resultWorker = AgentRuntimeResultWorker { failure ->
+        AndroidAgentLogger.warnThrottled("runtime_result_work_failed") {
+            "Agent runtime result work failed: type=${failure.safeLogType()}"
+        }
+    }
     @Volatile private var destroyed = false
     private val pendingStartRequests = linkedMapOf<String, PendingStartRequest>()
     // Keep the originating identity and frozen mode even after terminal registry removal.
@@ -170,6 +176,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         // Losing the presentation/service is not consent to stop children. Keep their snapshots
         // and pending choices; a replacement service must not receive a deferred global stop.
         destroyed = true
+        resultWorker.close()
         val retiring = sessions.snapshot()
         retiring.forEach { it.signalStop() }
         // Service destruction also runs on Main. Drain accepted stop work independently of
@@ -264,8 +271,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
                 AgentRuntimeWire.MSG_ACK_RESULT -> {
                     val runId = AgentRuntimeWire.runIdFromBundle(msg.data ?: return)
-                    AgentRuntimeResultStore.remove(this@AgentRuntimeService, runId)
-                    releaseResultTranscript(runId)
+                    resultWorker.submit {
+                        AgentRuntimeResultStore.remove(applicationContext, runId)
+                        releaseResultTranscript(runId)
+                    }
                 }
 
                 AgentRuntimeWire.MSG_DRAIN_RESULTS -> {
@@ -856,16 +865,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun sendDrainedResults(replyTo: Messenger?) {
-        runCatching {
+        if (replyTo == null) return
+        resultWorker.submit {
+            if (destroyed) return@submit
+            val results = AgentRuntimeResultStore.list(applicationContext)
+            if (destroyed) return@submit
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_DRAIN_RESULTS_RESPONSE)
-            msg.data = AgentRuntimeWire.completedRunsToBundle(
-                AgentRuntimeResultStore.list(this)
-            )
-            replyTo?.send(msg)
-        }.onFailure { throwable ->
-            AndroidAgentLogger.warnThrottled("runtime_drain_results_failed") {
-                "Agent runtime drain results failed: type=${throwable.safeLogType()}"
-            }
+            msg.data = AgentRuntimeWire.completedRunsToBundle(results)
+            replyTo.send(msg)
         }
     }
 

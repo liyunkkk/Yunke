@@ -35,7 +35,16 @@ internal object AgentHttpClient {
             .build()
     }
 
-    val modelClient: OkHttpClient by lazy { client }
+    val modelClient: OkHttpClient by lazy {
+        client.newBuilder()
+            .dispatcher(
+                okhttp3.Dispatcher().apply {
+                    // 保留模型总预算，不额外引入"每主机 5 并发"的瓶颈。
+                    maxRequestsPerHost = client.dispatcher.maxRequests
+                },
+            )
+            .build()
+    }
 
     /**
      * Antigravity / Cloud Code Assist 专用：强制 HTTP/1.1 单连接。
