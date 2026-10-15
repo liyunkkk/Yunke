@@ -96,6 +96,8 @@ internal fun ModelProviderListScreen(
     val scope = rememberCoroutineScope()
     // These factories create cold mapped flows; recollecting on each emission/search edit
     // needlessly repeats the database/model mapping during the page's first frames.
+    // 进入列表时读一次头像表，拖动/选择等交互不重复读。
+    LaunchedEffect(Unit) { io.github.mangi.eta.data.provider.ProviderLogoStore.refresh(context) }
     val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
     val storedProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }.collectAsState(initial = null)
     val selectedProviderId = currentProviderId?.takeIf { it.isNotBlank() } ?: storedProviderId
