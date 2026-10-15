@@ -8,6 +8,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,16 +24,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
@@ -40,6 +49,8 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.ui.unit.dp
 import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
@@ -110,6 +121,12 @@ internal fun ModelProviderListScreen(
     val selectableProviders = remember(filteredProviders) {
         filteredProviders.filterNot(ProviderSetting::isBuiltIn)
     }
+
+    // 拖动重排状态：只记当前拖动项与位移，落位后写回 sort_order。
+    var dragIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    var rowHeightPx by remember { mutableFloatStateOf(0f) }
+    val reorderScope = rememberCoroutineScope()
 
     LaunchedEffect(selectionMode, selectedProviderIds, providers) {
         if (!selectionMode) return@LaunchedEffect
@@ -284,34 +301,94 @@ internal fun ModelProviderListScreen(
                                 )
                             }
                         } else {
-                            filteredProviders.forEach { provider ->
-                                ProviderListItem(
-                                    provider = provider,
-                                    isCurrent = provider.id == selectedProviderId,
-                                    selectionMode = selectionMode,
-                                    checked = provider.id in selectedProviderIds,
-                                    onOpen = {
-                                        TouchHaptics.click(view)
-                                        onNavigate(AppRoute.ModelProviderDetail(provider.id))
-                                    },
-                                    onToggleChecked = {
-                                        TouchHaptics.click(view)
-                                        if (!provider.isBuiltIn) {
-                                            selectedProviderIds = if (provider.id in selectedProviderIds) {
-                                                selectedProviderIds - provider.id
-                                            } else {
-                                                selectedProviderIds + provider.id
+                            val dragging = dragIndex
+                            val dragTarget = dragging?.let { from ->
+                                if (rowHeightPx <= 0f) from else {
+                                    (from + dragOffsetY / rowHeightPx).roundToInt()
+                                        .coerceIn(0, filteredProviders.lastIndex)
+                                }
+                            }
+                            filteredProviders.forEachIndexed { index, provider ->
+                                val shift = when {
+                                    dragging == null -> 0f
+                                    index == dragging -> dragOffsetY
+                                    dragging < index && dragTarget != null && index <= dragTarget -> -rowHeightPx
+                                    dragging > index && dragTarget != null && index >= dragTarget -> rowHeightPx
+                                    else -> 0f
+                                }
+                                val isDragged = index == dragging
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .zIndex(if (isDragged) 1f else 0f)
+                                        .graphicsLayer { translationY = shift }
+                                        .alpha(if (isDragged) 0.92f else 1f)
+                                        .onSizeChanged { size -> if (rowHeightPx <= 0f) rowHeightPx = size.height.toFloat() },
+                                ) {
+                                    ProviderListItem(
+                                        provider = provider,
+                                        isCurrent = provider.id == selectedProviderId,
+                                        selectionMode = selectionMode,
+                                        checked = provider.id in selectedProviderIds,
+                                        onOpen = {
+                                            TouchHaptics.click(view)
+                                            onNavigate(AppRoute.ModelProviderDetail(provider.id))
+                                        },
+                                        onToggleChecked = {
+                                            TouchHaptics.click(view)
+                                            if (!provider.isBuiltIn) {
+                                                selectedProviderIds = if (provider.id in selectedProviderIds) {
+                                                    selectedProviderIds - provider.id
+                                                } else {
+                                                    selectedProviderIds + provider.id
+                                                }
                                             }
-                                        }
-                                    },
-                                    onEnterSelection = {
-                                        TouchHaptics.longPress(view)
-                                        if (!provider.isBuiltIn) {
-                                            selectionMode = true
-                                            selectedProviderIds = setOf(provider.id)
-                                        }
-                                    },
-                                )
+                                        },
+                                        onEnterSelection = {
+                                            TouchHaptics.longPress(view)
+                                            if (!provider.isBuiltIn) {
+                                                selectionMode = true
+                                                selectedProviderIds = setOf(provider.id)
+                                            }
+                                        },
+                                        dragHandleModifier = if (selectionMode) Modifier else Modifier
+                                            .pointerInput(filteredProviders.map { it.id }) {
+                                                detectDragGesturesAfterLongPress(
+                                                    onDragStart = {
+                                                        dragIndex = index
+                                                        dragOffsetY = 0f
+                                                        TouchHaptics.longPress(view)
+                                                    },
+                                                    onDrag = { change, amount ->
+                                                        change.consume()
+                                                        dragOffsetY += amount.y
+                                                    },
+                                                    onDragEnd = {
+                                                        val from = dragIndex
+                                                        dragIndex = null
+                                                        val drop = dragOffsetY
+                                                        dragOffsetY = 0f
+                                                        if (from != null && rowHeightPx > 0f) {
+                                                            val to = (from + drop / rowHeightPx).roundToInt()
+                                                                .coerceIn(0, filteredProviders.lastIndex)
+                                                            if (to != from) {
+                                                                val ids = filteredProviders.map { it.id }.toMutableList()
+                                                                val moved = ids.removeAt(from)
+                                                                ids.add(to, moved)
+                                                                reorderScope.launch {
+                                                                    ProviderRepository.reorderProviders(ids)
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    onDragCancel = {
+                                                        dragIndex = null
+                                                        dragOffsetY = 0f
+                                                    },
+                                                )
+                                            },
+                                    )
+                                }
                             }
                         }
                     }
@@ -443,6 +520,7 @@ private fun ProviderListItem(
     onOpen: () -> Unit,
     onToggleChecked: () -> Unit,
     onEnterSelection: () -> Unit,
+    dragHandleModifier: Modifier = Modifier,
 ) {
     val selectable = !provider.isBuiltIn
     val opacity = if (provider.isEnabled) 1f else 0.6f
@@ -501,6 +579,22 @@ private fun ProviderListItem(
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                     modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+        if (!selectionMode) {
+            // 拖动手柄：长按行本身是多选入口，所以重排走这个手柄，两者不冲突。
+            Box(
+                modifier = dragHandleModifier
+                    .padding(start = 8.dp)
+                    .size(24.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Menu,
+                    contentDescription = stringResource(R.string.ui_reorder_handle),
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
