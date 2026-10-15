@@ -203,6 +203,7 @@ internal fun ModelProviderDetailScreen(
     ) {
         mutableStateOf(ProviderConfigDraft.from(initial))
     }
+    LaunchedEffect(Unit) { io.github.mangi.eta.data.provider.ProviderLogoStore.refresh(context) }
     val title = if (isNew) context.getString(R.string.page_create_new_provider_36cab9) else initial.name
 
     MiuixScaffold(title = title, onBack = onBack) { paddingValues, scrollBehavior, sidePadding ->
@@ -471,6 +472,18 @@ private fun ProviderConfigTab(
             onExpandedChange = { bodiesExpanded = it },
             onBodiesChange = { onDraftChange(draft.copy(bodies = it)) },
         )
+
+        item(key = "avatar") {
+            ProviderSection(title = stringResource(R.string.ui_provider_avatar)) {
+                ProviderAvatarPreference(
+                    providerId = draft.id,
+                    current = io.github.mangi.eta.data.provider.ProviderLogoStore.valueOf(draft.id),
+                    onPick = { value ->
+                        io.github.mangi.eta.data.provider.ProviderLogoStore.set(context, draft.id, value)
+                    },
+                )
+            }
+        }
 
         item(key = "preferences_and_prompt") {
             ProviderSection(title = stringResource(R.string.ui_preferences_and_strategies_2abd3c)) {

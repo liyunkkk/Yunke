@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.pages.providers
 
 import androidx.annotation.DrawableRes
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
@@ -57,6 +59,25 @@ internal fun ProviderBrandIcon(
 }
 
 @Composable
+/** 自定义头像：读本地文件，不引入图片库。 */
+@Composable
+private fun ProviderFileImage(path: String, modifier: Modifier = Modifier) {
+    val bitmap = remember(path) {
+        runCatching { android.graphics.BitmapFactory.decodeFile(path) }.getOrNull()
+    }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = modifier
+                .padding(end = 6.dp)
+                .size(24.dp)
+                .clip(CircleShape),
+        )
+    }
+}
+
 private fun ProviderBrandImage(
     @DrawableRes logo: Int,
     modifier: Modifier = Modifier,
@@ -86,6 +107,21 @@ internal fun ProviderIcon(
     provider: ProviderSetting,
     modifier: Modifier = Modifier,
 ) {
+    // 用户自选头像优先：内置（builtin:<slug>）或自定义图片（file:<路径>）。
+    val custom = io.github.mangi.eta.data.provider.ProviderLogoStore.valueOf(provider.id)
+    when {
+        custom.startsWith("builtin:") -> {
+            io.github.mangi.eta.data.provider.ProviderLogoStore
+                .builtinRes(custom.removePrefix("builtin:"))?.let { res ->
+                    ProviderBrandImage(logo = res, modifier = modifier)
+                    return
+                }
+        }
+        custom.startsWith("file:") -> {
+            ProviderFileImage(path = custom.removePrefix("file:"), modifier = modifier)
+            return
+        }
+    }
     val logo = providerBrandLogoRes(provider)
     if (logo != null) {
         ProviderBrandImage(logo = logo, modifier = modifier)

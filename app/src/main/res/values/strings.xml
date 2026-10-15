@@ -1631,4 +1631,8 @@
     <string name="markdown_alert_caution">Caution</string>
     <string name="provider_oauth_renderer_gone">The login page renderer exited. Please start sign-in again.</string>
     <string name="ui_reorder_handle">Reorder</string>
+    <string name="ui_provider_avatar">Provider avatar</string>
+    <string name="ui_provider_avatar_summary">Choose a built-in avatar or pick an image</string>
+    <string name="ui_provider_avatar_custom">Pick image</string>
+    <string name="ui_provider_avatar_default">Reset to default</string>
 </resources>

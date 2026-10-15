@@ -1592,4 +1592,8 @@
   <string name="whale_maid_satiety_stuffed">吃得有點撐了</string>
     <string name="provider_oauth_renderer_gone">登入網頁已關閉，請重新發起登入。</string>
     <string name="ui_reorder_handle">拖動排序</string>
+    <string name="ui_provider_avatar">供應商頭像</string>
+    <string name="ui_provider_avatar_summary">選擇內建頭像，或從相冊選一張</string>
+    <string name="ui_provider_avatar_custom">從相冊選擇</string>
+    <string name="ui_provider_avatar_default">恢復預設</string>
 </resources>
