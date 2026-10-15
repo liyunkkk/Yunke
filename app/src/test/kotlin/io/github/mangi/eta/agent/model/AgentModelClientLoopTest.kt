@@ -701,7 +701,6 @@ class AgentModelClientLoopTest {
     }
 
     @Test
-    @Test
     fun refusalEndsRunWithoutReplayingPartialAssistantOrExecutingTools() {
         listOf("content_filter", "refusal").forEach { finishReason ->
             val provider = ScriptedProvider(
