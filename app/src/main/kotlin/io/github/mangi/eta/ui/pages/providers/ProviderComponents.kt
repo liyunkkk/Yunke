@@ -58,7 +58,6 @@ internal fun ProviderBrandIcon(
     ProviderBrandImage(logo = logo, modifier = modifier)
 }
 
-@Composable
 /** 自定义头像：读本地文件，不引入图片库。 */
 @Composable
 private fun ProviderFileImage(path: String, modifier: Modifier = Modifier) {
