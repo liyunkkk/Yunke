@@ -88,7 +88,7 @@ internal object ProviderRepository {
      */
     suspend fun reorderProviders(orderedIds: List<String>) {
         orderedIds.forEachIndexed { index, id ->
-            dao.updateProviderSortOrder(id, index)
+            dao().updateProviderSortOrder(id, index)
         }
     }
 

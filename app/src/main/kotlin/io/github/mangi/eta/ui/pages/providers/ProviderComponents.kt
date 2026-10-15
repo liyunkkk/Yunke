@@ -77,6 +77,7 @@ private fun ProviderFileImage(path: String, modifier: Modifier = Modifier) {
     }
 }
 
+@Composable
 private fun ProviderBrandImage(
     @DrawableRes logo: Int,
     modifier: Modifier = Modifier,

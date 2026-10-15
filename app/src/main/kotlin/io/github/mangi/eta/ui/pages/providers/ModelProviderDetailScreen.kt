@@ -476,10 +476,10 @@ private fun ProviderConfigTab(
         item(key = "avatar") {
             ProviderSection(title = stringResource(R.string.ui_provider_avatar)) {
                 ProviderAvatarPreference(
-                    providerId = initial.id,
-                    current = io.github.mangi.eta.data.provider.ProviderLogoStore.valueOf(draft.id),
+                    providerId = provider.id,
+                    current = io.github.mangi.eta.data.provider.ProviderLogoStore.valueOf(provider.id),
                     onPick = { value ->
-                        io.github.mangi.eta.data.provider.ProviderLogoStore.set(context, initial.id, value)
+                        io.github.mangi.eta.data.provider.ProviderLogoStore.set(context, provider.id, value)
                     },
                 )
             }
