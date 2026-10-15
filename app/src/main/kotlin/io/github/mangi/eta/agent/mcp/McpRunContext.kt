@@ -41,7 +41,7 @@ internal class McpRunSnapshot(
                         JSONObject()
                             .put("name", tool.modelName)
                             .put("description", description)
-                            .put("parameters", JSONObject(tool.definition.inputSchemaJson)),
+                            .put("parameters", normalizeToolParameters(tool.definition.inputSchemaJson)),
                     ),
             )
         }
@@ -73,7 +73,7 @@ internal class McpRunSnapshot(
                                     JSONObject()
                                         .put("name", modelToolName(server.id, tool.name))
                                         .put("description", description)
-                                        .put("parameters", JSONObject(tool.inputSchemaJson)),
+                                        .put("parameters", normalizeToolParameters(tool.inputSchemaJson)),
                                 ),
                         )
                         count++
@@ -323,4 +323,29 @@ internal class RoutingToolExecutor(
         runCatching { mcp.close() }
         (local as? AutoCloseable)?.let { runCatching { it.close() } }
     }
+}
+
+/**
+ * 把 MCP 提供的参数 schema 规整成标准 JSON Schema。
+ *
+ * 部分 MCP（例如清风）内部写法不一致：有的工具给
+ * `{"type":"object","properties":{...}}`，有的却把字段直接平铺成
+ * `{"action":{...},"apk_path":{...}}`。Gemini/CCA 侧遇到后者会报
+ * `Unknown name "action" at ...parameters` 并**拒掉整个请求**，
+ * 表现为对话一直报 400。这里统一补上包装。
+ */
+private fun normalizeToolParameters(raw: String): JSONObject {
+    val parsed = runCatching { JSONObject(raw) }.getOrNull()
+        ?: return JSONObject().put("type", "object")
+    // 已是标准 JSON Schema（含类型或组合子）就原样使用
+    if (parsed.has("type") || parsed.has("properties") ||
+        parsed.has("anyOf") || parsed.has("oneOf") || parsed.has("allOf")
+    ) {
+        return parsed
+    }
+    if (parsed.length() == 0) return JSONObject().put("type", "object")
+    // 平铺形态：每个键都是字段定义，包进 properties
+    val properties = JSONObject()
+    parsed.keys().forEach { key -> properties.put(key, parsed.get(key)) }
+    return JSONObject().put("type", "object").put("properties", properties)
 }
