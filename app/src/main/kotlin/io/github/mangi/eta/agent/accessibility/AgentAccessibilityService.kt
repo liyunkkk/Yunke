@@ -47,16 +47,16 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import org.json.JSONObject
 
-open /**
+/**
  * 输入框的真实内容。空框显示提示文字时 text 返回的是提示语，若当作已有内容，
  * 追加输入会把提示拼进结果，清空后读回校验也会误报失败。（移植上游 c6283e59）
  *
- * 必须放在文件级：嵌套的非 inner 类里拿不到外层类作扩展接收者。
+ * 放在文件级：嵌套的非 inner 类里拿不到外层类作扩展接收者。
  */
 private fun AccessibilityNodeInfo.realText(): String =
     if (isShowingHintText) "" else text?.toString().orEmpty()
 
-class AgentAccessibilityService : AccessibilityService() {
+open class AgentAccessibilityService : AccessibilityService() {
 
     private data class ScreenshotWindow(
         val id: Int,
