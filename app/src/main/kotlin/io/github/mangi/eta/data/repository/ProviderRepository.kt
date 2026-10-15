@@ -82,6 +82,16 @@ internal object ProviderRepository {
         )
     }
 
+    /**
+     * 按给定 id 顺序写回 sort_order。列表查询本就 ORDER BY sort_order ASC，
+     * 所以这里只需把顺序落库，重启后即保持。
+     */
+    suspend fun reorderProviders(orderedIds: List<String>) {
+        orderedIds.forEachIndexed { index, id ->
+            dao.updateProviderSortOrder(id, index)
+        }
+    }
+
     suspend fun deleteProvider(id: String) {
         val provider = providerById(id) ?: return
         if (provider.isBuiltIn) return

@@ -18,6 +18,9 @@ internal interface ProviderDao {
     @Query("SELECT * FROM model_providers ORDER BY sort_order ASC")
     suspend fun providers(): List<ProviderWithModels>
 
+    @Query("UPDATE model_providers SET sort_order = :order WHERE id = :id")
+    suspend fun updateProviderSortOrder(id: String, order: Int)
+
     @Query("DELETE FROM provider_models")
     suspend fun deleteAllModels()
 
