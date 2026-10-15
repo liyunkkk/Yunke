@@ -8,7 +8,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -354,7 +354,9 @@ internal fun ModelProviderListScreen(
                                         },
                                         dragHandleModifier = if (selectionMode) Modifier else Modifier
                                             .pointerInput(filteredProviders.map { it.id }) {
-                                                detectDragGesturesAfterLongPress(
+                                                // 外层行的 combinedClickable 已占用长按（进入多选），
+                                                // 所以手柄用即时拖动，不能再用 AfterLongPress。
+                                                detectDragGestures(
                                                     onDragStart = {
                                                         dragIndex = index
                                                         dragOffsetY = 0f
@@ -588,7 +590,7 @@ private fun ProviderListItem(
             Box(
                 modifier = dragHandleModifier
                     .padding(start = 8.dp)
-                    .size(24.dp),
+                    .size(40.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(

@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +43,9 @@ internal fun ProviderAvatarPreference(
 ) {
     val context = LocalContext.current
     var showPicker by remember { mutableStateOf(false) }
+    // 订阅头像表：选完立刻在行内看到预览，不必返回列表确认。
+    val logos by ProviderLogoStore.logos().collectAsState()
+    val applied = logos[providerId].orEmpty()
 
     val imageLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
@@ -58,7 +63,8 @@ internal fun ProviderAvatarPreference(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        ProviderAvatarPreview(providerId = providerId, value = applied)
+        Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
             Text(
                 text = stringResource(R.string.ui_provider_avatar),
                 style = MiuixTheme.textStyles.headline1,
@@ -135,6 +141,43 @@ internal fun ProviderAvatarPreference(
                             onPick("")
                             showPicker = false
                         },
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+/** 头像预览：内置走资源，自定义走本地文件，空值退回默认图标。 */
+@Composable
+private fun ProviderAvatarPreview(providerId: String, value: String) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            value.startsWith("builtin:") ->
+                ProviderLogoStore.builtinRes(value.removePrefix("builtin:"))?.let { res ->
+                    Image(
+                        painter = painterResource(res),
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp).clip(CircleShape),
+                    )
+                }
+            value.startsWith("file:") -> {
+                val bitmap = remember(value) {
+                    runCatching {
+                        android.graphics.BitmapFactory.decodeFile(value.removePrefix("file:"))
+                    }.getOrNull()
+                }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp).clip(CircleShape),
                     )
                 }
             }

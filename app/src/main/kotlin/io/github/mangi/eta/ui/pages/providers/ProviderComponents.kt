@@ -2,6 +2,8 @@ package io.github.mangi.eta.ui.pages.providers
 
 import androidx.annotation.DrawableRes
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -108,7 +110,9 @@ internal fun ProviderIcon(
     modifier: Modifier = Modifier,
 ) {
     // 用户自选头像优先：内置（builtin:<slug>）或自定义图片（file:<路径>）。
-    val custom = io.github.mangi.eta.data.provider.ProviderLogoStore.valueOf(provider.id)
+    // 必须订阅状态流：一次性读取不会在选完头像后触发重组。
+    val logos by io.github.mangi.eta.data.provider.ProviderLogoStore.logos().collectAsState()
+    val custom = logos[provider.id].orEmpty()
     when {
         custom.startsWith("builtin:") -> {
             io.github.mangi.eta.data.provider.ProviderLogoStore
