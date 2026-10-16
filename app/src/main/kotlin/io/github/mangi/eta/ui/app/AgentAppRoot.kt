@@ -364,7 +364,11 @@ fun AgentAppRoot(
         val conversationKey = assistantConversationKey ?: return@LaunchedEffect
         val opened = agentState.openAssistantConversation(conversationKey)
         if (opened) {
-            navigator.replace(AppRoute.Chat)
+            // 用 popToHome 而不是 replace(Chat)：replace 会把整个导航栈换成一个孤立的
+            // Chat 页，冷启动（点完成通知/点图标）时栈里只剩这一页——没有抽屉、返回键
+            // 出不去、退出后也回不到本体。popToHome 收敛回 Home，会话仍由上面
+            // openAssistantConversation 选中，展示效果一致但导航是完整的。
+            navigator.popToHome()
         }
         onAssistantConversationOpened(opened)
     }
