@@ -337,15 +337,44 @@ internal class RoutingToolExecutor(
 private fun normalizeToolParameters(raw: String): JSONObject {
     val parsed = runCatching { JSONObject(raw) }.getOrNull()
         ?: return JSONObject().put("type", "object")
-    // 已是标准 JSON Schema（含类型或组合子）就原样使用
-    if (parsed.has("type") || parsed.has("properties") ||
+    val schema = if (parsed.has("type") || parsed.has("properties") ||
         parsed.has("anyOf") || parsed.has("oneOf") || parsed.has("allOf")
     ) {
-        return parsed
+        parsed
+    } else if (parsed.length() == 0) {
+        JSONObject().put("type", "object")
+    } else {
+        // 平铺形态：每个键都是字段定义，包进 properties
+        val properties = JSONObject()
+        parsed.keys().forEach { key -> properties.put(key, parsed.get(key)) }
+        JSONObject().put("type", "object").put("properties", properties)
     }
-    if (parsed.length() == 0) return JSONObject().put("type", "object")
-    // 平铺形态：每个键都是字段定义，包进 properties
-    val properties = JSONObject()
-    parsed.keys().forEach { key -> properties.put(key, parsed.get(key)) }
-    return JSONObject().put("type", "object").put("properties", properties)
+    return fillMissingArrayItems(schema)
+}
+
+/**
+ * Gemini 侧要求每个 array 都必须带 items，否则整条请求 400：
+ *   ...function_declarations[N].parameters.properties[args].items: missing field.
+ * 部分 MCP（例如清风的 emulate_call / unidbg_batch）只写 type=array 而不写 items。
+ * 这里递归补上；类型未知时按 string 处理，描述里本来就是"integer/string 混合数组"。
+ */
+private fun fillMissingArrayItems(node: JSONObject): JSONObject {
+    if (node.optString("type") == "array") {
+        val items = node.optJSONObject("items")
+        if (items == null || items.length() == 0 || items.optString("type").isBlank()) {
+            node.put("items", JSONObject().put("type", "string"))
+        }
+    }
+    node.optJSONObject("items")?.let { fillMissingArrayItems(it) }
+    node.optJSONObject("properties")?.let { props ->
+        props.keys().forEach { key -> props.optJSONObject(key)?.let { fillMissingArrayItems(it) } }
+    }
+    for (comb in listOf("anyOf", "oneOf", "allOf")) {
+        node.optJSONArray(comb)?.let { arr ->
+            for (index in 0 until arr.length()) {
+                arr.optJSONObject(index)?.let { fillMissingArrayItems(it) }
+            }
+        }
+    }
+    return node
 }
