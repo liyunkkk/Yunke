@@ -263,9 +263,7 @@ internal object AntigravityRequestBuilder {
     }
 
     private val DROPPED_SCHEMA_KEYS = setOf(
-        // CLIProxy 同样会移除这两个：Antigravity 不接受 nullable/title。
         "nullable",
-        "title",
         "uniqueItems",
         "additionalProperties",
         "additional_properties",
