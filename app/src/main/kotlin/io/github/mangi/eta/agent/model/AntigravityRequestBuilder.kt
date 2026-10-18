@@ -195,6 +195,8 @@ internal object AntigravityRequestBuilder {
     private fun sanitizeObject(source: JSONObject): JSONObject {
         val result = JSONObject()
         val rawRequired = source.optJSONArray("required")
+        // 属性上写成 "required": true 的（非标准 JSON Schema），剥离并提升到父级 required。
+        val promotedRequired = linkedSetOf<String>()
         source.keys().forEach { key ->
             if (key in DROPPED_SCHEMA_KEYS) return@forEach
             // required 单独处理：见下方悬空名字裁剪。
@@ -203,16 +205,31 @@ internal object AntigravityRequestBuilder {
             // 丢掉会让该参数对模型不可见，且 required 里的名字随即变成悬空。
             if (key == "properties") {
                 val properties = source.optJSONObject(key)
-                result.put(
-                    key,
-                    if (properties == null) sanitizeSchema(source.opt(key)) else sanitizeProperties(properties),
-                )
+                val cleaned = if (properties == null) sanitizeSchema(source.opt(key)) else sanitizeProperties(properties)
+                result.put(key, cleaned)
+                (cleaned as? JSONObject)?.let { map ->
+                    map.keys().forEach { name ->
+                        val child = map.optJSONObject(name) ?: return@forEach
+                        if (child.opt("required") == true) {
+                            child.remove("required")
+                            promotedRequired.add(name)
+                        }
+                    }
+                }
                 return@forEach
             }
             result.put(key, sanitizeSchema(source.opt(key)))
         }
         if (!result.has("type") && (result.has("properties") || rawRequired != null)) {
             result.put("type", "object")
+        }
+        // Gemini/CCA 要求数组必须带 items（CLIProxy 同款修复）：
+        // "parameters.properties[args].items: missing field."
+        if (result.optString("type") == "array") {
+            val items = result.optJSONObject("items")
+            if (items == null || items.length() == 0 || items.optString("type").isBlank()) {
+                result.put("items", JSONObject().put("type", "string"))
+            }
         }
         // CCA/Gemini 要求 required 里的每个名字都在 properties 中有定义，否则整条请求被拒：
         // "GenerateContentRequest.tools[i].function_declarations[j].parameters.required[k]:
@@ -227,6 +244,12 @@ internal object AntigravityRequestBuilder {
                 if (name.isBlank() || properties?.has(name) != true || !seen.add(name)) continue
                 kept.put(name)
             }
+            promotedRequired.forEach { name -> if (properties?.has(name) == true && seen.add(name)) kept.put(name) }
+            if (kept.length() > 0) result.put("required", kept)
+        } else if (promotedRequired.isNotEmpty()) {
+            val properties = result.optJSONObject("properties")
+            val kept = JSONArray()
+            promotedRequired.forEach { name -> if (properties?.has(name) == true) kept.put(name) }
             if (kept.length() > 0) result.put("required", kept)
         }
         return result
@@ -240,6 +263,9 @@ internal object AntigravityRequestBuilder {
     }
 
     private val DROPPED_SCHEMA_KEYS = setOf(
+        // CLIProxy 同样会移除这两个：Antigravity 不接受 nullable/title。
+        "nullable",
+        "title",
         "uniqueItems",
         "additionalProperties",
         "additional_properties",
