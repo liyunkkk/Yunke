@@ -165,8 +165,9 @@ internal object RemoteModelFetcher {
         return Model(
             id = UUID.randomUUID().toString(),
             modelId = modelId,
-            displayName = string("display_name", "displayName", "name")?.trim().takeUnless { it.isNullOrBlank() }
-                ?: modelId,
+            // 展示名默认取 Model ID：自建聚合网关下同一模型可能来自不同上游，
+            // 只有 ID 能区分，远端给的友好名反而会重名。
+            displayName = modelId,
             source = ModelSource.REMOTE,
             ownedBy = string("owned_by", "ownedBy")?.trim().takeUnless { it.isNullOrBlank() } ?: defaultOwnedBy,
             contextWindow = positiveInt(

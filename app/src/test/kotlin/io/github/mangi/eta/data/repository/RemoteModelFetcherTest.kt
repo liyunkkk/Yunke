@@ -42,7 +42,7 @@ class RemoteModelFetcherTest {
         assertTrue(models.first().supportsTools)
         assertTrue(models.first().supportsReasoning)
         assertEquals(400000, models.first().contextWindow)
-        assertEquals("Qwen 3.7 Plus", models.last().displayName)
+        assertEquals("qwen3.7-plus", models.last().displayName)
         assertTrue(models.all { it.source == ModelSource.REMOTE })
     }
 
@@ -67,7 +67,7 @@ class RemoteModelFetcherTest {
             """.trimIndent()
         )
         assertEquals(listOf("gpt-5.4", "gpt-5.4-mini"), models.map { it.modelId })
-        assertEquals("GPT-5.4", models.first().displayName)
+        assertEquals("gpt-5.4", models.first().displayName)
         assertEquals(400000, models.first().contextWindow)
     }
 
@@ -92,7 +92,7 @@ class RemoteModelFetcherTest {
         assertTrue(byId.getValue("kimi-k2.7-code").supportsVision)
         assertTrue(byId.getValue("kimi-k2.6").supportsVision)
         assertTrue(byId.getValue("kimi-k2.6").supportsTools)
-        assertEquals("Kimi K2.6", byId.getValue("kimi-k2.6").displayName)
+        assertEquals("kimi-k2.6", byId.getValue("kimi-k2.6").displayName)
     }
 
     @Test
@@ -249,7 +249,7 @@ class RemoteModelFetcherTest {
 
         val model = models.single()
         assertEquals("google/gemini-3.6-flash", model.modelId)
-        assertEquals("Google: Gemini 3.6 Flash", model.displayName)
+        assertEquals("google/gemini-3.6-flash", model.displayName)
         assertEquals(1_048_576, model.contextWindow)
         assertEquals(listOf("text", "image", "video"), model.inputModalities)
         assertEquals(listOf("text"), model.outputModalities)

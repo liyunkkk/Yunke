@@ -120,7 +120,7 @@ internal object ModelRepository {
                                 remote.copy(
                                     id = stored.id,
                                     modelId = remote.modelId.trim(),
-                                    displayName = remote.displayName.trim().ifBlank { remote.modelId.trim() },
+                                    displayName = remote.modelId.trim(),
                                     isEnabled = stored.isEnabled,
                                     isBuiltIn = stored.isBuiltIn || remote.isBuiltIn,
                                     customHeaders = stored.customHeaders,
@@ -144,7 +144,7 @@ internal object ModelRepository {
                             remote.copy(
                                 id = remote.id.ifBlank(::newId),
                                 modelId = remote.modelId.trim(),
-                                displayName = remote.displayName.trim().ifBlank { remote.modelId.trim() },
+                                displayName = remote.modelId.trim(),
                                 isBuiltIn = false,
                                 source = ModelSource.REMOTE,
                             )
@@ -179,7 +179,7 @@ internal object ModelRepository {
                     remote.copy(
                         id = remote.id.ifBlank(::newId),
                         modelId = remote.modelId.trim(),
-                        displayName = remote.displayName.trim().ifBlank { remote.modelId.trim() },
+                        displayName = remote.modelId.trim(),
                         isBuiltIn = false,
                         source = ModelSource.REMOTE,
                     )

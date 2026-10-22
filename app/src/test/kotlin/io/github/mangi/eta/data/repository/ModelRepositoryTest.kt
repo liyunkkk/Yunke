@@ -235,7 +235,7 @@ class ModelRepositoryTest {
         assertEquals(stored.source, restored.source)
         assertEquals(stored.createdAt, restored.createdAt)
         assertEquals("REMOTE-1", restored.modelId)
-        assertEquals(remote.displayName, restored.displayName)
+        assertEquals("REMOTE-1", restored.displayName)
         assertEquals(remote.contextWindow, restored.contextWindow)
     }
 

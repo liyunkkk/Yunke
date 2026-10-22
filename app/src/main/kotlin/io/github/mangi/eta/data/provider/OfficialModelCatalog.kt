@@ -262,9 +262,8 @@ internal object OfficialModelCatalog {
         return models.map { model ->
             val official = findOfficialModel(officialById, model.modelId) ?: return@map model
             model.copy(
-                displayName = model.displayName
-                    .takeUnless { it.isBlank() || it == model.modelId }
-                    ?: official.displayName,
+                // 展示名沿用拉取结果（默认即 Model ID）：自建聚合网关下同名模型
+                // 来自不同上游，官方目录的友好名会掩盖区分度，故不再改写。
                 ownedBy = model.ownedBy ?: official.ownedBy,
                 contextWindow = model.contextWindow ?: official.contextWindow,
                 inputModalities = model.inputModalities.ifEmpty { official.inputModalities },
