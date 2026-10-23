@@ -10,6 +10,7 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.AdsClick
 import androidx.compose.material.icons.rounded.Alarm
+import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CalendarMonth
@@ -136,6 +137,10 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "delegate_to_kimi_code" -> Icons.Rounded.Code
     "get_assistant_config" -> Icons.Rounded.Info
     "update_assistant_config" -> Icons.Rounded.Tune
+    "eta_manage_models" -> Icons.Rounded.Tune
+    "eta_manage_subagents" -> Icons.Rounded.AccountTree
+    "eta_configure_mcp" -> Icons.Rounded.Extension
+    "skills_install_local" -> Icons.Rounded.FolderOpen
     "read_file" -> Icons.Rounded.Description
     "write_file" -> Icons.Rounded.EditNote
     "list_directory" -> Icons.Rounded.FolderOpen

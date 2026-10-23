@@ -57,6 +57,10 @@ internal class AgentTraceFormatter(
             "skills_list_curated" -> "浏览精选技能"
             "skills_inspect_github" -> "查看技能详情"
             "skills_install_from_github" -> "安装技能"
+            "skills_install_local" -> "安装本地技能"
+            "eta_manage_models" -> "配置模型"
+            "eta_manage_subagents" -> "配置子代理"
+            "eta_configure_mcp" -> "配置 MCP"
             else -> {
                 val label = DEVICE_ACTION_LABELS[toolCall.name]
                 when {

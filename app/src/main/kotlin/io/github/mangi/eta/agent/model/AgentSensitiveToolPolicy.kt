@@ -48,5 +48,11 @@ internal object AgentSensitiveToolPolicy {
         "set_setting",
         "memory_get",
         "memory_write",
+        // 参数可能携带供应商密钥与端点；原始结果不进入持久会话。
+        "eta_manage_models",
+        // 参数可能携带 MCP 服务器的端点与 Bearer 密钥；原始结果不进入持久会话。
+        "eta_configure_mcp",
+        // 参数是手机上的本地目录，结果含本机 Skill 的文件路径；原始结果不进入持久会话。
+        "skills_install_local",
     )
 }

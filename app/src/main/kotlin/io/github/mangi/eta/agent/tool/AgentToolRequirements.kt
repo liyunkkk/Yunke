@@ -39,6 +39,7 @@ internal object AgentToolRequirements {
             "skills_list", "skills_read", "skills_read_resource", "skills_list_curated",
             "skills_inspect_github", "skills_install_from_github", "delegate_to_kimi_code",
             "get_assistant_config", "update_assistant_config",
+            "skills_install_local", "eta_manage_models", "eta_manage_subagents", "eta_configure_mcp",
         )
         register(
             RootRequirement.PARTIAL,

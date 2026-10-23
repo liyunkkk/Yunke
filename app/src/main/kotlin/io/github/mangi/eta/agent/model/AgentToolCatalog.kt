@@ -21,6 +21,7 @@ internal object AgentToolCatalog {
             AgentQuestionToolCatalog.appendTo(tools)
             AgentTodoToolCatalog.appendTo(tools)
             AgentContextAppToolCatalog.appendTo(tools)
+            AgentSelfToolCatalog.appendTo(tools)
             AgentSpeechToolCatalog.appendTo(tools)
             AgentGestureToolCatalog.appendTo(tools)
             AgentTextSystemToolCatalog.appendTo(tools)
