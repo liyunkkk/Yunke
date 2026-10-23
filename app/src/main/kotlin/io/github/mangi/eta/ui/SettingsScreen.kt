@@ -284,39 +284,6 @@ internal fun SettingsScreen(
                     SettingsProviderEntry(currentProviderId, currentModelId) {
                         onNavigate(AppRoute.ModelProviders)
                     }
-
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
-                        key = Prefs.Keys.AGENT_THINKING_ENABLED,
-                        icon = Icons.Rounded.Psychology,
-                    )
-
-                    WindowSpinnerPreference(
-                        title = "模型请求重试次数",
-                        summary = "网络或中转站不稳时可调高；0 表示不自动重试。",
-                        items = ModelRetrySettings.allowedCounts.map { DropdownItem(text = it.toString()) },
-                        selectedIndex = ModelRetrySettings.allowedCounts.indexOf(modelRetryCount).coerceAtLeast(0),
-                        onSelectedIndexChange = { index ->
-                            val count = ModelRetrySettings.allowedCounts.getOrNull(index)
-                                ?: return@WindowSpinnerPreference
-                            val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
-                            if (putStringSync(targetPrefs, Prefs.Keys.MODEL_RETRY_COUNT, count.toString())) {
-                                modelRetryCount = count
-                            } else {
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    context.getString(R.string.settings_write_failed),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            }
-                        },
-                        startAction = {
-                            PreferenceIcon(icon = Icons.Rounded.Refresh, enabled = agentPrefs != null)
-                        },
-                        enabled = agentPrefs != null,
-                    )
                 }
             }
 
@@ -349,6 +316,39 @@ internal fun SettingsScreen(
                         title = stringResource(R.string.error_reconnect_title),
                         startAction = { PreferenceIcon(icon = Icons.Rounded.Refresh) },
                         onClick = { onNavigate(AppRoute.ErrorReconnectSettings) },
+                    )
+
+                    SwitchPref(
+                        context = context,
+                        prefs = agentPrefs,
+                        title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
+                        key = Prefs.Keys.AGENT_THINKING_ENABLED,
+                        icon = Icons.Rounded.Psychology,
+                    )
+
+                    WindowSpinnerPreference(
+                        title = "模型请求重试次数",
+                        summary = "网络或中转站不稳时可调高；0 表示不自动重试。",
+                        items = ModelRetrySettings.allowedCounts.map { DropdownItem(text = it.toString()) },
+                        selectedIndex = ModelRetrySettings.allowedCounts.indexOf(modelRetryCount).coerceAtLeast(0),
+                        onSelectedIndexChange = { index ->
+                            val count = ModelRetrySettings.allowedCounts.getOrNull(index)
+                                ?: return@WindowSpinnerPreference
+                            val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
+                            if (putStringSync(targetPrefs, Prefs.Keys.MODEL_RETRY_COUNT, count.toString())) {
+                                modelRetryCount = count
+                            } else {
+                                Toast.makeText(
+                                    context.applicationContext,
+                                    context.getString(R.string.settings_write_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        },
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Refresh, enabled = agentPrefs != null)
+                        },
+                        enabled = agentPrefs != null,
                     )
                 }
             }
