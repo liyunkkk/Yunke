@@ -67,6 +67,7 @@ import io.github.mangi.eta.ui.HapticsSettingsScreen
 import io.github.mangi.eta.ui.ErrorReconnectSettingsScreen
 import io.github.mangi.eta.ui.ContextCompressionSettingsScreen
 import io.github.mangi.eta.ui.SettingsScreen
+import io.github.mangi.eta.ui.SystemTakeoverSettingsScreen
 import io.github.mangi.eta.ui.components.AppUpdateDialog
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.AgentPendingChildStopDialog
@@ -915,6 +916,12 @@ fun AgentAppRoot(
                             }
                         }
                     },
+                )
+            }
+            entry<AppRoute.AssistantTakeover>(swipeDismiss = swipeDismiss) {
+                SystemTakeoverSettingsScreen(
+                    onBack = ::popRoute,
+                    onNavigate = ::pushRoute,
                 )
             }
             entry<AppRoute.SystemEnhance>(swipeDismiss = swipeDismiss) {

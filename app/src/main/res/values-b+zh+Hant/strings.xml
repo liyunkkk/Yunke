@@ -554,6 +554,10 @@
   <string name="ui_remove_image_089db3">移除圖片</string>
   <string name="ui_remove_file_reference_04bbfc">移除檔案參照</string>
   <string name="ui_system_assistant_takes_over_f46043">系統助理接管</string>
+
+  <string name="settings_system_takeover_entry">系統助手接管設定</string>
+
+  <string name="settings_system_takeover_entry_summary">預設助理、廠商入口、Gemini 與一圈即搜</string>
   <string name="ui_system_enhancement_dcd4ad">系統增強</string>
   <string name="ui_system_applications_have_voice_wake_up_permissions_f_0190f2">系統應用程式享有語音喚醒權限、較少的自啟動限制，體驗接近原生。將透過 Magisk / KernelSU 模組安裝，重新啟動後生效。</string>
   <string name="ui_result_0a2c91">結果</string>
@@ -1051,6 +1055,8 @@
   <string name="settings_not_configured">尚未設定</string>
   <string name="settings_default_assistant_active">已設為預設數位助理</string>
   <string name="settings_select_default_assistant">選擇 YUNKe 作為預設數位助理</string>
+
+  <string name="settings_default_assistant_section">預設助理</string>
   <string name="status_authorized">已授權</string>
   <string name="status_unauthorized">未授權</string>
   <string name="status_enabled">已啟用</string>

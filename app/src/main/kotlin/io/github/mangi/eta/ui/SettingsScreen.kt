@@ -150,9 +150,6 @@ internal fun SettingsScreen(
     val capabilities = rememberDeviceCapabilities()
     val enhancementHistory = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
     var hasConnectedFramework by remember { mutableStateOf(enhancementHistory.hasConnected) }
-    var hasUsedSystemizer by remember { mutableStateOf(enhancementHistory.hasUsedSystemizer) }
-    var showSystemizerDialog by remember { mutableStateOf(false) }
-    var installingSystemizer by remember { mutableStateOf(false) }
     val currentVersion = remember { AppUpdateRepository.currentVersionName(context) }
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateOffer by remember { mutableStateOf<AppUpdateOffer?>(null) }
@@ -206,15 +203,6 @@ internal fun SettingsScreen(
         mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.protection.initial") { AccessibilityProtectionClient.isEnabled(context) })
     }
     var accessibilityProtectionPending by remember { mutableStateOf(false) }
-    var etaAssistantActive by remember { mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.assistant.initial") { isEtaAssistantActive(context) }) }
-    val openAssistantSettings: () -> Unit = {
-        val failed = runCatching {
-            context.startActivity(Intent(Settings.ACTION_VOICE_INPUT_SETTINGS))
-        }.isFailure
-        if (failed) {
-            Toast.makeText(context, context.getString(R.string.settings_open_assistant_failed), Toast.LENGTH_SHORT).show()
-        }
-    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -223,7 +211,6 @@ internal fun SettingsScreen(
                 accessibilityGranted = StreamPerformanceDiagnostics.measure("settings.permission.accessibility.resume") { isAgentAccessibilityEnabled(context) }
                 accessibilityProtectionEnabled =
                     StreamPerformanceDiagnostics.measure("settings.permission.protection.resume") { AccessibilityProtectionClient.isEnabled(context) }
-                etaAssistantActive = StreamPerformanceDiagnostics.measure("settings.permission.assistant.resume") { isEtaAssistantActive(context) }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -250,21 +237,6 @@ internal fun SettingsScreen(
                 agentPrefs?.getString(Prefs.Keys.MODEL_RETRY_COUNT, ModelRetrySettings.DEFAULT_COUNT.toString()),
             ),
         )
-    }
-    var powerAssistantTarget by remember(prefs) {
-        mutableStateOf(prefs?.let(Prefs::powerAssistantTarget) ?: enhancementHistory.powerTarget())
-    }
-    DisposableEffect(prefs) {
-        val targetPrefs = prefs ?: return@DisposableEffect onDispose {}
-        val listener = SharedPreferences.OnSharedPreferenceChangeListener { changedPrefs, key ->
-            if (key == Prefs.Keys.POWER_KEY_ASSISTANT_TARGET ||
-                key == Prefs.Keys.POWER_KEY_TAKEOVER
-            ) {
-                powerAssistantTarget = Prefs.powerAssistantTarget(changedPrefs)
-            }
-        }
-        targetPrefs.registerOnSharedPreferenceChangeListener(listener)
-        onDispose { targetPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
     DisposableEffect(Unit) {
         // Only the immediate notification may reuse the successful initial read.
@@ -295,11 +267,6 @@ internal fun SettingsScreen(
         }
         onDispose { EtaApp.removeServiceStateListener(listener) }
     }
-    val powerAssistantTargets = PowerAssistantTarget.entries
-    val powerAssistantItems = powerAssistantTargets.map { target ->
-        DropdownItem(text = target.displayName(context))
-    }
-
     WithoutPressRipple {
     MiuixScaffoldPage(
         title = stringResource(R.string.ui_set_up_7debf9),
@@ -468,6 +435,13 @@ internal fun SettingsScreen(
                         },
                         onClick = { onNavigate(AppRoute.DataBackup) },
                     )
+
+                    ArrowPreference(
+                        title = stringResource(R.string.haptics_list),
+                        summary = stringResource(R.string.haptics_entry_summary),
+                        startAction = { PreferenceIcon(Icons.Rounded.Vibration) },
+                        onClick = { onNavigate(AppRoute.Haptics) },
+                    )
                 }
             }
 
@@ -581,184 +555,20 @@ internal fun SettingsScreen(
                 }
             }
 
-            item(key = "section_haptics") {
-                SmallTitle(stringResource(R.string.haptics_title))
-                Card(modifier = Modifier.settingsSectionDiagnostics("haptics").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.haptics_list),
-                        summary = stringResource(R.string.haptics_entry_summary),
-                        startAction = { PreferenceIcon(Icons.Rounded.Vibration) },
-                        onClick = { onNavigate(AppRoute.Haptics) },
-                    )
-                }
-            }
-
             // ── 系统助手接管 ──────────────────────────────────────────────
             item(key = "section_assistant_takeover") {
                 SmallTitle(stringResource(R.string.ui_system_assistant_takes_over_f46043))
                 Card(modifier = Modifier.settingsSectionDiagnostics("assistant_takeover").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
-                        title = stringResource(R.string.ui_eta_system_assistant_003e9b),
-                        summary = stringResource(
-                            if (etaAssistantActive) {
-                                R.string.settings_default_assistant_active
-                            } else {
-                                R.string.settings_select_default_assistant
-                            },
-                        ),
+                        title = stringResource(R.string.settings_system_takeover_entry),
+                        summary = stringResource(R.string.settings_system_takeover_entry_summary),
                         startAction = {
                             PreferenceIcon(
                                 icon = Icons.Rounded.AutoAwesome,
                             )
                         },
-                        onClick = openAssistantSettings,
+                        onClick = { onNavigate(AppRoute.AssistantTakeover) },
                     )
-                    if (prefs != null || hasConnectedFramework) {
-                        WindowSpinnerPreference(
-                            title = stringResource(R.string.ui_long_press_the_power_button_1958d0),
-                            items = powerAssistantItems,
-                            selectedIndex = powerAssistantTargets.indexOf(powerAssistantTarget),
-                            onSelectedIndexChange = { index ->
-                                val target = powerAssistantTargets.getOrNull(index)
-                                    ?: return@WindowSpinnerPreference
-                                val targetPrefs = prefs ?: return@WindowSpinnerPreference
-                                if (putStringSync(
-                                        prefs = targetPrefs,
-                                        key = Prefs.Keys.POWER_KEY_ASSISTANT_TARGET,
-                                        value = target.persistedValue,
-                                    )
-                                ) {
-                                    powerAssistantTarget = target
-                                    enhancementHistory.recordCommittedTarget(target)
-                                } else {
-                                    Toast.makeText(
-                                        context.applicationContext,
-                                        context.getString(R.string.settings_write_failed),
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
-                                }
-                            },
-                            startAction = {
-                                PreferenceIcon(
-                                    icon = Icons.Rounded.PowerSettingsNew,
-                                    enabled = prefs != null,
-                                )
-                            },
-                            enabled = prefs != null,
-                        )
-
-                        SwitchPref(
-                            context = context,
-                            prefs = prefs,
-                            title = stringResource(R.string.ui_automatically_set_default_assistant_f86963),
-                            summary = stringResource(R.string.ui_valid_only_for_gemini_and_eta_d5b63d),
-                            key = Prefs.Keys.ASSISTANT_AUTO_CONFIG,
-                            icon = Icons.Rounded.Settings,
-                        )
-                    }
-                }
-            }
-
-            if (prefs != null || hasConnectedFramework) {
-                // ── 厂商助手兼容入口 ──────────────────────────────────────────
-                item(key = "section_oem_assistant_compatibility") {
-                    SmallTitle(stringResource(R.string.ui_xiaobu_xiaoai_compatible_entrance_ae918a))
-                    Card(modifier = Modifier.settingsSectionDiagnostics("oem_assistant_compatibility").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                        SwitchPref(
-                            context = context,
-                            prefs = prefs,
-                            title = stringResource(R.string.ui_enable_vendor_assistant_custom_models_c8e465),
-                            key = Prefs.Keys.AGENT_CUSTOM_MODEL,
-                            icon = Icons.Rounded.Memory,
-                        )
-
-                        SwitchPref(
-                            context = context,
-                            prefs = prefs,
-                            title = stringResource(R.string.ui_only_take_over_with_agent_prefix_d17556),
-                            key = Prefs.Keys.AGENT_REQUIRE_PREFIX,
-                            icon = Icons.Rounded.Code,
-                        )
-                    }
-                }
-            }
-
-            if (prefs != null || hasConnectedFramework || capabilities.root.isGranted || hasUsedSystemizer) {
-                // ── Gemini ─────────────────────────────────────────────────
-                item(key = "section_gemini") {
-                    SmallTitle("Gemini")
-                    Card(modifier = Modifier.settingsSectionDiagnostics("gemini").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                        if (prefs != null || hasConnectedFramework) {
-                            SwitchPref(
-                                context = context,
-                                prefs = prefs,
-                                title = stringResource(R.string.ui_maintain_hey_google_detection_after_screen_rest_9d6877),
-                                key = Prefs.Keys.HOTWORD_SELF_HEAL,
-                                icon = Icons.Rounded.Hearing,
-                            )
-
-                            SwitchPref(
-                                context = context,
-                                prefs = prefs,
-                                title = stringResource(R.string.ui_lock_screen_evokes_automatic_voice_input_1cde18),
-                                key = Prefs.Keys.LOCKSCREEN_VOICE_COMMAND,
-                                icon = Icons.Rounded.Lock,
-                            )
-
-                            SwitchPref(
-                                context = context,
-                                prefs = prefs,
-                                title = stringResource(R.string.ui_bright_screen_evokes_automatic_voice_input_4358fe),
-                                key = Prefs.Keys.SCREEN_ON_VOICE_COMMAND,
-                                icon = Icons.Rounded.Mic,
-                            )
-
-                        }
-                        if (capabilities.root.isGranted || hasUsedSystemizer) {
-                            ArrowPreference(
-                                title = stringResource(R.string.ui_convert_google_apps_to_system_apps_0f6d89),
-                                startAction = {
-                                    PreferenceIcon(
-                                        icon = Icons.Rounded.Inventory,
-                                    )
-                                },
-                                summary = if (capabilities.root.isGranted) null else stringResource(R.string.capability_root_required),
-                                enabled = !installingSystemizer,
-                                holdDownState = showSystemizerDialog,
-                                onClick = {
-                                    if (!capabilities.root.isGranted) {
-                                        onNavigate(AppRoute.SystemEnhance)
-                                    } else if (!installingSystemizer) {
-                                        showSystemizerDialog = true
-                                    }
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (prefs != null || hasConnectedFramework) {
-                // ── 一圈即搜 ────────────────────────────────────────────────
-                item(key = "section_circle_to_search") {
-                    SmallTitle(stringResource(R.string.ui_search_in_one_turn_179584))
-                    Card(modifier = Modifier.settingsSectionDiagnostics("circle_to_search").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                        SwitchPref(
-                            context = context,
-                            prefs = prefs,
-                            title = stringResource(R.string.ui_long_press_on_the_gesture_bar_triggers_a_circle_to_s_b80117),
-                            key = Prefs.Keys.GESTURE_BAR_CIRCLE_TO_SEARCH,
-                            icon = Icons.Rounded.SwipeUp,
-                        )
-
-                        SwitchPref(
-                            context = context,
-                            prefs = prefs,
-                            title = stringResource(R.string.ui_long_press_with_two_fingers_to_trigger_a_circle_sear_ab597a),
-                            key = Prefs.Keys.DOUBLE_FINGER_CIRCLE_TO_SEARCH,
-                            icon = Icons.Rounded.TouchApp,
-                        )
-                    }
                 }
             }
 
@@ -1079,44 +889,12 @@ internal fun SettingsScreen(
             }
         }
 
-        SystemizerConfirmDialog(
-            show = showSystemizerDialog,
-            installing = installingSystemizer,
-            onDismissRequest = {
-                if (!installingSystemizer) {
-                    showSystemizerDialog = false
-                }
-            },
-            onConfirm = {
-                if (installingSystemizer) return@SystemizerConfirmDialog
-                if (!capabilities.root.isGranted) {
-                    showSystemizerDialog = false
-                    onNavigate(AppRoute.SystemEnhance)
-                    return@SystemizerConfirmDialog
-                }
-                enhancementHistory.recordSystemizerUse()
-                hasUsedSystemizer = true
-                showSystemizerDialog = false
-                installingSystemizer = true
-                coroutineScope.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        GoogleAppSystemizerInstaller(context.applicationContext).install()
-                    }
-                    installingSystemizer = false
-                    Toast.makeText(
-                        context.applicationContext,
-                        result.toToastMessage(context),
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            },
-        )
 }
 
 // ── 系统化确认对话框 ─────────────────────────────────────────────────────────
 
 @Composable
-private fun SystemizerConfirmDialog(
+internal fun SystemizerConfirmDialog(
     show: Boolean,
     installing: Boolean,
     onDismissRequest: () -> Unit,
@@ -1151,7 +929,7 @@ private fun SystemizerConfirmDialog(
  * Runtime 开关始终使用 App 本地配置。
  */
 @Composable
-private fun SwitchPref(
+internal fun SwitchPref(
     context: Context,
     prefs: SharedPreferences?,
     title: String,
@@ -1216,14 +994,14 @@ private fun putBooleanSync(
 ): Boolean =
     runCatching { prefs.edit().putBoolean(key, value).commit() }.getOrDefault(false)
 
-private fun putStringSync(
+internal fun putStringSync(
     prefs: SharedPreferences,
     key: String,
     value: String
 ): Boolean =
     runCatching { prefs.edit().putString(key, value).commit() }.getOrDefault(false)
 
-private fun PowerAssistantTarget.displayName(context: Context): String =
+internal fun PowerAssistantTarget.displayName(context: Context): String =
     when (this) {
         PowerAssistantTarget.OEM -> context.getString(R.string.power_assistant_system_default)
         PowerAssistantTarget.GEMINI -> "Gemini"
@@ -1245,7 +1023,7 @@ private fun isAgentAccessibilityEnabled(context: Context): Boolean {
 private fun defaultDiagnosticLogFileName(): String =
     "YUNKe-诊断日志-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.zip"
 
-private fun isEtaAssistantActive(context: Context): Boolean =
+internal fun isEtaAssistantActive(context: Context): Boolean =
     VoiceInteractionService.isActiveService(
         context,
         ComponentName(context, EtaVoiceInteractionService::class.java),
@@ -1253,7 +1031,7 @@ private fun isEtaAssistantActive(context: Context): Boolean =
 
 
 
-private fun SystemizerInstallResult.toToastMessage(context: Context): String =
+internal fun SystemizerInstallResult.toToastMessage(context: Context): String =
     when (this) {
         SystemizerInstallResult.AlreadySystemized -> context.getString(R.string.systemizer_already_system)
         SystemizerInstallResult.GoogleAppMissing -> context.getString(R.string.systemizer_google_missing)

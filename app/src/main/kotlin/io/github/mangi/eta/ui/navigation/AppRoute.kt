@@ -39,6 +39,10 @@ sealed interface AppRoute : NavKey {
     @Serializable
     data object SystemEnhance : AppRoute
 
+    /** 系统助手接管：默认助手、厂商入口、Gemini 与一圈即搜（自设置页抽出的二级页）。 */
+    @Serializable
+    data object AssistantTakeover : AppRoute
+
     @Serializable
     data object Settings : AppRoute
 

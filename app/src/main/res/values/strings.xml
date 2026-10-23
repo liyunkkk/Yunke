@@ -549,6 +549,10 @@
   <string name="ui_remove_image_089db3">Remove image</string>
   <string name="ui_remove_file_reference_04bbfc">Remove file reference</string>
   <string name="ui_system_assistant_takes_over_f46043">System assistant takes over</string>
+
+  <string name="settings_system_takeover_entry">System assistant takeover</string>
+
+  <string name="settings_system_takeover_entry_summary">Default assistant, vendor entrances, Gemini and Circle to Search</string>
   <string name="ui_system_enhancement_dcd4ad">System enhancement</string>
   <string name="ui_system_applications_have_voice_wake_up_permissions_f_0190f2">System applications have voice wake-up permissions, fewer self-start restrictions, and the experience is close to native. Will be installed via Magisk/KernelSU module and will take effect after reboot.</string>
   <string name="ui_result_0a2c91">result</string>
@@ -1036,6 +1040,8 @@
   <string name="settings_not_configured">Not configured</string>
   <string name="settings_default_assistant_active">Set as default digital assistant</string>
   <string name="settings_select_default_assistant">Select YUNKe as the default digital assistant</string>
+
+  <string name="settings_default_assistant_section">Default assistant</string>
   <string name="status_authorized">Authorized</string>
   <string name="status_unauthorized">Not authorized</string>
   <string name="status_enabled">Enabled</string>
