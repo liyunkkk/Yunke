@@ -27,6 +27,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.AppearanceAccentColor
 import io.github.mangi.eta.data.model.AppearancePaletteStyle
 import io.github.mangi.eta.data.model.AppearanceSettings
@@ -113,6 +114,12 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
         stringResource(R.string.appearance_accent_green),
         stringResource(R.string.appearance_accent_teal),
     )
+    val foldLevels = AnswerFoldLevel.entries
+    val foldLabels = listOf(
+        stringResource(R.string.appearance_fold_level_aggressive),
+        stringResource(R.string.appearance_fold_level_normal),
+        stringResource(R.string.appearance_fold_level_off),
+    )
     val blurStyles = AppearanceTopBarBlurStyle.entries
     val blurStyleLabels = listOf(
         stringResource(R.string.appearance_blur_style_gaussian),
@@ -187,6 +194,17 @@ internal fun AppearanceSettingsScreen(onBack: () -> Unit) {
                     checked = appearance.messageTimestampsEnabled,
                     onCheckedChange = { enabled ->
                         update { current -> current.copy(messageTimestampsEnabled = enabled) }
+                    },
+                )
+                OverlayDropdownPreference(
+                    title = stringResource(R.string.appearance_answer_fold),
+                    summary = stringResource(R.string.appearance_answer_fold_summary),
+                    items = foldLabels,
+                    selectedIndex = appearance.answerFoldLevel.ordinal,
+                    onSelectedIndexChange = { index ->
+                        foldLevels.getOrNull(index)?.let { level ->
+                            update { current -> current.copy(answerFoldLevel = level) }
+                        }
                     },
                 )
                 SwitchPreference(

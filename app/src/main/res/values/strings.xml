@@ -611,6 +611,10 @@
     <item quantity="one">Completed %d step</item>
     <item quantity="other">Completed %d steps</item>
   </plurals>
+  <plurals name="work_intermediate_replies">
+  <item quantity="one">%d intermediate reply</item>
+  <item quantity="other">%d intermediate replies</item>
+  </plurals>
   <string name="work_completed">Analysis complete</string>
   <string name="work_collapse">Collapse work details</string>
   <string name="work_expand">Expand work details</string>
@@ -1561,6 +1565,11 @@
   <string name="vision_feature_off">Disabled: text-only models cannot read images</string>
   <string name="revision_history_unavailable">Cannot locate the original context for this message. Operation cancelled; existing history is preserved. This does not mean the conversation was compressed.</string>
   <string name="appearance_message_timestamps">Message timestamps</string>
+  <string name="appearance_answer_fold">Fold completed work</string>
+  <string name="appearance_answer_fold_summary">After an answer appears, how much of this turn is folded away. Tap a card to reopen it.</string>
+  <string name="appearance_fold_level_aggressive">Aggressive</string>
+  <string name="appearance_fold_level_normal">Normal</string>
+  <string name="appearance_fold_level_off">Never fold</string>
   <string name="appearance_message_timestamps_summary">Show when each reply finished generating, on the right of its action bar.</string>
   <string name="chat_next_user_message">Next user message</string>
   <string name="chat_previous_user_message">Previous user message</string>

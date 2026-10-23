@@ -464,21 +464,27 @@ internal fun AgentWorkProcessHeader(
     isPaused: Boolean = false,
     expanded: Boolean,
     hasVisibleSteps: Boolean = expanded,
+    /** 本轮回答已出现，整组被 `answerFoldLevel` 策略收起；标题按完成态读，不再报「正在处理」。 */
+    folded: Boolean = false,
     onToggle: () -> Unit,
 ) {
-    val running = messages.any { message ->
+    val running = !folded && messages.any { message ->
         (message is ThinkingMessageUi && message.isStreaming) ||
             (message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running)
     }
     val toolCount = messages.count { it is ToolActivityMessageUi }
-    val runningTool = messages.lastOrNull { message ->
-        message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running
-    } as? ToolActivityMessageUi
+    // 激进档卡片可能没有工具调用、只有被并进来的中间回复，组头据此读作「N 条中间回复」。
+    val replyCount = messages.count { it is AgentMessageUi && it.content.isNotBlank() }
+    val runningTool = if (running) {
+        messages.lastOrNull { message ->
+            message is ToolActivityMessageUi && message.status == ToolActivityStatusUi.Running
+        } as? ToolActivityMessageUi
+    } else null
     val runningToolTitle = runningTool?.argumentsSummary?.takeIf { it.isNotBlank() }
         ?: runningTool?.let { toolDisplayName(it.toolName) }
     val view = LocalView.current
     SideEffect {
-        if (isPaused) return@SideEffect
+        if (isPaused || folded) return@SideEffect
         messages.forEach { message ->
             val liveId = when {
                 message is ToolActivityMessageUi &&
@@ -535,6 +541,15 @@ internal fun AgentWorkProcessHeader(
                             R.plurals.work_completed_steps,
                             toolCount,
                             toolCount,
+                        ) + if (replyCount > 0) {
+                            " · " + pluralStringResource(R.plurals.work_intermediate_replies, replyCount, replyCount)
+                        } else {
+                            ""
+                        }
+                        replyCount > 0 -> pluralStringResource(
+                            R.plurals.work_intermediate_replies,
+                            replyCount,
+                            replyCount,
                         )
                         else -> stringResource(R.string.work_completed)
                     },

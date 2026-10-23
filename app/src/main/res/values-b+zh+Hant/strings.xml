@@ -614,6 +614,9 @@
   <plurals name="work_completed_steps">
     <item quantity="other">已完成 %d 個步驟</item>
   </plurals>
+  <plurals name="work_intermediate_replies">
+  <item quantity="other">%d 條中間回覆</item>
+  </plurals>
   <string name="work_completed">分析完成</string>
   <string name="work_collapse">收合工作過程</string>
   <string name="work_expand">展開工作過程</string>
@@ -1528,6 +1531,11 @@
   <string name="vision_feature_off">未開啟：非視覺模型無法看圖</string>
   <string name="revision_history_unavailable">無法定位這則訊息對應的原始上下文，已取消操作並保留現有歷史；這不代表會話已壓縮。</string>
   <string name="appearance_message_timestamps">訊息時間戳</string>
+  <string name="appearance_answer_fold">回答後摺疊</string>
+  <string name="appearance_answer_fold_summary">本輪正文出現後，回答之前的內容收合多少。點卡片可重新展開。</string>
+  <string name="appearance_fold_level_aggressive">激進摺疊</string>
+  <string name="appearance_fold_level_normal">普通摺疊</string>
+  <string name="appearance_fold_level_off">不摺疊</string>
   <string name="appearance_message_timestamps_summary">在回覆操作列右側顯示本輪回覆產生完成的時間。</string>
   <string name="chat_next_user_message">下一則使用者訊息</string>
   <string name="chat_previous_user_message">上一則使用者訊息</string>

@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.github.mangi.eta.data.model.AppearanceAccentColor
 import io.github.mangi.eta.data.model.AppearancePaletteStyle
+import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
@@ -59,6 +60,8 @@ internal object SettingsDataStore {
         booleanPreferencesKey("appearance_morph_loading_before_response")
     private val APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED =
         booleanPreferencesKey("appearance_message_timestamps_enabled")
+    private val APPEARANCE_ANSWER_FOLD_LEVEL =
+        stringPreferencesKey("appearance_answer_fold_level")
     private val APP_LAUNCH_COUNT = intPreferencesKey("app_launch_count")
     private val UPDATE_DISMISSED_VERSION = stringPreferencesKey("update_dismissed_version")
     private val UPDATE_LAST_CHECK_AT = longPreferencesKey("update_last_check_at")
@@ -622,6 +625,7 @@ internal object SettingsDataStore {
             morphLoadingIndicator = this[APPEARANCE_MORPH_LOADING_INDICATOR] ?: true,
             morphLoadingBeforeResponseOnly = this[APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE] ?: false,
             messageTimestampsEnabled = this[APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED] ?: false,
+            answerFoldLevel = AnswerFoldLevel.fromPersistedValue(this[APPEARANCE_ANSWER_FOLD_LEVEL]),
         ).normalized(),
     )
 
@@ -639,6 +643,7 @@ internal object SettingsDataStore {
         this[APPEARANCE_MORPH_LOADING_INDICATOR] = settings.morphLoadingIndicator
         this[APPEARANCE_MORPH_LOADING_BEFORE_RESPONSE] = settings.morphLoadingBeforeResponseOnly
         this[APPEARANCE_MESSAGE_TIMESTAMPS_ENABLED] = settings.messageTimestampsEnabled
+        this[APPEARANCE_ANSWER_FOLD_LEVEL] = settings.answerFoldLevel.persistedValue
     }
 }
 

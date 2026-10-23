@@ -112,6 +112,7 @@ import io.github.mangi.eta.agent.voice.VoiceEntryMode
 import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.agent.voice.VOICE_MODE_SPEECH_OWNER_PREFIX
+import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
@@ -749,9 +750,22 @@ internal fun AgentConversationMessages(
     // Run state still drives footers/reveal below. Row projection only reads it
     // for the trailing work default; ordinary message rows do not depend on it.
     val rowStreamingDefault = projectedTimelineEntries.streamingWorkDefault(workExpansionOverrides, isStreaming)
-    val timelineRows = remember(projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps) {
+    // 「本轮回答出来，就把回答之前的内容收起来」：只在整轮停下之后生效，
+    // 生成过程中一律沿用旧的「跑着的摊开、跑完的收起」，不打扰看进度。
+    // 收起范围由档位决定：激进=整轮一张卡；普通=只收思考/工具；不折叠=彻底不收。
+    val answerFoldLevel = LocalAppearanceSettings.current.answerFoldLevel
+    val answerFoldEnabled = answerFoldLevel != AnswerFoldLevel.NONE
+    val isTurnSettled = !isStreaming && !isPaused && !isCompressingContext
+    val foldedWorkKeys = remember(projectedTimelineEntries, answerFoldEnabled, isTurnSettled) {
+        projectedTimelineEntries.autoFoldedWorkKeys(answerFoldEnabled && isTurnSettled)
+    }
+    val timelineRows = remember(
+        projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps, foldedWorkKeys,
+    ) {
         StreamPerformanceDiagnostics.measure("timeline.project", projectedTimelineEntries.size.toLong()) {
-            timelineRowsProjection.project(projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps)
+            timelineRowsProjection.project(
+                projectedTimelineEntries, workExpansionOverrides, rowStreamingDefault, retainedWorkSteps, foldedWorkKeys,
+            )
         }
     }
     LaunchedEffect(scrollToMessageId, timelineRows) {
@@ -1608,6 +1622,7 @@ internal fun AgentConversationMessages(
                             messages = entry.group.messages,
                             isPaused = isPaused,
                             expanded = entry.expanded,
+                            folded = entry.folded,
                             // Deleted retained keys no longer own a card slice or its bottom gap.
                             hasVisibleSteps = entry.expanded || entry.group.messages.any { message ->
                                 "work-step:${message.id}" in retainedWorkSteps[entry.key].orEmpty()
