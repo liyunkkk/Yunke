@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.skill
 
 import android.content.Context
 import android.content.res.AssetManager
+import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.model.AssistantStorage
 import io.github.mangi.eta.data.db.SkillRegistryEntity
@@ -714,27 +715,47 @@ object SkillRuntime {
             runCatching {
                 java.io.RandomAccessFile(lease, "rw").use { file ->
                     file.channel.tryLock()?.use {
-                        check(deleteSkillPathWithoutFollowingLinks(skillsRoot(context), root))
+                        // 回收孤儿快照同样按尽力而为处理：失败留到下次，不让绑定流程失败。
+                        if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), root)) {
+                            AndroidAgentLogger.warnThrottled("skill-abandoned-cleanup", message = {
+                                "未能回收孤儿技能快照，已跳过：" + root.name
+                            })
+                        }
                     }
                 }
             }
         }
     }
 
-    /** Revocation hides code, never deletes the assistant's writable data. */
+    /**
+     * Revocation hides code, never deletes the assistant's writable data.
+     *
+     * 撤销只是「把已授权的快照收窄」，不是事务：某个副本删不掉（并发清理、目录已消失、
+     * 短暂占用）不该让整个绑定流程失败。历史上这里用 check() 抛 IllegalStateException，
+     * 而调用方在 IO 线程上没有任何捕获，直接把进程打死 —— 打开别的助手的对话就会崩。
+     * 现在改为尽力删除：失败的项留在下次绑定或任务结束时再清，最多写一条告警。
+     */
     private fun revokeRunSkills(context: Context, assistantId: String, enabled: Set<String>) {
         val runs = File(assistantSkillsDirectory(context, assistantId), ".runs")
         runs.listFiles().orEmpty().forEach { run ->
-            File(run, "skills").listFiles().orEmpty().filter { it.name !in enabled }.forEach {
-                check(deleteSkillPathWithoutFollowingLinks(skillsRoot(context), it)) { "无法撤销技能目录" }
+            File(run, "skills").listFiles().orEmpty().filter { it.name !in enabled }.forEach { target ->
+                if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), target)) {
+                    AndroidAgentLogger.warnThrottled("skill-revoke-delete", message = {
+                        "技能撤销时未能删除快照副本，已跳过：" + target.name
+                    })
+                }
             }
         }
     }
 
     fun pruneRunSkills(context: Context, root: File, allowed: Set<String>) =
         SkillMutationLock.withLock(skillsRoot(context)) {
-            root.listFiles().orEmpty().filter { it.name !in allowed }.forEach {
-                check(deleteSkillPathWithoutFollowingLinks(skillsRoot(context), it)) { "无法撤销技能目录" }
+            root.listFiles().orEmpty().filter { it.name !in allowed }.forEach { target ->
+                if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), target)) {
+                    AndroidAgentLogger.warnThrottled("skill-prune-delete", message = {
+                        "技能快照裁剪未能删除副本，已跳过：" + target.name
+                    })
+                }
             }
         }
 
@@ -754,8 +775,13 @@ object SkillRuntime {
         val destRoot = File(view, "skills")
         check(destRoot.mkdirs() || destRoot.isDirectory)
         val keep = entries.map { it.id }.toSet()
-        destRoot.listFiles().orEmpty().filter { it.name !in keep }.forEach {
-            check(deleteSkillPathWithoutFollowingLinks(skillsRoot(context), it))
+        destRoot.listFiles().orEmpty().filter { it.name !in keep }.forEach { stale ->
+            // 发布新快照时清掉旧副本；删不掉不影响本次发布，下次再清。
+            if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), stale)) {
+                AndroidAgentLogger.warnThrottled("skill-publish-cleanup", message = {
+                    "技能快照发布时未能清理旧副本，已跳过：" + stale.name
+                })
+            }
         }
         return entries.map { entry ->
             require(entry.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,199}"))) { "技能 ID 无效" }
@@ -778,7 +804,12 @@ object SkillRuntime {
         val view = root.parentFile!!
         if (retain && view.isDirectory) File(view, ".retained").writeText("daemon")
         closeRunLease(view)
-        if (!retain) check(deleteSkillPathWithoutFollowingLinks(skillsRoot(context), view))
+        if (!retain && !deleteSkillPathWithoutFollowingLinks(skillsRoot(context), view)) {
+            // 快照已 closeRunLease，剩余目录留待下次回收；这里失败不影响任务结束。
+            AndroidAgentLogger.warnThrottled("skill-release-delete", message = {
+                "任务结束时未能删除技能快照，已跳过：" + view.name
+            })
+        }
     }
 
     fun copyAssistantSkills(context: Context, fromId: String, toId: String) {

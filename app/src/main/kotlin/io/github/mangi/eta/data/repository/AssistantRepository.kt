@@ -175,7 +175,14 @@ internal object AssistantRepository {
             next to (next.id == snapshot.activeId)
         }
         if (::applicationContext.isInitialized) {
-            refreshAssistantSkills(updated.id, publishVisible = publishVisible)
+            // 技能快照发布是尽力而为的附属动作：失败不能连带把助手保存也弄崩。
+            runCatching { refreshAssistantSkills(updated.id, publishVisible = publishVisible) }
+                .onFailure { error ->
+                    io.github.mangi.eta.core.AndroidAgentLogger.error(
+                        "Assistant skill refresh after update failed: ${error.javaClass.simpleName}",
+                        error,
+                    )
+                }
         }
         return updated
     }
@@ -198,9 +205,21 @@ internal object AssistantRepository {
         }
         AgentMemoryRepository.delete(id)
         if (::applicationContext.isInitialized) {
-            SkillRuntime.deleteAssistantSkills(applicationContext, id)
+            runCatching { SkillRuntime.deleteAssistantSkills(applicationContext, id) }
+                .onFailure { error ->
+                    io.github.mangi.eta.core.AndroidAgentLogger.error(
+                        "Assistant skill cleanup failed: ${error.javaClass.simpleName}",
+                        error,
+                    )
+                }
             if (nextActive != id) {
-                refreshAssistantSkills(nextActive, publishVisible = true)
+                runCatching { refreshAssistantSkills(nextActive, publishVisible = true) }
+                    .onFailure { error ->
+                        io.github.mangi.eta.core.AndroidAgentLogger.error(
+                            "Assistant skill refresh after delete failed: ${error.javaClass.simpleName}",
+                            error,
+                        )
+                    }
             }
         }
     }
@@ -223,7 +242,13 @@ internal object AssistantRepository {
             publish(next)
             next.activeId
         }
-        refreshAssistantSkills(active, publishVisible = true)
+        runCatching { refreshAssistantSkills(active, publishVisible = true) }
+            .onFailure { error ->
+                io.github.mangi.eta.core.AndroidAgentLogger.error(
+                    "Assistant skill refresh after import failed: ${error.javaClass.simpleName}",
+                    error,
+                )
+            }
     }
 
     fun exportAvatars(): Map<String, ByteArray> {
@@ -271,7 +296,17 @@ internal object AssistantRepository {
             publish(snapshot)
             true
         }
-        if (changed) refreshAssistantSkills(id, publishVisible = true)
+        if (changed) {
+            // 切换助手会重新发布技能快照；历史上这里没接住异常，导致打开其它助手的
+            // 对话时进程被 SkillRuntime 的删除失败直接打死。切换本身必须成功。
+            runCatching { refreshAssistantSkills(id, publishVisible = true) }
+                .onFailure { error ->
+                    io.github.mangi.eta.core.AndroidAgentLogger.error(
+                        "Assistant skill refresh after select failed: ${error.javaClass.simpleName}",
+                        error,
+                    )
+                }
+        }
     }
 
     private fun refreshAssistantSkills(assistantId: String, publishVisible: Boolean) {
