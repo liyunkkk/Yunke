@@ -15,6 +15,10 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 
 private const val BUILTIN_SKILL_MANIFEST_ASSET = "builtin_skills/manifest.json"
+/** 无锁文件快照的孤儿判定窗口：创建中的快照还没写 .lease，不能立刻当垃圾。 */
+private const val ORPHAN_RUN_VIEW_GRACE_MS = 10 * 60 * 1000L
+/** 单个助手允许保留的技能运行快照数；每份含全套技能副本，不能无限堆积。 */
+private const val MAX_RUN_VIEWS = 8
 internal const val BUILTIN_SKILL_SOURCE = "builtin"
 internal const val USER_SKILL_SOURCE = "user"
 private const val BUILTIN_SOURCE = BUILTIN_SKILL_SOURCE
@@ -683,7 +687,12 @@ object SkillRuntime {
             val runs = File(assistantSkillsDirectory(context, assistantId), ".runs")
             check(runs.mkdirs() || runs.isDirectory)
             cleanupAbandonedRunViews(context, runs)
-            check(runs.listFiles().orEmpty().size < 128) { "技能运行快照已达上限，请先清理已结束任务的快照" }
+            // 清理后仍超过上限，按最旧优先再收一批；技能副本动辄数十兆，
+            // 上限太松会长期占空间。仍然失败的保留，不阻断本次任务。
+            enforceRunViewLimit(context, runs)
+            check(runs.listFiles().orEmpty().size < MAX_RUN_VIEWS) {
+                "技能运行快照已达上限，请先清理已结束任务的快照"
+            }
             val root = File(runs, java.util.UUID.randomUUID().toString())
             check(root.mkdirs())
             val leaseFile = java.io.RandomAccessFile(File(root, ".lease"), "rw")
@@ -706,24 +715,63 @@ object SkillRuntime {
         }
     }
 
-    /** A process crash releases its file lock. Never collect a live or daemon-retained view. */
+    /**
+     * 回收已结束任务的技能快照。绝不回收活动租约或 daemon 保留的视图。
+     *
+     * 两类会被回收：
+     * 1. 有 `.lease` 且能拿到排他锁 —— 进程正常退出，锁已释放；
+     * 2. 没有 `.lease` 的孤儿 —— 崩溃/被杀时锁文件可能没写成或随进程消失，
+     *    旧实现直接 `return@forEach` 跳过，这些快照就永久残留（每份含全套技能副本）。
+     *    现在改为按目录年龄回收，避免误删正在创建的快照。
+     *
+     * 失败一律只记告警：这是后台清理，不该让任何调用方失败。
+     */
     private fun cleanupAbandonedRunViews(context: Context, runs: File) {
+        val now = System.currentTimeMillis()
         runs.listFiles().orEmpty().forEach { root ->
-            if (!root.isDirectory || File(root, ".retained").exists() || runLeases.containsKey(root.canonicalPath)) return@forEach
+            if (!root.isDirectory) return@forEach
+            if (File(root, ".retained").exists()) return@forEach
+            if (runLeases.containsKey(root.canonicalPath)) return@forEach
             val lease = File(root, ".lease")
-            if (Files.isSymbolicLink(lease.toPath()) || !lease.isFile) return@forEach
-            runCatching {
-                java.io.RandomAccessFile(lease, "rw").use { file ->
-                    file.channel.tryLock()?.use {
-                        // 回收孤儿快照同样按尽力而为处理：失败留到下次，不让绑定流程失败。
-                        if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), root)) {
-                            AndroidAgentLogger.warnThrottled("skill-abandoned-cleanup", message = {
-                                "未能回收孤儿技能快照，已跳过：" + root.name
-                            })
-                        }
+            if (!Files.isSymbolicLink(lease.toPath()) && lease.isFile) {
+                runCatching {
+                    java.io.RandomAccessFile(lease, "rw").use { file ->
+                        file.channel.tryLock()?.use { collectAbandonedView(context, root) }
                     }
                 }
+                return@forEach
             }
+            // 无锁文件：只有足够老的目录才认定是孤儿，给创建中的快照留出窗口。
+            if (now - root.lastModified() < ORPHAN_RUN_VIEW_GRACE_MS) return@forEach
+            collectAbandonedView(context, root)
+        }
+    }
+
+    /**
+     * 未释放快照超过上限时，从最旧的开始回收。
+     *
+     * 只处理既没有活动租约、也没有 daemon 保留标记的目录；仍然失败的留到下次。
+     */
+    private fun enforceRunViewLimit(context: Context, runs: File) {
+        val survivors = runs.listFiles().orEmpty().filter { it.isDirectory }
+        if (survivors.size < MAX_RUN_VIEWS) return
+        val candidates = survivors
+            .filterNot { File(it, ".retained").exists() }
+            .filterNot { runLeases.containsKey(it.canonicalPath) }
+            .sortedBy { it.lastModified() }
+        var excess = survivors.size - MAX_RUN_VIEWS + 1
+        for (candidate in candidates) {
+            if (excess <= 0) break
+            collectAbandonedView(context, candidate)
+            excess -= 1
+        }
+    }
+
+    private fun collectAbandonedView(context: Context, root: File) {
+        if (!deleteSkillPathWithoutFollowingLinks(skillsRoot(context), root)) {
+            AndroidAgentLogger.warnThrottled("skill-abandoned-cleanup", message = {
+                "未能回收孤儿技能快照，已跳过：" + root.name
+            })
         }
     }
 

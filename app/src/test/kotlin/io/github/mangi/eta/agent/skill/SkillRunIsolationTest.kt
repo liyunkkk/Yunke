@@ -78,6 +78,36 @@ class SkillRunIsolationTest {
         assertTrue(emptyRoot.listFiles().orEmpty().isEmpty())
     }
 
+    @Test fun abandonedSnapshotWithoutLeaseIsCollected() {
+        val context = context()
+        val (_, _) = SkillRuntime.createRunSkills(context, "assistant-a", listOf(createEntry(context)))
+        val runs = File(SkillRuntime.assistantSkillsDirectory(context, "assistant-a"), ".runs")
+        // 模拟崩溃：锁文件没写成，目录已经是老目录。
+        val orphan = File(runs, "orphan-without-lease").apply { mkdirs() }
+        File(orphan, "skills").mkdirs()
+        File(orphan, "skills/ghost").apply { mkdirs() }
+        File(orphan, "skills/ghost/SKILL.md").writeText("---\nname: ghost\n---\nbody")
+        val aged = System.currentTimeMillis() - 60L * 60 * 1000
+        assertTrue(orphan.setLastModified(aged))
+        assertTrue(File(orphan, "skills").setLastModified(aged))
+
+        SkillRuntime.createRunSkills(context, "assistant-a", listOf(createEntry(context)))
+
+        assertFalse("无锁文件的孤儿快照应被回收", orphan.exists())
+    }
+
+    @Test fun freshSnapshotWithoutLeaseSurvivesTheGraceWindow() {
+        val context = context()
+        val runs = File(SkillRuntime.assistantSkillsDirectory(context, "assistant-a"), ".runs").apply { mkdirs() }
+        // 刚创建、还没写 .lease 的快照不能被当成垃圾。
+        val pending = File(runs, "pending-create").apply { mkdirs() }
+        File(pending, "skills").mkdirs()
+
+        SkillRuntime.createRunSkills(context, "assistant-a", listOf(createEntry(context)))
+
+        assertTrue("创建窗口内的快照不应被回收", pending.exists())
+    }
+
     @Test fun releaseDeletesSnapshotWithoutFollowingTheDataPointer() {
         val context = context(); val entry = createEntry(context)
         val (root, _) = SkillRuntime.createRunSkills(context, "assistant-a", listOf(entry))
