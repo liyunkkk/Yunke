@@ -676,6 +676,16 @@ object SkillRuntime {
             val root = File(skillsRoot(context), "$VISIBLE_SKILL_DIR/${AssistantStorage.id(assistantId)}")
             val result = publishSkillView(context, assistantId, entries, root)
             revokeRunSkills(context, assistantId, entries.map { it.id }.toSet())
+            // 顺带回收该助手的历史快照。只在 createRunSkills 里清理的话，用户只要
+            // 不开新任务，崩溃留下的孤儿快照就永远留在磁盘上（每份含全套技能副本）。
+            // 切换助手/打开对话本来就会走到这里，是最自然的清理时机。
+            runCatching {
+                val runs = File(assistantSkillsDirectory(context, assistantId), ".runs")
+                if (runs.isDirectory) {
+                    cleanupAbandonedRunViews(context, runs)
+                    enforceRunViewLimit(context, runs)
+                }
+            }
             result
         }
 
