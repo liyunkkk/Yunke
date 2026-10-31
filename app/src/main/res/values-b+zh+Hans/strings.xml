@@ -1616,4 +1616,11 @@
     <string name="ui_provider_avatar_summary">选择内置头像，或从相册选一张</string>
     <string name="ui_provider_avatar_custom">从相册选择</string>
     <string name="ui_provider_avatar_default">恢复默认</string>
+  <string name="overlay_virtual_canvas_auto">后台画布</string>
+  <string name="overlay_virtual_canvas_takeover">手动接管中</string>
+  <string name="overlay_virtual_takeover">接管</string>
+  <string name="overlay_virtual_continue">继续</string>
+  <string name="overlay_virtual_fullscreen">全屏</string>
+  <string name="overlay_virtual_collapse">收起画板</string>
+  <string name="overlay_capsule_toggle">%1$s，点击展开控制</string>
 </resources>

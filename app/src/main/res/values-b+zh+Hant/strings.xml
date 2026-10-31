@@ -1610,4 +1610,11 @@
     <string name="ui_provider_avatar_summary">選擇內建頭像，或從相冊選一張</string>
     <string name="ui_provider_avatar_custom">從相冊選擇</string>
     <string name="ui_provider_avatar_default">恢復預設</string>
+  <string name="overlay_virtual_canvas_auto">後台畫布</string>
+  <string name="overlay_virtual_canvas_takeover">手動接管中</string>
+  <string name="overlay_virtual_takeover">接管</string>
+  <string name="overlay_virtual_continue">繼續</string>
+  <string name="overlay_virtual_fullscreen">全螢幕</string>
+  <string name="overlay_virtual_collapse">收合畫板</string>
+  <string name="overlay_capsule_toggle">%1$s，點擊展開控制</string>
 </resources>

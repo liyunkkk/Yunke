@@ -106,12 +106,42 @@ private val SuccessColor = Color(0xFF34C759)
 private const val SupplementExitDelayMs = 380L
 
 @Composable
-private fun phaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
+internal fun phaseAccent(phase: AgentOverlayPhase): Color = when (phase) {
     AgentOverlayPhase.RUNNING -> MiuixTheme.colorScheme.primary
     AgentOverlayPhase.PAUSED -> Color(0xFFFF9F0A)
     AgentOverlayPhase.FINISHED -> SuccessColor
     AgentOverlayPhase.FAILED -> MiuixTheme.colorScheme.error
 }
+
+/** Eta 胶囊沿用的命名；语义与 [phaseAccent] 完全相同。 */
+@Composable
+internal fun overlayPhaseAccent(phase: AgentOverlayPhase): Color = phaseAccent(phase)
+
+/** 屏幕四角圆角，供胶囊与装裱视窗贴合系统圆角。 */
+internal data class ScreenCornerRadii(
+    val topLeft: Float,
+    val topRight: Float,
+    val bottomRight: Float,
+    val bottomLeft: Float,
+) {
+    companion object {
+        val Zero = ScreenCornerRadii(0f, 0f, 0f, 0f)
+    }
+}
+
+/** Eta 胶囊沿用的命名；转发到既有 [SupplementInput]。 */
+@Composable
+internal fun OverlaySupplementInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onCancel: () -> Unit,
+    onSend: () -> Unit,
+) = SupplementInput(
+    value = value,
+    onValueChange = onValueChange,
+    onCancel = onCancel,
+    onSend = onSend,
+)
 
 /**
  * 助手光球窗口：默认显示在屏幕右侧中下，可拖动；点击展开/收起小气泡。

@@ -1650,4 +1650,11 @@
     <string name="ui_provider_avatar_summary">Choose a built-in avatar or pick an image</string>
     <string name="ui_provider_avatar_custom">Pick image</string>
     <string name="ui_provider_avatar_default">Reset to default</string>
+  <string name="overlay_virtual_canvas_auto">Background canvas</string>
+  <string name="overlay_virtual_canvas_takeover">Manual control</string>
+  <string name="overlay_virtual_takeover">Take over</string>
+  <string name="overlay_virtual_continue">Continue</string>
+  <string name="overlay_virtual_fullscreen">Fullscreen</string>
+  <string name="overlay_virtual_collapse">Collapse canvas</string>
+  <string name="overlay_capsule_toggle">%1$s, tap to expand controls</string>
 </resources>

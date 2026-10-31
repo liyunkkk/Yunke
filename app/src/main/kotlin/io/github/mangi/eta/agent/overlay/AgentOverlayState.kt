@@ -15,6 +15,13 @@ internal data class AgentOverlayState(
     val round: Int = 0,
     val status: AgentOverlayStatus = AgentOverlayStatus.Preparing,
     val detailText: String = "",
+    /**
+     * 最近一段思考/流式文本的短预览，供胶囊展开态的 ThoughtLine 显示。
+     *
+     * 与 detailText 共用同一来源（流式增量累积），这里单独暴露是因为胶囊只显示
+     * 一行、且需要在 RUNNING 之外清空；完整文本仍走 detailText。
+     */
+    val thought: String = "",
 ) {
     companion object {
         val Initial = AgentOverlayState(status = AgentOverlayStatus.Received)
