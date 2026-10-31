@@ -13,12 +13,19 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
  * runtime callers must also pass the originating session's frozen surface mode.
  */
 internal object AgentOverlayVisibilityPolicy {
-    fun allowsOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
-        taskSurfaceMode == AgentTaskSurfaceMode.FOREGROUND
+    /**
+     * 浮层是否允许显示。
+     *
+     * 移植 Eta 胶囊后的口径：浮层跟随「是否拥有手机操作权」，与任务落在主屏还是后台虚拟屏无关。
+     * 后台虚拟屏恰恰最需要这个胶囊——用户在主屏正常使用，胶囊提供微缩镜与接管入口。
+     * 因此三种 surface 都允许；真正决定「要不要画」的是 shouldRevealFor 里的 GUI 事件。
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun allowsOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean = true
 
-    /** 运行开始时：前台，或还没选的“每次询问”（可能选前台），都先准备好悬浮窗状态。 */
-    fun mayUseOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
-        taskSurfaceMode != AgentTaskSurfaceMode.BACKGROUND
+    /** 运行开始时一律先准备好浮层状态；是否显现仍由 GUI 事件驱动。 */
+    @Suppress("UNUSED_PARAMETER")
+    fun mayUseOverlay(taskSurfaceMode: AgentTaskSurfaceMode): Boolean = true
 
     fun shouldRevealFor(event: AgentEvent, taskSurfaceMode: AgentTaskSurfaceMode): Boolean =
         allowsOverlay(taskSurfaceMode) && shouldRevealFor(event)
@@ -103,9 +110,18 @@ internal object AgentOverlayVisibilityPolicy {
         "open_system_panel",
     )
 
+    /** 后台副屏会话的生命周期工具：建/收副屏时也应显现胶囊，用户才有接管入口。 */
+    private val virtualDisplayTools = setOf(
+        "start_virtual_session",
+        "keep_virtual_result",
+        "finish_virtual_session",
+        "present_to_user",
+    )
+
     private val foregroundOperationTools = setOf(
         "observe_screen",
         *foregroundDrivingTools.toTypedArray(),
+        *virtualDisplayTools.toTypedArray(),
     )
 
     private val entrySurfaceDismissalTools =

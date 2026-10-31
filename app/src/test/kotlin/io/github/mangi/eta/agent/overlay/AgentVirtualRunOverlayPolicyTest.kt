@@ -8,23 +8,46 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentVirtualRunOverlayPolicyTest {
+    /**
+     * 移植 Eta 胶囊后的口径：浮层跟随「是否拥有手机操作权」，与任务落在主屏还是后台虚拟屏无关。
+     * 后台虚拟屏恰恰最需要胶囊（用户在主屏正常使用，胶囊提供微缩镜与接管入口）。
+     * 因此三种 surface 的显现/记录/结果卡判定必须与 FOREGROUND 完全一致。
+     */
     @Test
-    fun `virtual and unresolved modes never reveal record or dismiss for foreground tool names`() {
-        for (mode in listOf(AgentTaskSurfaceMode.BACKGROUND, AgentTaskSurfaceMode.ASK)) {
-            assertFalse(AgentOverlayVisibilityPolicy.allowsOverlay(mode))
+    fun `every surface mode shares the same overlay presentation rules`() {
+        for (mode in AgentTaskSurfaceMode.entries) {
+            assertTrue("$mode", AgentOverlayVisibilityPolicy.allowsOverlay(mode))
             for (event in toolEvents()) {
-                assertFalse("$mode: $event", AgentOverlayVisibilityPolicy.shouldRevealFor(event, mode))
-                assertFalse("$mode: $event", AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event, mode))
+                assertEquals(
+                    "$mode: $event",
+                    AgentOverlayVisibilityPolicy.shouldRevealFor(event),
+                    AgentOverlayVisibilityPolicy.shouldRevealFor(event, mode),
+                )
+                assertEquals(
+                    "$mode: $event",
+                    AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event),
+                    AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event, mode),
+                )
                 for (ready in listOf(false, true)) {
-                    assertFalse(
+                    assertEquals(
                         "$mode: $event, ready=$ready",
+                        AgentOverlayVisibilityPolicy.shouldRecordForegroundExecution(event, ready),
                         AgentOverlayVisibilityPolicy.shouldRecordForegroundExecution(event, ready, mode),
                     )
                 }
             }
-            // Terminal presentation must stay quiet even if a previous run set this flag.
             assertFalse(AgentOverlayVisibilityPolicy.shouldShowResultCard(mode, false))
-            assertFalse(AgentOverlayVisibilityPolicy.shouldShowResultCard(mode, true))
+            assertTrue(AgentOverlayVisibilityPolicy.shouldShowResultCard(mode, true))
+        }
+    }
+
+    /** 副屏会话的生命周期工具也要触发显现，否则后台虚拟屏任务没有接管入口。 */
+    @Test
+    fun `virtual display tools reveal the overlay in background mode`() {
+        val mode = AgentTaskSurfaceMode.BACKGROUND
+        for (name in listOf("start_virtual_session", "keep_virtual_result", "finish_virtual_session", "present_to_user")) {
+            assertTrue(name, AgentOverlayVisibilityPolicy.shouldRevealFor(AgentEvent.ToolStarted(1, "call", name, "{}"), mode))
+            assertTrue(name, AgentOverlayVisibilityPolicy.shouldRevealFor(AgentEvent.ToolFinished(1, "call", name, "ok", 0, 0), mode))
         }
     }
 
