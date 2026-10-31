@@ -82,6 +82,25 @@ final class OwnerFrameStore implements ImageReader.OnImageAvailableListener {
     }
 
     /** PNG bytes and metadata always belong to the same captured image, including cache hits. */
+    /** 缩略帧：微缩镜/装裱视窗用，低分辨率 JPEG，字节数远小于全分辨率 PNG。 */
+    Snapshot encodeThumb(int maxBytes) throws OwnerException {
+        try {
+            OwnerFramePolicy.Snapshot snapshot = frames.snapshot(THUMB_JPEG_ENCODER);
+            if (snapshot == null) {
+                throw new OwnerException(OwnerProtocol.ERROR_NO_FRAME, "no frame");
+            }
+            if (snapshot.png.length > maxBytes) {
+                throw new OwnerException(OwnerProtocol.ERROR_IMAGE_TOO_LARGE,
+                        "thumb " + snapshot.png.length);
+            }
+            return new Snapshot(snapshot);
+        } catch (OwnerException ex) {
+            throw ex;
+        } catch (Throwable ex) {
+            throw new OwnerException(OwnerProtocol.ERROR_SNAPSHOT_FAILED, "thumb");
+        }
+    }
+
     Snapshot encodePng(int maxBytes) throws OwnerException {
         try {
             OwnerFramePolicy.Snapshot snapshot = frames.snapshot(PNG_ENCODER);
@@ -105,19 +124,59 @@ final class OwnerFrameStore implements ImageReader.OnImageAvailableListener {
     private static final OwnerFramePolicy.Encoder PNG_ENCODER = new OwnerFramePolicy.Encoder() {
         @Override
         public byte[] encode(byte[] rgba, int width, int height) {
-            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            return encodeRgba(rgba, width, height, 0, Bitmap.CompressFormat.PNG, 100);
+        }
+    };
+
+    /**
+     * 缩略帧编码器：给胶囊微缩镜/装裱视窗用。
+     *
+     * 全分辨率 PNG 编码 + Base64 + 单行 JSON 是帧率上不去的根因（见 C 方案）。
+     * 微缩镜实际只渲染 18x32dp，没必要传原图：先按长边缩到 [maxEdge]，
+     * 再用 JPEG 低质量编码，单帧字节数降到 1/10 以下，往返才能提到每秒多帧。
+     */
+    private static final OwnerFramePolicy.Encoder THUMB_JPEG_ENCODER = new OwnerFramePolicy.Encoder() {
+        @Override
+        public byte[] encode(byte[] rgba, int width, int height) {
+            return encodeRgba(rgba, width, height, THUMB_MAX_EDGE_PX, Bitmap.CompressFormat.JPEG, THUMB_JPEG_QUALITY);
+        }
+    };
+
+    private static byte[] encodeRgba(byte[] rgba, int width, int height, int maxEdge,
+                                     Bitmap.CompressFormat format, int quality) {
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        try {
+            bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgba));
+            Bitmap source = bitmap;
+            Bitmap scaled = null;
+            if (maxEdge > 0) {
+                int longest = Math.max(width, height);
+                if (longest > maxEdge) {
+                    float ratio = (float) maxEdge / (float) longest;
+                    int tw = Math.max(1, Math.round(width * ratio));
+                    int th = Math.max(1, Math.round(height * ratio));
+                    scaled = Bitmap.createScaledBitmap(bitmap, tw, th, true);
+                    source = scaled;
+                }
+            }
             try {
-                bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(rgba));
-                ByteArrayOutputStream out = new ByteArrayOutputStream(rgba.length / 4);
-                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                ByteArrayOutputStream out = new ByteArrayOutputStream(rgba.length / 8);
+                if (!source.compress(format, quality, out)) {
                     throw new IllegalStateException("compress");
                 }
                 return out.toByteArray();
             } finally {
-                bitmap.recycle();
+                if (scaled != null) scaled.recycle();
             }
+        } finally {
+            bitmap.recycle();
         }
-    };
+    }
+
+    /** 缩略帧长边上限：微缩镜 18x32dp 在 440dpi 下约 100px 宽，360 已足够清晰。 */
+    static final int THUMB_MAX_EDGE_PX = 360;
+    /** 缩略帧 JPEG 质量：视觉预览用途，60 在手机屏上几乎看不出差别。 */
+    static final int THUMB_JPEG_QUALITY = 60;
 
     private static final class PlaneFrame implements OwnerFramePolicy.Frame {
         private final Image image;

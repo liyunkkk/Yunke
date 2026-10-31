@@ -1388,17 +1388,25 @@ internal object VirtualDisplaySession {
      * 只读镜像页取帧：复用本会话的 owner 连接取一帧，返回 {data(base64), width, height}。
      * 只读、不改变任何观察状态；没有会话或取帧失败时返回 null。
      */
-    @Synchronized fun viewerFrame(): JSONObject? {
+    /**
+     * 预览取帧。[thumb] = true 走 owner 的低分辨率 JPEG 缩略通道，
+     * 供胶囊微缩镜/装裱视窗连续刷新；全分辨率 PNG 只用于 Agent 真正看图。
+     */
+    @Synchronized fun viewerFrame(thumb: Boolean = false): JSONObject? {
         val session = sessions.entries.firstOrNull { it.value.phase != "finished" }?.value ?: return null
         val client = session.client ?: return null
-        val shot = runCatching { client.snapshot() }.getOrNull() ?: return null
+        val shot = runCatching { client.snapshot(thumb = thumb) }.getOrNull() ?: return null
         if (!shot.ok) return null
         val data = body(shot)
         val encoded = data.optString("data")
         val width = data.optInt("width", 0)
         val height = data.optInt("height", 0)
         if (encoded.isBlank() || width <= 0 || height <= 0) return null
-        return JSONObject().put("data", encoded).put("width", width).put("height", height)
+        return JSONObject()
+            .put("data", encoded)
+            .put("width", width)
+            .put("height", height)
+            .put("format", data.optString("format", if (thumb) "jpeg" else "png"))
     }
 
     /** 只读镜像页的最近操作轨迹。 */

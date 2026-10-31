@@ -149,17 +149,25 @@ internal class VirtualDisplayOwnerClient private constructor(
         )
     }
 
-    /** `snapshot`：请求截图，响应上限放宽到 16MB。 */
+    /**
+     * `snapshot`：请求截图，响应上限放宽到 16MB。
+     *
+     * [thumb] = true 时 owner 返回低分辨率 JPEG（长边 360），用于胶囊微缩镜与装裱视窗的
+     * 连续预览。全分辨率 PNG 单帧体积大、编码慢，做不到多帧/秒；预览不需要原图。
+     */
     fun snapshot(
         runId: String = this.runId,
         timeoutMillis: Long = SCREENSHOT_REQUEST_TIMEOUT_MS,
+        thumb: Boolean = false,
     ): OwnerResponse {
         val run = runId.ifBlank {
             return errorResponse(VirtualDisplayOwnerProtocol.OP_SNAPSHOT, VirtualDisplayOwnerError.REQUEST_INVALID)
         }
+        val payload = linkedMapOf(VirtualDisplayOwnerProtocol.FIELD_RUN_ID to run)
+        if (thumb) payload["thumb"] = "true"
         return request(
             VirtualDisplayOwnerProtocol.OP_SNAPSHOT,
-            linkedMapOf(VirtualDisplayOwnerProtocol.FIELD_RUN_ID to run),
+            payload,
             timeoutMillis,
             SCREENSHOT_MAX_RESPONSE_BYTES,
         )

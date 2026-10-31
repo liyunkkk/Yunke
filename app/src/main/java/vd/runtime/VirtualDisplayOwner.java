@@ -469,9 +469,13 @@ public final class VirtualDisplayOwner {
             out.put("displayId", created.displayId);
             out.put("frameCount", frames.frameCount());
             out.put("timestampNs", frames.latestTimestampNs());
-            out.put("format", "png");
+            // thumb=true：微缩镜/装裱视窗预览用低分辨率 JPEG，帧率与传输量都远优于全分辨率 PNG。
+            boolean thumb = parsed.optionalBoolean("thumb", false);
+            out.put("format", thumb ? "jpeg" : "png");
             if (include) {
-                OwnerFrameStore.Snapshot snapshot = frames.encodePng(maxBytes);
+                OwnerFrameStore.Snapshot snapshot = thumb
+                        ? frames.encodeThumb(maxBytes)
+                        : frames.encodePng(maxBytes);
                 out.put("frameCount", snapshot.frameCount);
                 out.put("timestampNs", snapshot.timestampNs);
                 out.put("width", snapshot.width);
