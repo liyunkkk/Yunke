@@ -36,12 +36,12 @@ import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.overlay.AgentOverlayCapsule
+import io.github.mangi.eta.agent.overlay.AgentOverlayGlow
+import io.github.mangi.eta.agent.overlay.ScreenCornerRadii
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
+import io.github.mangi.eta.agent.virtualdisplay.YunkeVirtualDisplayBridge
 import io.github.mangi.eta.agent.overlay.AgentHapticFeedback
-import io.github.mangi.eta.agent.overlay.AgentOverlayBubble
-import io.github.mangi.eta.agent.overlay.AgentOverlayOrb
-import io.github.mangi.eta.agent.overlay.AgentOrbPosition
-import io.github.mangi.eta.agent.overlay.AgentOrbBounds
-import io.github.mangi.eta.agent.overlay.AgentOrbPlacement
 import io.github.mangi.eta.agent.overlay.AgentResultCard
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
 import io.github.mangi.eta.agent.overlay.AgentOverlayState
@@ -109,15 +109,23 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     )
 
     private var windowManager: WindowManager? = null
-    private var orbView: ComposeView? = null
-    private var bubbleView: ComposeView? = null
+    // 顶部状态胶囊：唯一的常驻浮层窗口（原悬浮球 + 气泡 + 结果卡三窗口方案已下线）。
+    private var capsuleView: ComposeView? = null
+    private var capsuleParams: WindowManager.LayoutParams? = null
+    // 氛围光窗口：全屏触摸穿透，承载边缘流光与破壁放大动画。
+    private var glowView: ComposeView? = null
+    private var glowParams: WindowManager.LayoutParams? = null
+    // 结果卡保留：任务结束后仍需一张可关闭的汇总卡。
     private var resultCardView: ComposeView? = null
-    private var orbParams: WindowManager.LayoutParams? = null
-    private var bubbleParams: WindowManager.LayoutParams? = null
     private var resultCardParams: WindowManager.LayoutParams? = null
-    // Retain the user's placement across hide/show while this service is alive.
-    private var orbPosition: AgentOrbPosition? = null
-    private var orbDragStart = AgentOrbPosition(0f, 0f)
+    /** 胶囊展开态。收起时只显示一行状态；展开后显示控制与装裱视窗。 */
+    private val capsuleExpanded = mutableStateOf(false)
+    /** 补充输入模式下胶囊需要可获焦，尺寸与标志位随之切换。 */
+    private val capsuleSupplementFocusable = mutableStateOf(false)
+    /** 让路态：手势经过胶囊时窗口临时不吃触摸。 */
+    private val capsuleYielded = mutableStateOf(false)
+    /** 副屏实时快照，由 YunkeVirtualDisplayBridge 供给。 */
+    private val virtualDisplayState = mutableStateOf(VirtualDisplaySnapshot.Inactive)
 
     private val state = mutableStateOf(AgentOverlayState.Initial)
     // The compact orb does not display tool details or round counters.
@@ -148,7 +156,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        positionOverlayWindows()
+        // 屏幕旋转/尺寸变化后重新贴合状态栏，并按当前档位重算胶囊窗口尺寸。
+        val wm = windowManager
+        val capsule = capsuleView
+        val lp = capsuleParams
+        if (wm != null && capsule != null && lp != null) {
+            lp.y = statusBarHeightPx()
+            runCatching { wm.updateViewLayout(capsule, lp) }
+        }
+        updateCapsuleWindowBounds()
     }
 
     override fun onBind(intent: Intent): IBinder? {
@@ -196,14 +212,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         overlaySession = null
         mainHandler.removeCallbacksAndMessages(null)
         resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
         resultCardView = null
-        bubbleView = null
-        orbView = null
+        capsuleView = null
+        glowView = null
         resultCardParams = null
-        bubbleParams = null
-        orbParams = null
+        capsuleParams = null
+        glowParams = null
+        YunkeVirtualDisplayBridge.stop()
         windowManager = null
         pendingResultTranscripts.values.forEach { prepared -> runCatching { prepared.close() } }
         pendingResultTranscripts.clear()
@@ -683,7 +700,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     state.value = state.value.applyControlledEvent(event, session.controller.isPaused)
                 }
                 if (revealsForegroundOperation && entrySurfaceReady && ownsOverlay) {
-                    if (orbView == null) {
+                    if (capsuleView == null) {
                         AgentHapticFeedback.perform(
                             this,
                             AgentHapticFeedback.Type.RUN_STARTED,
@@ -748,7 +765,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 overlaySession !== session
             ) {
                 if (sessions.isEmpty() && pendingStartRequests.isEmpty() && !AgentChildTaskGroups.hasAnyActive() &&
-                    orbView == null && bubbleView == null && resultCardView == null
+                    capsuleView == null && resultCardView == null
                 ) {
                     stopSelf()
                 }
@@ -971,7 +988,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         // Preparation failures have no session/overlay ownership. They must not
         // reuse another run's foreground-execution flag or terminal windows.
         if (sessions.isEmpty() && pendingStartRequests.isEmpty() && !AgentChildTaskGroups.hasAnyActive() &&
-            orbView == null && bubbleView == null && resultCardView == null
+            capsuleView == null && resultCardView == null
         ) {
             stopSelf()
         }
@@ -1051,7 +1068,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun stopIfRuntimeIdle() {
         if (sessions.isEmpty() && pendingStartRequests.isEmpty() && !AgentChildTaskGroups.hasAnyActive() &&
-            orbView == null && bubbleView == null && resultCardView == null) stopSelf()
+            capsuleView == null && resultCardView == null) stopSelf()
     }
 
     private fun requestPause() {
@@ -1113,7 +1130,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val updatesOverlay = targetSession?.let {
             overlaySession === it && AgentOverlayVisibilityPolicy.allowsOverlay(it.overlaySurfaceMode)
         } ?: (targetRunId == overlayRunId)
-        if (updatesOverlay) setBubbleInputMode(focusable = false)
+        if (updatesOverlay) setCapsuleInputMode(focusable = false)
         targetSession?.let { session ->
             val event = session.steer(supplementText, imagesJson) {
                 recordSupplementEvent(targetRunId, supplementText, requestId, imagesJson)
@@ -1179,84 +1196,148 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun showOverlay() {
         val session = overlaySession ?: return
         if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)) return
-        if (orbView != null) return
+        if (capsuleView != null) return
         // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
         if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) return
         val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
         windowManager = wm
 
-        // No full-screen decorative window: it shared the UI/RenderThread with chat scrolling.
-        // ── 光球窗口：默认右侧中下，可拖动 ──────────────────────────
-        val orb = createOverlayComposeView {
-            AgentOverlayOrb(
-                phase = orbPhase.value,
-                collapsed = collapsed.value,
-                onToggleCollapse = ::toggleCollapse,
-                onDragStart = ::beginOrbDrag,
-                onDrag = ::handleDrag,
-            )
-        }
-        val orbLp = orbLayoutParams()
-        runCatching { wm.addView(orb, orbLp) }.onFailure { throwable ->
-            AndroidAgentLogger.warnThrottled("runtime_orb_add_view_failed") {
-                "Agent runtime orb addView failed: type=${throwable.safeLogType()}"
-            }
-            return
-        }
-        orbView = orb
-        orbParams = orbLp
-        orb.visibility = View.VISIBLE
-        orb.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
-            if (orbView === orb && (r - l != or - ol || b - t != ob - ot)) positionOverlayWindows()
-        }
-        positionOverlayWindows()
-
-        // ── 小气泡窗口：展开态显示，跟随光球，窗口外触摸穿透 ─────────
-        if (!collapsed.value) {
-            showBubble(wm)
-        }
-    }
-
-    private fun toggleCollapse() {
-        collapsed.value = !collapsed.value
-        val wm = windowManager ?: return
-        if (collapsed.value) {
-            bubbleView?.let { view -> runCatching { wm.removeView(view) } }
-            bubbleView = null
-            bubbleParams = null
-        } else {
-            if (bubbleView == null) showBubble(wm)
-        }
-    }
-
-    private fun showBubble(wm: WindowManager) {
-        val session = overlaySession ?: return
-        if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)) return
-        if (bubbleView != null) return
-        val bubble = createOverlayComposeView {
-            AgentOverlayBubble(
+        // ── 氛围光窗口：全屏触摸穿透，彩虹光圈（后台虚拟屏运行时隐藏流光，仅承载破壁动画） ──
+        val glow = createOverlayComposeView {
+            AgentOverlayGlow(
                 state = state.value,
-                onCollapse = ::toggleCollapse,
-                onPause = ::requestPause,
-                onResume = ::requestResume,
-                onStop = ::requestStop,
-                onSupplementModeChange = ::setBubbleInputMode,
-                onSupplement = { text -> requestSupplement(text) },
+                corners = screenCornerRadii(),
+                virtualDisplay = virtualDisplayState.value,
             )
         }
-        val lp = bubbleLayoutParams()
-        runCatching { wm.addView(bubble, lp) }.onFailure { throwable ->
-            AndroidAgentLogger.warnThrottled("runtime_bubble_add_view_failed") {
-                "Agent runtime bubble addView failed: type=${throwable.safeLogType()}"
+        val glowLp = glowLayoutParams()
+        runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
+            AndroidAgentLogger.warnThrottled("runtime_glow_add_view_failed") {
+                "Agent runtime glow addView failed: type=${throwable.safeLogType()}"
+            }
+        }
+        glowView = glow
+        glowParams = glowLp
+
+        // ── 状态胶囊窗口：状态栏下方居中，收起时一句状态（含微缩镜），点击展开控制与画廊视窗 ──
+        val capsule = createOverlayComposeView {
+            val controlRunId = displayedRun?.runId
+            AgentOverlayCapsule(
+                state = state.value,
+                expanded = capsuleExpanded.value,
+                yielded = capsuleYielded.value,
+                onToggleExpanded = ::toggleCapsule,
+                onCollapsedSettled = ::onCapsuleCollapsedSettled,
+                onPause = { requestPause(controlRunId) },
+                onResume = { requestResume() },
+                onStop = { requestStop(controlRunId) },
+                onSupplementModeChange = ::setCapsuleInputMode,
+                onSupplement = { text -> requestSupplement(controlRunId, text) },
+                virtualDisplay = virtualDisplayState.value,
+                onTakeOverVirtualDisplay = {
+                    YunkeVirtualDisplayBridge.setUserControlling(true)
+                    requestPause(controlRunId)
+                },
+                onResumeVirtualDisplay = {
+                    YunkeVirtualDisplayBridge.setUserControlling(false)
+                    requestResume()
+                },
+                onFullscreenVirtualDisplay = ::requestFullscreenVirtualDisplay,
+                onTapVirtualCanvas = { nx, ny, longPress ->
+                    YunkeVirtualDisplayBridge.dispatchUserTapOnCanvas(nx, ny, longPress)
+                },
+                onSwipeVirtualCanvas = { sx, sy, ex, ey, durationMs ->
+                    YunkeVirtualDisplayBridge.dispatchUserSwipeOnCanvas(sx, sy, ex, ey, durationMs)
+                },
+            )
+        }
+        val capsuleLp = capsuleLayoutParams()
+        runCatching { wm.addView(capsule, capsuleLp) }.onFailure { throwable ->
+            AndroidAgentLogger.warnThrottled("runtime_capsule_add_view_failed") {
+                "Agent runtime capsule addView failed: type=${throwable.safeLogType()}"
             }
             return
         }
-        bubbleView = bubble
-        bubbleParams = lp
-        bubble.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, or, ob ->
-            if (bubbleView === bubble && (r - l != or - ol || b - t != ob - ot)) positionOverlayWindows()
+        capsuleView = capsule
+        capsuleParams = capsuleLp
+
+        // 副屏快照驱动胶囊尺寸与画面；bridge 在 run 开始时启动、结束时停止。
+        YunkeVirtualDisplayBridge.start(this)
+        serviceScope.launch {
+            YunkeVirtualDisplayBridge.snapshots.collect { snapshot ->
+                val wasActive = virtualDisplayState.value.active
+                virtualDisplayState.value = snapshot
+                if (wasActive != snapshot.active) {
+                    updateCapsuleWindowBounds()
+                }
+            }
         }
-        positionOverlayWindows()
+    }
+
+    private fun toggleCapsule() {
+        val expand = !capsuleExpanded.value
+        // 先把窗口扩到展开档再开始动画；收起由胶囊在动画结束后回调 onCapsuleCollapsedSettled 缩窗。
+        if (expand) updateCapsuleWindowBounds(expanding = true)
+        capsuleExpanded.value = expand
+    }
+
+    private fun onCapsuleCollapsedSettled() {
+        if (!capsuleExpanded.value) {
+            updateCapsuleWindowBounds(expanding = false)
+        }
+    }
+
+    private fun updateCapsuleWindowBounds(expanding: Boolean = capsuleExpanded.value) {
+        val vdActive = virtualDisplayState.value.active
+        val focusable = capsuleSupplementFocusable.value
+        val widthDp = if (vdActive && expanding && !focusable) {
+            CAPSULE_STAGE_WINDOW_WIDTH_DP
+        } else if (vdActive) {
+            CAPSULE_MICRO_WINDOW_WIDTH_DP
+        } else {
+            CAPSULE_WINDOW_WIDTH_DP
+        }
+        val heightDp = when {
+            focusable -> CAPSULE_SUPPLEMENT_HEIGHT_DP
+            expanding && vdActive -> CAPSULE_STAGE_HEIGHT_DP
+            expanding -> CAPSULE_CONTROLS_HEIGHT_DP
+            else -> CAPSULE_COLLAPSED_HEIGHT_DP
+        }
+        setCapsuleWindowSize(widthDp, heightDp)
+    }
+
+    private fun setCapsuleWindowSize(widthDp: Int, heightDp: Int) {
+        val wm = windowManager ?: return
+        val capsule = capsuleView ?: return
+        val lp = capsuleParams ?: return
+        val width = dpToPx(widthDp)
+        val height = dpToPx(heightDp)
+        if (lp.width == width && lp.height == height) return
+        lp.width = width
+        lp.height = height
+        runCatching { wm.updateViewLayout(capsule, lp) }.onFailure { throwable ->
+            AndroidAgentLogger.warnThrottled("runtime_capsule_resize_failed") {
+                "Agent runtime capsule resize failed: type=${throwable.safeLogType()}"
+            }
+        }
+    }
+
+    /** 补充输入模式：切换窗口可获焦与尺寸，让输入法能落到胶囊里。 */
+    private fun setCapsuleInputMode(focusable: Boolean) {
+        val wm = windowManager ?: return
+        val capsule = capsuleView ?: return
+        val lp = capsuleParams ?: return
+        val nextFlags = if (focusable) {
+            lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        } else {
+            lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        if (lp.flags != nextFlags) {
+            lp.flags = nextFlags
+            runCatching { wm.updateViewLayout(capsule, lp) }
+        }
+        capsuleSupplementFocusable.value = focusable
+        updateCapsuleWindowBounds()
     }
 
     private fun showResultCard(wm: WindowManager, session: AgentRuntimeSession) {
@@ -1298,65 +1379,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             }
         }
 
-    private fun beginOrbDrag() {
-        val lp = orbParams ?: return
-        orbDragStart = orbPosition ?: AgentOrbPosition(lp.x.toFloat(), lp.y.toFloat())
-    }
-
     // dx/dy are total raw-screen displacement from DOWN, not local frame deltas.
-    private fun handleDrag(dx: Float, dy: Float) {
-        if (!dx.isFinite() || !dy.isFinite()) return
-        orbPosition = AgentOrbPosition(orbDragStart.x + dx, orbDragStart.y + dy)
-        positionOverlayWindows()
-    }
-
-    private fun overlayBounds(wm: WindowManager): AgentOrbBounds = runCatching {
-        val metrics = wm.currentWindowMetrics
-        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
-            WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
-        )
-        AgentOrbBounds(
-            metrics.bounds.left + insets.left, metrics.bounds.top + insets.top,
-            metrics.bounds.right - insets.right,
-            metrics.bounds.bottom - insets.bottom,
-        )
-    }.getOrElse {
-        AgentOrbBounds(0, 0, resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
-    }
-
-    private fun positionOverlayWindows() {
-        val wm = windowManager ?: return
-        val orb = orbView ?: return
-        val lp = orbParams ?: return
-        val bounds = overlayBounds(wm)
-        val orbWidth = orb.width.takeIf { it > 0 } ?: dpToPx(56)
-        val orbHeight = orb.height.takeIf { it > 0 } ?: dpToPx(56)
-        val desired = orbPosition ?: AgentOrbPlacement.initial(bounds, orbWidth, orbHeight, dpToPx(8))
-        val position = AgentOrbPlacement.clamp(desired, bounds, orbWidth, orbHeight)
-        orbPosition = position
-        if (lp.x != position.x.roundToInt() || lp.y != position.y.roundToInt()) {
-            lp.x = position.x.roundToInt()
-            lp.y = position.y.roundToInt()
-            runCatching { wm.updateViewLayout(orb, lp) }
-        }
-        val bubble = bubbleView ?: return
-        val bubbleLp = bubbleParams ?: return
-        val bubbleWidth = bubble.width.takeIf { it > 0 } ?: dpToPx(136)
-        val bubbleHeight = bubble.height.takeIf { it > 0 } ?: dpToPx(56)
-        val bubblePosition = AgentOrbPlacement.bubble(
-            position, orbWidth, orbHeight, bubbleWidth, bubbleHeight, bounds, dpToPx(8),
-        )
-        if (bubbleLp.x != bubblePosition.x.roundToInt() || bubbleLp.y != bubblePosition.y.roundToInt()) {
-            bubbleLp.x = bubblePosition.x.roundToInt()
-            bubbleLp.y = bubblePosition.y.roundToInt()
-            runCatching { wm.updateViewLayout(bubble, bubbleLp) }
-        }
-    }
-
-    private fun orbLayoutParams(): WindowManager.LayoutParams =
+    /** 顶部状态胶囊窗口：状态栏下方居中，收起/展开/装裱三档尺寸由 updateCapsuleWindowBounds 决定。 */
+    private fun capsuleLayoutParams(): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            dpToPx(if (virtualDisplayState.value.active) CAPSULE_MICRO_WINDOW_WIDTH_DP else CAPSULE_WINDOW_WIDTH_DP),
+            dpToPx(CAPSULE_COLLAPSED_HEIGHT_DP),
             overlayType(),
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -1364,41 +1392,82 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            title = "Eta Agent Orb"
-            // We clamp system-bar/cutout insets ourselves, in physical display coordinates.
-            setFitInsetsTypes(0)
-            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            // Physical top-left coordinates make raw dragging consistent in LTR and RTL.
-            gravity = Gravity.LEFT or Gravity.TOP
-            val bounds = overlayBounds(windowManager ?: overlayContext().getSystemService(Context.WINDOW_SERVICE) as WindowManager)
-            val position = AgentOrbPlacement.clamp(
-                orbPosition ?: AgentOrbPlacement.initial(bounds, dpToPx(56), dpToPx(56), dpToPx(8)),
-                bounds, dpToPx(56), dpToPx(56),
-            )
-            x = position.x.roundToInt()
-            y = position.y.roundToInt()
+            title = "Eta Agent Capsule"
+            // 贴在状态栏下方居中：远离多数应用的主要点击区，也和系统胶囊、流体云的位置习惯一致。
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = statusBarHeightPx()
+            windowAnimations = 0
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
         }
 
-    private fun bubbleLayoutParams(): WindowManager.LayoutParams =
+    /** 氛围光窗口：全屏触摸穿透，承载边缘流光与破壁放大动画。 */
+    private fun glowLayoutParams(): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
             overlayType(),
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            title = "Eta Agent Controls"
-            setFitInsetsTypes(0)
-            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            // Follow the orb; measured layout later refines this initial placement.
+            title = "Eta Agent Glow"
             gravity = Gravity.LEFT or Gravity.TOP
-            x = orbParams?.x ?: 0
-            y = orbParams?.y ?: 0
+            x = 0
+            y = 0
             windowAnimations = 0
         }
+
+    /**
+     * 破壁全屏：把副屏画面放大贴合到物理主屏，随后原位移交回主屏。
+     *
+     * 动画本身由胶囊/装裱视窗内的 materializingToMain 驱动；这里只负责
+     * 标记状态、触发移交，并在完成后清位。移交失败时回退到收起画布。
+     */
+    private fun requestFullscreenVirtualDisplay() {
+        if (!virtualDisplayState.value.active) return
+        val runId = overlayRunId ?: displayedRun?.runId ?: return
+        YunkeVirtualDisplayBridge.setMaterializingToMain(true)
+        serviceScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    // finish 内部会先把接管过的 task 原位移回主屏，再关闭副屏。
+                    io.github.mangi.eta.agent.device.VirtualDisplaySession
+                        .finish(runId, this@AgentRuntimeService)
+                }
+            }
+            YunkeVirtualDisplayBridge.setMaterializingToMain(false)
+            result.onFailure { throwable ->
+                AndroidAgentLogger.warnThrottled("runtime_vd_fullscreen_failed") {
+                    "Virtual display fullscreen handoff failed: type=${throwable.safeLogType()}"
+                }
+            }
+            if (result.isSuccess) {
+                updateCapsuleWindowBounds()
+            }
+        }
+    }
+
+    private fun statusBarHeightPx(): Int {
+        val metrics = (overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
+            ?.currentWindowMetrics ?: return dpToPx(28)
+        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars())
+        return insets.top.takeIf { it > 0 } ?: dpToPx(28)
+    }
+
+    /** 屏幕四角圆角半径（像素），供胶囊与装裱视窗贴合系统圆角。 */
+    private fun screenCornerRadii(): ScreenCornerRadii {
+        val fallback = dpToPx(28).toFloat()
+        val radius = runCatching {
+            val res = resources
+            val id = res.getIdentifier("rounded_corner_radius", "dimen", "android")
+            if (id > 0) res.getDimensionPixelSize(id).toFloat() else fallback
+        }.getOrDefault(fallback)
+        return ScreenCornerRadii(radius, radius, radius, radius)
+    }
+
+
 
     private fun resultCardLayoutParams(): WindowManager.LayoutParams =
         WindowManager.LayoutParams(
@@ -1430,24 +1499,6 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun overlayContext(): Context =
         AgentAccessibilityService.current() ?: this
 
-    private fun setBubbleInputMode(focusable: Boolean) {
-        val wm = windowManager ?: return
-        val bubble = bubbleView ?: return
-        val lp = bubbleParams ?: return
-        val nextFlags = if (focusable) {
-            lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
-        } else {
-            lp.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        }
-        if (lp.flags == nextFlags) return
-        lp.flags = nextFlags
-        runCatching { wm.updateViewLayout(bubble, lp) }.onFailure { throwable ->
-            AndroidAgentLogger.warnThrottled("runtime_bubble_focus_update_failed") {
-                "Agent runtime bubble focus update failed: type=${throwable.safeLogType()}"
-            }
-        }
-    }
-
     private fun resultCardWindowHeightPx(): Int =
         (resources.displayMetrics.heightPixels * RESULT_CARD_HEIGHT_RATIO).toInt()
 
@@ -1476,24 +1527,27 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun removeAmbientWindows() {
-        orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        orbView = null
-        bubbleView = null
-        orbParams = null
-        bubbleParams = null
+        capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        capsuleView = null
+        glowView = null
+        capsuleParams = null
+        glowParams = null
+        capsuleExpanded.value = false
+        YunkeVirtualDisplayBridge.stop()
     }
 
     private fun dismissAndStop() {
         resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        bubbleView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        orbView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
         resultCardView = null
-        bubbleView = null
-        orbView = null
+        capsuleView = null
+        glowView = null
         resultCardParams = null
-        bubbleParams = null
-        orbParams = null
+        capsuleParams = null
+        glowParams = null
+        YunkeVirtualDisplayBridge.stop()
         windowManager = null
         overlaySession = null
         hasExecutedForegroundTool = false
@@ -1580,6 +1634,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         const val RESULT_REVIEW_DELAY_MS = 120_000L
         const val RESULT_CARD_HEIGHT_RATIO = 0.5f
         const val MAX_ARCHIVED_USER_IMAGE_PREVIEWS = 4
+
+        // ── 顶部状态胶囊尺寸档位（对齐 Eta 3.4.0 口径）────────────────────────
+        const val CAPSULE_WINDOW_WIDTH_DP = 272
+        const val CAPSULE_MICRO_WINDOW_WIDTH_DP = 290
+        const val CAPSULE_STAGE_WINDOW_WIDTH_DP = 324
+        const val CAPSULE_COLLAPSED_HEIGHT_DP = 68
+        const val CAPSULE_CONTROLS_HEIGHT_DP = 124
+        const val CAPSULE_STAGE_HEIGHT_DP = 524
+        const val CAPSULE_SUPPLEMENT_HEIGHT_DP = 260
     }
 
     private data class CompletedRunContext(

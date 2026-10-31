@@ -1,5 +1,8 @@
 package io.github.mangi.eta.agent.overlay
 
+import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
+import top.yukonga.miuix.kmp.squircle.addSquircleRect
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -130,6 +133,94 @@ internal data class ScreenCornerRadii(
     companion object {
         val Zero = ScreenCornerRadii(0f, 0f, 0f, 0f)
     }
+}
+
+private val EdgeLightColors = listOf(
+    Color(0xFF7AB8FF),
+    Color(0xFFB59CFF),
+    Color(0xFFFF9EC7),
+    Color(0xFFFFC98A),
+    Color(0xFF7AB8FF),
+)
+
+
+@Composable
+internal fun AgentOverlayGlow(
+    state: AgentOverlayState,
+    corners: ScreenCornerRadii,
+    virtualDisplay: VirtualDisplaySnapshot = VirtualDisplaySnapshot.Inactive,
+) {
+    if (virtualDisplay.materializingToMain) {
+        VirtualDisplayMaterializeOverlay(snapshot = virtualDisplay, corners = corners)
+        return
+    }
+    // 后台虚拟屏激活时，物理屏幕属于用户，不绘制四边流光。
+    if (virtualDisplay.active) return
+    val phase = state.phase
+    if (phase != AgentOverlayPhase.RUNNING && phase != AgentOverlayPhase.PAUSED) return
+    val running = phase == AgentOverlayPhase.RUNNING
+    val pausedAccent = overlayPhaseAccent(AgentOverlayPhase.PAUSED)
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    val reveal by animateFloatAsState(if (shown) 1f else 0f, tween(420), label = "edge_reveal")
+
+    val rotation = if (running) {
+        val transition = rememberInfiniteTransition(label = "edge_light")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(4200, easing = LinearEasing), RepeatMode.Restart),
+            label = "edge_rotation",
+        ).value
+    } else 0f
+
+    Box(
+        modifier = Modifier.fillMaxSize().drawBehind {
+            val density = this.density
+            val inset = 1.5f * density
+            // 光带沿屏幕轮廓的连续曲线走：路径向内收 inset，转角同步减小，保证与屏幕边缘等距。
+            val edge = Path().apply {
+                addSquircleRect(
+                    width = size.width - inset * 2,
+                    height = size.height - inset * 2,
+                    cornerRadius = (corners.radius - inset).coerceAtLeast(0f),
+                )
+                translate(Offset(inset, inset))
+            }.asAndroidPath()
+            drawIntoCanvas { canvas ->
+                if (!running) {
+                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f * density
+                        color = pausedAccent.copy(alpha = 0.55f * reveal).toArgb()
+                    }
+                    canvas.nativeCanvas.drawPath(edge, paint)
+                    return@drawIntoCanvas
+                }
+                val shader = android.graphics.SweepGradient(
+                    size.width / 2f, size.height / 2f, EdgeLightColors.map { it.toArgb() }.toIntArray(), null,
+                ).apply {
+                    setLocalMatrix(android.graphics.Matrix().apply { setRotate(rotation, size.width / 2f, size.height / 2f) })
+                }
+                // 外层柔光与内层亮线共用同一个旋转渐变，光带看起来是一体流动的。
+                val halo = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 14f * density
+                    maskFilter = android.graphics.BlurMaskFilter(12f * density, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                    this.shader = shader
+                    alpha = (0.55f * reveal * 255).toInt()
+                }
+                val line = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 3f * density
+                    this.shader = shader
+                    alpha = (0.95f * reveal * 255).toInt()
+                }
+                canvas.nativeCanvas.drawPath(edge, halo)
+                canvas.nativeCanvas.drawPath(edge, line)
+            }
+        }
+    )
 }
 
 /** Eta 胶囊沿用的命名；转发到既有 [SupplementInput]。 */
