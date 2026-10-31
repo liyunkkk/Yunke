@@ -1,5 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.app.Service
 import io.github.mangi.eta.agent.question.AgentQuestionReceipt
 import android.content.Context
@@ -1221,22 +1223,22 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
         // ── 状态胶囊窗口：状态栏下方居中，收起时一句状态（含微缩镜），点击展开控制与画廊视窗 ──
         val capsule = createOverlayComposeView {
-            val controlRunId = displayedRun?.runId
+            val controlRunId = overlayRunId
             AgentOverlayCapsule(
                 state = state.value,
                 expanded = capsuleExpanded.value,
                 yielded = capsuleYielded.value,
                 onToggleExpanded = ::toggleCapsule,
                 onCollapsedSettled = ::onCapsuleCollapsedSettled,
-                onPause = { requestPause(controlRunId) },
+                onPause = { if (controlRunId != null) requestPause(controlRunId) },
                 onResume = { requestResume() },
-                onStop = { requestStop(controlRunId) },
+                onStop = { requestStop() },
                 onSupplementModeChange = ::setCapsuleInputMode,
-                onSupplement = { text -> requestSupplement(controlRunId, text) },
+                onSupplement = { text -> requestSupplement(text, controlRunId) },
                 virtualDisplay = virtualDisplayState.value,
                 onTakeOverVirtualDisplay = {
                     YunkeVirtualDisplayBridge.setUserControlling(true)
-                    requestPause(controlRunId)
+                    if (controlRunId != null) requestPause(controlRunId)
                 },
                 onResumeVirtualDisplay = {
                     YunkeVirtualDisplayBridge.setUserControlling(false)
@@ -1263,7 +1265,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
         // 副屏快照驱动胶囊尺寸与画面；bridge 在 run 开始时启动、结束时停止。
         YunkeVirtualDisplayBridge.start(this)
-        serviceScope.launch {
+        lifecycleScope.launch {
             YunkeVirtualDisplayBridge.snapshots.collect { snapshot ->
                 val wasActive = virtualDisplayState.value.active
                 virtualDisplayState.value = snapshot
@@ -1427,9 +1429,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
      */
     private fun requestFullscreenVirtualDisplay() {
         if (!virtualDisplayState.value.active) return
-        val runId = overlayRunId ?: displayedRun?.runId ?: return
+        val runId = overlayRunId ?: return
         YunkeVirtualDisplayBridge.setMaterializingToMain(true)
-        serviceScope.launch {
+        lifecycleScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     // finish 内部会先把接管过的 task 原位移回主屏，再关闭副屏。
