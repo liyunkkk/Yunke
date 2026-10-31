@@ -97,21 +97,21 @@ internal object YunkeVirtualDisplayBridge {
         // Agent 正在操作副屏时让路：owner 只有一条连接，抢帧会拖慢 GUI 命令。
         val canFetch = idleSeconds < 0L || idleSeconds >= BUSY_IDLE_THRESHOLD_SECONDS
         val previous = _snapshots.value
-        val frame = if (canFetch) fetchThumb() else previous.frame
-        val width = frame?.second ?: previous.width
-        val height = frame?.third ?: previous.height
-        val packageName = previous.packageName
+        val fetched = if (canFetch) fetchThumb() else null
+        val frameBitmap = fetched?.first ?: previous.frame
+        val frameWidth = fetched?.second?.takeIf { it > 0 } ?: previous.width
+        val frameHeight = fetched?.third?.takeIf { it > 0 } ?: previous.height
         _snapshots.value = VirtualDisplaySnapshot(
             active = true,
             displayId = displayId,
-            width = if (width > 0) width else previous.width,
-            height = if (height > 0) height else previous.height,
+            width = frameWidth,
+            height = frameHeight,
             appName = previous.appName,
-            packageName = packageName,
+            packageName = previous.packageName,
             userControlling = userControlling,
             materializingToMain = materializing,
-            frame = frame?.first ?: previous.frame,
-            frameSequence = if (frame != null) previous.frameSequence + 1 else previous.frameSequence,
+            frame = frameBitmap,
+            frameSequence = if (fetched != null) previous.frameSequence + 1 else previous.frameSequence,
             touchEffect = previous.touchEffect,
         )
     }

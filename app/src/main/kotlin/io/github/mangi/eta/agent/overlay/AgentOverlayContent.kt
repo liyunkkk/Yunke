@@ -124,6 +124,9 @@ internal data class ScreenCornerRadii(
     val bottomRight: Float,
     val bottomLeft: Float,
 ) {
+    /** 四角在主流机型上一致；取最大值作为连续曲线的转角尺寸，不让任何一角露出直边。 */
+    val radius: Float get() = maxOf(topLeft, topRight, bottomRight, bottomLeft)
+
     companion object {
         val Zero = ScreenCornerRadii(0f, 0f, 0f, 0f)
     }
