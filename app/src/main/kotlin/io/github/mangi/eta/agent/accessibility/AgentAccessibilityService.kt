@@ -955,7 +955,12 @@ open class AgentAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun gestureTap(x: Float, y: Float, durationMs: Long = 50): NodeActionResult =
+    fun gestureTap(
+        x: Float,
+        y: Float,
+        durationMs: Long = 50,
+        displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+    ): NodeActionResult =
         dispatchGestureResult(
             Path().apply {
                 moveTo(x, y)
@@ -963,6 +968,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             },
             durationMs.coerceIn(1, 3_000),
             successMethod = "GESTURE_TAP",
+            displayId = displayId,
         )
 
     fun gestureSwipe(
@@ -971,6 +977,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         x2: Float,
         y2: Float,
         durationMs: Long,
+        displayId: Int = android.view.Display.DEFAULT_DISPLAY,
     ): NodeActionResult =
         dispatchGestureResult(
             Path().apply {
@@ -979,6 +986,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             },
             durationMs.coerceIn(100, 3_000),
             successMethod = "GESTURE_SWIPE",
+            displayId = displayId,
         )
 
     fun globalActionResult(name: String): NodeActionResult {
@@ -1866,6 +1874,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         path: Path,
         durationMs: Long,
         successMethod: String,
+        displayId: Int = android.view.Display.DEFAULT_DISPLAY,
     ): NodeActionResult {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return NodeActionResult.failure(
@@ -1882,9 +1891,13 @@ open class AgentAccessibilityService : AccessibilityService() {
                 return@post
             }
             val gesture = runCatching {
-                GestureDescription.Builder()
-                    .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
-                    .build()
+                GestureDescription.Builder().apply {
+                    // 副屏接管需要把手势派发到目标 display；主屏保持默认行为不变。
+                    if (displayId != android.view.Display.DEFAULT_DISPLAY) {
+                        setDisplayId(displayId)
+                    }
+                    addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+                }.build()
             }.getOrElse {
                 outcome.set(GestureDispatch.NOT_DISPATCHED)
                 gate.finish()
