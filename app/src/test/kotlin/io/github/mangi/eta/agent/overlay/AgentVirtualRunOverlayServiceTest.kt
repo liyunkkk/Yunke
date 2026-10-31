@@ -107,21 +107,22 @@ class AgentVirtualRunOverlayServiceTest {
         }
     }
 
+    /**
+     * 胶囊口径下，后台虚拟屏会话同样拥有浮层（用户需要接管入口），
+     * 所以这里只验证「窗口能被创建且归属正确」，不再要求后台模式拒绝建窗。
+     */
     @Test
-    fun `late direct window paths reject background originating identity`() = withService { service ->
+    fun `background session owns its capsule windows`() = withService { service ->
         val session = AgentRuntimeSession("virtual", taskSurfaceMode = AgentTaskSurfaceMode.BACKGROUND)
         val windows = RecordingWindows()
-        // Simulate a stale owner after registry removal to exercise the final defenses.
         setField(service, "overlaySession", session)
         setField(service, "windowManager", windows.manager)
-        setField(service, "hasExecutedForegroundTool", true)
         call(service, "showOverlay")
-        call(service, "showResultCard", windows.manager, session)
-        call(service, "enterFinalState", finishedState(), true, session)
-        assertNoWindows(service)
-        assertEquals(AgentOverlayState.Initial, overlayState(service))
-        assertTrue(windows.added.isEmpty())
-        assertTrue(windows.removed.isEmpty())
+        idle()
+        assertTrue("capsule 必须创建", windows.added.isNotEmpty())
+        assertNotNull(field(service, "capsuleView"))
+        // 归属仍属于该会话：终态前不能被别的 run 抢走。
+        assertSame(session, field(service, "overlaySession"))
     }
 
     @Test

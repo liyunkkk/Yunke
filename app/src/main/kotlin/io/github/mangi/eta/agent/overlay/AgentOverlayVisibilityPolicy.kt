@@ -92,6 +92,11 @@ internal object AgentOverlayVisibilityPolicy {
         this?.trim()?.lowercase() in entrySurfaceDismissalTools
 
     private val foregroundDrivingTools = setOf(
+        // 副屏会话生命周期：建屏/收屏本身就是「开始占用手机」的信号，要显现胶囊。
+        "start_virtual_session",
+        "keep_virtual_result",
+        "finish_virtual_session",
+        "present_to_user",
         "launch_app",
         "open_uri",
         "tap",
@@ -110,18 +115,9 @@ internal object AgentOverlayVisibilityPolicy {
         "open_system_panel",
     )
 
-    /** 后台副屏会话的生命周期工具：建/收副屏时也应显现胶囊，用户才有接管入口。 */
-    private val virtualDisplayTools = setOf(
-        "start_virtual_session",
-        "keep_virtual_result",
-        "finish_virtual_session",
-        "present_to_user",
-    )
-
     private val foregroundOperationTools = setOf(
         "observe_screen",
         *foregroundDrivingTools.toTypedArray(),
-        *virtualDisplayTools.toTypedArray(),
     )
 
     private val entrySurfaceDismissalTools =

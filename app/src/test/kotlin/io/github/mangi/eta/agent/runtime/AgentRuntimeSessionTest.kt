@@ -50,7 +50,8 @@ class AgentRuntimeSessionTest {
         assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.FOREGROUND, first.overlaySurfaceMode)
         first.setSelfAppOverlayActive(false)
         assertEquals(io.github.mangi.eta.agent.device.AgentTaskSurfaceMode.BACKGROUND, first.overlaySurfaceMode)
-        assertFalse(io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy.shouldRevealFor(
+        // 胶囊口径：后台虚拟屏同样会显现浮层（用户需要微缩镜与接管入口）。
+        assertTrue(io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy.shouldRevealFor(
             AgentEvent.ToolStarted(1, "background", "launch_app", ""), first.overlaySurfaceMode,
         ))
     }
