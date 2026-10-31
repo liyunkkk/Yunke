@@ -116,7 +116,6 @@ class AgentVirtualRunOverlayServiceTest {
         setField(service, "windowManager", windows.manager)
         setField(service, "hasExecutedForegroundTool", true)
         call(service, "showOverlay")
-        call(service, "showBubble", windows.manager)
         call(service, "showResultCard", windows.manager, session)
         call(service, "enterFinalState", finishedState(), true, session)
         assertNoWindows(service)
@@ -241,7 +240,8 @@ class AgentVirtualRunOverlayServiceTest {
             assertNull(field(service, "capsuleView"))
             // bubble 已并入 capsule
             assertNotNull(field(service, "resultCardView"))
-            assertEquals(2, windows.removed.size)
+            // 旧方案是 orb + bubble 两个窗口；胶囊方案只移除 capsule 一个。
+            assertEquals(1, windows.removed.size)
             assertEquals(1, windows.added.size)
 
             // Removed sessions cannot reopen a dismissed result card via a duplicate callback.
