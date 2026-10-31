@@ -1411,7 +1411,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             title = "Eta Agent Glow"
@@ -1430,6 +1431,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun requestFullscreenVirtualDisplay() {
         if (!virtualDisplayState.value.active) return
         val runId = overlayRunId ?: return
+        capsuleExpanded.value = false
+        updateCapsuleWindowBounds()
         YunkeVirtualDisplayBridge.setMaterializingToMain(true)
         lifecycleScope.launch {
             val result = runCatching {
@@ -1454,7 +1457,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun statusBarHeightPx(): Int {
         val metrics = (overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager)
             ?.currentWindowMetrics ?: return dpToPx(28)
-        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars())
+        val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
+            WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout(),
+        )
         return insets.top.takeIf { it > 0 } ?: dpToPx(28)
     }
 
@@ -1643,7 +1648,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         const val CAPSULE_STAGE_WINDOW_WIDTH_DP = 324
         const val CAPSULE_COLLAPSED_HEIGHT_DP = 68
         const val CAPSULE_CONTROLS_HEIGHT_DP = 124
-        const val CAPSULE_STAGE_HEIGHT_DP = 524
+        const val CAPSULE_STAGE_HEIGHT_DP = 480
         const val CAPSULE_SUPPLEMENT_HEIGHT_DP = 260
     }
 
