@@ -1,5 +1,15 @@
 package io.github.mangi.eta.agent.overlay
 
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.LinearEasing
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
 import top.yukonga.miuix.kmp.squircle.addSquircleRect
 import androidx.compose.ui.graphics.asAndroidPath
