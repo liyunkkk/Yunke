@@ -135,8 +135,8 @@ class AgentVirtualRunOverlayServiceTest {
         setField(service, "windowManager", windows.manager)
         val orb = ComposeView(service)
         val bubble = ComposeView(service)
-        setField(service, "orbView", orb)
-        setField(service, "bubbleView", bubble)
+        setField(service, "capsuleView", orb)
+        // bubble 已并入 capsule，无需单独设置
         val originalState = overlayState(service)
         for (error in listOf(null, "failed", "已停止")) {
             val background = AgentRuntimeSession("virtual-$error", taskSurfaceMode = AgentTaskSurfaceMode.BACKGROUND)
@@ -147,8 +147,8 @@ class AgentVirtualRunOverlayServiceTest {
             call(service, "postTerminalOverlay", background, result, null, null)
             idle()
             assertSame(foreground, field(service, "overlaySession"))
-            assertSame(orb, field(service, "orbView"))
-            assertSame(bubble, field(service, "bubbleView"))
+            assertSame(orb, field(service, "capsuleView"))
+            // bubble 已并入 capsule
             assertSame(originalState, overlayState(service))
             assertTrue(field(service, "hasExecutedForegroundTool") as Boolean)
             assertTrue(registry(service).contains(foreground))
@@ -188,7 +188,7 @@ class AgentVirtualRunOverlayServiceTest {
         val windows = RecordingWindows()
         setField(service, "windowManager", windows.manager)
         val orb = ComposeView(service)
-        setField(service, "orbView", orb)
+        setField(service, "capsuleView", orb)
         setField(service, "hasExecutedForegroundTool", true)
         call(service, "recordSupplementEvent", replacement.runId, "keep", "request", "[]")
         val supplements = field(service, "supplementsByRunId") as Map<*, *>
@@ -200,7 +200,7 @@ class AgentVirtualRunOverlayServiceTest {
         assertSame(replacement, registry(service).get("same"))
         assertSame(replacement, field(service, "overlaySession"))
         assertSame(replacementSupplements, supplements["same"])
-        assertSame(orb, field(service, "orbView"))
+        assertSame(orb, field(service, "capsuleView"))
         assertNull(field(service, "resultCardView"))
         assertTrue(windows.removed.isEmpty())
         assertTrue(windows.added.isEmpty())
@@ -220,8 +220,8 @@ class AgentVirtualRunOverlayServiceTest {
             setField(service, "windowManager", windows.manager)
             val orb = ComposeView(service)
             val bubble = ComposeView(service)
-            setField(service, "orbView", orb)
-            setField(service, "bubbleView", bubble)
+            setField(service, "capsuleView", orb)
+            // bubble 已并入 capsule，无需单独设置
             var dismissals = 0
             val guard = entryGuard { dismissals++; true }
             call(service, "handleAcceptedRunEvent", session, AgentEvent.ToolStarted(1, "call", "tap", "{}"), guard)
@@ -229,7 +229,7 @@ class AgentVirtualRunOverlayServiceTest {
             assertEquals(1, dismissals)
             assertTrue(guard.wasTriggered)
             assertTrue(field(service, "hasExecutedForegroundTool") as Boolean)
-            assertSame(orb, field(service, "orbView"))
+            assertSame(orb, field(service, "capsuleView"))
             val result = AgentRuntimeWire.RunResult(session.runId, true, "foreground result")
             assertTrue(session.complete(result))
             call(service, "postTerminalOverlay", session, result, guard, null)
@@ -238,8 +238,8 @@ class AgentVirtualRunOverlayServiceTest {
             assertEquals(AgentTaskSurfaceMode.FOREGROUND, session.taskSurfaceMode)
             assertEquals(AgentOverlayPhase.FINISHED, overlayState(service).phase)
             assertEquals("foreground result", overlayState(service).detailText)
-            assertNull(field(service, "orbView"))
-            assertNull(field(service, "bubbleView"))
+            assertNull(field(service, "capsuleView"))
+            // bubble 已并入 capsule
             assertNotNull(field(service, "resultCardView"))
             assertEquals(2, windows.removed.size)
             assertEquals(1, windows.added.size)
@@ -354,7 +354,7 @@ class AgentVirtualRunOverlayServiceTest {
         (field(service, "state") as MutableState<AgentOverlayState>).value
 
     private fun assertNoWindows(service: AgentRuntimeService) {
-        for (name in listOf("orbView", "bubbleView", "resultCardView")) assertNull(name, field(service, name))
+        for (name in listOf("capsuleView", "glowView", "resultCardView")) assertNull(name, field(service, name))
     }
 
     private fun field(service: AgentRuntimeService, name: String): Any? =
