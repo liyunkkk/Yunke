@@ -38,6 +38,8 @@ internal object VirtualDisplaySession {
     private const val AGENT_PREFERENCES = "eta_agent_preferences"
     /** 只读镜像页展示的最近操作条数。 */
     private const val TRACE_LIMIT = 100
+    /** 别的 run 的副屏会话空闲多久后视为残留并自动收尾（毫秒）。 */
+    private const val STALE_SESSION_RECLAIM_MS = 120_000L
     private class Session(var client: VirtualDisplayOwnerClient? = null, var phase: String = "starting") {
         val kept = linkedSetOf<Int>()
         val packages = linkedMapOf<String, Set<Int>>()
@@ -324,6 +326,21 @@ internal object VirtualDisplaySession {
             }
             return if (s.phase == "active") reply(true).put("phase", s.phase)
             else reply(false, "RECOVERY_REQUIRED").put("phase", s.phase)
+        }
+        // 残留会话自愈：上一轮 run 的 finally 收尾没执行（进程被杀、被系统回收、
+        // 用户直接切走）时，它的会话会以 closedRun=false 永久留在内存里，
+        // 之后每次 start 都返回 VIRTUAL_SESSION_BUSY，用户只能重启应用。
+        // 这里对「属于别的 run 且长时间无任何 GUI 活动」的残留会话先自动收尾一次。
+        val stale = sessions.entries.filter { it.key != runId && it.value.phase != "finished" }
+        if (stale.size == 1) {
+            val (staleRunId, staleSession) = stale.single()
+            val idleMs = System.currentTimeMillis() - staleSession.lastActivityMs
+            if (idleMs >= STALE_SESSION_RECLAIM_MS) {
+                AndroidAgentLogger.warn(
+                    "Virtual display stale session reclaimed: run=$staleRunId idleMs=$idleMs",
+                )
+                runCatching { finish(staleRunId, context) }
+            }
         }
         val others = sessions.values.filter { it.phase != "finished" }
         if (others.any { !it.closedRun } || others.size > 1) return reply(false, "VIRTUAL_SESSION_BUSY")
