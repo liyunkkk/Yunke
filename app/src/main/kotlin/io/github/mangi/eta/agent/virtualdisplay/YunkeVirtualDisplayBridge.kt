@@ -31,6 +31,8 @@ internal object YunkeVirtualDisplayBridge {
 
     /** 缩略帧轮询间隔：约 4 fps，胶囊微缩镜足够顺滑，又不会挤占 GUI 命令。 */
     private const val THUMB_POLL_INTERVAL_MS = 250L
+    /** Agent 正在操作副屏时的取帧下限：约 1 fps，保证画面仍在动，又不至于拖慢 GUI。 */
+    private const val PREVIEW_BUSY_MIN_INTERVAL_MS = 1000L
     /** Agent 空闲多久后恢复取帧（秒）。0 表示正在操作，必须让路。 */
     private const val BUSY_IDLE_THRESHOLD_SECONDS = 1L
 
@@ -40,6 +42,8 @@ internal object YunkeVirtualDisplayBridge {
 
     private var pollJob: kotlinx.coroutines.Job? = null
     private var touchSequence = 0L
+    @Volatile
+    private var lastFrameFetchMs = 0L
 
     /** 用户是否已在胶囊里开启手动接管。 */
     @Volatile
@@ -94,10 +98,21 @@ internal object YunkeVirtualDisplayBridge {
         } else {
             -1L
         }
-        // Agent 正在操作副屏时让路：owner 只有一条连接，抢帧会拖慢 GUI 命令。
-        val canFetch = idleSeconds < 0L || idleSeconds >= BUSY_IDLE_THRESHOLD_SECONDS
+        // 预览帧与 GUI 命令共用 owner 的单条连接，必须限频，但不能在任务进行中完全停帧：
+        // lastActivityMs 每次 GUI 调用都会刷新，idle_seconds 在任务期间恒为 0，
+        // 若据此停帧，胶囊微缩镜与装裱视窗会全程黑屏（实测现象）。
+        // 改为按「距上次取帧的时间」节流：忙时降到 PREVIEW_BUSY_MIN_INTERVAL_MS，闲时恢复 THUMB_POLL_INTERVAL_MS。
+        val busy = idleSeconds in 0L until BUSY_IDLE_THRESHOLD_SECONDS
+        val minInterval = if (busy) PREVIEW_BUSY_MIN_INTERVAL_MS else 0L
+        val sinceLast = android.os.SystemClock.elapsedRealtime() - lastFrameFetchMs
+        val canFetch = sinceLast >= minInterval
         val previous = _snapshots.value
-        val fetched = if (canFetch) fetchThumb() else null
+        val fetched = if (canFetch) {
+            lastFrameFetchMs = android.os.SystemClock.elapsedRealtime()
+            fetchThumb()
+        } else {
+            null
+        }
         val frameBitmap = fetched?.first ?: previous.frame
         val frameWidth = fetched?.second?.takeIf { it > 0 } ?: previous.width
         val frameHeight = fetched?.third?.takeIf { it > 0 } ?: previous.height

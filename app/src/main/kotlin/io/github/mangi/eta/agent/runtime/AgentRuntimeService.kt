@@ -128,6 +128,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private val capsuleYielded = mutableStateOf(false)
     /** 副屏实时快照，由 YunkeVirtualDisplayBridge 供给。 */
     private val virtualDisplayState = mutableStateOf(VirtualDisplaySnapshot.Inactive)
+    /** 快照订阅只挂一次，避免重复 collect。 */
+    private var virtualDisplaySubscribed = false
 
     private val state = mutableStateOf(AgentOverlayState.Initial)
     // The compact orb does not display tool details or round counters.
@@ -1263,8 +1265,20 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         capsuleView = capsule
         capsuleParams = capsuleLp
 
-        // 副屏快照驱动胶囊尺寸与画面；bridge 在 run 开始时启动、结束时停止。
+        // 副屏快照驱动胶囊尺寸与画面。
+        ensureVirtualDisplayBridge()
+    }
+
+    /**
+     * 启动副屏快照桥并确保只有一个订阅者。
+     *
+     * 运行结束改显结果卡时胶囊会被移除，但副屏可能仍在运行；这里做成幂等，
+     * 结果卡阶段或用户再次展开时都能拿到画面，不会出现「画布打开但空白」。
+     */
+    private fun ensureVirtualDisplayBridge() {
         YunkeVirtualDisplayBridge.start(this)
+        if (virtualDisplaySubscribed) return
+        virtualDisplaySubscribed = true
         lifecycleScope.launch {
             YunkeVirtualDisplayBridge.snapshots.collect { snapshot ->
                 val wasActive = virtualDisplayState.value.active
@@ -1526,6 +1540,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             // 撤掉光球和小气泡，改显半屏结果卡片，不自动关闭，用户手动关闭
             collapsed.value = true
             removeAmbientWindows()
+            // 副屏可能仍在运行：保持快照桥存活，用户之后展开画布仍有画面。
+            ensureVirtualDisplayBridge()
             windowManager?.let { showResultCard(it, session) }
             mainHandler.removeCallbacksAndMessages(hideToken)
         } else {
@@ -1541,7 +1557,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         capsuleParams = null
         glowParams = null
         capsuleExpanded.value = false
-        YunkeVirtualDisplayBridge.stop()
+        // 注意：这里不停 YunkeVirtualDisplayBridge。
+        // 运行结束时副屏可能仍然存在（用户还能从结果卡或再次展开查看），
+        // 停掉 bridge 会让画面状态归零、画布变空。bridge 只在真正停止服务时停。
     }
 
     private fun dismissAndStop() {
