@@ -163,8 +163,9 @@ internal class VirtualDisplayOwnerClient private constructor(
         val run = runId.ifBlank {
             return errorResponse(VirtualDisplayOwnerProtocol.OP_SNAPSHOT, VirtualDisplayOwnerError.REQUEST_INVALID)
         }
-        val payload = linkedMapOf(VirtualDisplayOwnerProtocol.FIELD_RUN_ID to run)
-        if (thumb) payload["thumb"] = "true"
+        val payload = linkedMapOf<String, Any?>(VirtualDisplayOwnerProtocol.FIELD_RUN_ID to run)
+        // owner 的 optionalBoolean 只接受真正的 JSON 布尔；传字符串 "true" 会抛 ERROR_PROTOCOL。
+        if (thumb) payload["thumb"] = true
         return request(
             VirtualDisplayOwnerProtocol.OP_SNAPSHOT,
             payload,

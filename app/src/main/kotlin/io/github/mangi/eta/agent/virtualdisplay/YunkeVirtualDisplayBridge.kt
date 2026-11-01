@@ -131,14 +131,31 @@ internal object YunkeVirtualDisplayBridge {
         )
     }
 
+    /** 最近一次取帧失败原因，供诊断；成功时清空。 */
+    @Volatile
+    var lastFrameError: String = ""
+        private set
+
     /** 返回 (ImageBitmap, 原始宽, 原始高)。 */
     private fun fetchThumb(): Triple<androidx.compose.ui.graphics.ImageBitmap, Int, Int>? {
-        val payload = runCatching { VirtualDisplaySession.viewerFrame(thumb = true) }.getOrNull() ?: return null
+        val payload = runCatching { VirtualDisplaySession.viewerFrame(thumb = true) }.getOrNull()
+        if (payload == null) {
+            lastFrameError = "viewer_frame_null"
+            return null
+        }
         val bytes = runCatching {
             Base64.decode(payload.optString("data"), Base64.DEFAULT)
-        }.getOrNull() ?: return null
-        if (bytes.isEmpty()) return null
-        val bitmap = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull() ?: return null
+        }.getOrNull()
+        if (bytes == null || bytes.isEmpty()) {
+            lastFrameError = "decode_base64_empty"
+            return null
+        }
+        val bitmap = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
+        if (bitmap == null) {
+            lastFrameError = "bitmap_decode_failed"
+            return null
+        }
+        lastFrameError = ""
         return Triple(
             bitmap.asImageBitmap(),
             payload.optInt("width", bitmap.width),
@@ -213,5 +230,6 @@ internal object YunkeVirtualDisplayBridge {
         put("display_id", snapshot.displayId)
         put("frame_sequence", snapshot.frameSequence)
         put("user_controlling", snapshot.userControlling)
+        put("last_frame_error", lastFrameError)
     }
 }
