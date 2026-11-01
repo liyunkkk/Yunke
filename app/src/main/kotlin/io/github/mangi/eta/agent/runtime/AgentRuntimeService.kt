@@ -121,6 +121,28 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private var resultCardView: ComposeView? = null
     private var resultCardParams: WindowManager.LayoutParams? = null
     /** 胶囊展开态。收起时只显示一行状态；展开后显示控制与装裱视窗。 */
+    /**
+     * 浮层存活看门狗。
+     *
+     * 胶囊是 TYPE_ACCESSIBILITY_OVERLAY 窗口，窗口生命周期绑定在创建它的无障碍服务上：
+     * 无障碍一旦重绑（系统回收、我们自己的恢复流程、副屏创建引起的窗口重算），
+     * 这些窗口会被系统直接销毁，而 capsuleView 引用还在 —— showOverlay 的
+     * 「已存在就直接返回」会让胶囊永久消失，用户看到的就是「显示一会儿就没了」。
+     * 这里定期检查窗口是否仍挂在窗口管理器上，掉了就整体重建。
+     */
+    private val overlayWatchdog = object : Runnable {
+        override fun run() {
+            if (destroyed) return
+            val capsule = capsuleView
+            if (capsule != null && !capsule.isAttachedToWindow && overlaySession != null) {
+                AndroidAgentLogger.info("Agent overlay capsule detached from window manager; recreating")
+                removeAmbientWindows()
+                showOverlay()
+            }
+            mainHandler.postDelayed(this, OVERLAY_WATCHDOG_INTERVAL_MS)
+        }
+    }
+
     private val capsuleExpanded = mutableStateOf(false)
     /** 补充输入模式下胶囊需要可获焦，尺寸与标志位随之切换。 */
     private val capsuleSupplementFocusable = mutableStateOf(false)
@@ -224,6 +246,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         resultCardParams = null
         capsuleParams = null
         glowParams = null
+        mainHandler.removeCallbacks(overlayWatchdog)
         YunkeVirtualDisplayBridge.setOverlayVisible(false)
         YunkeVirtualDisplayBridge.stop()
         windowManager = null
@@ -1277,6 +1300,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
         // 副屏快照驱动胶囊尺寸与画面。
         ensureVirtualDisplayBridge()
+        // 窗口挂上后开始盯存活：无障碍重绑会静默销毁这些窗口。
+        mainHandler.removeCallbacks(overlayWatchdog)
+        mainHandler.postDelayed(overlayWatchdog, OVERLAY_WATCHDOG_INTERVAL_MS)
     }
 
     /**
@@ -1337,21 +1363,23 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         } else {
             CAPSULE_WINDOW_WIDTH_DP
         }
-        val heightDp = when {
-            focusable -> CAPSULE_SUPPLEMENT_HEIGHT_DP
-            expanding && vdActive -> CAPSULE_STAGE_HEIGHT_DP
-            expanding -> CAPSULE_CONTROLS_HEIGHT_DP
-            else -> CAPSULE_COLLAPSED_HEIGHT_DP
+        // 展开态高度交给内容自适应（WRAP_CONTENT）。
+        // 之前用固定高度（装裱 480 / 控制 124），内容一旦比它高就被窗口裁掉，
+        // 展开/收起动画期间表现为「跳一下、内容突然被切」——实测反馈的抖动。
+        val heightPx = when {
+            focusable -> dpToPx(CAPSULE_SUPPLEMENT_HEIGHT_DP)
+            expanding -> WindowManager.LayoutParams.WRAP_CONTENT
+            else -> dpToPx(CAPSULE_COLLAPSED_HEIGHT_DP)
         }
-        setCapsuleWindowSize(widthDp, heightDp)
+        setCapsuleWindowSize(widthDp, heightPx)
     }
 
-    private fun setCapsuleWindowSize(widthDp: Int, heightDp: Int) {
+    private fun setCapsuleWindowSize(widthDp: Int, heightPx: Int) {
         val wm = windowManager ?: return
         val capsule = capsuleView ?: return
         val lp = capsuleParams ?: return
         val width = dpToPx(widthDp)
-        val height = dpToPx(heightDp)
+        val height = heightPx
         if (lp.width == width && lp.height == height) return
         lp.width = width
         lp.height = height
@@ -1584,6 +1612,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun removeAmbientWindows() {
+        if (capsuleView != null) {
+            // 留痕：胶囊消失是高频反馈，没有这条日志就分不清是「运行结束」还是「被误删」。
+            AndroidAgentLogger.info("Agent overlay ambient windows removed (phase=${state.value.phase})")
+        }
         capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
         glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
         capsuleView = null
@@ -1597,6 +1629,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun dismissAndStop() {
+        AndroidAgentLogger.info(
+            "Agent overlay dismissed (phase=${state.value.phase} sessions=${sessions.snapshot().size} " +
+                "hasCapsule=${capsuleView != null})",
+        )
         resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
         capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
         glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
@@ -1606,6 +1642,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         resultCardParams = null
         capsuleParams = null
         glowParams = null
+        mainHandler.removeCallbacks(overlayWatchdog)
         YunkeVirtualDisplayBridge.setOverlayVisible(false)
         YunkeVirtualDisplayBridge.stop()
         windowManager = null
@@ -1691,6 +1728,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         const val ACTION_KEEP_ALIVE = "io.github.mangi.eta.agent.runtime.KEEP_ALIVE"
         const val HIDE_DELAY_MS = 2_500L
+        /** 浮层存活检查间隔：足够快，用户几乎看不到空窗。 */
+        const val OVERLAY_WATCHDOG_INTERVAL_MS = 1_500L
         const val RESULT_REVIEW_DELAY_MS = 120_000L
         const val RESULT_CARD_HEIGHT_RATIO = 0.5f
         const val MAX_ARCHIVED_USER_IMAGE_PREVIEWS = 4

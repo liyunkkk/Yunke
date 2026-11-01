@@ -1530,9 +1530,10 @@ internal object VirtualDisplaySession {
             if (!deferAfterAction) afterActionSummary(context, s, displayId, before)?.let { payload.put("after_action",it) }
             return payload
         }
-        if (nodes.isEmpty() && snapshot == null) {
-            return reply(false,"VIRTUAL_NODES_UNAVAILABLE","副屏本次观察没有节点，请先 observe_screen 取节点")
-        }
+        // 不因「没有节点」直接失败：本机实测副屏窗口的 AccessibilityWindowInfo.getRoot()
+        // 恒为 null（dumpsys 能看到窗口、无障碍也已绑定，但 root 取不到），
+        // 节点树永远为空。此时剪贴板 + PASTE 是唯一可用路径，必须走它。
+        // 代价是无法逐字校验写入结果，payload 里已标注 clipboard_restored/note。
         // 回退：借系统剪贴板 + PASTE 键；先备份，动作后由 restoreVirtualClipboard 尽量还原。
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val backup = readClipboardText(context, clipboard)
