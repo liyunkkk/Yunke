@@ -163,6 +163,10 @@ open class AgentAccessibilityService : AccessibilityService() {
      * 默认 display 用 rootInActiveWindow；其它 display（例如后台副屏）取该 display 上聚焦或活跃窗口的根。
      * 取不到就返回 null，由调用方回退到截图路径，绝不回退主屏。
      */
+    /** 诊断用：该 display 上系统报告的无障碍窗口数量。 */
+    fun windowsOnDisplayCount(displayId: Int): Int =
+        runCatching { windowsOnAllDisplays.get(displayId)?.size ?: 0 }.getOrDefault(0)
+
     private fun rootForDisplay(displayId: Int): AccessibilityNodeInfo? {
         if (displayId == android.view.Display.DEFAULT_DISPLAY) return rootInActiveWindow
         val windows = windowsOnAllDisplays.get(displayId).orEmpty()

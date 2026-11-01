@@ -1532,6 +1532,15 @@ internal object VirtualDisplaySession {
             AgentAccessibilityService.current()?.captureNodeSnapshot(maxNodes, displayId)
         }.getOrNull()
         if (first != null) return first
+        // 副屏取不到树时把归因信息写进日志：区分「无障碍没绑定」「该 display 没有窗口」
+        // 「窗口有但 root 为 null」三种情况，否则只能看到下游的「没有节点」。
+        val bound = AgentAccessibilityService.current() != null
+        val windowCount = runCatching {
+            AgentAccessibilityService.current()?.windowsOnDisplayCount(displayId)
+        }.getOrNull()
+        AndroidAgentLogger.warnThrottled("virtual_nodes_missing") {
+            "Virtual display nodes missing: display=$displayId serviceBound=$bound windows=$windowCount"
+        }
         if (s.accessibilityRecoveryAttempted || AgentAccessibilityService.defaultDisplayWindowsUsable()) return null
         s.accessibilityRecoveryAttempted = true
         val healed = runCatching {
