@@ -44,7 +44,7 @@ internal object YunkeVirtualDisplayBridge {
      */
     private const val INTERVAL_VISIBLE_IDLE_MS = 400L
     private const val INTERVAL_VISIBLE_BUSY_MS = 1_600L
-    private const val INTERVAL_EXPANDED_MS = 700L
+    private const val INTERVAL_EXPANDED_MS = 1_000L
     /** Agent 空闲多久算「不在操作」（秒）。 */
     private const val BUSY_IDLE_THRESHOLD_SECONDS = 2L
 

@@ -1363,12 +1363,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         } else {
             CAPSULE_WINDOW_WIDTH_DP
         }
-        // 展开态高度交给内容自适应（WRAP_CONTENT）。
-        // 之前用固定高度（装裱 480 / 控制 124），内容一旦比它高就被窗口裁掉，
-        // 展开/收起动画期间表现为「跳一下、内容突然被切」——实测反馈的抖动。
+        // 注意：展开态不能用 WRAP_CONTENT。实测它让 WindowManager 在动画的每一帧
+        // 重新测量窗口（内容逐帧变化），展开/收起会明显掉帧——v37 的回归。
+        // 用固定档位（与 Eta 一致）：装裱 480 / 控制 124 / 补充输入 260。
         val heightPx = when {
             focusable -> dpToPx(CAPSULE_SUPPLEMENT_HEIGHT_DP)
-            expanding -> WindowManager.LayoutParams.WRAP_CONTENT
+            expanding && vdActive -> dpToPx(CAPSULE_STAGE_HEIGHT_DP)
+            expanding -> dpToPx(CAPSULE_CONTROLS_HEIGHT_DP)
             else -> dpToPx(CAPSULE_COLLAPSED_HEIGHT_DP)
         }
         setCapsuleWindowSize(widthDp, heightPx)
@@ -1562,12 +1563,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
 
     private fun overlayType(): Int =
-        // 无障碍服务可用时用 TYPE_ACCESSIBILITY_OVERLAY（免 SYSTEM_ALERT_WINDOW 权限，且截图
-        // filterValidWindows 可过滤）；需用无障碍服务 context 创建，否则 BadTokenException
-        if (AgentAccessibilityService.current() != null)
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        else
+        // 优先 TYPE_APPLICATION_OVERLAY：部分 ROM（含本机 HyperOS）会给 TYPE_ACCESSIBILITY_OVERLAY
+        // 分配软件 Canvas，胶囊的位图绘制与展开动画会明显掉帧（实测「展开关闭非常卡」）。
+        // 代价是这类窗口会进入无障碍截图，必须在 ScreenshotWindowPolicy 里按标题排除
+        // （isAccessibilityOverlay 判据不再覆盖它）；悬浮窗权限未授予时仍回退无障碍类型。
+        if (Settings.canDrawOverlays(this))
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
 
     private fun overlayContext(): Context =
         AgentAccessibilityService.current() ?: this
@@ -1586,6 +1589,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (overlaySession !== session ||
             !AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)
         ) return
+        AndroidAgentLogger.info(
+            "Agent overlay entering final state (phase=${finalState.phase} vdActive=${virtualDisplayState.value.active})"
+        )
         state.value = finalState
 
         // 副屏仍在运行时必须保留胶囊：否则用户失去唯一的微缩镜与接管入口，

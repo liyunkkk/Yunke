@@ -1132,6 +1132,8 @@ open class AgentAccessibilityService : AccessibilityService() {
                 resolvedPackage = windowPackages[window.id],
                 ownPackage = packageName,
                 excludedPackages = excludedPackages,
+                // 浮窗改为 TYPE_APPLICATION_OVERLAY 后按标题排除（见 ScreenshotWindowPolicy）。
+                windowTitle = window.title?.toString(),
             )
         }
         val unknownRelevantWindowIds = windowDecisions

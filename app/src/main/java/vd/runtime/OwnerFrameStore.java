@@ -206,8 +206,12 @@ final class OwnerFrameStore implements ImageReader.OnImageAvailableListener {
 
     /** 缩略帧长边上限：微缩镜 18x32dp 在 440dpi 下约 100px 宽，360 已足够清晰。 */
     static final int THUMB_MAX_EDGE_PX = 360;
-    /** 装裱视窗预览长边：对齐 324dp 窗口在 440dpi 下的实际像素宽度。 */
-    static final int STAGE_MAX_EDGE_PX = 900;
+    /**
+     * 装裱视窗预览长边。
+     * 324dp 在 440dpi 下约 891px；900 与之一一对应但解码绘制开销偏大，
+     * 实测胶囊 UI 掉帧，降到 720（约 1.24 倍上采样，观感仍清晰）。
+     */
+    static final int STAGE_MAX_EDGE_PX = 720;
     /** 装裱视窗预览质量：比缩略帧高一档，放大后仍可辨认文字轮廓。 */
     static final int STAGE_JPEG_QUALITY = 78;
     /** 缩略帧 JPEG 质量：视觉预览用途，60 在手机屏上几乎看不出差别。 */
