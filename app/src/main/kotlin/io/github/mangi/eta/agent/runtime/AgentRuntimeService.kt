@@ -247,6 +247,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         capsuleParams = null
         glowParams = null
         mainHandler.removeCallbacks(overlayWatchdog)
+        AgentExecutionService.setVirtualDisplayActive(false)
         YunkeVirtualDisplayBridge.setOverlayVisible(false)
         YunkeVirtualDisplayBridge.stop()
         windowManager = null
@@ -1319,6 +1320,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             YunkeVirtualDisplayBridge.snapshots.collect { snapshot ->
                 val previous = virtualDisplayState.value
                 virtualDisplayState.value = snapshot
+                // 把副屏活跃状态推给通知服务：通知在主线程构建，不能再自己去问
+                // VirtualDisplaySession（那把锁会被截图工具长时间持有）。
+                if (previous.active != snapshot.active) {
+                    AgentExecutionService.setVirtualDisplayActive(snapshot.active)
+                }
                 // 只有「外观相关」字段变化才动窗口；帧更新不动窗口，
                 // 否则每 250ms 一次 updateViewLayout 会和 Compose 的展开动画打架。
                 if (!snapshot.samePresentationAs(previous)) {
@@ -1649,6 +1655,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         capsuleParams = null
         glowParams = null
         mainHandler.removeCallbacks(overlayWatchdog)
+        AgentExecutionService.setVirtualDisplayActive(false)
         YunkeVirtualDisplayBridge.setOverlayVisible(false)
         YunkeVirtualDisplayBridge.stop()
         windowManager = null

@@ -110,9 +110,12 @@ internal class AgentExecutionService : Service() {
             getString(R.string.execution_summary, leases.executingSessionCount())
         }
         // 副屏存活时在既有常驻通知上补一行状态，不新增通知渠道。
-        val virtualDisplayActive = runCatching {
-            io.github.mangi.eta.agent.device.VirtualDisplaySession.viewerStatus().optBoolean("running")
-        }.getOrDefault(false)
+        // 注意：这里绝不能调 VirtualDisplaySession.viewerStatus()——它是 @Synchronized，
+        // 而本函数在主线程被 publishExecutionState 调用。工具线程正在做全分辨率截图时
+        // 会长时间持锁，主线程就跟着卡在 futex 上：实测连续阻塞 18 秒，
+        // 期间胶囊不动、手机整体无法滑动（我们可触摸的浮窗收不了事件）。
+        // 改读运行时服务推送过来的非阻塞缓存标记。
+        val virtualDisplayActive = virtualDisplayActiveFlag
         val detailWithVirtualDisplay = if (virtualDisplayActive) {
             detailText + " · " + getString(R.string.execution_virtual_display_active)
         } else {
@@ -264,6 +267,15 @@ internal class AgentExecutionService : Service() {
         private const val COMPLETION_NOTIFICATION_ID_BASE = 20000
         private const val FOCUS_PIC_ICON = "eta_island_icon"
         @Volatile private var executionState = AgentExecutionState()
+        /**
+         * 副屏是否活跃。由 AgentRuntimeService 在快照变化时写入；
+         * 通知构建路径只读这个标记，避免在主线程上抢 VirtualDisplaySession 的监视器锁。
+         */
+        @Volatile private var virtualDisplayActiveFlag = false
+
+        fun setVirtualDisplayActive(active: Boolean) {
+            virtualDisplayActiveFlag = active
+        }
         @Volatile private var currentSource: String = AgentNotificationTrampolineActivity.SOURCE_MAIN
 
         fun ensureChannels(context: Context, manager: NotificationManager) {
