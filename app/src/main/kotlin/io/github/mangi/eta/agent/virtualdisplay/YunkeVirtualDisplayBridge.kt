@@ -119,6 +119,12 @@ internal object YunkeVirtualDisplayBridge {
         if (visible) {
             // 重新可见时立刻取一帧，避免先显示空框。
             lastFrameFetchMs = 0L
+        } else if (_snapshots.value.active) {
+            // 隐藏时立刻把快照置为非活跃。
+            // 否则轮询停摆后没人再更新状态：副屏随后被 owner 释放/超时回收时，
+            // 快照会永远停在 active=true + 旧帧，胶囊就会为一个已经不存在的副屏
+            // 保留一张冻结的微缩镜，看起来正是「画面卡住不动」。
+            _snapshots.value = VirtualDisplaySnapshot.Inactive
         }
     }
 

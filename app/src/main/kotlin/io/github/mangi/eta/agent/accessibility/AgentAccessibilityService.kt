@@ -55,6 +55,24 @@ import org.json.JSONObject
  */
 private fun AccessibilityNodeInfo.realText(): String =
     if (isShowingHintText) "" else text?.toString().orEmpty()
+/**
+ * 节点所在 display；取不到就按主屏处理。
+ *
+ * 放在文件级：嵌套的非 inner 类（例如 NodeActionTarget）里拿不到外层类作扩展接收者。
+ */
+private fun AccessibilityNodeInfo.windowDisplayIdOrMain(): Int =
+    runCatching { window?.displayId }.getOrNull() ?: android.view.Display.DEFAULT_DISPLAY
+
+/**
+ * 节点是否「可见到足以执行动作」。
+ *
+ * 副屏（非默认 display）不是用户正在看的屏，其上节点的 isVisibleToUser 恒为 false。
+ * 若继续据此判死，副屏所有节点动作都会失败（点击/长按/滚动/写入文本全部报
+ * STALE_ACTION_TARGET 或 NODE_NOT_ACTIONABLE）。主屏判定保持原样。
+ */
+private fun AccessibilityNodeInfo.visibleEnoughForAction(): Boolean =
+    windowDisplayIdOrMain() != android.view.Display.DEFAULT_DISPLAY || isVisibleToUser
+
 
 open class AgentAccessibilityService : AccessibilityService() {
 
@@ -166,20 +184,6 @@ open class AgentAccessibilityService : AccessibilityService() {
     /** 诊断用：该 display 上系统报告的无障碍窗口数量。 */
     fun windowsOnDisplayCount(displayId: Int): Int =
         runCatching { windowsOnAllDisplays.get(displayId)?.size ?: 0 }.getOrDefault(0)
-
-    /** 节点所在 display；取不到就按主屏处理。 */
-    private fun AccessibilityNodeInfo.displayIdOrMain(): Int =
-        runCatching { window?.displayId }.getOrNull() ?: android.view.Display.DEFAULT_DISPLAY
-
-    /**
-     * 节点是否「可见到足以执行动作」。
-     *
-     * 副屏（非默认 display）不是用户正在看的屏，其上节点的 isVisibleToUser 恒为 false。
-     * 若继续据此判死，副屏所有节点动作都会失败（点击/长按/滚动/写入文本全部报
-     * STALE_ACTION_TARGET 或 NODE_NOT_ACTIONABLE）。主屏判定保持原样。
-     */
-    private fun AccessibilityNodeInfo.visibleEnoughForAction(): Boolean =
-        displayIdOrMain() != android.view.Display.DEFAULT_DISPLAY || isVisibleToUser
 
     private fun rootForDisplay(displayId: Int): AccessibilityNodeInfo? {
         if (displayId == android.view.Display.DEFAULT_DISPLAY) return rootInActiveWindow
@@ -548,7 +552,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     bounds.centerX().toFloat(),
                     bounds.centerY().toFloat(),
                     // 副屏节点必须把手势派发到它所在的 display，否则点击会打到主屏。
-                    displayId = node.displayIdOrMain(),
+                    displayId = node.windowDisplayIdOrMain(),
                 )
             }
         }
@@ -581,7 +585,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     bounds.centerX().toFloat(),
                     bounds.centerY().toFloat(),
                     durationMs = durationMs.coerceIn(300L, 3_000L),
-                    displayId = node.displayIdOrMain(),
+                    displayId = node.windowDisplayIdOrMain(),
                 ).let { result ->
                     if (result.ok) result.copy(method = "GESTURE_LONG_PRESS") else result
                 }
@@ -714,7 +718,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     gesture.end.y.toFloat(),
                     SCROLL_GESTURE_DURATION_MS,
                     // 副屏滚动同样必须派发到目标节点的 display。
-                    displayId = target.displayIdOrMain(),
+                    displayId = target.windowDisplayIdOrMain(),
                 )
                 if (!gestureResult.ok) {
                     return ScrollActionResult.failure(
@@ -1582,7 +1586,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         val bounds = node.bounds()
         // displaySize() 是主屏尺寸。副屏分辨率/比例可能不同，用主屏矩形裁剪会把
         // 超出主屏的节点整块裁空，随后 clickNode 直接报 INVALID_NODE_BOUNDS。
-        val size = if (node.displayIdOrMain() == android.view.Display.DEFAULT_DISPLAY) displaySize() else null
+        val size = if (node.windowDisplayIdOrMain() == android.view.Display.DEFAULT_DISPLAY) displaySize() else null
         if (size != null) {
             if (!bounds.intersect(0, 0, size.first, size.second)) bounds.setEmpty()
         }
