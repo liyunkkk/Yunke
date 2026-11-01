@@ -159,14 +159,23 @@ private val EdgeLightColors = listOf(
 internal fun AgentOverlayGlow(
     state: AgentOverlayState,
     corners: ScreenCornerRadii,
-    virtualDisplay: VirtualDisplaySnapshot = VirtualDisplaySnapshot.Inactive,
+    /**
+     * 只传布尔量，不传整个 VirtualDisplaySnapshot。
+     *
+     * 快照每帧都是新实例（含新 ImageBitmap），若把它作为参数，glow 窗口会跟着
+     * 每一帧重组——即使函数体第一行就 return。浮层期间这等于两个窗口一起空转，
+     * 是「胶囊卡顿」的重要来源。
+     */
+    virtualDisplayActive: Boolean = false,
+    /** 仅在破壁全屏动画期间非空；其余时间保持 null，参数稳定，不触发重组。 */
+    materializeSnapshot: VirtualDisplaySnapshot? = null,
 ) {
-    if (virtualDisplay.materializingToMain) {
-        VirtualDisplayMaterializeOverlay(snapshot = virtualDisplay, corners = corners)
+    if (materializeSnapshot != null) {
+        VirtualDisplayMaterializeOverlay(snapshot = materializeSnapshot, corners = corners)
         return
     }
     // 后台虚拟屏激活时，物理屏幕属于用户，不绘制四边流光。
-    if (virtualDisplay.active) return
+    if (virtualDisplayActive) return
     val phase = state.phase
     if (phase != AgentOverlayPhase.RUNNING && phase != AgentOverlayPhase.PAUSED) return
     val running = phase == AgentOverlayPhase.RUNNING

@@ -1217,7 +1217,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             AgentOverlayGlow(
                 state = state.value,
                 corners = screenCornerRadii(),
-                virtualDisplay = virtualDisplayState.value,
+                // 只传布尔量与「仅动画期非空」的快照：避免 glow 窗口跟着每一帧重组。
+                virtualDisplayActive = virtualDisplayState.value.active,
+                materializeSnapshot = virtualDisplayState.value.takeIf { it.materializingToMain },
             )
         }
         val glowLp = glowLayoutParams()
