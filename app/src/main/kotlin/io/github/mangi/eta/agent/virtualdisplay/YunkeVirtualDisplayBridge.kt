@@ -29,12 +29,24 @@ import org.json.JSONObject
  */
 internal object YunkeVirtualDisplayBridge {
 
-    /** 缩略帧轮询间隔：约 4 fps，胶囊微缩镜足够顺滑，又不会挤占 GUI 命令。 */
-    private const val THUMB_POLL_INTERVAL_MS = 250L
-    /** Agent 正在操作副屏时的取帧下限：约 1 fps，保证画面仍在动，又不至于拖慢 GUI。 */
-    private const val PREVIEW_BUSY_MIN_INTERVAL_MS = 1000L
-    /** Agent 空闲多久后恢复取帧（秒）。0 表示正在操作，必须让路。 */
-    private const val BUSY_IDLE_THRESHOLD_SECONDS = 1L
+    /**
+     * 取帧间隔。
+     *
+     * 关键约束：VirtualDisplaySession.viewerFrame 与 executeGui 是同一个对象上的
+     * @Synchronized，共用一把监视器锁，而且每次取帧都是一次完整的 LocalSocket 往返。
+     * 所以取帧频率直接决定 Agent 的 GUI 调用要排多久队。
+     *
+     * 早期用 250ms 硬轮询，等于把锁的一半时间占住，observe_screen/tap 被拖慢到
+     * 触发「无进展」守卫，任务直接失败。这里改成三档：
+     * - 胶囊不可见：完全不取帧（连锁都不碰）
+     * - Agent 刚操作过（idle < 阈值）：低频让路
+     * - Agent 空闲：正常刷新
+     */
+    private const val INTERVAL_VISIBLE_IDLE_MS = 400L
+    private const val INTERVAL_VISIBLE_BUSY_MS = 1_600L
+    private const val INTERVAL_EXPANDED_MS = 700L
+    /** Agent 空闲多久算「不在操作」（秒）。 */
+    private const val BUSY_IDLE_THRESHOLD_SECONDS = 2L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _snapshots = MutableStateFlow(VirtualDisplaySnapshot.Inactive)
@@ -44,6 +56,15 @@ internal object YunkeVirtualDisplayBridge {
     private var touchSequence = 0L
     @Volatile
     private var lastFrameFetchMs = 0L
+    /**
+     * 浮层当前是否可见。
+     *
+     * 不可见时完全不取帧：既省电，更重要的是不去抢 executeGui 的锁。
+     * 之前 removeAmbientWindows 之后桥仍在 250ms 轮询，等于在没有 UI 的情况下
+     * 持续占用 owner 连接，任务和界面都会变慢。
+     */
+    @Volatile
+    private var overlayVisible = false
 
     /** 用户是否已在胶囊里开启手动接管。 */
     @Volatile
@@ -64,7 +85,9 @@ internal object YunkeVirtualDisplayBridge {
         pollJob = scope.launch {
             while (isActive) {
                 runCatching { pollOnce(context) }
-                delay(THUMB_POLL_INTERVAL_MS)
+                // 固定小睡即可：真正的取帧节奏由 pollOnce 内的分档间隔决定，
+                // 不可见时它会直接返回，不产生任何 owner 往返。
+                delay(200L)
             }
         }
     }
@@ -72,6 +95,8 @@ internal object YunkeVirtualDisplayBridge {
     fun stop() {
         pollJob?.cancel()
         pollJob = null
+        // 保证状态不残留：任何 stop 之后都不再取帧，不依赖调用方先调 setOverlayVisible(false)。
+        overlayVisible = false
         _snapshots.value = VirtualDisplaySnapshot.Inactive
         userControlling = false
         materializing = false
@@ -80,6 +105,21 @@ internal object YunkeVirtualDisplayBridge {
     fun setUserControlling(controlling: Boolean) {
         userControlling = controlling
         _snapshots.value = _snapshots.value.copy(userControlling = controlling)
+    }
+
+    /**
+     * 浮层显示/隐藏时切换取帧开关。
+     *
+     * 隐藏时必须立刻停止取帧：owner 只有一条连接，空转的预览请求会和
+     * executeGui 抢同一把锁，把任务拖慢到触发「无进展」。
+     */
+    fun setOverlayVisible(visible: Boolean) {
+        if (overlayVisible == visible) return
+        overlayVisible = visible
+        if (visible) {
+            // 重新可见时立刻取一帧，避免先显示空框。
+            lastFrameFetchMs = 0L
+        }
     }
 
     /** 展开/收起时切换取帧画质档位。 */
@@ -96,6 +136,9 @@ internal object YunkeVirtualDisplayBridge {
     }
 
     private fun pollOnce(context: Context) {
+        // 浮层不可见时直接返回：连 viewerStatus（同样是 @Synchronized）都不调，
+        // 彻底不碰 VirtualDisplaySession 的监视器锁。
+        if (!overlayVisible) return
         val status = runCatching { VirtualDisplaySession.viewerStatus() }.getOrNull()
         val running = status?.optBoolean("running") == true
         if (!running) {
@@ -114,16 +157,20 @@ internal object YunkeVirtualDisplayBridge {
         } else {
             -1L
         }
-        // 预览帧与 GUI 命令共用 owner 的单条连接，必须限频，但不能在任务进行中完全停帧：
-        // lastActivityMs 每次 GUI 调用都会刷新，idle_seconds 在任务期间恒为 0，
-        // 若据此停帧，胶囊微缩镜与装裱视窗会全程黑屏（实测现象）。
-        // 改为按「距上次取帧的时间」节流：忙时降到 PREVIEW_BUSY_MIN_INTERVAL_MS，闲时恢复 THUMB_POLL_INTERVAL_MS。
+        // 分档节流：Agent 刚操作过就让路（它正在排队等这把锁），空闲时正常刷新。
         val busy = idleSeconds in 0L until BUSY_IDLE_THRESHOLD_SECONDS
-        val minInterval = if (busy) PREVIEW_BUSY_MIN_INTERVAL_MS else 0L
+        val minInterval = when {
+            busy -> INTERVAL_VISIBLE_BUSY_MS
+            stageExpanded -> INTERVAL_EXPANDED_MS
+            else -> INTERVAL_VISIBLE_IDLE_MS
+        }
         val sinceLast = android.os.SystemClock.elapsedRealtime() - lastFrameFetchMs
         val canFetch = sinceLast >= minInterval
         val previous = _snapshots.value
-        val fetched = if (canFetch) {
+        // GUI 调用在跑或排队时整帧跳过：既不碰锁，也不推进取帧时间戳，
+        // 否则「刚好撞上 GUI 的那一次」会白白吃掉整个间隔窗，画面变迟钝。
+        val canFetchNow = canFetch && !VirtualDisplaySession.guiBusy()
+        val fetched = if (canFetchNow) {
             lastFrameFetchMs = android.os.SystemClock.elapsedRealtime()
             fetchThumb()
         } else {
@@ -154,15 +201,17 @@ internal object YunkeVirtualDisplayBridge {
 
     /** 返回 (ImageBitmap, 原始宽, 原始高)。 */
     private fun fetchThumb(): Triple<androidx.compose.ui.graphics.ImageBitmap, Int, Int>? {
+        // 用 tryViewerFrame：有 GUI 调用在跑时直接放弃这一帧，绝不去抢那把锁。
         val payload = runCatching {
             if (stageExpanded) {
-                VirtualDisplaySession.viewerFrame(stage = true)
+                VirtualDisplaySession.tryViewerFrame(stage = true)
             } else {
-                VirtualDisplaySession.viewerFrame(thumb = true)
+                VirtualDisplaySession.tryViewerFrame(thumb = true)
             }
         }.getOrNull()
         if (payload == null) {
-            lastFrameError = "viewer_frame_null"
+            // 主动让路（GUI 正在用 owner）不是故障，别污染诊断字段。
+            lastFrameError = if (VirtualDisplaySession.guiBusy()) lastFrameError else "viewer_frame_null"
             return null
         }
         val bytes = runCatching {

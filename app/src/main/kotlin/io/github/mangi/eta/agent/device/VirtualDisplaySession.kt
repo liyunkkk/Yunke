@@ -1030,7 +1030,28 @@ internal object VirtualDisplaySession {
         s.receipt = runCatching { finish(runId, context) }.getOrElse { fail(s, "AUTO_FINISH_FAILED") }
         if (!s.receipt!!.optBoolean("ok")) AndroidAgentLogger.warn("Virtual display auto-finish failed; recovery retained")
     }
-    @Synchronized fun executeGui(context: Context,runId: String,tool: String,args: JSONObject, excludedPackages: Set<String> = emptySet()): AgentModelClient.ToolResult {
+    /**
+     * 正在执行（或正在排队等锁）的 GUI 调用计数。
+     *
+     * viewerFrame 与 executeGui 共用同一把监视器锁。若预览请求已经拿到锁，
+     * 后到的 observe_screen/tap 就得等一次完整的 LocalSocket 往返；
+     * 密集轮询会把 GUI 调用拖到触发「无进展」守卫，任务直接失败。
+     * 桥在取帧前读这个计数：只要有人要用 owner，就不去抢锁。
+     *
+     * 计数在**进入同步区之前**递增，这样「正在排队」也算忙碌，避免桥趁隙插入。
+     */
+    private val guiInFlight = java.util.concurrent.atomic.AtomicInteger(0)
+
+    fun executeGui(context: Context,runId: String,tool: String,args: JSONObject, excludedPackages: Set<String> = emptySet()): AgentModelClient.ToolResult {
+        guiInFlight.incrementAndGet()
+        try {
+            return executeGuiSerialized(context, runId, tool, args, excludedPackages)
+        } finally {
+            guiInFlight.decrementAndGet()
+        }
+    }
+
+    @Synchronized private fun executeGuiSerialized(context: Context,runId: String,tool: String,args: JSONObject, excludedPackages: Set<String> = emptySet()): AgentModelClient.ToolResult {
         fun text(obj: JSONObject)=AgentModelClient.ToolResult(obj.put("tool",tool).put("display","virtual").toString())
         if(tool !in setOf("observe_screen","launch_app","wait","tap","tap_area","swipe","long_press","press_key","paste_text","input_text","replace_text","clear_text","type_text","wait_for_text","wait_for_package","tap_element","long_press_element","scroll","scroll_element"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
         if(tool=="press_key" && args.optString("button") !in setOf("BACK","ENTER","PASTE"))return text(reply(false,"UNSUPPORTED_ON_VIRTUAL_DISPLAY"))
@@ -1068,7 +1089,9 @@ internal object VirtualDisplaySession {
                 var vdNodeSnapshot = captureVirtualNodes(context, s, NODE_LIMIT, c.displayId)
                 if (!s.uiTreeAvailability.unavailable()) {
                     var retryCount = 0
-                    while (vdNodeSnapshot != null && vdNodeSnapshot.nodes.isEmpty() && retryCount < 2) {
+                    // 注意也要覆盖 null：首次取树常常正好撞上无障碍还没绑定副屏窗口，
+                    // 只重试「有树但为空」会漏掉这种情况，直接退化成纯截图。
+                    while ((vdNodeSnapshot == null || vdNodeSnapshot.nodes.isEmpty()) && retryCount < 2) {
                         Thread.sleep(250L)
                         retryCount++
                         vdNodeSnapshot = captureVirtualNodes(context, s, NODE_LIMIT, c.displayId)
@@ -1095,7 +1118,10 @@ internal object VirtualDisplaySession {
                     ownerPackage,
                     elementObservation?.nodes.orEmpty().isNotEmpty(),
                 )
-                if (nodesUnavailable) {
+                // 只要这次真的取到了节点就必须记录：熔断状态是「过去连续空树」的证据，
+                // 不能反过来把一个有效的节点集合丢掉，否则会一直卡在纯截图模式。
+                val hasNodesNow = elementObservation?.nodes.orEmpty().isNotEmpty()
+                if (nodesUnavailable && !hasNodesNow) {
                     s.observation.recordNodes(null, null)
                 } else {
                     s.observation.recordNodes(elementObservation, vdNodeSnapshot)
@@ -1414,13 +1440,23 @@ internal object VirtualDisplaySession {
             )
     }
 
+    /** 是否有 GUI 调用在跑或排队（无锁读取，供预览侧判断要不要让路）。 */
+    fun guiBusy(): Boolean = guiInFlight.get() > 0
+
     /**
-     * 只读镜像页取帧：复用本会话的 owner 连接取一帧，返回 {data(base64), width, height}。
-     * 只读、不改变任何观察状态；没有会话或取帧失败时返回 null。
+     * 预览取帧的非阻塞入口：有 GUI 调用在跑（或排队）时直接放弃这一帧。
+     *
+     * 宁可在这一轮少一帧画面，也不让预览去和 observe_screen/tap 抢同一把锁——
+     * 后者被拖慢会直接导致任务判「无进展」失败。
      */
+    fun tryViewerFrame(thumb: Boolean = false, stage: Boolean = false): JSONObject? {
+        if (guiInFlight.get() > 0) return null
+        return viewerFrame(thumb, stage)
+    }
+
     /**
      * 预览取帧。[thumb] = true 走 owner 的低分辨率 JPEG 缩略通道，
-     * 供胶囊微缩镜/装裱视窗连续刷新；全分辨率 PNG 只用于 Agent 真正看图。
+     * 供胶囊微缩镜/装裱视窗连续刷新；[stage] = true 走长边 900 的高清档；全分辨率 PNG 只用于 Agent 真正看图。
      */
     @Synchronized fun viewerFrame(thumb: Boolean = false, stage: Boolean = false): JSONObject? {
         val session = sessions.entries.firstOrNull { it.value.phase != "finished" }?.value ?: return null
@@ -1558,19 +1594,23 @@ internal object VirtualDisplaySession {
         maxNodes: Int,
         displayId: Int,
     ): AgentAccessibilityService.NodeSnapshot? {
+        // 注意：这里**不能加重试 sleep**。本函数在 executeGuiSerialized 的同步区内被调用，
+        // 任何 sleep 都会延长 GUI 持锁时间、把 Agent 的其它调用一起拖慢。
+        // 重试统一放在外层（observe_screen 分支，已有 2×250ms），且那里也会覆盖 null。
         val first = runCatching {
             AgentAccessibilityService.current()?.captureNodeSnapshot(maxNodes, displayId)
         }.getOrNull()
         if (first != null) return first
         // 副屏取不到树时把归因信息写进日志：区分「无障碍没绑定」「该 display 没有窗口」
         // 「窗口有但 root 为 null」三种情况，否则只能看到下游的「没有节点」。
+        // 用 info 级并附带计数，便于和 owner/无障碍侧的告警对齐时间线。
         val bound = AgentAccessibilityService.current() != null
         val windowCount = runCatching {
             AgentAccessibilityService.current()?.windowsOnDisplayCount(displayId)
         }.getOrNull()
-        AndroidAgentLogger.warnThrottled("virtual_nodes_missing") {
+        AndroidAgentLogger.info(
             "Virtual display nodes missing: display=$displayId serviceBound=$bound windows=$windowCount"
-        }
+        )
         if (s.accessibilityRecoveryAttempted || AgentAccessibilityService.defaultDisplayWindowsUsable()) return null
         s.accessibilityRecoveryAttempted = true
         val healed = runCatching {

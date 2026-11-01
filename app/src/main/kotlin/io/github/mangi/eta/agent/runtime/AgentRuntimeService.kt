@@ -224,6 +224,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         resultCardParams = null
         capsuleParams = null
         glowParams = null
+        YunkeVirtualDisplayBridge.setOverlayVisible(false)
         YunkeVirtualDisplayBridge.stop()
         windowManager = null
         pendingResultTranscripts.values.forEach { prepared -> runCatching { prepared.close() } }
@@ -1200,7 +1201,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun showOverlay() {
         val session = overlaySession ?: return
         if (!AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)) return
-        if (capsuleView != null) return
+        if (capsuleView != null) {
+            // 幂等：胶囊已存在时也要确保取帧开关是开的，
+            // 否则「只隐藏不清引用」的路径会让画布永久停帧。
+            YunkeVirtualDisplayBridge.setOverlayVisible(true)
+            return
+        }
         // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
         if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) return
         val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
@@ -1264,6 +1270,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         capsuleView = capsule
         capsuleParams = capsuleLp
+        // 胶囊真正挂上就立刻开启取帧（放在末尾会被任何提前 return 漏掉）。
+        YunkeVirtualDisplayBridge.setOverlayVisible(true)
 
         // 副屏快照驱动胶囊尺寸与画面。
         ensureVirtualDisplayBridge()
@@ -1581,9 +1589,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         capsuleParams = null
         glowParams = null
         capsuleExpanded.value = false
-        // 注意：这里不停 YunkeVirtualDisplayBridge。
-        // 运行结束时副屏可能仍然存在（用户还能从结果卡或再次展开查看），
-        // 停掉 bridge 会让画面状态归零、画布变空。bridge 只在真正停止服务时停。
+        // 不停 bridge（副屏可能还在跑，之后还要用），但必须立刻停止取帧：
+        // viewerFrame 与 executeGui 共用同一把锁，没有 UI 却持续取帧会把 Agent 拖慢。
+        YunkeVirtualDisplayBridge.setOverlayVisible(false)
     }
 
     private fun dismissAndStop() {
@@ -1596,6 +1604,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         resultCardParams = null
         capsuleParams = null
         glowParams = null
+        YunkeVirtualDisplayBridge.setOverlayVisible(false)
         YunkeVirtualDisplayBridge.stop()
         windowManager = null
         overlaySession = null

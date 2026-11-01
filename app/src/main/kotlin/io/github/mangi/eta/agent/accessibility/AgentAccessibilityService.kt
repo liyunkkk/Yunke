@@ -167,15 +167,35 @@ open class AgentAccessibilityService : AccessibilityService() {
     fun windowsOnDisplayCount(displayId: Int): Int =
         runCatching { windowsOnAllDisplays.get(displayId)?.size ?: 0 }.getOrDefault(0)
 
+    /** 节点所在 display；取不到就按主屏处理。 */
+    private fun AccessibilityNodeInfo.displayIdOrMain(): Int =
+        runCatching { window?.displayId }.getOrNull() ?: android.view.Display.DEFAULT_DISPLAY
+
+    /**
+     * 节点是否「可见到足以执行动作」。
+     *
+     * 副屏（非默认 display）不是用户正在看的屏，其上节点的 isVisibleToUser 恒为 false。
+     * 若继续据此判死，副屏所有节点动作都会失败（点击/长按/滚动/写入文本全部报
+     * STALE_ACTION_TARGET 或 NODE_NOT_ACTIONABLE）。主屏判定保持原样。
+     */
+    private fun AccessibilityNodeInfo.visibleEnoughForAction(): Boolean =
+        displayIdOrMain() != android.view.Display.DEFAULT_DISPLAY || isVisibleToUser
+
     private fun rootForDisplay(displayId: Int): AccessibilityNodeInfo? {
         if (displayId == android.view.Display.DEFAULT_DISPLAY) return rootInActiveWindow
         val windows = windowsOnAllDisplays.get(displayId).orEmpty()
-        val applicationWindows = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
-        val window = applicationWindows.firstOrNull { it.isFocused }
-            ?: windows.firstOrNull { it.isActive }
-            ?: applicationWindows.firstOrNull()
-            ?: return null
-        return runCatching { window.root }.getOrNull()
+        if (windows.isEmpty()) return null
+        // 副屏上「聚焦的应用窗口」未必是唯一能取到 root 的那个：
+        // 有的 ROM 会给部分窗口返回 null 的 root（例如刚建立、还没首帧的窗口）。
+        // 这里按优先级依次尝试，取到第一个非空 root 就用，不再因为首选窗口为 null 就整体放弃。
+        val ordered = windows
+            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            .sortedByDescending { it.isFocused } + windows.filter { it.type != AccessibilityWindowInfo.TYPE_APPLICATION }
+        for (window in ordered) {
+            val root = runCatching { window.root }.getOrNull()
+            if (root != null) return root
+        }
+        return null
     }
 
     fun captureNodeSnapshot(
@@ -446,7 +466,16 @@ open class AgentAccessibilityService : AccessibilityService() {
 
     private fun pruneWindowContentGenerations() {
         if (windowContentGenerations.isEmpty()) return
-        val liveWindowIds = windows.orEmpty().mapTo(hashSetOf()) { window -> window.id }
+        // windows 只含默认屏。若仍按它裁剪，副屏窗口的代数会在任何一次主屏窗口变化时
+        // 被整体清掉，随后 validateNode 比较 contentGeneration 就会误判 STALE_CONTENT。
+        val liveWindowIds = hashSetOf<Int>()
+        val all = windowsOnAllDisplays
+        for (index in 0 until all.size()) {
+            all.valueAt(index).forEach { liveWindowIds.add(it.id) }
+        }
+        if (liveWindowIds.isEmpty()) {
+            windows.orEmpty().mapTo(liveWindowIds) { window -> window.id }
+        }
         windowContentGenerations.keys.retainAll(liveWindowIds)
     }
 
@@ -515,7 +544,12 @@ open class AgentAccessibilityService : AccessibilityService() {
                 val bounds = clippedNodeBounds(node)
                 if (bounds.isEmpty) {
                     NodeActionResult.failure("INVALID_NODE_BOUNDS", "目标节点没有可点击区域")
-                } else gestureTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                } else gestureTap(
+                    bounds.centerX().toFloat(),
+                    bounds.centerY().toFloat(),
+                    // 副屏节点必须把手势派发到它所在的 display，否则点击会打到主屏。
+                    displayId = node.displayIdOrMain(),
+                )
             }
         }
 
@@ -547,6 +581,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     bounds.centerX().toFloat(),
                     bounds.centerY().toFloat(),
                     durationMs = durationMs.coerceIn(300L, 3_000L),
+                    displayId = node.displayIdOrMain(),
                 ).let { result ->
                     if (result.ok) result.copy(method = "GESTURE_LONG_PRESS") else result
                 }
@@ -611,7 +646,7 @@ open class AgentAccessibilityService : AccessibilityService() {
     ): ScrollActionResult = scrollActionLock.withLock {
         val startedAt = SystemClock.elapsedRealtime()
         val refreshed = runOnMainSync { target.refresh() } == true
-        if (!refreshed || !target.isVisibleToUser || !target.isEnabled) {
+        if (!refreshed || !target.visibleEnoughForAction() || !target.isEnabled) {
             return ScrollActionResult.failure(
                 direction = direction,
                 code = "STALE_NODE",
@@ -678,6 +713,8 @@ open class AgentAccessibilityService : AccessibilityService() {
                     gesture.end.x.toFloat(),
                     gesture.end.y.toFloat(),
                     SCROLL_GESTURE_DURATION_MS,
+                    // 副屏滚动同样必须派发到目标节点的 display。
+                    displayId = target.displayIdOrMain(),
                 )
                 if (!gestureResult.ok) {
                     return ScrollActionResult.failure(
@@ -1345,7 +1382,7 @@ open class AgentAccessibilityService : AccessibilityService() {
     }
 
     private fun AccessibilityNodeInfo.isUsableInputTarget(): Boolean =
-        isEditable && isEnabled && isVisibleToUser
+        isEditable && isEnabled && visibleEnoughForAction()
 
     private fun AccessibilityNodeInfo.incrementalTextValidationError(): NodeActionResult? {
         val currentText = text
@@ -1388,7 +1425,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             ) return
             visitedNodes++
             try {
-                if (!node.isVisibleToUser) return
+                if (!node.visibleEnoughForAction()) return
                 if (node.isEnabled && node.hasScrollCapability()) {
                     val bounds = clippedNodeBounds(node)
                     val supportRank = node.directionSupportRank(direction)
@@ -1543,7 +1580,9 @@ open class AgentAccessibilityService : AccessibilityService() {
 
     private fun clippedNodeBounds(node: AccessibilityNodeInfo): Rect {
         val bounds = node.bounds()
-        val size = displaySize()
+        // displaySize() 是主屏尺寸。副屏分辨率/比例可能不同，用主屏矩形裁剪会把
+        // 超出主屏的节点整块裁空，随后 clickNode 直接报 INVALID_NODE_BOUNDS。
+        val size = if (node.displayIdOrMain() == android.view.Display.DEFAULT_DISPLAY) displaySize() else null
         if (size != null) {
             if (!bounds.intersect(0, 0, size.first, size.second)) bounds.setEmpty()
         }
@@ -1562,7 +1601,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 !activePath.add(node)
             ) return
             try {
-                if (!node.isVisibleToUser) return
+                if (!node.visibleEnoughForAction()) return
                 val bounds = node.bounds()
                 val key = buildString {
                     append(node.uniqueId.orEmpty())
@@ -1723,7 +1762,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 NodeActionResult.failure("NODE_NOT_ACTIONABLE", "目标节点当前不可用"),
             )
         }
-        if (!NodeValidationDisplay.usesDisplayScopedRoot(snapshot.displayId) && !node.isVisibleToUser) {
+        if (!node.visibleEnoughForAction()) {
             return NodeValidation.Invalid(
                 NodeActionResult.failure("NODE_NOT_ACTIONABLE", "目标节点当前不可见"),
             )
@@ -2331,7 +2370,7 @@ open class AgentAccessibilityService : AccessibilityService() {
     ) {
         fun resolveFor(descendant: AccessibilityNodeInfo): AccessibilityNodeInfo? {
             if (!runCatching { node.refresh() }.getOrDefault(false)) return null
-            if (!node.isVisibleToUser || !node.isEnabled) return null
+            if (!node.visibleEnoughForAction() || !node.isEnabled) return null
             val refreshedIdentity = AccessibilityNodeIdentity(
                 uniqueId = node.uniqueId.orEmpty(),
                 windowId = node.windowId,
