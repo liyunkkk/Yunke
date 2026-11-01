@@ -16,7 +16,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.overlay.VirtualDisplayFloatingWindow
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.ui.components.WindowSpinnerPreference
@@ -40,7 +39,6 @@ internal fun VirtualDisplayExtrasControls() {
     val prefs = remember { context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE) }
     var idleMinutes by remember { mutableIntStateOf(prefs.getInt(IDLE_KEY, DEFAULT_IDLE_MINUTES)) }
     var allowScreenOff by remember { mutableStateOf(prefs.getBoolean(SCREEN_OFF_KEY, false)) }
-    var floatingWindow by remember { mutableStateOf(prefs.getBoolean(FLOAT_KEY, false)) }
     var conflictTakeover by remember { mutableStateOf(prefs.getBoolean(TAKEOVER_KEY, false)) }
     var viewerOpen by remember { mutableStateOf(false) }
 
@@ -57,25 +55,8 @@ internal fun VirtualDisplayExtrasControls() {
                 summary = stringResource(R.string.vd_status_summary),
                 onClick = { viewerOpen = true },
             )
-            SwitchPreference(
-                title = stringResource(R.string.vd_float_title),
-                summary = stringResource(R.string.vd_float_summary),
-                checked = floatingWindow,
-                onCheckedChange = { next ->
-                    val applied = if (next) {
-                        VirtualDisplayFloatingWindow.show(context)
-                    } else {
-                        VirtualDisplayFloatingWindow.hide(context)
-                        true
-                    }
-                    if (applied) {
-                        floatingWindow = next
-                        prefs.edit().putBoolean(FLOAT_KEY, next).apply()
-                    } else {
-                        Toast.makeText(context, R.string.vd_float_denied, Toast.LENGTH_SHORT).show()
-                    }
-                },
-            )
+            // 2026-11-01：悬浮小窗开关移除（用户要求）。预览画面统一由顶部状态胶囊承担，
+            // 小窗与胶囊并存会双倍抢 owner 取帧、加重卡顿。
             SwitchPreference(
                 title = stringResource(R.string.vd_screen_off_title),
                 summary = stringResource(R.string.vd_screen_off_summary),

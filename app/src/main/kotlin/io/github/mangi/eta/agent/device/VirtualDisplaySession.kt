@@ -440,10 +440,8 @@ internal object VirtualDisplaySession {
             sessions.remove(runId)
             return reply(false, "NO_VIRTUAL_SESSION")
         }
-        // 开关打开时随会话自动挂上只读悬浮小窗；会话结束后小窗会自行收掉。
-        if (floatingWindowEnabled(context)) {
-            runCatching { io.github.mangi.eta.agent.overlay.VirtualDisplayFloatingWindow.show(context) }
-        }
+        // 2026-11-01：悬浮小窗已下线（用户要求）。预览画面由顶部状态胶囊承担，
+        // 小窗与胶囊并存还会双倍抢 owner 取帧、加重卡顿。这里不再挂载。
         return when (val started = VirtualDisplayOwnerClient.start(context, AndroidAgentLogger)) {
             is OwnerStartResult.Failed -> fail(s, started.errorCode)
             is OwnerStartResult.Ready -> {
