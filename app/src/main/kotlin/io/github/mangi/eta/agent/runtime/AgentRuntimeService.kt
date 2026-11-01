@@ -1281,10 +1281,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         virtualDisplaySubscribed = true
         lifecycleScope.launch {
             YunkeVirtualDisplayBridge.snapshots.collect { snapshot ->
-                val wasActive = virtualDisplayState.value.active
+                val previous = virtualDisplayState.value
                 virtualDisplayState.value = snapshot
-                if (wasActive != snapshot.active) {
-                    updateCapsuleWindowBounds()
+                // 只有「外观相关」字段变化才动窗口；帧更新不动窗口，
+                // 否则每 250ms 一次 updateViewLayout 会和 Compose 的展开动画打架。
+                if (!snapshot.samePresentationAs(previous)) {
+                    if (previous.active != snapshot.active) {
+                        updateCapsuleWindowBounds()
+                    }
                 }
             }
         }

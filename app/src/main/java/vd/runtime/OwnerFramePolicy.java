@@ -37,7 +37,8 @@ final class OwnerFramePolicy {
 
     private final Object encodingLock = new Object();
     private Frame latest;
-    private Snapshot cached;
+    /** 按编码器区分的产物缓存：PNG（Agent 看图）与 JPEG 缩略（胶囊预览）互不串用。 */
+    private java.util.Map<Encoder, Snapshot> cached = new java.util.HashMap<>();
     private int frameCount;
     private boolean closed;
 
@@ -51,7 +52,7 @@ final class OwnerFramePolicy {
         if (frame == latest) return;
         Frame previous = latest;
         latest = frame;
-        cached = null;
+        cached.clear();
         frameCount++;
         closeQuietly(previous);
     }
@@ -67,7 +68,7 @@ final class OwnerFramePolicy {
         closed = true;
         Frame previous = latest;
         latest = null;
-        cached = null;
+        cached.clear();
         closeQuietly(previous);
     }
 
@@ -82,7 +83,10 @@ final class OwnerFramePolicy {
             long timestampNs;
             synchronized (this) {
                 if (closed || latest == null) return null;
-                if (cached != null) return cached;
+                // 必须按 encoder 命中：否则先请求的 PNG 会让 thumb 直接拿到全分辨率大图，
+                // 预览既没变小，format 也会被谎报成 jpeg。
+                Snapshot hit = cached.get(encoder);
+                if (hit != null) return hit;
                 source = latest;
                 width = source.width();
                 height = source.height();
@@ -97,7 +101,7 @@ final class OwnerFramePolicy {
                 if (closed) return null;
                 // An old encoder must neither poison the new frame's cache nor its timestamp.
                 // Identity, not timestamp equality, also handles duplicate producer timestamps.
-                if (latest == source) cached = result;
+                if (latest == source) cached.put(encoder, result);
                 return result;
             }
         }

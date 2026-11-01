@@ -62,6 +62,22 @@ internal data class VirtualDisplaySnapshot(
             9f / 19.5f
         }
 
+    /**
+     * 外观是否与另一快照一致（不含画面帧与触控光效）。
+     *
+     * 帧每 250ms 变一次，但胶囊的尺寸档位、微缩镜开关、接管按钮显隐只跟这些字段有关。
+     * 用于 distinctUntilChanged，避免每次帧更新都让整棵胶囊重组、拖慢展开/收起动画。
+     */
+    fun samePresentationAs(other: VirtualDisplaySnapshot): Boolean =
+        active == other.active &&
+            displayId == other.displayId &&
+            width == other.width &&
+            height == other.height &&
+            appName == other.appName &&
+            packageName == other.packageName &&
+            userControlling == other.userControlling &&
+            materializingToMain == other.materializingToMain
+
     companion object {
         val Inactive = VirtualDisplaySnapshot()
     }
