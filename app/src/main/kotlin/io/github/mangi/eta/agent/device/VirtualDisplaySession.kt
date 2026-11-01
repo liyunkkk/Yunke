@@ -378,9 +378,9 @@ internal object VirtualDisplaySession {
                 // 用户只能反复重试到某次偶然成功——实测就是这个表现。
                 recoveryStage = "record_write"
                 if (!saved.edit().clear().commit()) return fail(s, "RECOVERY_STATE_UNWRITABLE")
-                AndroidAgentLogger.warn {
+                AndroidAgentLogger.warn(
                     "Virtual display stale recovery record cleared (owner gone, display absent)"
-                }
+                )
             } else if (fields.isNotEmpty()) {
                 recoveryStage = "record_decode"
                 val record = VirtualDisplayRecoveryRecord.decode(fields)
