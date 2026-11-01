@@ -101,6 +101,25 @@ final class OwnerFrameStore implements ImageReader.OnImageAvailableListener {
         }
     }
 
+    /** 装裱视窗预览帧：长边 900 JPEG，贴合 324dp 窗口的实际像素宽度。 */
+    Snapshot encodeStage(int maxBytes) throws OwnerException {
+        try {
+            OwnerFramePolicy.Snapshot snapshot = frames.snapshot(STAGE_JPEG_ENCODER);
+            if (snapshot == null) {
+                throw new OwnerException(OwnerProtocol.ERROR_NO_FRAME, "no frame");
+            }
+            if (snapshot.png.length > maxBytes) {
+                throw new OwnerException(OwnerProtocol.ERROR_IMAGE_TOO_LARGE,
+                        "stage " + snapshot.png.length);
+            }
+            return new Snapshot(snapshot);
+        } catch (OwnerException ex) {
+            throw ex;
+        } catch (Throwable ex) {
+            throw new OwnerException(OwnerProtocol.ERROR_SNAPSHOT_FAILED, "stage");
+        }
+    }
+
     Snapshot encodePng(int maxBytes) throws OwnerException {
         try {
             OwnerFramePolicy.Snapshot snapshot = frames.snapshot(PNG_ENCODER);
@@ -173,8 +192,24 @@ final class OwnerFrameStore implements ImageReader.OnImageAvailableListener {
         }
     }
 
+    /**
+     * 装裱视窗预览：窗口宽 324dp，440dpi 下约 891px。
+     * 用 360px 的缩略帧去铺满它会放大 2.5 倍，肉眼就是「糊」——这正是实测反馈的模糊。
+     * 长边 900 与显示宽度基本一一对应，再高只是白白增加传输量。
+     */
+    private static final OwnerFramePolicy.Encoder STAGE_JPEG_ENCODER = new OwnerFramePolicy.Encoder() {
+        @Override
+        public byte[] encode(byte[] rgba, int width, int height) {
+            return encodeRgba(rgba, width, height, STAGE_MAX_EDGE_PX, Bitmap.CompressFormat.JPEG, STAGE_JPEG_QUALITY);
+        }
+    };
+
     /** 缩略帧长边上限：微缩镜 18x32dp 在 440dpi 下约 100px 宽，360 已足够清晰。 */
     static final int THUMB_MAX_EDGE_PX = 360;
+    /** 装裱视窗预览长边：对齐 324dp 窗口在 440dpi 下的实际像素宽度。 */
+    static final int STAGE_MAX_EDGE_PX = 900;
+    /** 装裱视窗预览质量：比缩略帧高一档，放大后仍可辨认文字轮廓。 */
+    static final int STAGE_JPEG_QUALITY = 78;
     /** 缩略帧 JPEG 质量：视觉预览用途，60 在手机屏上几乎看不出差别。 */
     static final int THUMB_JPEG_QUALITY = 60;
 

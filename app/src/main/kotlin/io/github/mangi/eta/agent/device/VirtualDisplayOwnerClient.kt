@@ -159,6 +159,7 @@ internal class VirtualDisplayOwnerClient private constructor(
         runId: String = this.runId,
         timeoutMillis: Long = SCREENSHOT_REQUEST_TIMEOUT_MS,
         thumb: Boolean = false,
+        stage: Boolean = false,
     ): OwnerResponse {
         val run = runId.ifBlank {
             return errorResponse(VirtualDisplayOwnerProtocol.OP_SNAPSHOT, VirtualDisplayOwnerError.REQUEST_INVALID)
@@ -166,6 +167,8 @@ internal class VirtualDisplayOwnerClient private constructor(
         val payload = linkedMapOf<String, Any?>(VirtualDisplayOwnerProtocol.FIELD_RUN_ID to run)
         // owner 的 optionalBoolean 只接受真正的 JSON 布尔；传字符串 "true" 会抛 ERROR_PROTOCOL。
         if (thumb) payload["thumb"] = true
+        // stage：装裱视窗预览档（长边 900），缩小放大后不糊。
+        else if (stage) payload["stage"] = true
         return request(
             VirtualDisplayOwnerProtocol.OP_SNAPSHOT,
             payload,

@@ -48,6 +48,14 @@ internal object YunkeVirtualDisplayBridge {
     /** 用户是否已在胶囊里开启手动接管。 */
     @Volatile
     private var userControlling = false
+    /**
+     * 胶囊是否处于展开态（装裱视窗可见）。
+     *
+     * 展开时窗口宽 324dp ≈ 891px，360px 缩略帧铺满会放大 2.5 倍、肉眼发糊，
+     * 因此展开时改取长边 900 的 stage 档；收起成微缩镜时仍用 360 省带宽。
+     */
+    @Volatile
+    private var stageExpanded = false
     @Volatile
     private var materializing = false
 
@@ -72,6 +80,14 @@ internal object YunkeVirtualDisplayBridge {
     fun setUserControlling(controlling: Boolean) {
         userControlling = controlling
         _snapshots.value = _snapshots.value.copy(userControlling = controlling)
+    }
+
+    /** 展开/收起时切换取帧画质档位。 */
+    fun setStageExpanded(expanded: Boolean) {
+        if (stageExpanded == expanded) return
+        stageExpanded = expanded
+        // 立即作废上一次取帧时间，让下一轮立刻拿到新档位的画面。
+        lastFrameFetchMs = 0L
     }
 
     fun setMaterializingToMain(value: Boolean) {
@@ -138,7 +154,13 @@ internal object YunkeVirtualDisplayBridge {
 
     /** 返回 (ImageBitmap, 原始宽, 原始高)。 */
     private fun fetchThumb(): Triple<androidx.compose.ui.graphics.ImageBitmap, Int, Int>? {
-        val payload = runCatching { VirtualDisplaySession.viewerFrame(thumb = true) }.getOrNull()
+        val payload = runCatching {
+            if (stageExpanded) {
+                VirtualDisplaySession.viewerFrame(stage = true)
+            } else {
+                VirtualDisplaySession.viewerFrame(thumb = true)
+            }
+        }.getOrNull()
         if (payload == null) {
             lastFrameError = "viewer_frame_null"
             return null

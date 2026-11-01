@@ -1290,6 +1290,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         updateCapsuleWindowBounds()
                     }
                 }
+                // 副屏自然结束（用户点停止/超时释放）且已无在跑会话时，胶囊没有存在意义，收掉服务。
+                if (!snapshot.active && previous.active && sessions.isEmpty() &&
+                    resultCardView == null
+                ) {
+                    dismissAndStop()
+                }
             }
         }
     }
@@ -1298,12 +1304,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val expand = !capsuleExpanded.value
         // 先把窗口扩到展开档再开始动画；收起由胶囊在动画结束后回调 onCapsuleCollapsedSettled 缩窗。
         if (expand) updateCapsuleWindowBounds(expanding = true)
+        // 展开即切到高清预览档，避免 360px 缩略帧铺满 324dp 视窗后发糊。
+        YunkeVirtualDisplayBridge.setStageExpanded(expand)
         capsuleExpanded.value = expand
     }
 
     private fun onCapsuleCollapsedSettled() {
         if (!capsuleExpanded.value) {
             updateCapsuleWindowBounds(expanding = false)
+            // 收起回微缩镜后回到省流量的缩略档。
+            YunkeVirtualDisplayBridge.setStageExpanded(false)
         }
     }
 
@@ -1539,6 +1549,16 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             !AgentOverlayVisibilityPolicy.allowsOverlay(session.overlaySurfaceMode)
         ) return
         state.value = finalState
+
+        // 副屏仍在运行时必须保留胶囊：否则用户失去唯一的微缩镜与接管入口，
+        // 只能干看着一个还在跑的虚拟屏（run 结束但 finish 失败时会真实发生）。
+        if (virtualDisplayState.value.active) {
+            capsuleExpanded.value = false
+            YunkeVirtualDisplayBridge.setStageExpanded(false)
+            updateCapsuleWindowBounds(expanding = false)
+            mainHandler.removeCallbacksAndMessages(hideToken)
+            return
+        }
 
         if (AgentOverlayVisibilityPolicy.shouldShowResultCard(session.overlaySurfaceMode, hasExecutedForegroundTool)) {
             // 撤掉光球和小气泡，改显半屏结果卡片，不自动关闭，用户手动关闭

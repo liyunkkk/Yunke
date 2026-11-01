@@ -1392,20 +1392,24 @@ internal object VirtualDisplaySession {
      * 预览取帧。[thumb] = true 走 owner 的低分辨率 JPEG 缩略通道，
      * 供胶囊微缩镜/装裱视窗连续刷新；全分辨率 PNG 只用于 Agent 真正看图。
      */
-    @Synchronized fun viewerFrame(thumb: Boolean = false): JSONObject? {
+    @Synchronized fun viewerFrame(thumb: Boolean = false, stage: Boolean = false): JSONObject? {
         val session = sessions.entries.firstOrNull { it.value.phase != "finished" }?.value ?: return null
         val client = session.client ?: return null
-        val shot = runCatching { client.snapshot(thumb = thumb) }.getOrNull() ?: return null
+        val shot = runCatching { client.snapshot(thumb = thumb, stage = stage) }.getOrNull() ?: return null
         if (!shot.ok) return null
         val data = body(shot)
         val encoded = data.optString("data")
         val width = data.optInt("width", 0)
         val height = data.optInt("height", 0)
         if (encoded.isBlank() || width <= 0 || height <= 0) return null
+        // width/height 是副屏真实尺寸（坐标换算用）；frameWidth/frameHeight 是实际编码尺寸。
+        // 缩略帧下两者不同，混用会让点击坐标整体偏移。
         return JSONObject()
             .put("data", encoded)
             .put("width", width)
             .put("height", height)
+            .put("frameWidth", data.optInt("frameWidth", width))
+            .put("frameHeight", data.optInt("frameHeight", height))
             .put("format", data.optString("format", if (thumb) "jpeg" else "png"))
     }
 

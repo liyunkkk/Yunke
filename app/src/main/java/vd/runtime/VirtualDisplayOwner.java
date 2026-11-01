@@ -471,15 +471,27 @@ public final class VirtualDisplayOwner {
             out.put("timestampNs", frames.latestTimestampNs());
             // thumb=true：微缩镜/装裱视窗预览用低分辨率 JPEG，帧率与传输量都远优于全分辨率 PNG。
             boolean thumb = parsed.optionalBoolean("thumb", false);
-            out.put("format", thumb ? "jpeg" : "png");
+            // stage=true：装裱视窗预览，长边 900，贴合 324dp 窗口；thumb 是微缩镜用的 360。
+            boolean stage = !thumb && parsed.optionalBoolean("stage", false);
+            out.put("format", (thumb || stage) ? "jpeg" : "png");
             if (include) {
-                OwnerFrameStore.Snapshot snapshot = thumb
-                        ? frames.encodeThumb(maxBytes)
-                        : frames.encodePng(maxBytes);
+                OwnerFrameStore.Snapshot snapshot;
+                if (thumb) {
+                    snapshot = frames.encodeThumb(maxBytes);
+                } else if (stage) {
+                    snapshot = frames.encodeStage(maxBytes);
+                } else {
+                    snapshot = frames.encodePng(maxBytes);
+                }
                 out.put("frameCount", snapshot.frameCount);
                 out.put("timestampNs", snapshot.timestampNs);
-                out.put("width", snapshot.width);
-                out.put("height", snapshot.height);
+                // width/height 始终是副屏的真实像素尺寸：客户端用它做坐标归一化换算。
+                // 缩略帧只改变编码尺寸（frameWidth/frameHeight），绝不能顶替 display 尺寸，
+                // 否则预览用的 360px 会把点击坐标整体缩小到约三分之一。
+                out.put("width", frames.frameWidth());
+                out.put("height", frames.frameHeight());
+                out.put("frameWidth", snapshot.width);
+                out.put("frameHeight", snapshot.height);
                 out.put("bytes", snapshot.png.length);
                 out.put("data", android.util.Base64.encodeToString(snapshot.png,
                         android.util.Base64.NO_WRAP));
