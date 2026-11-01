@@ -714,9 +714,23 @@ final class OwnerHandoff {
             verifyDisplay(source,unique);focus(witness);
             anchor.check(roots().get(anchor.id),source);
             phase="remove-anchor";
-            if(!Boolean.TRUE.equals(invokeAtm("removeTask",new Class<?>[]{int.class},anchor.id)))throw new IllegalStateException("anchor removal failed");
+            // 锚点任务可能已经自己退场（应用主动退出、被系统回收、Agent 恰好按了返回）。
+            // removeTask 对已经不存在的任务返回 false，这不是失败：只要它确实不在 roots() 里，
+            // 就视为移除成功。旧逻辑把它当成 "anchor removal failed"，
+            // 导致收尾一律 HANDOFF_UNCERTAIN、副屏被留下（实测 remove-anchor:IllegalStateException）。
+            Object anchorRemovedRaw;
+            try {
+                anchorRemovedRaw=invokeAtm("removeTask",new Class<?>[]{int.class},anchor.id);
+            } catch(java.lang.reflect.InvocationTargetException alreadyGone) {
+                anchorRemovedRaw=Boolean.FALSE;
+            }
+            boolean anchorRemoved=Boolean.TRUE.equals(anchorRemovedRaw);
             for(int attempt=0;attempt<20 && roots().containsKey(anchor.id);attempt++)Thread.sleep(100L);
-            if(roots().containsKey(anchor.id))throw new IllegalStateException("anchor removal uncertain");
+            if(roots().containsKey(anchor.id)) {
+                throw new IllegalStateException(anchorRemoved
+                        ? "anchor removal uncertain"
+                        : "anchor removal failed");
+            }
             verifyDisplay(source,unique);focus(witness);
             for(Object t:roots().values())if(number(t,"displayId")==source)throw new IllegalStateException("source occupied");
             for(Integer id:selected)owned.get(id).check(roots().get(id),0);

@@ -196,6 +196,9 @@ open class AgentAccessibilityService : AccessibilityService() {
             maxNodes = nodeLimit,
             depth = 0,
             traversal = traversal,
+            // 副屏（非默认 display）上节点的 isVisibleToUser 恒为 false，
+            // 按它剪枝会得到空树；只有主屏才按可见性剪枝。
+            requireVisible = displayId == android.view.Display.DEFAULT_DISPLAY,
         )
         NodeSnapshot(
             id = "o${SNAPSHOT_IDS.incrementAndGet()}",
@@ -1712,9 +1715,17 @@ open class AgentAccessibilityService : AccessibilityService() {
                 NodeActionResult.failure("IDENTITY_CHANGED", "目标节点内容或身份已经变化，请重新观察屏幕"),
             )
         }
-        if (!node.isVisibleToUser || !node.isEnabled) {
+        // 副屏（非默认 display）上节点的 isVisibleToUser 恒为 false：用户没在看那块屏。
+        // 按它判死会把副屏所有节点动作都拒绝成 NODE_NOT_ACTIONABLE（实测 type_text 不可用）。
+        // 主屏仍严格校验可见性；副屏只保留 enabled 校验。
+        if (!node.isEnabled) {
             return NodeValidation.Invalid(
-                NodeActionResult.failure("NODE_NOT_ACTIONABLE", "目标节点当前不可见或不可用"),
+                NodeActionResult.failure("NODE_NOT_ACTIONABLE", "目标节点当前不可用"),
+            )
+        }
+        if (!NodeValidationDisplay.usesDisplayScopedRoot(snapshot.displayId) && !node.isVisibleToUser) {
+            return NodeValidation.Invalid(
+                NodeActionResult.failure("NODE_NOT_ACTIONABLE", "目标节点当前不可见"),
             )
         }
         return NodeValidation.Valid(indexed)
@@ -1749,6 +1760,15 @@ open class AgentAccessibilityService : AccessibilityService() {
         clickableAncestor: NodeActionTarget? = null,
         longClickableAncestor: NodeActionTarget? = null,
         scrollableAncestor: NodeActionTarget? = null,
+        /**
+         * 是否要求节点 isVisibleToUser。
+         *
+         * 主屏必须要求：不可见分支会挡住真实可点目标。副屏不能要求：
+         * 用户没在看那块屏，窗口内节点的 isVisibleToUser 恒为 false，
+         * 按它剪枝会把整棵树剪空（实测副屏 ui_nodes 始终为空、
+         * 只有截图没有节点，type_text 因此不可用）。
+         */
+        requireVisible: Boolean = true,
     ) {
         if (out.size >= maxNodes) {
             traversal.truncated = true
@@ -1766,7 +1786,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         try {
             // 不可见父节点的后代不会成为可操作目标，尽早裁掉这类大分支。
             val visible = node.isVisibleToUser
-            if (depth > 0 && !visible) return
+            if (depth > 0 && !visible && requireVisible) return
 
             val bounds = node.bounds()
             val text = node.realText().take(120)
@@ -1804,7 +1824,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 hasScrollCapability ||
                 focused ||
                 editable
-            if (visible && bounds.width() > 2 && bounds.height() > 2 && useful) {
+            if ((visible || !requireVisible) && bounds.width() > 2 && bounds.height() > 2 && useful) {
                 out += IndexedNode(
                     index = out.size,
                     node = node,
@@ -1849,6 +1869,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     clickableAncestor = clickTarget,
                     longClickableAncestor = longClickTarget,
                     scrollableAncestor = scrollTarget,
+                    requireVisible = requireVisible,
                 )
             }
         } finally {
