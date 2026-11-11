@@ -24,9 +24,11 @@ class TurnTickRailTest {
 
     @Test
     fun `resolveVisibleTurn interpolates between boundaries`() {
-        // 边界 2 与 6 之间：位置 4 正好是第 1 轮的中点。
-        assertEquals(1.5f, resolveVisibleTurn(4f, listOf(2, 6, 10), 14), 0.0001f)
-        assertEquals(1.25f, resolveVisibleTurn(3f, listOf(2, 6, 10), 14), 0.0001f)
+        // 边界 2 与 6 之间是第 0 轮到第 1 轮：位置 4 正好是中点 0.5（0-based 插值，
+        // 与实现 i + (pos-start)/(end-start) 一致；旧期望 1.5/1.25 是按 1-based
+        // 误写的，CI 2026-11-11 run 260 因此失败，已修正）。
+        assertEquals(0.5f, resolveVisibleTurn(4f, listOf(2, 6, 10), 14), 0.0001f)
+        assertEquals(0.25f, resolveVisibleTurn(3f, listOf(2, 6, 10), 14), 0.0001f)
     }
 
     @Test
