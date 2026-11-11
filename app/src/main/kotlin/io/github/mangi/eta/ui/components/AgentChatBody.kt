@@ -585,6 +585,8 @@ internal fun AgentChatScaffold(
     tickJumpRequest: Pair<TurnTick, Int>? = null,
     onTickJumpConsumed: () -> Unit = {},
     tickScrubMessageId: String? = null,
+    /** 是否正在刮擦刻度轨（透传给消息列表，决定刮擦跟随滚动是否生效）。 */
+    tickScrubbing: Boolean = false,
     // Eta Mod：刻度轨可见性——tickRailVisible 下发给底部栏（带子淡入淡出），
     // onTickRailVisibilityChanged 上报自消息列表的锚点观测（PATCH_03）。
     tickRailVisible: Boolean = false,
