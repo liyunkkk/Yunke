@@ -5,6 +5,8 @@ import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -84,10 +86,12 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -134,6 +138,8 @@ import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import io.github.mangi.eta.ui.model.isResumeAfterCompress
 import io.github.mangi.eta.ui.model.isSteerSupplement
+import kotlin.math.abs
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -347,6 +353,59 @@ internal fun AgentChatBody(
     val submitScrollScope = rememberCoroutineScope()
     var keepBottomAnchored by remember { mutableStateOf(true) }
 
+    // Eta Mod：轮次刻度轨——从同一份 timelineEntries 派生刻度（与 Number444 的
+    // buildTurnTicks 同一语义；Yunke 不另起第二份时间线投影）。
+    // 轮数 < MIN_TURN_TICKS（3）时 tickRail 为 null，刻度条不显示，短会话只留
+    // ConversationTurnNavigationButton（见 README「按钮为什么保留」）。
+    val turnTicks = remember(timelineEntries) { buildTurnTicks(timelineEntries) }
+    // 列表视口同步来的浮点当前轮；刻度条刮擦期间由刻度条接管，松手后回到这里。
+    val visibleTurn = remember { mutableFloatStateOf(-1f) }
+    // 刮擦气泡目标轮；气泡渲染在底部栏带子 Box 之外（带子 Box 会裁剪子内容溢出）。
+    var tickBubbleTick by remember { mutableStateOf<TurnTick?>(null) }
+    // 轻点跳转请求：行下标换算在 AgentConversationMessages 里（PATCH_03），
+    // 这里只发请求；nonce 保证同一轮连点两次也会再次触发。
+    var tickJumpRequest by remember { mutableStateOf<Pair<TurnTick, Int>?>(null) }
+    var tickJumpNonce by remember { mutableIntStateOf(0) }
+    // 刮擦跟随目标：实时、无动画，同样由 AgentConversationMessages 消费。
+    var tickScrubMessageId by remember { mutableStateOf<String?>(null) }
+    // Eta Mod：刻度轨可见性——抄上一条/下一条按钮（showMessageNavigation，约 :1830）：
+    // 平时不常驻；内层（PATCH_03）在滚动中 / 不在底部时上报 true，到底部静止
+    // TICK_RAIL_IDLE_HIDE_DELAY_MS 后上报 false；刮擦时外层强制可见。
+    var tickRailVisibleReported by remember { mutableStateOf(false) }
+    var tickRailScrubbing by remember { mutableStateOf(false) }
+    val tickRailVisible = tickRailScrubbing || tickRailVisibleReported
+    val tickRail: (@Composable () -> Unit)? = if (turnTicks.size >= MIN_TURN_TICKS) {
+        {
+            TurnTickRail(
+                ticks = turnTicks,
+                currentTurn = visibleTurn,
+                visible = tickRailVisible,
+                onTap = { tick ->
+                    // 末轮即“回到底部”，由消费端走 snapListToBottom；其余轮走行下标跳转。
+                    keepBottomAnchored = tick == turnTicks.lastOrNull()
+                    tickJumpNonce += 1
+                    tickJumpRequest = tick to tickJumpNonce
+                },
+                onScrubStart = {
+                    tickRailScrubbing = true
+                    keepBottomAnchored = false
+                },
+                onScrubTick = { tick -> tickScrubMessageId = tick.firstUserMessageId },
+                onScrubEnd = { atLatest ->
+                    tickRailScrubbing = false
+                    if (atLatest) {
+                        keepBottomAnchored = true
+                        tickJumpNonce += 1
+                        tickJumpRequest = turnTicks.lastOrNull()?.to(tickJumpNonce)
+                    }
+                },
+                onBubbleChanged = { tickBubbleTick = it },
+            )
+        }
+    } else {
+        null
+    }
+
     LaunchedEffect(isDrawerOpen) {
         if (isDrawerOpen) {
             hideChatInputIme(focusManager, keyboard, view)
@@ -413,6 +472,15 @@ internal fun AgentChatBody(
                 showEmptySuggestions = !isKeyboardVisible,
                 keepBottomAnchored = keepBottomAnchored,
                 onBottomAnchorChanged = { keepBottomAnchored = it },
+                tickRail = tickRail,
+                tickBubble = tickBubbleTick,
+                turnTicks = turnTicks,
+                onVisibleTurnChanged = { visibleTurn.floatValue = it },
+                tickJumpRequest = tickJumpRequest,
+                onTickJumpConsumed = { tickJumpRequest = null },
+                tickScrubMessageId = tickScrubMessageId,
+                tickRailVisible = tickRailVisible,
+                onTickRailVisibilityChanged = { tickRailVisibleReported = it },
                 onSubmit = { text ->
                     // Hide only for this submit action, never for a later streaming/tool update.
                     keyboard?.hide()
@@ -502,6 +570,18 @@ internal fun AgentChatScaffold(
     showEmptySuggestions: Boolean,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
+    // Eta Mod：轮次刻度轨——外层 AgentChatBody 派生，只做透传。
+    tickRail: (@Composable () -> Unit)? = null,
+    tickBubble: TurnTick? = null,
+    turnTicks: List<TurnTick> = emptyList(),
+    onVisibleTurnChanged: (Float) -> Unit = {},
+    tickJumpRequest: Pair<TurnTick, Int>? = null,
+    onTickJumpConsumed: () -> Unit = {},
+    tickScrubMessageId: String? = null,
+    // Eta Mod：刻度轨可见性——tickRailVisible 下发给底部栏（带子淡入淡出），
+    // onTickRailVisibilityChanged 上报自消息列表的锚点观测（PATCH_03）。
+    tickRailVisible: Boolean = false,
+    onTickRailVisibilityChanged: (Boolean) -> Unit = {},
     onSubmit: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onModelSelected: (String, String) -> Unit,
@@ -555,6 +635,9 @@ internal fun AgentChatScaffold(
         ),
         bottomBar = {
             AgentChatBottomBar(
+                tickRail = tickRail,
+                tickBubble = tickBubble,
+                tickRailVisible = tickRailVisible,
                 collaborationConversationId = collaborationConversationId,
                 input = input,
                 draftField = draftField,
@@ -629,6 +712,12 @@ internal fun AgentChatScaffold(
                 bottomInset = bottomPadding,
                 keepBottomAnchored = keepBottomAnchored,
                 onBottomAnchorChanged = onBottomAnchorChanged,
+                turnTicks = turnTicks,
+                onVisibleTurnChanged = onVisibleTurnChanged,
+                tickJumpRequest = tickJumpRequest,
+                onTickJumpConsumed = onTickJumpConsumed,
+                tickScrubMessageId = tickScrubMessageId,
+                onTickRailVisibilityChanged = onTickRailVisibilityChanged,
                 onSuggestionClick = onSuggestionClick,
                 onRunTraceClick = onRunTraceClick,
                 onOpenBrowser = onOpenBrowser,
@@ -655,6 +744,19 @@ internal fun AgentChatScaffold(
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
+// Eta Mod：刻度轨到底部静止后自动隐藏的宽限（毫秒）。按钮逻辑本身没有计时器，
+// 是纯位置判断（到锚定底部立刻消失）；刻度条多留 2.5 秒，给刚到到底部的用户
+// 一个顺手点刻度跳回去的窗口。单点常量，真机可调。
+private const val TICK_RAIL_IDLE_HIDE_DELAY_MS = 2500L
+
+// Eta Mod：轮次刻度轨跟随——锚点观测流里多发的一组视口位置，随 flow 值一起去重。
+private data class TurnFollowState(
+    val isUserScrolling: Boolean,
+    val isAtBottom: Boolean,
+    val anchored: Boolean,
+    val firstVisibleFloat: Float,
+    val totalItemsCount: Int,
+)
 internal fun AgentConversationMessages(
     visibleMessages: List<AgentChatMessageUi>,
     scrollState: LazyListState,
@@ -666,6 +768,13 @@ internal fun AgentConversationMessages(
     bottomInset: Dp,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
+    // Eta Mod：轮次刻度轨——外层 AgentChatBody 派生（turnTicks）与下发的跳转请求。
+    turnTicks: List<TurnTick> = emptyList(),
+    onVisibleTurnChanged: (Float) -> Unit = {},
+    tickJumpRequest: Pair<TurnTick, Int>? = null,
+    onTickJumpConsumed: () -> Unit = {},
+    tickScrubMessageId: String? = null,
+    onTickRailVisibilityChanged: (Boolean) -> Unit = {},
     onSuggestionClick: (String) -> Unit = {},
     onRunTraceClick: () -> Unit = {},
     onOpenBrowser: () -> Unit = {},
@@ -768,6 +877,29 @@ internal fun AgentConversationMessages(
             )
         }
     }
+
+    // Eta Mod：刻度跟随的行空间边界——每轮首条用户消息经消息 id 换算成行下标。
+    // 用户消息永远是独立 Message 行（toTimelineEntries 只把思考/工具消息组进
+    // WorkProcess），所以正常情况下每个 tick 都能换算到；换算不到的轮次直接丢弃
+    //（见 README 风险：折叠工作组与压缩占位行）。
+    val turnRowBoundaries = remember(timelineRows, turnTicks) {
+        turnTicks.mapNotNull { tick ->
+            timelineRows.indexOfFirst { it.containsMessageId(tick.firstUserMessageId) }
+                .takeIf { it >= 0 }
+        }
+    }
+
+    // Eta Mod：bottomItemIndex 提前声明（合查 BLOCKER 2 修法，见下条说明）。
+    // 下面的轻点跳转 effect 在原声明（:838）之前引用它，Kotlin 局部 val 不能前向引用。
+    // 合查报告只说移 bottomItemIndex 一行是不够的：它依赖的 compressingItemCount
+    // 声明在 :837，同样在 scrollToMessageId effect 之后，单移一行会造出新的前向引用。
+    // 所以 telemetry / compressingChildren / compressingItemCount / bottomItemIndex
+    // 四行整块上移——它们的依赖只有 timelineRows、函数参数与组合局部变量，全部满足；
+    // 原位置的四行由下一个 hunk 删掉。
+    val telemetry = LocalAgentContextTelemetry.current
+    val compressingChildren = telemetry.children.filter { it.isCompacting }
+    val compressingItemCount = if (isCompressingContext || isWaitingForCompression || compressingChildren.isNotEmpty()) 1 else 0
+    val bottomItemIndex = timelineRows.size + compressingItemCount
     LaunchedEffect(scrollToMessageId, timelineRows) {
         val target = scrollToMessageId ?: return@LaunchedEffect
         val index = timelineRows.indexOfFirst { it.containsMessageId(target) }
@@ -778,6 +910,30 @@ internal fun AgentConversationMessages(
         } else if (timelineRows.isNotEmpty()) {
             onScrollToMessageConsumed()
         }
+    }
+
+    // Eta Mod：刻度轨轻点跳转——经消息 id 中转到行下标（与上面 scrollToMessageId
+    // 同一写法，禁止直接拿 timelineIndex 当 animateScrollToItem 参数）；
+    // 末轮回底走现成的 snapListToBottom；nonce 在外层递增，保证同一轮连点也触发。
+    LaunchedEffect(tickJumpRequest, timelineRows) {
+        val (tick, _) = tickJumpRequest ?: return@LaunchedEffect
+        if (tick == turnTicks.lastOrNull()) {
+            snapListToBottom(scrollState, bottomItemIndex)
+        } else {
+            val index = timelineRows.indexOfFirst { it.containsMessageId(tick.firstUserMessageId) }
+            if (index >= 0) {
+                scrollState.animateScrollToItem(index)
+            } else {
+                snapListToBottom(scrollState, bottomItemIndex)
+            }
+        }
+        onTickJumpConsumed()
+    }
+    // Eta Mod：刻度轨刮擦跟随——实时、无动画；目标行不存在时不跳（等下一帧 tick）。
+    LaunchedEffect(tickScrubMessageId, timelineRows) {
+        val targetId = tickScrubMessageId ?: return@LaunchedEffect
+        val index = timelineRows.indexOfFirst { it.containsMessageId(targetId) }
+        if (index >= 0) scrollState.requestScrollToItem(index)
     }
     // Project onto the EXACT rows consumed by LazyColumn. Expansion and late
     // records move only the footer anchor, never the message or callback owner.
@@ -832,10 +988,6 @@ internal fun AgentConversationMessages(
         val activeIds = visibleMessages.mapTo(mutableSetOf()) { it.id }
         streamingMarkdownStates.keys.retainAll(activeIds)
     }
-    val telemetry = LocalAgentContextTelemetry.current
-    val compressingChildren = telemetry.children.filter { it.isCompacting }
-    val compressingItemCount = if (isCompressingContext || isWaitingForCompression || compressingChildren.isNotEmpty()) 1 else 0
-    val bottomItemIndex = timelineRows.size + compressingItemCount
     val userMessageTargets = remember(timelineRows) { timelineRows.lazyUserMessageIndices() }
     val directionThreshold = with(LocalDensity.current) { 12.dp.toPx() }
     val directionTracker = remember(scrollState, directionThreshold) {
@@ -908,14 +1060,51 @@ internal fun AgentConversationMessages(
     }
 
     var hasLeftBottom by remember { mutableStateOf(false) }
+    // Eta Mod：刻度跟随——复用下面已有的锚点观测，不另起高频 snapshotFlow。
+    val currentOnVisibleTurnChanged by rememberUpdatedState(onVisibleTurnChanged)
+    val currentTurnRowBoundaries by rememberUpdatedState(turnRowBoundaries)
+    // Eta Mod：刻度轨可见性上报——抄上一条/下一条按钮（showMessageNavigation）：
+    // 只在用户离开底部时出现，回到锚定底部即消失；上报走这个回调到外层。
+    val currentOnTickRailVisibilityChanged by rememberUpdatedState(onTickRailVisibilityChanged)
+    val tickRailVisibilityScope = rememberCoroutineScope()
     LaunchedEffect(scrollState) {
+        var lastReportedTurn = -1f
+        // 刻度轨可见性本地状态：hide job 与已上报值只在主线程碰（collect 与
+        // hide job 都跑在 Main 上），无竞态。
+        var railHideJob: Job? = null
+        var railVisible = false
         snapshotFlow {
             if (messageNavigationJob != null) null
-            else Triple(isUserScrolling, scrollState.isConversationAtBottom(), currentAnchor.value)
+            else {
+                val info = scrollState.layoutInfo
+                val first = info.visibleItemsInfo.firstOrNull()
+                val firstFloat = if (first == null) {
+                    -1f
+                } else {
+                    first.index + if (first.size > 0) {
+                        (-first.offset.toFloat() / first.size).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                }
+                TurnFollowState(
+                    isUserScrolling = isUserScrolling,
+                    isAtBottom = scrollState.isConversationAtBottom(),
+                    anchored = currentAnchor.value,
+                    firstVisibleFloat = firstFloat,
+                    totalItemsCount = info.totalItemsCount,
+                )
+            }
         }
-            .distinctUntilChanged()
+            .distinctUntilChanged { old, new ->
+                if (old == null || new == null) old == new
+                else old.isUserScrolling == new.isUserScrolling &&
+                    old.isAtBottom == new.isAtBottom &&
+                    old.anchored == new.anchored &&
+                    abs(old.firstVisibleFloat - new.firstVisibleFloat) < 0.002f
+            }
             .collect { state ->
-                val (userScrolling, atBottom, anchored) = state ?: return@collect
+                val (userScrolling, atBottom, anchored, firstFloat, totalItems) = state ?: return@collect
                 if (userScrolling && !atBottom) hasLeftBottom = true
                 val next = resolveKeepBottomAnchored(
                     current = anchored,
@@ -925,6 +1114,40 @@ internal fun AgentConversationMessages(
                 )
                 if (next && atBottom) hasLeftBottom = false
                 if (next != anchored) onBottomAnchorChanged(next)
+                // 刻度跟随：首可见行浮点位置 → 浮点轮次，0.002 阈值去重后上报。
+                // 刮擦期间 TurnTickRail 优先用 scrubTurn，这里照常上报也不会打架。
+                val boundaries = currentTurnRowBoundaries
+                if (firstFloat >= 0f && boundaries.size >= MIN_TURN_TICKS) {
+                    val turn = resolveVisibleTurn(firstFloat, boundaries, totalItems)
+                    if (turn >= 0f && abs(turn - lastReportedTurn) >= 0.002f) {
+                        lastReportedTurn = turn
+                        currentOnVisibleTurnChanged(turn)
+                    }
+                }
+                // 刻度轨可见性：滚动中，或不在底部时显示；到底部且静止
+                // TICK_RAIL_IDLE_HIDE_DELAY_MS 后隐藏。按钮（showMessageNavigation）
+                // 是纯位置判断（!keepBottomAnchored），到锚定底部立刻消失；
+                // 刻度条多留 2.5 秒宽限，给刚到到底部的用户一个顺手点刻度跳回去的窗口。
+                // 刮擦期间外层强制可见（tickRailScrubbing），这里不用管；松手后
+                // 若已到底部且静止，hide job 到时即隐藏。
+                val railActive = userScrolling || !atBottom
+                if (railActive) {
+                    railHideJob?.cancel()
+                    railHideJob = null
+                    if (!railVisible) {
+                        railVisible = true
+                        currentOnTickRailVisibilityChanged(true)
+                    }
+                } else if (railHideJob == null) {
+                    railHideJob = tickRailVisibilityScope.launch {
+                        delay(TICK_RAIL_IDLE_HIDE_DELAY_MS)
+                        railHideJob = null
+                        if (railVisible) {
+                            railVisible = false
+                            currentOnTickRailVisibilityChanged(false)
+                        }
+                    }
+                }
             }
     }
 
@@ -1988,6 +2211,9 @@ internal fun visibleTurnSpeechPreface(
 }
 
 
+/** Eta Mod：刻度带高度——刻度 28dp + 底部 2dp + 上方 6dp 渐变淡出（无玻璃纯渐变）。 */
+private val ChatBottomRailBandHeight = 36.dp
+
 @Composable
 private fun AgentChatBottomBar(
     input: String,
@@ -2038,76 +2264,145 @@ private fun AgentChatBottomBar(
     onAssistantSelected: (String) -> Unit = {},
     gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
     onCycleGptSpeedMode: () -> Unit = {},
+    // Eta Mod：轮次刻度轨插槽——无玻璃版；气泡渲染在带子 Box 之外。
+    tickRail: (@Composable () -> Unit)? = null,
+    tickBubble: TurnTick? = null,
+    // Eta Mod：刻度轨可见性——平时不常驻，抄上一条/下一条按钮的逻辑；
+    // 带子随它淡入淡出 + 高度收起，隐藏时不占 36dp 位置。
+    tickRailVisible: Boolean = false,
 ) {
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (drawerBlocksIme) Modifier else Modifier.imePadding()),
+    // 底部栏实测高度：刻度气泡用它定位（浮层不参与布局，纯位移）。
+    var dockHeightPx by remember { mutableIntStateOf(0) }
+    Box(
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        // 输入框周围保持透明：消息列表延伸到底栏之后，只有输入框本体不透明。
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
+                .then(if (drawerBlocksIme) Modifier else Modifier.imePadding())
+                .onSizeChanged { dockHeightPx = it.height },
         ) {
-            AgentChatTodoDock(
-                conversationId = collaborationConversationId,
-                runActive = isStreaming || isPaused,
+            // Eta Mod：刻度带——Yunke 底部栏本就是透明的，只做 36dp 透明→surface 渐变，
+            // 不另起磨砂层、不照抄 Number444 的 50dp 玻璃带；tickRail 为 null 时不渲染。
+            // 可见性动画：透明度与高度同为 250ms tween，与 TurnTickRail 内部的
+            // railAlpha 同步起落；隐藏时高度收到 0，不在输入框上方留一条空带子。
+            val railBandAlpha by animateFloatAsState(
+                targetValue = if (tickRailVisible) 1f else 0f,
+                animationSpec = tween(durationMillis = 250),
+                label = "tickRailBandAlpha",
             )
-            AgentChatInputBar(
-                collaborationConversationId = collaborationConversationId,
-                input = input,
-                draftField = draftField,
-                modelPickerState = modelPickerState,
-                history = history,
-                billedContextTokens = billedContextTokens,
-                projectedContextTokens = projectedContextTokens,
-                billedHistoryTokens = billedHistoryTokens,
-                requestOverheadTokens = requestOverheadTokens,
-                measuredContextTokens = measuredContextTokens,
-                contextDisplayPolicy = contextDisplayPolicy,
-                billedOverheadTokens = billedOverheadTokens,
-                activeRunContextWindow = activeRunContextWindow,
-                autoCompressEnabled = autoCompressEnabled,
-                showContextUsage = showContextUsage,
-                isStreaming = isStreaming,
-                isPaused = isPaused,
-                canContinueDisconnected = canContinueDisconnected,
-                isCompressingContext = isCompressingContext,
-                showMorphLoading = showMorphLoading,
-                reasoningEffort = reasoningEffort,
-                availableReasoningEfforts = availableReasoningEfforts,
-                pendingImages = pendingImages,
-                pendingFileReferences = pendingFileReferences,
-            conversationMentions = conversationMentions,
-                isEditingMessage = messageEdit != null,
-                assistantId = assistantId,
-                voiceState = voiceState,
-                onStartVoiceMode = onStartVoiceMode,
-                onStopVoiceMode = onStopVoiceMode,
-                editHasLaterTurns = messageEdit?.hasLaterTurns == true,
-                onSubmit = onSubmit,
-                onReasoningEffortChange = onReasoningEffortChange,
-                onModelSelected = onModelSelected,
-                onStop = onStop,
-                onContinue = onContinue,
-                onAbortPausedRun = onAbortPausedRun,
-                onAttachImage = onAttachImage,
-                onAttachVideo = onAttachVideo,
-                onRemoveImage = onRemoveImage,
-                onAttachFiles = onAttachFiles,
-                onAttachFolder = onAttachFolder,
-                onAttachFilePath = onAttachFilePath,
-                onRemoveFileReference = onRemoveFileReference,
-                onCancelMessageEdit = onCancelMessageEdit,
-                onEditAssistant = onEditAssistant,
-                onAssistantSelected = onAssistantSelected,
-                gptSpeedMode = gptSpeedMode,
-                onCycleGptSpeedMode = onCycleGptSpeedMode,
-                modifier = Modifier.fillMaxWidth(),
+            val railBandHeight by animateDpAsState(
+                targetValue = if (tickRailVisible) ChatBottomRailBandHeight else 0.dp,
+                animationSpec = tween(durationMillis = 250),
+                label = "tickRailBandHeight",
             )
+            if (tickRail != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(railBandHeight)
+                        .graphicsLayer { alpha = railBandAlpha }
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    MiuixTheme.colorScheme.surface,
+                                ),
+                            ),
+                        ),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 14.dp, bottom = 2.dp),
+                    ) {
+                        tickRail()
+                    }
+                }
+            }
+            // 输入框周围保持透明：消息列表延伸到底栏之后，只有输入框本体不透明。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(start = 14.dp, end = 14.dp, bottom = 12.dp),
+            ) {
+                AgentChatTodoDock(
+                    conversationId = collaborationConversationId,
+                    runActive = isStreaming || isPaused,
+                )
+                AgentChatInputBar(
+                    collaborationConversationId = collaborationConversationId,
+                    input = input,
+                    draftField = draftField,
+                    modelPickerState = modelPickerState,
+                    history = history,
+                    billedContextTokens = billedContextTokens,
+                    projectedContextTokens = projectedContextTokens,
+                    billedHistoryTokens = billedHistoryTokens,
+                    requestOverheadTokens = requestOverheadTokens,
+                    measuredContextTokens = measuredContextTokens,
+                    contextDisplayPolicy = contextDisplayPolicy,
+                    billedOverheadTokens = billedOverheadTokens,
+                    activeRunContextWindow = activeRunContextWindow,
+                    autoCompressEnabled = autoCompressEnabled,
+                    showContextUsage = showContextUsage,
+                    isStreaming = isStreaming,
+                    isPaused = isPaused,
+                    canContinueDisconnected = canContinueDisconnected,
+                    isCompressingContext = isCompressingContext,
+                    showMorphLoading = showMorphLoading,
+                    reasoningEffort = reasoningEffort,
+                    availableReasoningEfforts = availableReasoningEfforts,
+                    pendingImages = pendingImages,
+                    pendingFileReferences = pendingFileReferences,
+                    conversationMentions = conversationMentions,
+                    isEditingMessage = messageEdit != null,
+                    assistantId = assistantId,
+                    voiceState = voiceState,
+                    onStartVoiceMode = onStartVoiceMode,
+                    onStopVoiceMode = onStopVoiceMode,
+                    editHasLaterTurns = messageEdit?.hasLaterTurns == true,
+                    onSubmit = onSubmit,
+                    onReasoningEffortChange = onReasoningEffortChange,
+                    onModelSelected = onModelSelected,
+                    onStop = onStop,
+                    onContinue = onContinue,
+                    onAbortPausedRun = onAbortPausedRun,
+                    onAttachImage = onAttachImage,
+                    onAttachVideo = onAttachVideo,
+                    onRemoveImage = onRemoveImage,
+                    onAttachFiles = onAttachFiles,
+                    onAttachFolder = onAttachFolder,
+                    onAttachFilePath = onAttachFilePath,
+                    onRemoveFileReference = onRemoveFileReference,
+                    onCancelMessageEdit = onCancelMessageEdit,
+                    onEditAssistant = onEditAssistant,
+                    onAssistantSelected = onAssistantSelected,
+                    gptSpeedMode = gptSpeedMode,
+                    onCycleGptSpeedMode = onCycleGptSpeedMode,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        // Eta Mod：刻度刮擦气泡——渲染在带子 Box 之外（带子 Box 会裁剪子内容溢出），
+        // 底部对齐 dock 底后整体上移，气泡底落在刻度顶上 8dp、水平居中。
+        // 气泡只在刻度条可见时出现：刮擦时外层强制可见，松手后随刻度条一起淡出。
+        if (tickRailVisible) {
+            tickBubble?.let { bubble ->
+                val density = LocalDensity.current
+                val bubbleBottomFromDockTop =
+                    ChatBottomRailBandHeight - 2.dp - TurnTickRailHeight - 8.dp
+                val liftPx = with(density) { bubbleBottomFromDockTop.toPx() } - dockHeightPx
+                TurnTickBubble(
+                    tick = bubble,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .graphicsLayer { translationY = liftPx },
+                )
+            }
         }
     }
 }
