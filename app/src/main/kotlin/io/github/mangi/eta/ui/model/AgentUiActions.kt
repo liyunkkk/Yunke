@@ -45,6 +45,8 @@ sealed interface AgentHomeAction {
 sealed interface PermissionHealthAction {
     data class OpenItemAction(val itemId: String) : PermissionHealthAction
     data object NavigateBack : PermissionHealthAction
+    /** 强制保持无障碍开关（方案 b）：拨动即派发，真值由 AppState 路持有，UI 不本地假切状态。 */
+    data class ToggleAccessibilityProtection(val enabled: Boolean) : PermissionHealthAction
 }
 
 sealed interface AgentChatAction {

@@ -1056,6 +1056,7 @@
   <string name="status_disabled">Disabled</string>
   <string name="accessibility_protection_unavailable">The accessibility protection backend is unavailable. Enable the system scope and restart</string>
   <string name="accessibility_protection_rejected">The system rejected the accessibility protection request</string>
+  <string name="accessibility_protection_summary">Automatically restores accessibility after a system restart or cleanup, so the assistant stays connected</string>
   <string name="settings_write_failed">Couldn\'t save settings</string>
   <string name="status_processing">Processing…</string>
   <string name="power_assistant_system_default">System default assistant</string>

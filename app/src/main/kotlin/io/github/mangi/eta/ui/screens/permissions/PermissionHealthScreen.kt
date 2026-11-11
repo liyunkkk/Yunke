@@ -14,6 +14,7 @@ import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -21,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.PreferenceIcon
+import io.github.mangi.eta.ui.components.SwitchPreference
 import io.github.mangi.eta.ui.components.color
 import io.github.mangi.eta.ui.components.label
 import io.github.mangi.eta.ui.model.PermissionHealthAction
@@ -37,6 +39,10 @@ fun PermissionHealthScreen(
     state: PermissionHealthUiState,
     onAction: (PermissionHealthAction) -> Unit,
     modifier: Modifier = Modifier,
+    // 保护开关请求进行中时禁用开关行（由 AgentAppRoot 的分发处持有并复位，
+    // 见 staging README：pending 不能放屏内，失败回弹时状态值不变会导致屏内
+    // LaunchedEffect(state) 不触发、开关永久禁用）。
+    protectionPending: Boolean = false,
 ) {
     MiuixScaffoldPage(
         title = stringResource(R.string.ui_permission_health_3048bb),
@@ -52,6 +58,12 @@ fun PermissionHealthScreen(
                     PermissionItemRow(
                         item = item,
                         onActionClick = { onAction(PermissionHealthAction.OpenItemAction(item.id)) },
+                        onToggleChange = if (item.toggleChecked != null) {
+                            { enabled -> onAction(PermissionHealthAction.ToggleAccessibilityProtection(enabled)) }
+                        } else {
+                            null
+                        },
+                        toggleEnabled = !protectionPending,
                     )
                 }
             }
@@ -63,9 +75,12 @@ fun PermissionHealthScreen(
 private fun PermissionItemRow(
     item: PermissionHealthItemUi,
     onActionClick: () -> Unit,
+    onToggleChange: ((Boolean) -> Unit)? = null,
+    toggleEnabled: Boolean = true,
 ) {
     val icon = when (item.id) {
         "accessibility" -> Icons.Rounded.AccessibilityNew
+        "accessibility_protection" -> Icons.Rounded.VerifiedUser
         "overlay" -> Icons.Rounded.Layers
         "model" -> Icons.Rounded.Memory
         "terminal" -> Icons.Rounded.Terminal
@@ -77,6 +92,23 @@ private fun PermissionItemRow(
         "app_list" -> Icons.Rounded.Dashboard
         "location" -> Icons.Rounded.LocationOn
         else -> Icons.Rounded.Shield
+    }
+
+    // 开关行：toggleChecked != null 时渲染 SwitchPreference（照旧开关写法），
+    // checked 完全由状态驱动，不本地假切；其余行保持 ArrowPreference 不动。
+    val toggleChecked = item.toggleChecked
+    if (toggleChecked != null && onToggleChange != null) {
+        SwitchPreference(
+            title = item.title,
+            summary = item.summary.takeIf { it.isNotBlank() },
+            checked = toggleChecked,
+            onCheckedChange = onToggleChange,
+            startAction = {
+                PreferenceIcon(icon = icon)
+            },
+            enabled = toggleEnabled,
+        )
+        return
     }
 
     ArrowPreference(

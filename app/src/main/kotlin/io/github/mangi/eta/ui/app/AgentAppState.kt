@@ -28,6 +28,7 @@ import androidx.compose.runtime.snapshots.Snapshot
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.device.AgentFileReferenceGateway
 import io.github.mangi.eta.agent.device.DeviceLocationProvider
@@ -7402,9 +7403,14 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
     val locationAccess = DeviceLocationProvider.accessState(context)
     val notificationHistoryEnabled = io.github.mangi.eta.agent.device.AgentNotificationHistoryService.isEnabled(context)
     val usageAccessEnabled = io.github.mangi.eta.agent.tool.AgentPersonalContextTools.hasUsageAccess(context)
+    // 方案 b：框架连接信号与保护开关状态。两者都是同步读（SharedPreferences /
+    // Settings.Global），buildPermissionHealthState 在 Dispatchers.IO 上跑，线程安全。
+    // EnhancementSettingsHistory 与本文件同包（ui.app），无需 import。
+    val frameworkConnected = EnhancementSettingsHistory(context).hasConnected
+    val protectionEnabled = AccessibilityProtectionClient.isEnabled(context)
 
     return PermissionHealthUiState(
-        items = listOf(
+        items = listOfNotNull(
             PermissionHealthItemUi(
                 id = "background",
                 title = context.getString(R.string.state_background_running_permission_dde21b),
@@ -7473,6 +7479,21 @@ private fun buildPermissionHealthState(context: Context): PermissionHealthUiStat
                 status = if (accessibilityEnabled) PermissionStatusUi.Available else PermissionStatusUi.Missing,
                 primaryActionLabel = if (accessibilityEnabled) null else context.getString(R.string.state_ui_to_open_13ec17),
             ),
+            // 强制保持无障碍（方案 b）：仅 LSPosed 框架已连接时出现，放在无障碍项之后。
+            // 状态用 Warning 不用 Missing——它不是缺失的授权，是关闭的加固开关。
+            // 不计入一级页 unauthorizedCount（见 staging README）。
+            if (frameworkConnected) {
+                PermissionHealthItemUi(
+                    id = "accessibility_protection",
+                    title = context.getString(R.string.ui_enforce_accessibility_55e838),
+                    summary = context.getString(R.string.accessibility_protection_summary),
+                    status = if (protectionEnabled) PermissionStatusUi.Available else PermissionStatusUi.Warning,
+                    primaryActionLabel = null,
+                    toggleChecked = protectionEnabled,
+                )
+            } else {
+                null
+            },
             PermissionHealthItemUi(
                 id = "notifications",
                 title = context.getString(R.string.capability_notifications_title),

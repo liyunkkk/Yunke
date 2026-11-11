@@ -49,6 +49,7 @@ import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
 import io.github.mangi.eta.agent.device.DeviceLocationProvider
@@ -820,11 +821,45 @@ fun AgentAppRoot(
                 LaunchedEffect(Unit) {
                     agentState.refreshPermissionHealth()
                 }
+                // 保护开关请求进行中守卫：照旧开关写法，回调里复位。setEnabled 回调在主线程
+                // （AccessibilityProtectionClient 用 mainHandler 做广播调度），
+                // 回调里直接 Toast / refresh，无需切线程。
+                var protectionPending by remember { mutableStateOf(false) }
                 PermissionHealthScreen(
                     state = agentState.permissionHealthState,
+                    protectionPending = protectionPending,
                     onAction = { action ->
                         when (action) {
                             PermissionHealthAction.NavigateBack -> popRoute()
+                            is PermissionHealthAction.ToggleAccessibilityProtection -> {
+                                if (!protectionPending) {
+                                    protectionPending = true
+                                    AccessibilityProtectionClient.setEnabled(
+                                        context = context,
+                                        enabled = action.enabled,
+                                    ) { result ->
+                                        protectionPending = false
+                                        val failureMessage = when (result.status) {
+                                            AccessibilityProtectionClient.ControlStatus.APPLIED -> null
+                                            AccessibilityProtectionClient.ControlStatus.UNAVAILABLE ->
+                                                context.getString(R.string.accessibility_protection_unavailable)
+                                            AccessibilityProtectionClient.ControlStatus.REJECTED ->
+                                                context.getString(R.string.accessibility_protection_rejected)
+                                        }
+                                        if (failureMessage != null) {
+                                            Toast.makeText(
+                                                context.applicationContext,
+                                                failureMessage,
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                        }
+                                        // 无论成功失败都重读：成功后保护状态与
+                                        // accessibilityGranted 一起刷新；失败后读回真实值，
+                                        // 开关回弹，不停在拨动后的假状态上。
+                                        agentState.refreshPermissionHealth()
+                                    }
+                                }
+                            }
                             is PermissionHealthAction.OpenItemAction -> {
                                 when (action.itemId) {
                                     "accessibility" -> {
