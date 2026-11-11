@@ -72,6 +72,8 @@ import io.github.mangi.eta.ui.SystemTakeoverSettingsScreen
 import io.github.mangi.eta.ui.SettingsModelScreen
 import io.github.mangi.eta.ui.SettingsExtensionsScreen
 import io.github.mangi.eta.ui.SettingsToolsScreen
+import io.github.mangi.eta.ui.SettingsAboutScreen
+import io.github.mangi.eta.ui.SettingsDiagnosticsScreen
 import io.github.mangi.eta.ui.SettingsGeneralScreen
 import io.github.mangi.eta.ui.components.AppUpdateDialog
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -1034,6 +1036,18 @@ fun AgentAppRoot(
             entry<AppRoute.SettingsGeneral>(swipeDismiss = swipeDismiss) {
                 SettingsGeneralScreen(
                     onNavigate = { route -> pushRoute(route) },
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.SettingsDiagnostics>(swipeDismiss = swipeDismiss) {
+                SettingsDiagnosticsScreen(
+                    context = context,
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.SettingsAbout>(swipeDismiss = swipeDismiss) {
+                SettingsAboutScreen(
+                    context = context,
                     onBack = ::popRoute,
                 )
             }

@@ -110,8 +110,9 @@ class AgentChatViewportContractTest(unittest.TestCase):
         )
         self.assertRegex(draw, r"clipRect\s*\(\s*bottom\s*=\s*restLine")
 
-    def test_inset_is_consumed_by_clip_list_padding_and_navigation(self):
-        # Rest clip (remember key + value), follow clip, list padding, navigation.
+    def test_inset_is_consumed_by_clip_and_list_padding(self):
+        # Rest clip (remember key + value), follow clip, list padding.
+        # 导航按钮已下线，12dp 那条断言随之删除（轮次跳转改由刻度轨承担）。
         self.assertRegex(
             self.messages,
             r"remember\s*\(\s*bottomInset\s*\)\s*\{\s*ComposerRestClip\s*\(\s*bottomInset\s*\+",
@@ -121,7 +122,6 @@ class AgentChatViewportContractTest(unittest.TestCase):
             r"size\.height\s*-\s*\(\s*bottomInset\s*\+\s*ConversationComposerGap\s*\)",
         )
         self.assertRegex(self.messages, r"bottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset")
-        self.assertRegex(self.messages, r"bottom\s*=\s*12\.dp\s*\+\s*bottomInset")
         # The inset is a resting-space budget, not a reason to keep an idle
         # anchored conversation permanently clipped.
         clip_calls = list(calls(self.messages, "shouldClipChatTail"))
@@ -142,14 +142,20 @@ class AgentChatViewportContractTest(unittest.TestCase):
         self.assertRegex(paddings[0], r"\bbottom\s*=\s*ConversationComposerGap\s*\+\s*bottomInset\b")
         self.assertRegex(self.source, r"private\s+val\s+ConversationComposerGap\s*=\s*14\.dp")
 
-    def test_navigation_stays_above_composer(self):
-        buttons = list(calls(self.messages, "ConversationTurnNavigationButton"))
-        self.assertEqual(len(buttons), 1, "Expected the messages navigation button")
-        self.assertRegex(
-            buttons[0],
-            r"\.align\s*\(\s*Alignment\.BottomCenter\s*\)\s*"
-            r"\.padding\s*\(\s*bottom\s*=\s*12\.dp\s*\+\s*bottomInset\s*,?\s*\)",
+    def test_turn_rail_replaces_the_navigation_button(self):
+        # 上一条/下一条按钮已下线，轮次跳转改由横向刻度轨承担（用户要求）。
+        self.assertEqual(
+            len(list(calls(self.messages, "ConversationTurnNavigationButton"))),
+            0,
+            "The messages navigation button should no longer be rendered",
         )
+        self.assertIn("TurnTickRail", self.source)
+
+    def test_turn_rail_only_follows_user_scroll(self):
+        # 可见性只认 keepBottomAnchored（用户滑离底部），不再把「不在底部」算进来，
+        # 否则加图片撑高输入栏 / 弹输入法压小视口时都会把刻度轨唤出来。
+        self.assertIn("val railActive = !anchored", self.source)
+        self.assertNotIn("userScrolling || !atBottom", self.source)
 
     def test_composer_surround_is_transparent(self):
         bar_start = self.source.index("private fun AgentChatBottomBar(")

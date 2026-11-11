@@ -96,11 +96,13 @@ internal fun rememberAttachmentPickerLaunchers(
     val context = LocalContext.current
     val registryOwner = androidx.activity.compose.LocalActivityResultRegistryOwner.current
 
+    // 一次可选多张：PickMultipleVisualMedia 打开的是同一个系统相册，但允许多选。
+    // 回调仍是逐张 onAttachImage，调用方与悬浮窗那条路径都不用改。
     val photoPicker = if (registryOwner != null) {
         rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.PickVisualMedia(),
-        ) { uri ->
-            if (uri != null) {
+            contract = ActivityResultContracts.PickMultipleVisualMedia(),
+        ) { uris ->
+            uris.forEach { uri ->
                 runCatching {
                     context.contentResolver.takePersistableUriPermission(
                         uri,

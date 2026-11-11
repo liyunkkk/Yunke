@@ -93,47 +93,6 @@ internal fun SettingsScreen(
     }
     val coroutineScope = rememberCoroutineScope()
     val permissionState = rememberPermissionSummaryState(context)
-    val currentVersion = remember { AppUpdateRepository.currentVersionName(context) }
-    var checkingUpdate by remember { mutableStateOf(false) }
-    var updateOffer by remember { mutableStateOf<AppUpdateOffer?>(null) }
-    val appSettings by remember { SettingsDataStore.settingsFlow() }.collectAsState(
-        initial = io.github.mangi.eta.data.model.Settings(),
-    )
-    var exportingLogs by remember { mutableStateOf(false) }
-    var clearingLogs by remember { mutableStateOf(false) }
-    var showClearLogsDialog by remember { mutableStateOf(false) }
-    val exportLogsLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/zip"),
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        coroutineScope.launch {
-            exportingLogs = true
-            try {
-                val output = withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)
-                        ?: error(context.getString(R.string.settings_export_logs_open_failed))
-                }
-                val count = withContext(Dispatchers.IO) {
-                    output.use { AppFileLogger.export(it) }
-                }
-                Toast.makeText(
-                    context.applicationContext,
-                    context.getString(R.string.settings_export_logs_success, count),
-                    Toast.LENGTH_SHORT,
-                ).show()
-            } catch (throwable: Throwable) {
-                if (throwable is CancellationException) throw throwable
-                Toast.makeText(
-                    context.applicationContext,
-                    throwable.message?.takeIf { it.isNotBlank() }
-                        ?: context.getString(R.string.settings_export_logs_failed),
-                    Toast.LENGTH_SHORT,
-                ).show()
-            } finally {
-                exportingLogs = false
-            }
-        }
-    }
 
     WithoutPressRipple {
     MiuixScaffoldPage(
@@ -217,197 +176,24 @@ internal fun SettingsScreen(
                         },
                         onClick = { onNavigate(AppRoute.AssistantTakeover) },
                     )
-                }
-            }
-
-            item(key = "section_diagnostics") {
-                SmallTitle(stringResource(R.string.settings_diagnostics))
-                Card(modifier = Modifier.settingsSectionDiagnostics("diagnostics").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    SwitchPreference(
-                        title = stringResource(R.string.settings_file_logging),
-                        summary = stringResource(R.string.settings_file_logging_summary),
-                        checked = appSettings.fileLoggingEnabled,
-                        onCheckedChange = { enabled ->
-                            coroutineScope.launch {
-                                SettingsDataStore.setFileLoggingEnabled(enabled)
-                            }
-                        },
+                    // 诊断与关于改为二级页（用户要求：与工具/通用一致）。
+                    ArrowPreference(
+                        title = stringResource(R.string.settings_diagnostics),
                         startAction = {
                             PreferenceIcon(icon = Icons.Rounded.BugReport)
                         },
+                        onClick = { onNavigate(AppRoute.SettingsDiagnostics) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.settings_export_logs),
-                        summary = stringResource(
-                            if (exportingLogs) {
-                                R.string.settings_export_logs_working
-                            } else {
-                                R.string.settings_export_logs_summary
-                            },
-                        ),
-                        enabled = !exportingLogs && !clearingLogs,
+                        title = stringResource(R.string.ui_about_bed172),
                         startAction = {
-                            PreferenceIcon(icon = Icons.Rounded.Share)
+                            PreferenceIcon(icon = Icons.Rounded.CloudDownload)
                         },
-                        onClick = {
-                            if (exportingLogs || clearingLogs) return@ArrowPreference
-                            if (!AppFileLogger.hasLogs()) {
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    context.getString(R.string.settings_export_logs_empty),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                                return@ArrowPreference
-                            }
-                            exportLogsLauncher.launch(defaultDiagnosticLogFileName())
-                        },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_clear_logs),
-                        summary = stringResource(R.string.settings_clear_logs_summary),
-                        enabled = !exportingLogs && !clearingLogs,
-                        startAction = {
-                            PreferenceIcon(icon = Icons.Rounded.DeleteSweep)
-                        },
-                        onClick = {
-                            if (exportingLogs || clearingLogs) return@ArrowPreference
-                            showClearLogsDialog = true
-                        },
+                        onClick = { onNavigate(AppRoute.SettingsAbout) },
                     )
                 }
             }
 
-            // ── 关于 ────────────────────────────────────────────────────
-            item(key = "section_about") {
-                SmallTitle(stringResource(R.string.ui_about_bed172))
-                Card(modifier = Modifier.settingsSectionDiagnostics("about").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.update_check_title),
-                        summary = if (checkingUpdate) {
-                            stringResource(R.string.update_checking)
-                        } else {
-                            stringResource(
-                                R.string.update_current_version,
-                                currentVersion.ifBlank { stringResource(R.string.update_unknown_version) },
-                            )
-                        },
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.CloudDownload,
-                            )
-                        },
-                        onClick = {
-                            if (checkingUpdate) return@ArrowPreference
-                            checkingUpdate = true
-                            coroutineScope.launch {
-                                val result = AppUpdateRepository.checkForUpdate(context, force = true)
-                                checkingUpdate = false
-                                result.fold(
-                                    onSuccess = { offer ->
-                                        if (offer == null) {
-                                            Toast.makeText(
-                                                context,
-                                                context.getString(R.string.update_latest),
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
-                                        } else {
-                                            updateOffer = offer
-                                        }
-                                    },
-                                    onFailure = { failure ->
-                                        Toast.makeText(
-                                            context,
-                                            failure.message?.takeIf { it.isNotBlank() }
-                                                ?: context.getString(R.string.update_check_failed),
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
-                                    },
-                                )
-                            }
-                        },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.ui_source_code_740296),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Code,
-                            )
-                        },
-                        endActions = {
-                            Text(
-                                text = "GitHub",
-                                fontSize = MiuixTheme.textStyles.body2.fontSize,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantActions,
-                            )
-                        },
-                        onClick = {
-                            val intent = android.content.Intent(
-                                android.content.Intent.ACTION_VIEW,
-                                android.net.Uri.parse("https://github.com/liyunkkk/Yunke"),
-                            )
-                            context.startActivity(intent)
-                        },
-                    )
-                }
-            }
         }
     }
-
-        AppUpdateDialog(
-            offer = updateOffer,
-            currentVersion = currentVersion,
-            onDismiss = { updateOffer = null },
-        )
-
-        if (showClearLogsDialog) {
-            WindowDialog(
-                show = true,
-                title = stringResource(R.string.settings_clear_logs_confirm_title),
-                summary = stringResource(R.string.settings_clear_logs_confirm_summary),
-                onDismissRequest = {
-                    if (!clearingLogs) showClearLogsDialog = false
-                },
-            ) {
-                MiuixDialogActions(
-                    confirmText = if (clearingLogs) {
-                        stringResource(R.string.settings_export_logs_working)
-                    } else {
-                        stringResource(R.string.settings_clear_logs)
-                    },
-                    destructive = true,
-                    cancelEnabled = !clearingLogs,
-                    confirmEnabled = !clearingLogs,
-                    onCancel = { showClearLogsDialog = false },
-                    onConfirm = {
-                        if (clearingLogs) return@MiuixDialogActions
-                        clearingLogs = true
-                        coroutineScope.launch {
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    AppFileLogger.clear()
-                                    io.github.mangi.eta.agent.voice.doubao.DoubaoDiagnostics.clear()
-                                }
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    context.getString(R.string.settings_clear_logs_done),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                                showClearLogsDialog = false
-                            } catch (throwable: Throwable) {
-                                if (throwable is CancellationException) throw throwable
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    throwable.message?.takeIf { it.isNotBlank() }
-                                        ?: context.getString(R.string.settings_export_logs_failed),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            } finally {
-                                clearingLogs = false
-                            }
-                        }
-                    },
-                )
-            }
-        }
-
 }

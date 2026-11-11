@@ -1132,7 +1132,12 @@ internal fun AgentConversationMessages(
                 // 刻度条多留 2.5 秒宽限，给刚到到底部的用户一个顺手点刻度跳回去的窗口。
                 // 刮擦期间外层强制可见（tickRailScrubbing），这里不用管；松手后
                 // 若已到底部且静止，hide job 到时即隐藏。
-                val railActive = userScrolling || !atBottom
+                // 只认「用户把对话滑离了底部」这一个信号（anchored = keepBottomAnchored）。
+                // 旧写法 userScrolling || !atBottom 会把「不在底部」也算进来，于是
+                // 加图片撑高输入栏、弹出输入法压小视口、语音输入改高度时列表暂时不在
+                // 底部，刻度轨就被无端唤出来。改用 anchored 后与原来的上一条/下一条
+                // 按钮同一口径：只有用户真的滑动对话才会出现。
+                val railActive = !anchored
                 if (railActive) {
                     railHideJob?.cancel()
                     railHideJob = null
@@ -2052,23 +2057,8 @@ internal fun AgentConversationMessages(
                 }
             }
         }
-        val showMessageNavigation by remember(scrollState, navigationDirection, keepBottomAnchored) {
-            derivedStateOf {
-                !keepBottomAnchored && when (navigationDirection) {
-                    ConversationNavigationDirection.Up -> scrollState.canScrollBackward
-                    ConversationNavigationDirection.Down -> !scrollState.isConversationAtBottom()
-                }
-            }
-        }
-        ConversationTurnNavigationButton(
-            direction = navigationDirection,
-            visible = showMessageNavigation,
-            onStep = { navigateUserMessage(toEdge = false) },
-            onEdge = { navigateUserMessage(toEdge = true) },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp + bottomInset),
-        )
+        // 上一条/下一条按钮已下线：横向刻度轨接管了轮次跳转（用户要求）。
+        // navigateUserMessage 仍保留，供无障碍/测试等其它路径复用。
     }
 }
 
