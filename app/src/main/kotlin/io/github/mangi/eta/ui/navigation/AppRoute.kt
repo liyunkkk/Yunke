@@ -46,6 +46,26 @@ sealed interface AppRoute : NavKey {
     @Serializable
     data object Settings : AppRoute
 
+    /** 设置二级页：模型与对话（从设置首页抽出）。 */
+    @Serializable
+    data object SettingsModel : AppRoute
+
+    /** 设置二级页：扩展与角色（从设置首页抽出）。 */
+    @Serializable
+    data object SettingsExtensions : AppRoute
+
+    /** 设置二级页：工具（从设置首页抽出）。 */
+    @Serializable
+    data object SettingsTools : AppRoute
+
+    /** 设置二级页：通用（从设置首页抽出）。 */
+    @Serializable
+    data object SettingsGeneral : AppRoute
+
+    // 注意：不新增 SettingsPermissions / SettingsAssistantTakeover 两个路由。
+    // 权限与通知直接复用已有的 AppRoute.Permissions（PermissionHealthScreen，
+    // 比 Number444 的 4 行简化页完整得多）；系统接管直接复用已有的
+    // AppRoute.AssistantTakeover（SystemTakeoverSettingsScreen）。
     @Serializable
     data object SpeechSettings : AppRoute
 

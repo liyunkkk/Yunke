@@ -195,6 +195,10 @@
   <string name="route_provider_details">Provider 详情</string>
   <string name="route_new_provider">新建提供商</string>
   <string name="settings_general">通用</string>
+  <string name="settings_category_model_conversation">模型与对话</string>
+  <string name="settings_category_extensions">扩展与角色</string>
+  <string name="settings_category_permissions_notifications">权限与通知</string>
+  <string name="settings_permissions_unauthorized_count">%1$d 项未授权</string>
   <string name="app_press_back_again_to_exit">再按一次返回退出应用</string>
   <string name="settings_diagnostics">诊断</string>
   <string name="settings_file_logging">记录诊断日志</string>

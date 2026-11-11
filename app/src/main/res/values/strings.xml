@@ -166,6 +166,10 @@
   <string name="route_provider_details">Provider details</string>
   <string name="route_new_provider">New provider</string>
   <string name="settings_general">General</string>
+  <string name="settings_category_model_conversation">Model &amp; conversation</string>
+  <string name="settings_category_extensions">Extensions &amp; characters</string>
+  <string name="settings_category_permissions_notifications">Permissions &amp; notifications</string>
+  <string name="settings_permissions_unauthorized_count">%1$d not granted</string>
   <string name="app_press_back_again_to_exit">Press back again to exit</string>
   <string name="settings_diagnostics">Diagnostics</string>
   <string name="settings_file_logging">Record diagnostic logs</string>

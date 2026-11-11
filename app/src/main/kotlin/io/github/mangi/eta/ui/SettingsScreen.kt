@@ -1,64 +1,23 @@
 package io.github.mangi.eta.ui
 
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
-import android.content.SharedPreferences
-import android.provider.Settings
-import android.service.voice.VoiceInteractionService
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AccessibilityNew
-import androidx.compose.material.icons.rounded.AccountTree
-import androidx.compose.material.icons.rounded.SmartToy
-import androidx.compose.material.icons.rounded.RemoveRedEye
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.DeleteSweep
-import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Extension
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.GppMaybe
-import androidx.compose.material.icons.rounded.HealthAndSafety
-import androidx.compose.material.icons.rounded.Hearing
-import androidx.compose.material.icons.rounded.Inventory
-import androidx.compose.material.icons.rounded.Inventory2
-import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material.icons.rounded.Language
-import androidx.compose.material.icons.rounded.Layers
-import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Memory
-import androidx.compose.material.icons.rounded.Compress
-import androidx.compose.material.icons.rounded.VolumeUp
-import androidx.compose.material.icons.rounded.RecordVoiceOver
-import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.Pets
-import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Psychology
-import androidx.compose.material.icons.rounded.Refresh
-import io.github.mangi.eta.ui.icons.SubAgents
-import androidx.compose.material.icons.rounded.Restaurant
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
-import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Smartphone
-import androidx.compose.material.icons.rounded.SwipeUp
-import androidx.compose.material.icons.rounded.Terminal
-import androidx.compose.material.icons.rounded.TouchApp
-import androidx.compose.material.icons.rounded.Vibration
-import androidx.compose.material.icons.rounded.VerifiedUser
-import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -67,75 +26,62 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
-import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
-import io.github.mangi.eta.agent.kimi.KimiPermissionMode
-import io.github.mangi.eta.agent.model.ModelRetrySettings
-import io.github.mangi.eta.agent.voice.EtaVoiceInteractionService
-import io.github.mangi.eta.config.PowerAssistantTarget
-import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AppUpdateOffer
 import io.github.mangi.eta.data.repository.AppUpdateRepository
-import io.github.mangi.eta.data.repository.ProviderRepository
-import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.systemizer.GoogleAppSystemizerInstaller
-import io.github.mangi.eta.systemizer.RootManager
-import io.github.mangi.eta.systemizer.SystemizerInstallResult
-import io.github.mangi.eta.ui.app.EnhancementSettingsHistory
-import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
 import io.github.mangi.eta.ui.components.AppUpdateDialog
+import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
+import io.github.mangi.eta.ui.components.SwitchPreference
+import io.github.mangi.eta.ui.components.WithoutPressRipple
+import io.github.mangi.eta.ui.components.settingsSectionDiagnostics
+import io.github.mangi.eta.ui.components.streamDiagnosticDraw
 import io.github.mangi.eta.ui.components.streamDiagnosticMeasure
 import io.github.mangi.eta.ui.components.streamDiagnosticPlacement
-import io.github.mangi.eta.ui.components.streamDiagnosticDraw
-import io.github.mangi.eta.ui.components.settingsSectionDiagnostics
-import io.github.mangi.eta.ui.components.WithoutPressRipple
-import io.github.mangi.eta.ui.components.PreferenceIcon
 import io.github.mangi.eta.ui.navigation.AppRoute
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import io.github.mangi.eta.ui.components.ArrowPreference
-import io.github.mangi.eta.ui.components.HapticBasicComponent
-import io.github.mangi.eta.ui.components.SwitchPreference
-import io.github.mangi.eta.ui.components.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowDialog
 
 /**
- * 模块配置界面。
+ * 设置一级页：6 个分类入口 + 权限未授权计数 + 诊断 + 关于。
  *
- * 开关默认值由 [Prefs.Keys.BOOLEAN_DEFAULTS] 统一定义。Eta Runtime 自己消费的开关写入
- * App 本地配置；仅 Hook 消费的开关通过 RemotePreferences 提交到 LSPosed。
+ * 二级化后的瘦身版（原 1088 行 → 约 300 行）。搬走的内容：
+ * - 模型与对话 → [SettingsModelScreen]（提供商入口、深度思考、压缩入口、模型功能）
+ * - 扩展与角色 → [SettingsExtensionsScreen]（记忆、鲸鱼女仆、助手、Skills、MCP）
+ * - 工具 → [SettingsToolsScreen]（工具列表、设备/终端/Kimi 开关、Linux、工作区）
+ * - 通用 → [SettingsGeneralScreen]（语音、外观、用量、备份、触感）
+ * - 权限与通知 → 已有的 [AppRoute.Permissions]（PermissionHealthScreen，不新建简化页）
+ * - 系统接管增强 → 已有的 [AppRoute.AssistantTakeover]（SystemTakeoverSettingsScreen）
+ * - 底部 helper（SwitchPref / putBooleanSync / putStringSync / SettingsProviderEntry 等）
+ *   → [SettingsShared.kt]；权限状态 → [rememberPermissionSummaryState]。
+ * currentProviderId / currentModelId 参数随瘦身删掉，改由 AgentAppRoot 的
+ * SettingsModel 入口直接从 shellHomeState 传入 SettingsModelScreen。
+ *
+ * 行为保持点（特意没动）：
+ * - 接管入口无条件显示（Number444 是按框架/root/系统化条件显隐，改了会让没 root
+ *   也没接过 LSPosed 的新用户看不到入口，见 README 待确认）。
+ * - 诊断分组留在一级页（Number444 的六个分类里没有它的位置）。
+ * - 关于区保持 Yunke 的两项（检查更新、源代码），不补 Number444 的版本号单行与反馈入口。
  */
 @Composable
 internal fun SettingsScreen(
     context: Context,
     onNavigate: (AppRoute) -> Unit,
     onBack: () -> Unit,
-    currentProviderId: String? = null,
-    currentModelId: String? = null,
 ) {
     // Read only attach/detach generation so idle sections rebuild observer identities.
     StreamPerformanceDiagnostics.sessionGeneration.longValue
@@ -146,10 +92,7 @@ internal fun SettingsScreen(
         }
     }
     val coroutineScope = rememberCoroutineScope()
-    val taskBackendInstalled = rememberTaskBackendInstalled()
-    val capabilities = rememberDeviceCapabilities()
-    val enhancementHistory = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
-    var hasConnectedFramework by remember { mutableStateOf(enhancementHistory.hasConnected) }
+    val permissionState = rememberPermissionSummaryState(context)
     val currentVersion = remember { AppUpdateRepository.currentVersionName(context) }
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateOffer by remember { mutableStateOf<AppUpdateOffer?>(null) }
@@ -192,81 +135,6 @@ internal fun SettingsScreen(
         }
     }
 
-    // 悬浮窗权限状态：授权后从系统设置返回时（ON_RESUME）刷新。
-    var overlayGranted by remember {
-        mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.overlay.initial") { android.provider.Settings.canDrawOverlays(context) })
-    }
-    var accessibilityGranted by remember {
-        mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.accessibility.initial") { isAgentAccessibilityEnabled(context) })
-    }
-    var accessibilityProtectionEnabled by remember {
-        mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.protection.initial") { AccessibilityProtectionClient.isEnabled(context) })
-    }
-    var accessibilityProtectionPending by remember { mutableStateOf(false) }
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                overlayGranted = StreamPerformanceDiagnostics.measure("settings.permission.overlay.resume") { android.provider.Settings.canDrawOverlays(context) }
-                accessibilityGranted = StreamPerformanceDiagnostics.measure("settings.permission.accessibility.resume") { isAgentAccessibilityEnabled(context) }
-                accessibilityProtectionEnabled =
-                    StreamPerformanceDiagnostics.measure("settings.permission.protection.resume") { AccessibilityProtectionClient.isEnabled(context) }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // prefs 绑定到 XposedService：service 到达时切换到 RemotePreferences（跨进程提交到
-    // LSPosed 数据库）；未就绪时保持 null，UI 禁止修改。
-    val initialPreferences = remember {
-        val service = EtaApp.serviceInstance
-        val initialPrefs = StreamPerformanceDiagnostics.measure("settings.prefs.initial") {
-            Prefs.remotePreferencesForUi(service)
-        }
-        InitialServicePreferenceSnapshot(service, initialPrefs)
-    }
-    var prefs by remember { mutableStateOf(initialPreferences.initialValueForUi()) }
-    val agentPrefs = remember { Prefs.localAgentPreferences() }
-    var kimiPermissionMode by remember(agentPrefs) {
-        mutableStateOf(KimiPermissionMode.resolve(agentPrefs?.getString(Prefs.Keys.KIMI_PERMISSION_MODE, KimiPermissionMode.YOLO)))
-    }
-    var modelRetryCount by remember(agentPrefs) {
-        mutableStateOf(
-            ModelRetrySettings.parseCount(
-                agentPrefs?.getString(Prefs.Keys.MODEL_RETRY_COUNT, ModelRetrySettings.DEFAULT_COUNT.toString()),
-            ),
-        )
-    }
-    DisposableEffect(Unit) {
-        // Only the immediate notification may reuse the successful initial read.
-        // A failed initial read retries, and every subsequent service event refreshes.
-        val listener = object : EtaApp.ServiceStateListener {
-            override fun onServiceStateChanged(service: io.github.libxposed.service.XposedService?) {
-                prefs = initialPreferences.resolve(service) { currentService ->
-                    StreamPerformanceDiagnostics.measure("settings.prefs.refresh") {
-                        Prefs.remotePreferencesForUi(currentService)
-                    }
-                }
-                prefs?.let { connected ->
-                    StreamPerformanceDiagnostics.measure("settings.prefs.capture") {
-                        enhancementHistory.captureConnected(connected)
-                    }
-                    hasConnectedFramework = true
-                }
-                StreamPerformanceDiagnostics.measure("settings.prefs.reconcile") {
-                    Prefs.reconcileAgentPreferences(service)
-                }
-                coroutineScope.launch {
-                    RuntimeConfigRepository.ensureDefaults(service)
-                }
-            }
-        }
-        StreamPerformanceDiagnostics.measure("settings.service.subscribe") {
-            EtaApp.addServiceStateListener(listener, notifyImmediately = true)
-        }
-        onDispose { EtaApp.removeServiceStateListener(listener) }
-    }
     WithoutPressRipple {
     MiuixScaffoldPage(
         title = stringResource(R.string.ui_set_up_7debf9),
@@ -277,288 +145,58 @@ internal fun SettingsScreen(
         topBarModifier = Modifier.streamDiagnosticMeasure("settings.topbar.measure"),
         listModifier = Modifier.streamDiagnosticMeasure("settings.lazy.measure").streamDiagnosticPlacement("settings.lazy.place").streamDiagnosticDraw("settings.lazy.draw"),
     ) {
-            // ── LLM 提供商 ──────────────────────────────────────────────
-            item(key = "section_agent") {
-                SmallTitle(stringResource(R.string.settings_llm_providers))
-                Card(modifier = Modifier.settingsSectionDiagnostics("agent").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    SettingsProviderEntry(currentProviderId, currentModelId) {
-                        onNavigate(AppRoute.ModelProviders)
-                    }
-                }
-            }
-
-            item(key = "section_model_features") {
-                SmallTitle(stringResource(R.string.settings_model_features))
-                Card(modifier = Modifier.settingsSectionDiagnostics("model_features").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+            // ── 分类入口 ────────────────────────────────────────────────
+            item(key = "section_categories") {
+                Card(modifier = Modifier.settingsSectionDiagnostics("categories").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
-                        title = stringResource(R.string.route_context_compression),
+                        title = stringResource(R.string.settings_category_model_conversation),
                         startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Compress,
-                            )
+                            PreferenceIcon(icon = Icons.Rounded.Psychology)
                         },
-                        onClick = { onNavigate(AppRoute.ContextCompression) },
+                        onClick = { onNavigate(AppRoute.SettingsModel) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.auxiliary_vision_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.RemoveRedEye) },
-                        onClick = { onNavigate(AppRoute.AuxiliaryVision) },
-                    )
-                    ArrowPreference(title = "子代理",
-                        startAction = { PreferenceIcon(icon = SubAgents) },
-                        onClick = { onNavigate(AppRoute.SubAgents) })
-                    ArrowPreference(
-                        title = stringResource(R.string.title_model_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.AutoAwesome) },
-                        onClick = { onNavigate(AppRoute.TitleModel) },
+                        title = stringResource(R.string.settings_category_extensions),
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Extension)
+                        },
+                        onClick = { onNavigate(AppRoute.SettingsExtensions) },
                     )
                     ArrowPreference(
-                        title = stringResource(R.string.error_reconnect_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.Refresh) },
-                        onClick = { onNavigate(AppRoute.ErrorReconnectSettings) },
+                        title = stringResource(R.string.ui_tool_a72ef1),
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Build)
+                        },
+                        onClick = { onNavigate(AppRoute.SettingsTools) },
                     )
-
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
-                        key = Prefs.Keys.AGENT_THINKING_ENABLED,
-                        icon = Icons.Rounded.Psychology,
+                    ArrowPreference(
+                        title = stringResource(R.string.settings_general),
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Tune)
+                        },
+                        onClick = { onNavigate(AppRoute.SettingsGeneral) },
                     )
-
-                    WindowSpinnerPreference(
-                        title = "模型请求重试次数",
-                        summary = "网络或中转站不稳时可调高；0 表示不自动重试。",
-                        items = ModelRetrySettings.allowedCounts.map { DropdownItem(text = it.toString()) },
-                        selectedIndex = ModelRetrySettings.allowedCounts.indexOf(modelRetryCount).coerceAtLeast(0),
-                        onSelectedIndexChange = { index ->
-                            val count = ModelRetrySettings.allowedCounts.getOrNull(index)
-                                ?: return@WindowSpinnerPreference
-                            val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
-                            if (putStringSync(targetPrefs, Prefs.Keys.MODEL_RETRY_COUNT, count.toString())) {
-                                modelRetryCount = count
-                            } else {
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    context.getString(R.string.settings_write_failed),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
+                    ArrowPreference(
+                        title = stringResource(R.string.settings_category_permissions_notifications),
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Security)
+                        },
+                        endActions = {
+                            // 未授权计数聚合悬浮窗/无障碍/超级岛三状态，入口可见性不因入二级而丢失。
+                            // 岛项本 lane 恒为 CHECKING（不计入），岛 lane 接线后自动生效。
+                            if (permissionState.unauthorizedCount > 0) {
+                                Text(
+                                    text = stringResource(
+                                        R.string.settings_permissions_unauthorized_count,
+                                        permissionState.unauthorizedCount,
+                                    ),
+                                    fontSize = MiuixTheme.textStyles.body2.fontSize,
+                                    color = MiuixTheme.colorScheme.error,
+                                )
                             }
                         },
-                        startAction = {
-                            PreferenceIcon(icon = Icons.Rounded.Refresh, enabled = agentPrefs != null)
-                        },
-                        enabled = agentPrefs != null,
+                        onClick = { onNavigate(AppRoute.Permissions) },
                     )
-                }
-            }
-
-            // ── 扩展 ────────────────────────────────────────────
-            item(key = "section_context_extensions") {
-                SmallTitle(stringResource(R.string.settings_context_extensions))
-                Card(modifier = Modifier.settingsSectionDiagnostics("context_extensions").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.whale_maid_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.Pets) },
-                        onClick = { onNavigate(AppRoute.WhaleMaid) },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_assistants),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.SmartToy,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.Assistants()) },
-                    )
-
-
-                    ArrowPreference(
-                        title = stringResource(R.string.route_skills),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Extension,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.Skills) },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.route_mcp_servers),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.AccountTree,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.McpServers) },
-                    )
-                }
-            }
-
-            // ── 通用 ────────────────────────────────────────────────────
-            item(key = "section_general") {
-                SmallTitle(stringResource(R.string.settings_general))
-                Card(modifier = Modifier.settingsSectionDiagnostics("general").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.voice_title),
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.RecordVoiceOver) },
-                        onClick = { onNavigate(AppRoute.VoiceSettings) },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.appearance_title),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Palette,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.AppearanceSettings) },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.stats_page_title),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.BarChart,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.UsageStats) },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.data_backup_title),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Description,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.DataBackup) },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.haptics_list),
-                        summary = stringResource(R.string.haptics_entry_summary),
-                        startAction = { PreferenceIcon(Icons.Rounded.Vibration) },
-                        onClick = { onNavigate(AppRoute.Haptics) },
-                    )
-                }
-            }
-
-            // ── 工具 ───────────────────────────────────────────────────
-            item(key = "section_tools") {
-                SmallTitle(stringResource(R.string.ui_tool_a72ef1))
-                Card(modifier = Modifier.settingsSectionDiagnostics("tools").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_tools_list),
-                        startAction = { PreferenceIcon(Icons.Rounded.Dashboard) },
-                        onClick = { onNavigate(AppRoute.Tools) },
-                    )
-
-                    if (taskBackendInstalled == true) {
-                        ArrowPreference(
-                            title = stringResource(R.string.agent_task_surface_title),
-                            startAction = { PreferenceIcon(Icons.Rounded.Layers) },
-                            onClick = { onNavigate(AppRoute.AgentTaskPreference) },
-                        )
-                    }
-
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_enable_web_browsing_tools_8b6b03),
-                        key = Prefs.Keys.AGENT_BROWSER_TOOLS,
-                        icon = Icons.Rounded.Language,
-                    )
-
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_enable_device_direct_tools_e2d595),
-                        key = Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS,
-                        icon = Icons.Rounded.Smartphone,
-                    )
-
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_allow_reading_of_sensitive_device_information_feaec0),
-                        key = Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS,
-                        icon = Icons.Rounded.Visibility,
-                    )
-
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_allow_sensitive_device_operation_3d42ea),
-                        key = Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS,
-                        icon = Icons.Rounded.GppMaybe,
-                    )
-
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.ui_enable_terminal_file_tools_18bb43),
-                        key = Prefs.Keys.AGENT_TERMINAL_TOOLS,
-                        icon = Icons.Rounded.Terminal,
-                    )
-                    SwitchPref(
-                        context = context,
-                        prefs = agentPrefs,
-                        title = stringResource(R.string.settings_kimi_web_builtin_browser),
-                        key = Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER,
-                        icon = Icons.Rounded.Language,
-                    )
-
-                    WindowSpinnerPreference(
-                        title = "Kimi 授权模式",
-                        summary = "默认自动批准，遇到高风险操作可切到「每次确认」。",
-                        items = listOf("自动批准（yolo）", "自动（auto）", "每次确认（manual）")
-                            .map { DropdownItem(text = it) },
-                        selectedIndex = KimiPermissionMode.all.indexOf(kimiPermissionMode).coerceAtLeast(0),
-                        onSelectedIndexChange = { index ->
-                            val mode = KimiPermissionMode.all.getOrNull(index)
-                                ?: return@WindowSpinnerPreference
-                            val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
-                            if (putStringSync(targetPrefs, Prefs.Keys.KIMI_PERMISSION_MODE, mode)) {
-                                kimiPermissionMode = mode
-                            } else {
-                                Toast.makeText(
-                                    context.applicationContext,
-                                    context.getString(R.string.settings_write_failed),
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            }
-                        },
-                        startAction = {
-                            PreferenceIcon(icon = Icons.Rounded.Lock, enabled = agentPrefs != null)
-                        },
-                        enabled = agentPrefs != null,
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.ui_linux_tool_environment_314d22),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Inventory2,
-                            )
-                        },
-                        onClick = { onNavigate(AppRoute.LinuxEnvironment) },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.capability_workspace),
-                        summary = stringResource(R.string.capability_workspace_summary),
-                        startAction = { PreferenceIcon(Icons.Rounded.Folder) },
-                        onClick = { onNavigate(AppRoute.Workspace) },
-                    )
-                }
-            }
-
-            // ── 系统助手接管 ──────────────────────────────────────────────
-            item(key = "section_assistant_takeover") {
-                SmallTitle(stringResource(R.string.ui_system_assistant_takes_over_f46043))
-                Card(modifier = Modifier.settingsSectionDiagnostics("assistant_takeover").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
                     ArrowPreference(
                         title = stringResource(R.string.settings_system_takeover_entry),
                         summary = stringResource(R.string.settings_system_takeover_entry_summary),
@@ -626,133 +264,6 @@ internal fun SettingsScreen(
                             showClearLogsDialog = true
                         },
                     )
-                }
-            }
-
-            // ── 权限 ────────────────────────────────────────────────────
-            item(key = "section_permissions") {
-                SmallTitle(stringResource(R.string.ui_permissions_560165))
-                Card(modifier = Modifier.settingsSectionDiagnostics("permissions").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.ui_permission_health_3048bb),
-                        summary = stringResource(R.string.ui_permissions_and_status_35f368),
-                        startAction = {
-                            PreferenceIcon(icon = Icons.Rounded.HealthAndSafety)
-                        },
-                        onClick = { onNavigate(AppRoute.Permissions) },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.capability_enhancements),
-                        summary = stringResource(R.string.capability_enhancements_summary),
-                        startAction = {
-                            PreferenceIcon(icon = Icons.Rounded.Security)
-                        },
-                        onClick = { onNavigate(AppRoute.SystemEnhance) },
-                    )
-                    ArrowPreference(
-                        title = stringResource(R.string.ui_floating_window_permissions_076b77),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.Layers,
-                            )
-                        },
-                        endActions = {
-                            Text(
-                                text = stringResource(
-                                    if (overlayGranted) R.string.status_authorized else R.string.status_unauthorized,
-                                ),
-                                fontSize = MiuixTheme.textStyles.body2.fontSize,
-                                color = if (overlayGranted) {
-                                    MiuixTheme.colorScheme.onSurfaceVariantActions
-                                } else {
-                                    MiuixTheme.colorScheme.error
-                                },
-                            )
-                        },
-                        onClick = {
-                            if (!overlayGranted) {
-                                runCatching {
-                                    context.startActivity(
-                                        android.content.Intent(
-                                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                            android.net.Uri.parse("package:${context.packageName}"),
-                                        ),
-                                    )
-                                }
-                            }
-                        },
-                    )
-
-                    ArrowPreference(
-                        title = stringResource(R.string.ui_accessibility_enhancement_tools_8fd257),
-                        startAction = {
-                            PreferenceIcon(
-                                icon = Icons.Rounded.AccessibilityNew,
-                            )
-                        },
-                        endActions = {
-                            val enabled = accessibilityGranted || AgentAccessibilityService.isAvailable()
-                            Text(
-                                text = stringResource(
-                                    if (enabled) R.string.status_enabled else R.string.status_disabled,
-                                ),
-                                fontSize = MiuixTheme.textStyles.body2.fontSize,
-                                color = if (enabled) {
-                                    MiuixTheme.colorScheme.onSurfaceVariantActions
-                                } else {
-                                    MiuixTheme.colorScheme.primary
-                                },
-                            )
-                        },
-                        onClick = {
-                            runCatching {
-                                context.startActivity(
-                                    android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS),
-                                )
-                            }
-                        },
-                    )
-                    if (prefs != null || hasConnectedFramework) {
-                        SwitchPreference(
-                            title = stringResource(R.string.ui_enforce_accessibility_55e838),
-                            checked = accessibilityProtectionEnabled,
-                            onCheckedChange = { enabled ->
-                                if (accessibilityProtectionPending) {
-                                    return@SwitchPreference
-                                }
-                                accessibilityProtectionPending = true
-                                AccessibilityProtectionClient.setEnabled(
-                                    context = context,
-                                    enabled = enabled,
-                                ) { result ->
-                                    accessibilityProtectionPending = false
-                                    accessibilityProtectionEnabled = result.enabled
-                                    accessibilityGranted = isAgentAccessibilityEnabled(context)
-                                    val failureMessage = when (result.status) {
-                                        AccessibilityProtectionClient.ControlStatus.APPLIED -> null
-                                        AccessibilityProtectionClient.ControlStatus.UNAVAILABLE ->
-                                            context.getString(R.string.accessibility_protection_unavailable)
-                                        AccessibilityProtectionClient.ControlStatus.REJECTED ->
-                                            context.getString(R.string.accessibility_protection_rejected)
-                                    }
-                                    if (failureMessage != null) {
-                                        Toast.makeText(
-                                            context.applicationContext,
-                                            failureMessage,
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
-                                    }
-                                }
-                            },
-                            startAction = {
-                                PreferenceIcon(
-                                    icon = Icons.Rounded.VerifiedUser,
-                                    enabled = prefs != null && !accessibilityProtectionPending,
-                                )
-                            },
-                            enabled = prefs != null && !accessibilityProtectionPending,
-                        )
-                    }
                 }
             }
 
@@ -889,200 +400,4 @@ internal fun SettingsScreen(
             }
         }
 
-}
-
-// ── 系统化确认对话框 ─────────────────────────────────────────────────────────
-
-@Composable
-internal fun SystemizerConfirmDialog(
-    show: Boolean,
-    installing: Boolean,
-    onDismissRequest: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    WindowDialog(
-        show = show,
-        title = stringResource(R.string.ui_convert_google_apps_to_system_apps_0f6d89),
-        summary = stringResource(R.string.ui_system_applications_have_voice_wake_up_permissions_f_0190f2),
-        onDismissRequest = onDismissRequest,
-    ) {
-        MiuixDialogActions(
-            confirmText = if (installing) {
-                stringResource(R.string.status_processing)
-            } else {
-                stringResource(R.string.action_confirm)
-            },
-            cancelEnabled = !installing,
-            confirmEnabled = !installing,
-            onCancel = onDismissRequest,
-            onConfirm = onConfirm,
-        )
-    }
-}
-
-// ── 带图标的布尔开关 ─────────────────────────────────────────────────────────
-
-/**
- * 单个布尔开关：状态随 [prefs]/[key] 变化重读，切换时同步写入。
- *
- * 配置来源由调用方按能力边界传入。Hook 开关仍可能因 LSPosed 未连接而禁用；Agent
- * Runtime 开关始终使用 App 本地配置。
- */
-@Composable
-internal fun SwitchPref(
-    context: Context,
-    prefs: SharedPreferences?,
-    title: String,
-    summary: String? = null,
-    key: String,
-    icon: ImageVector,
-) {
-    val enabled = prefs != null
-    val history = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
-    val default = Prefs.Keys.BOOLEAN_DEFAULTS[key] ?: true
-    var checked by remember(prefs, key) {
-        mutableStateOf(prefs?.getBoolean(key, default) ?: history.checked(key, default))
-    }
-    DisposableEffect(prefs, key) {
-        val targetPrefs = prefs ?: return@DisposableEffect onDispose {}
-        val listener = SharedPreferences.OnSharedPreferenceChangeListener { changedPrefs, changedKey ->
-            if (changedKey == key) {
-                checked = changedPrefs.getBoolean(key, default)
-            }
-        }
-        targetPrefs.registerOnSharedPreferenceChangeListener(listener)
-        onDispose { targetPrefs.unregisterOnSharedPreferenceChangeListener(listener) }
-    }
-    SwitchPreference(
-        title = title,
-        summary = summary,
-        checked = checked,
-        onCheckedChange = { value ->
-            // 同步提交；RemotePreferences.commit() 失败（binder 提交失败）时回滚 UI 状态，
-            // 避免 UI 显示已切换而 hook 进程实际未收到。
-            val targetPrefs = prefs ?: return@SwitchPreference
-            if (putBooleanSync(targetPrefs, key, value)) {
-                checked = value
-                history.recordCommittedBoolean(key, value)
-                if (key in Prefs.Keys.LOCAL_AGENT_KEYS) {
-                    Prefs.reconcileAgentPreferences(EtaApp.serviceInstance)
-                }
-            } else {
-                Toast.makeText(
-                    context.applicationContext,
-                    context.getString(R.string.settings_write_failed),
-                    Toast.LENGTH_SHORT,
-                ).show()
-            }
-        },
-        startAction = {
-            PreferenceIcon(icon = icon, enabled = enabled)
-        },
-        enabled = enabled,
-    )
-}
-
-/**
- * 同步写入布尔值。RemotePreferences 的 [commit] 先更新本进程 map 再同步等待 binder 提交，
- * 失败（binder RemoteException）返回 false 但本进程 map 已被改写——此时 hook 进程收不到新值。
- * 返回是否提交成功，供调用方决定是否更新 UI。
- */
-private fun putBooleanSync(
-    prefs: SharedPreferences,
-    key: String,
-    value: Boolean
-): Boolean =
-    runCatching { prefs.edit().putBoolean(key, value).commit() }.getOrDefault(false)
-
-internal fun putStringSync(
-    prefs: SharedPreferences,
-    key: String,
-    value: String
-): Boolean =
-    runCatching { prefs.edit().putString(key, value).commit() }.getOrDefault(false)
-
-internal fun PowerAssistantTarget.displayName(context: Context): String =
-    when (this) {
-        PowerAssistantTarget.OEM -> context.getString(R.string.power_assistant_system_default)
-        PowerAssistantTarget.GEMINI -> "Gemini"
-        PowerAssistantTarget.ETA -> "YUNKe"
-    }
-
-private fun isAgentAccessibilityEnabled(context: Context): Boolean {
-    val expected = ComponentName(
-        context,
-        AgentAccessibilityService::class.java
-    ).flattenToString()
-    val enabledServices = android.provider.Settings.Secure.getString(
-        context.contentResolver,
-        android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-    ).orEmpty()
-    return enabledServices.split(':').any { it.equals(expected, ignoreCase = true) }
-}
-
-private fun defaultDiagnosticLogFileName(): String =
-    "YUNKe-诊断日志-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.zip"
-
-internal fun isEtaAssistantActive(context: Context): Boolean =
-    VoiceInteractionService.isActiveService(
-        context,
-        ComponentName(context, EtaVoiceInteractionService::class.java),
-    )
-
-
-
-internal fun SystemizerInstallResult.toToastMessage(context: Context): String =
-    when (this) {
-        SystemizerInstallResult.AlreadySystemized -> context.getString(R.string.systemizer_already_system)
-        SystemizerInstallResult.GoogleAppMissing -> context.getString(R.string.systemizer_google_missing)
-        SystemizerInstallResult.UnsupportedRootManager -> context.getString(R.string.systemizer_root_manager_missing)
-        SystemizerInstallResult.KernelSuMetamoduleMissing -> context.getString(R.string.systemizer_metamodule_missing)
-        is SystemizerInstallResult.RootPermissionUnavailable -> when (rootManager) {
-            RootManager.KERNEL_SU -> context.getString(R.string.systemizer_grant_kernelsu)
-            RootManager.MAGISK -> context.getString(R.string.systemizer_grant_magisk)
-            RootManager.UNSUPPORTED -> context.getString(R.string.systemizer_root_denied)
-        }
-        is SystemizerInstallResult.InstalledRebootRequired -> context.getString(R.string.systemizer_installed)
-        is SystemizerInstallResult.Failed -> commandOutput
-            .lineSequence()
-            .map { it.trim() }
-            .lastOrNull { it.isNotEmpty() }
-            ?.let { "$message：$it" }
-            ?: message
-    }
-
-@Composable
-private fun SettingsProviderEntry(
-    currentProviderId: String?,
-    currentModelId: String?,
-    onClick: () -> Unit,
-) {
-    // Provider / Model 选中状态展示
-    val providers by remember { ProviderRepository.providersFlow() }.collectAsState(initial = emptyList())
-    val storedProviderId by remember { RuntimeConfigRepository.selectedProviderIdFlow() }
-        .collectAsState(initial = null)
-    val storedModelId by remember { RuntimeConfigRepository.selectedModelIdFlow() }
-        .collectAsState(initial = null)
-    val selectedProviderId = currentProviderId?.takeIf { it.isNotBlank() } ?: storedProviderId
-    val selectedModelId = currentModelId?.takeIf { it.isNotBlank() } ?: storedModelId
-    val selectedProvider = remember(providers, selectedProviderId) {
-        providers.find { it.id == selectedProviderId }
-    }
-    val selectedModel = remember(selectedProvider, selectedModelId) {
-        selectedProvider?.models?.find { it.id == selectedModelId }
-    }
-    val providerSummary = selectedProvider?.let { provider ->
-        "${provider.name} / ${selectedModel?.displayName ?: stringResource(R.string.settings_model_not_selected)}"
-    } ?: stringResource(R.string.settings_not_configured)
-
-    ArrowPreference(
-        title = stringResource(R.string.ui_model_provider_e8c7f5),
-        summary = providerSummary,
-        startAction = {
-            PreferenceIcon(
-                icon = Icons.Rounded.Memory,
-            )
-        },
-        onClick = onClick,
-    )
 }

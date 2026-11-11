@@ -68,6 +68,10 @@ import io.github.mangi.eta.ui.ErrorReconnectSettingsScreen
 import io.github.mangi.eta.ui.ContextCompressionSettingsScreen
 import io.github.mangi.eta.ui.SettingsScreen
 import io.github.mangi.eta.ui.SystemTakeoverSettingsScreen
+import io.github.mangi.eta.ui.SettingsModelScreen
+import io.github.mangi.eta.ui.SettingsExtensionsScreen
+import io.github.mangi.eta.ui.SettingsToolsScreen
+import io.github.mangi.eta.ui.SettingsGeneralScreen
 import io.github.mangi.eta.ui.components.AppUpdateDialog
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.AgentPendingChildStopDialog
@@ -968,8 +972,34 @@ fun AgentAppRoot(
                     context = context,
                     onNavigate = { route -> pushRoute(route) },
                     onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.SettingsModel>(swipeDismiss = swipeDismiss) {
+                SettingsModelScreen(
+                    context = context,
+                    onNavigate = { route -> pushRoute(route) },
+                    onBack = ::popRoute,
                     currentProviderId = shellHomeState.providerId,
                     currentModelId = shellHomeState.modelId,
+                )
+            }
+            entry<AppRoute.SettingsExtensions>(swipeDismiss = swipeDismiss) {
+                SettingsExtensionsScreen(
+                    onNavigate = { route -> pushRoute(route) },
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.SettingsTools>(swipeDismiss = swipeDismiss) {
+                SettingsToolsScreen(
+                    context = context,
+                    onNavigate = { route -> pushRoute(route) },
+                    onBack = ::popRoute,
+                )
+            }
+            entry<AppRoute.SettingsGeneral>(swipeDismiss = swipeDismiss) {
+                SettingsGeneralScreen(
+                    onNavigate = { route -> pushRoute(route) },
+                    onBack = ::popRoute,
                 )
             }
             entry<AppRoute.AuxiliaryVision>(swipeDismiss = swipeDismiss) {
