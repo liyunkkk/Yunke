@@ -62,13 +62,6 @@ sealed interface AppRoute : NavKey {
     @Serializable
     data object SettingsGeneral : AppRoute
 
-    /** 设置二级页：诊断（从设置首页抽出）。 */
-    @Serializable
-    data object SettingsDiagnostics : AppRoute
-
-    /** 设置二级页：关于（从设置首页抽出）。 */
-    @Serializable
-    data object SettingsAbout : AppRoute
 
     // 注意：不新增 SettingsPermissions / SettingsAssistantTakeover 两个路由。
     // 权限与通知直接复用已有的 AppRoute.Permissions（PermissionHealthScreen，

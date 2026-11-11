@@ -380,8 +380,6 @@ private fun titleForRoute(route: AppRoute?, currentConversationTitle: String? = 
     is AppRoute.SettingsExtensions -> stringResource(R.string.settings_category_extensions)
     is AppRoute.SettingsTools -> stringResource(R.string.ui_tool_a72ef1)
     is AppRoute.SettingsGeneral -> stringResource(R.string.settings_general)
-    is AppRoute.SettingsDiagnostics -> stringResource(R.string.settings_diagnostics)
-    is AppRoute.SettingsAbout -> stringResource(R.string.ui_about_bed172)
     is AppRoute.VoiceSettings -> stringResource(R.string.voice_title)
     is AppRoute.SpeechSettings -> stringResource(R.string.speech_title)
     is AppRoute.AuxiliaryVision -> stringResource(R.string.auxiliary_vision_title)

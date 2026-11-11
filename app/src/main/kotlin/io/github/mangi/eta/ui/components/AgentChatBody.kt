@@ -394,6 +394,11 @@ internal fun AgentChatBody(
                 onScrubTick = { tick -> tickScrubMessageId = tick.firstUserMessageId },
                 onScrubEnd = { atLatest ->
                     tickRailScrubbing = false
+                    // 必须清掉刮擦目标：tickScrubMessageId 留着的话，下面那个
+                    // LaunchedEffect(tickScrubMessageId, timelineRows) 会在每次
+                    // timelineRows 变化时重跑——也就是流式输出的每一帧——把列表
+                    // 反复拉回那次刮擦指向的旧提问，表现为「输出时莫名跳回上一个提问」。
+                    tickScrubMessageId = null
                     if (atLatest) {
                         keepBottomAnchored = true
                         tickJumpNonce += 1
@@ -480,6 +485,7 @@ internal fun AgentChatBody(
                 tickJumpRequest = tickJumpRequest,
                 onTickJumpConsumed = { tickJumpRequest = null },
                 tickScrubMessageId = tickScrubMessageId,
+                tickScrubbing = tickRailScrubbing,
                 tickRailVisible = tickRailVisible,
                 onTickRailVisibilityChanged = { tickRailVisibleReported = it },
                 onSubmit = { text ->
@@ -718,6 +724,7 @@ internal fun AgentChatScaffold(
                 tickJumpRequest = tickJumpRequest,
                 onTickJumpConsumed = onTickJumpConsumed,
                 tickScrubMessageId = tickScrubMessageId,
+                tickScrubbing = tickScrubbing,
                 onTickRailVisibilityChanged = onTickRailVisibilityChanged,
                 onSuggestionClick = onSuggestionClick,
                 onRunTraceClick = onRunTraceClick,
@@ -776,6 +783,8 @@ internal fun AgentConversationMessages(
     tickJumpRequest: Pair<TurnTick, Int>? = null,
     onTickJumpConsumed: () -> Unit = {},
     tickScrubMessageId: String? = null,
+    /** 是否正在刮擦刻度轨；只有为 true 时上面那个刮擦跟随 effect 才会滚动。 */
+    tickScrubbing: Boolean = false,
     onTickRailVisibilityChanged: (Boolean) -> Unit = {},
     onSuggestionClick: (String) -> Unit = {},
     onRunTraceClick: () -> Unit = {},
@@ -932,7 +941,9 @@ internal fun AgentConversationMessages(
         onTickJumpConsumed()
     }
     // Eta Mod：刻度轨刮擦跟随——实时、无动画；目标行不存在时不跳（等下一帧 tick）。
-    LaunchedEffect(tickScrubMessageId, timelineRows) {
+    LaunchedEffect(tickScrubMessageId, tickScrubbing, timelineRows) {
+        // 只在「正在刮擦」时跟随；其余时刻即使 id 残留也不滚动。
+        if (!tickScrubbing) return@LaunchedEffect
         val targetId = tickScrubMessageId ?: return@LaunchedEffect
         val index = timelineRows.indexOfFirst { it.containsMessageId(targetId) }
         if (index >= 0) scrollState.requestScrollToItem(index)

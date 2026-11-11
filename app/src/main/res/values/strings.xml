@@ -1670,4 +1670,6 @@
   <string name="settings_kimi_auth_yolo">Auto approve (yolo)</string>
   <string name="settings_kimi_auth_auto">Auto</string>
   <string name="settings_kimi_auth_manual">Confirm each time</string>
+  <string name="settings_about_version">Version</string>
+  <string name="settings_about_feedback">Send feedback</string>
 </resources>

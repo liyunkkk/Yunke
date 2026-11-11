@@ -1630,4 +1630,6 @@
   <string name="settings_kimi_auth_yolo">自動批准（yolo）</string>
   <string name="settings_kimi_auth_auto">自動（auto）</string>
   <string name="settings_kimi_auth_manual">每次確認（manual）</string>
+  <string name="settings_about_version">版本</string>
+  <string name="settings_about_feedback">問題反饋</string>
 </resources>
