@@ -8,9 +8,10 @@
 //  2. TurnTick 增加 firstUserMessageId：Yunke 的列表渲染的是经两层投影后的 timelineRows（行），
 //     行下标 != 时间线条目下标，跳转必须经消息 id 中转，不能直接拿 timelineIndex 当
 //     animateScrollToItem 参数（见 PATCH_01 的 jumpToTick）。
-//  3. buildTurnTicks 不用 AgentFileReferencePromptCodec / AgentFileReferencePolicy：
-//     这两个符号在 Yunke 4f8f6c45 里不存在（按 agent/model 下的路径查不到文件），
-//     输入摘要改用用户消息正文纯文本折叠；如 Yunke 别处有同款标题 helper，再接线。
+//  3. buildTurnTicks 的标题来源与源版一致：AgentFileReferencePromptCodec.parse 剥掉文件
+//     引用信封，再由 AgentFileReferencePolicy.titleSource 取标题。
+//     （此前误判这两个符号在 Yunke 不存在而退化成纯文本截断，实际在
+//      agent/model/AgentFileReference.kt，已按源版恢复。）
 //  4. steer 补充不另开一轮：Yunke 里 steer 补充是同一轮的续跑（autoFoldedWorkKeys、
 //     isWaitingForFirstModelOutput 都是这个语义），遇 isSteerSupplement() 的用户消息
 //     不封轮、不改 pendingInput。
@@ -62,6 +63,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import io.github.mangi.eta.agent.model.AgentFileReferencePolicy
+import io.github.mangi.eta.agent.model.AgentFileReferencePromptCodec
 import io.github.mangi.eta.ui.model.isSteerSupplement
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
@@ -110,7 +113,13 @@ internal fun buildTurnTicks(entries: List<AgentTimelineEntry>): List<TurnTick> {
                 closeTurn()
                 pendingIndex = index
                 pendingUserId = message.id
-                pendingInput = message.content.collapseSummaryWhitespace(MAX_SUMMARY_CHARS)
+                // 与源版一致：先从消息正文里剥掉 Eta 自己写的文件引用信封，
+                // 再用 AgentFileReferencePolicy.titleSource 取标题（请求为空时退回首个文件名）。
+                // Muse 原以为这两个符号在 Yunke 不存在，实际在 agent/model/AgentFileReference.kt 里。
+                val parsed = AgentFileReferencePromptCodec.parse(message.content)
+                pendingInput = AgentFileReferencePolicy.titleSource(parsed.request, parsed.references)
+                    .ifBlank { message.content.trim() }
+                    .collapseSummaryWhitespace(MAX_SUMMARY_CHARS)
                 lastOutput = ""
             }
             is AgentMessageUi -> {

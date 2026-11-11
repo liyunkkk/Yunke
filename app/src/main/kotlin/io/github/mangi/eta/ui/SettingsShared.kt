@@ -24,6 +24,8 @@ import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
+import io.github.mangi.eta.agent.runtime.AgentExecutionService
+import io.github.mangi.eta.agent.runtime.IslandAvailability
 import io.github.mangi.eta.agent.voice.EtaVoiceInteractionService
 import io.github.mangi.eta.config.PowerAssistantTarget
 import io.github.mangi.eta.config.Prefs
@@ -51,14 +53,12 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 // 不含 settingsTopSpacing()：Yunke 的页都用 SmallTitle + Card，不需要裸卡片页的 12dp 补白。
 
 /**
- * 超级岛支持状态（Yunke 临时版）。
+ * 超级岛（焦点通知）可用性。
  *
- * Yunke 里没有 Number444 的 `AgentIslandNotifier`（Yunke 的岛做在 1107 号前台通知里，
- * 见超级岛 lane 报告），所以本 lane 没有探针可调：[rememberPermissionSummaryState] 始终
- * 把岛状态留在 [CHECKING]，[PermissionSummaryState.unauthorizedCount] 的岛项恒为通过。
- * 岛 lane 落地后，把这个 enum 删掉，字段类型改成 `AgentIslandNotifier.SupportStatus`，
- * 并在 `rememberPermissionSummaryState` 里接上后台探测（Number444 原写法见其
- * `SettingsShared.kt:139-145` 的 `LaunchedEffect(Unit)`）。
+ * Yunke 没有 Number444 的 AgentIslandNotifier：上岛能力由 AgentExecutionService
+ * 在 1107 号前台通知里通过 miui.focus.* extras 提供。因此探针直接用
+ * [AgentExecutionService.islandAvailability]（小米系 ROM + 通知开关），
+ * 不去反射系统插件内部类——那类类名随版本变动，反射失败会把「支持」误报成「不支持」。
  */
 internal enum class IslandSupportStatus {
     CHECKING,
@@ -90,6 +90,19 @@ internal class PermissionSummaryState internal constructor(
         ).count { !it }
 }
 
+/**
+ * 探针：服务侧可用性 → 设置页枚举。
+ *
+ * 不用扩展函数放在 companion 的内嵌类型上（`AgentExecutionService.Companion.Xxx`），
+ * 那种写法对嵌套类型的解析在 Kotlin 里容易踩坑；这里直接用普通函数。
+ */
+private fun islandStatus(context: Context): IslandSupportStatus =
+    when (AgentExecutionService.islandAvailability(context)) {
+        IslandAvailability.SUPPORTED -> IslandSupportStatus.SUPPORTED
+        IslandAvailability.NO_PERMISSION -> IslandSupportStatus.NO_PERMISSION
+        IslandAvailability.UNSUPPORTED -> IslandSupportStatus.UNSUPPORTED
+    }
+
 @Composable
 internal fun rememberPermissionSummaryState(context: Context): PermissionSummaryState {
     val state = remember {
@@ -97,8 +110,12 @@ internal fun rememberPermissionSummaryState(context: Context): PermissionSummary
             overlayState = mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.overlay.initial") { android.provider.Settings.canDrawOverlays(context) }),
             accessibilityState = mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.accessibility.initial") { isAgentAccessibilityEnabled(context) }),
             protectionEnabledState = mutableStateOf(StreamPerformanceDiagnostics.measure("settings.permission.protection.initial") { AccessibilityProtectionClient.isEnabled(context) }),
-            // 岛项：本 lane 无探针，恒为 CHECKING（不计入 unauthorizedCount），岛 lane 接线。
-            islandState = mutableStateOf(IslandSupportStatus.CHECKING),
+            // 岛项：真实探测（小米系 ROM + 通知开关），不再恒为 CHECKING。
+            islandState = mutableStateOf(
+                StreamPerformanceDiagnostics.measure("settings.permission.island.initial") {
+                    islandStatus(context)
+                },
+            ),
             notificationsState = mutableStateOf(
                 androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled(),
             ),
@@ -114,6 +131,12 @@ internal fun rememberPermissionSummaryState(context: Context): PermissionSummary
                     StreamPerformanceDiagnostics.measure("settings.permission.protection.resume") { AccessibilityProtectionClient.isEnabled(context) }
                 state.notificationsGranted = androidx.core.app.NotificationManagerCompat.from(context)
                     .areNotificationsEnabled()
+                // 通知开关与岛可用性相关：用户可能刚从系统设置改完返回，
+                // 必须一起刷新，否则岛状态会停在旧值（占位实现的老问题）。
+                state.islandStatus =
+                    StreamPerformanceDiagnostics.measure("settings.permission.island.resume") {
+                        islandStatus(context)
+                    }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

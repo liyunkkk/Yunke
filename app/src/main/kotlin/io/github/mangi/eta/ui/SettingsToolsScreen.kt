@@ -126,10 +126,13 @@ internal fun SettingsToolsScreen(
                 )
 
                 WindowSpinnerPreference(
-                    title = "Kimi 授权模式",
-                    summary = "默认自动批准，遇到高风险操作可切到「每次确认」。",
-                    items = listOf("自动批准（yolo）", "自动（auto）", "每次确认（manual）")
-                        .map { DropdownItem(text = it) },
+                    title = stringResource(R.string.settings_kimi_auth_title),
+                    summary = stringResource(R.string.settings_kimi_auth_summary),
+                    items = listOf(
+                        stringResource(R.string.settings_kimi_auth_yolo),
+                        stringResource(R.string.settings_kimi_auth_auto),
+                        stringResource(R.string.settings_kimi_auth_manual),
+                    ).map { DropdownItem(text = it) },
                     selectedIndex = KimiPermissionMode.all.indexOf(kimiPermissionMode).coerceAtLeast(0),
                     onSelectedIndexChange = { index ->
                         val mode = KimiPermissionMode.all.getOrNull(index)

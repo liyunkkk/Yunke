@@ -197,6 +197,16 @@ internal fun SettingsScreen(
                         },
                         onClick = { onNavigate(AppRoute.Permissions) },
                     )
+                    // 系统增强入口：Number444 二级化移植时被整段删掉，这里按原位置补回
+                    // （权限之后、系统接管之前，与 main 的排布一致）。
+                    ArrowPreference(
+                        title = stringResource(R.string.capability_enhancements),
+                        summary = stringResource(R.string.capability_enhancements_summary),
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Security)
+                        },
+                        onClick = { onNavigate(AppRoute.SystemEnhance) },
+                    )
                     ArrowPreference(
                         title = stringResource(R.string.settings_system_takeover_entry),
                         summary = stringResource(R.string.settings_system_takeover_entry_summary),

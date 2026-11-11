@@ -1,12 +1,10 @@
-// staging: TurnTickRailTest.kt
-// 目标路径（新增）: app/src/test/kotlin/io/github/mangi/eta/ui/components/TurnTickRailTest.kt
-// 只测纯函数 resolveVisibleTurn（不依赖 Android 运行时）；buildTurnTicks 需构造
-// UserMessageUi / AgentMessageUi 真实例，构造参数未在本次核对中确认，
-// 留待集成时补（见 README 待核对）。
-
 package io.github.mangi.eta.ui.components
 
+import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.UserMessageUi
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TurnTickRailTest {
@@ -42,4 +40,83 @@ class TurnTickRailTest {
     fun `resolveVisibleTurn handles single boundary`() {
         assertEquals(0f, resolveVisibleTurn(5f, listOf(5), 9), 0.0001f)
     }
+
+    // ── buildTurnTicks ────────────────────────────────────────────────────
+    // 构造参数已核对：UserMessageUi(id, content, ...)、AgentMessageUi(id, content, ...)
+    // 其余字段都有默认值；AgentTimelineEntry.Message(message) 只需要一个 AgentChatMessageUi。
+
+    @Test
+    fun `buildTurnTicks closes a turn on the next user message`() {
+        val ticks = buildTurnTicks(
+            listOf(
+                userEntry(0, "u1", "第一问"),
+                agentEntry(1, "a1", "第一答"),
+                userEntry(2, "u2", "第二问"),
+                agentEntry(3, "a2", "第二答"),
+            ),
+        )
+        assertEquals(2, ticks.size)
+        // 刻度记录的是该轮首条用户消息的 ID，跳转靠它换算行下标。
+        assertEquals("u1", ticks[0].firstUserMessageId)
+        assertEquals(0, ticks[0].timelineIndex)
+        assertEquals("u2", ticks[1].firstUserMessageId)
+        assertEquals(2, ticks[1].timelineIndex)
+        // 输入取用户原文，输出取本轮最后一条助手消息。
+        assertEquals("第一问", ticks[0].inputSummary)
+        assertEquals("第一答", ticks[0].outputSummary)
+    }
+
+    @Test
+    fun `buildTurnTicks keeps the last assistant message as output`() {
+        val ticks = buildTurnTicks(
+            listOf(
+                userEntry(0, "u1", "问"),
+                agentEntry(1, "a1", "答一"),
+                agentEntry(2, "a2", "答二"),
+            ),
+        )
+        assertEquals(1, ticks.size)
+        assertEquals("答二", ticks[0].outputSummary)
+    }
+
+    @Test
+    fun `buildTurnTicks ignores an assistant message that has no user before it`() {
+        val ticks = buildTurnTicks(
+            listOf(
+                agentEntry(0, "a0", "开场白"),
+                userEntry(1, "u1", "问"),
+                agentEntry(2, "a1", "答"),
+            ),
+        )
+        assertEquals(1, ticks.size)
+        assertEquals("u1", ticks[0].firstUserMessageId)
+    }
+
+    @Test
+    fun `buildTurnTicks collapses whitespace and truncates long input`() {
+        val long = "  多行\n\n文本 " + "x".repeat(200)
+        val ticks = buildTurnTicks(
+            listOf(
+                userEntry(0, "u1", long),
+                agentEntry(1, "a1", "答"),
+            ),
+        )
+        assertEquals(1, ticks.size)
+        // 折叠空白后超过 160 字符会截断并加省略号。
+        assertTrue(ticks[0].inputSummary.endsWith("…"))
+        assertTrue(ticks[0].inputSummary.length <= 161)
+        assertFalse(ticks[0].inputSummary.contains("\n"))
+    }
+
+    @Test
+    fun `buildTurnTicks returns empty list for no entries`() {
+        assertTrue(buildTurnTicks(emptyList()).isEmpty())
+    }
+
+    // 时间线条目下标由列表顺序决定，不需要显式传入，避免未使用参数告警。
+    private fun userEntry(@Suppress("UNUSED_PARAMETER") index: Int, id: String, text: String) =
+        AgentTimelineEntry.Message(UserMessageUi(id = id, content = text))
+
+    private fun agentEntry(@Suppress("UNUSED_PARAMETER") index: Int, id: String, text: String) =
+        AgentTimelineEntry.Message(AgentMessageUi(id = id, content = text))
 }

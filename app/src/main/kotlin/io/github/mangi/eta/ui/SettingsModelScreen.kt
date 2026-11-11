@@ -101,9 +101,11 @@ internal fun SettingsModelScreen(
                     startAction = { PreferenceIcon(icon = Icons.Rounded.RemoveRedEye) },
                     onClick = { onNavigate(AppRoute.AuxiliaryVision) },
                 )
-                ArrowPreference(title = "子代理",
+                ArrowPreference(
+                    title = stringResource(R.string.route_subagents),
                     startAction = { PreferenceIcon(icon = SubAgents) },
-                    onClick = { onNavigate(AppRoute.SubAgents) })
+                    onClick = { onNavigate(AppRoute.SubAgents) },
+                )
                 ArrowPreference(
                     title = stringResource(R.string.title_model_title),
                     startAction = { PreferenceIcon(icon = Icons.Rounded.AutoAwesome) },
@@ -116,8 +118,8 @@ internal fun SettingsModelScreen(
                 )
 
                 WindowSpinnerPreference(
-                    title = "模型请求重试次数",
-                    summary = "网络或中转站不稳时可调高；0 表示不自动重试。",
+                    title = stringResource(R.string.settings_model_retry_title),
+                    summary = stringResource(R.string.settings_model_retry_summary),
                     items = ModelRetrySettings.allowedCounts.map { DropdownItem(text = it.toString()) },
                     selectedIndex = ModelRetrySettings.allowedCounts.indexOf(modelRetryCount).coerceAtLeast(0),
                     onSelectedIndexChange = { index ->

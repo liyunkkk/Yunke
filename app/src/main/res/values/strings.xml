@@ -1662,4 +1662,12 @@
   <string name="overlay_virtual_fullscreen">Fullscreen</string>
   <string name="overlay_virtual_collapse">Collapse canvas</string>
   <string name="overlay_capsule_toggle">%1$s, tap to expand controls</string>
+  <string name="route_subagents">Sub-agents</string>
+  <string name="settings_model_retry_title">Model request retries</string>
+  <string name="settings_model_retry_summary">Raise it when the network or relay is unstable; 0 disables automatic retries.</string>
+  <string name="settings_kimi_auth_title">Kimi authorization mode</string>
+  <string name="settings_kimi_auth_summary">Approves automatically by default; use confirm-each-time for high-risk actions.</string>
+  <string name="settings_kimi_auth_yolo">Auto approve (yolo)</string>
+  <string name="settings_kimi_auth_auto">Auto</string>
+  <string name="settings_kimi_auth_manual">Confirm each time</string>
 </resources>

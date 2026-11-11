@@ -278,6 +278,33 @@ internal class AgentExecutionService : Service() {
         }
         @Volatile private var currentSource: String = AgentNotificationTrampolineActivity.SOURCE_MAIN
 
+        /**
+         * 探测焦点通知（超级岛）可用性。
+         *
+         * 本项目没有 Number444 的 `AgentIslandNotifier`，上岛能力全部由本服务在
+         * [notification] 里通过 `miui.focus.*` extras 提供（HyperOS 3/4、MIUI 14+）。
+         * 因此这里按「系统是否小米系 + 通知是否开启」判定，不去反射系统插件类：
+         * 插件内部类名随版本变动，反射失败会把「支持」误报成「不支持」。
+         */
+        fun islandAvailability(context: Context): IslandAvailability {
+            if (!isMiuiFamily()) return IslandAvailability.UNSUPPORTED
+            val enabled = androidx.core.app.NotificationManagerCompat.from(context)
+                .areNotificationsEnabled()
+            return if (enabled) IslandAvailability.SUPPORTED else IslandAvailability.NO_PERMISSION
+        }
+
+        /** 小米系 ROM 判定：HyperOS / MIUI 都会带 miui 或 mi.os 版本属性。 */
+        private fun isMiuiFamily(): Boolean {
+            fun prop(key: String): String =
+                runCatching {
+                    val c = Class.forName("android.os.SystemProperties")
+                    c.getMethod("get", String::class.java).invoke(null, key) as? String
+                }.getOrNull().orEmpty()
+            return prop("ro.miui.ui.version.name").isNotEmpty() ||
+                prop("ro.mi.os.version.name").isNotEmpty() ||
+                prop("ro.mi.os.version.incremental").isNotEmpty()
+        }
+
         fun ensureChannels(context: Context, manager: NotificationManager) {
             val executionChannel = NotificationChannel(
                 CHANNEL,
@@ -381,4 +408,20 @@ internal class AgentExecutionService : Service() {
             mainHandler.post { instance?.refreshNotification() }
         }
     }
+}
+
+/**
+ * 焦点通知（超级岛）在设置页展示的可用性。
+ *
+ * 放在顶层：它需要被 `io.github.mangi.eta.ui` 包引用，而嵌套在 companion 里的类型
+ * 跨文件限定名容易歧义（`AgentExecutionService.IslandAvailability` 与
+ * `AgentExecutionService.Companion.IslandAvailability` 两种写法行为不一致）。
+ */
+enum class IslandAvailability {
+    /** 系统支持焦点通知，且通知权限已授予。 */
+    SUPPORTED,
+    /** 系统支持，但用户关闭了本应用的通知。 */
+    NO_PERMISSION,
+    /** 非小米系/HyperOS 系统，或版本过低，焦点通知不会上岛。 */
+    UNSUPPORTED,
 }

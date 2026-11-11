@@ -1,7 +1,6 @@
 package io.github.mangi.eta.ui.app
 
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.IntentFilter
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
@@ -27,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.ui.components.StreamPerformanceDiagnostics
+import io.github.mangi.eta.ui.isAgentAccessibilityEnabled
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
@@ -7524,18 +7524,6 @@ private fun AgentTokenUsage.toUi(): TokenUsageUi =
         reasoningTokens = reasoningTokens,
         cachedTokens = cachedTokens,
     )
-
-private fun isAgentAccessibilityEnabled(context: Context): Boolean {
-    val expected = ComponentName(
-        context,
-        AgentAccessibilityService::class.java,
-    ).flattenToString()
-    val enabledServices = Settings.Secure.getString(
-        context.contentResolver,
-        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-    ).orEmpty()
-    return enabledServices.split(':').any { it.equals(expected, ignoreCase = true) }
-}
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager

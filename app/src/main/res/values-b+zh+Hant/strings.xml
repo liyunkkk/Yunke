@@ -1622,4 +1622,12 @@
   <string name="overlay_virtual_fullscreen">全螢幕</string>
   <string name="overlay_virtual_collapse">收合畫板</string>
   <string name="overlay_capsule_toggle">%1$s，點擊展開控制</string>
+  <string name="route_subagents">子代理</string>
+  <string name="settings_model_retry_title">模型請求重試次數</string>
+  <string name="settings_model_retry_summary">網路或中轉站不穩時可調高；0 表示不自動重試。</string>
+  <string name="settings_kimi_auth_title">Kimi 授權模式</string>
+  <string name="settings_kimi_auth_summary">預設自動批准，遇到高風險操作可切到「每次確認」。</string>
+  <string name="settings_kimi_auth_yolo">自動批准（yolo）</string>
+  <string name="settings_kimi_auth_auto">自動（auto）</string>
+  <string name="settings_kimi_auth_manual">每次確認（manual）</string>
 </resources>
