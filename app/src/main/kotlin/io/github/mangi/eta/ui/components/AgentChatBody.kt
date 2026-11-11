@@ -58,6 +58,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.SideEffect
@@ -742,8 +743,6 @@ internal fun AgentChatScaffold(
     }
 }
 
-@Composable
-@OptIn(ExperimentalLayoutApi::class)
 // Eta Mod：刻度轨到底部静止后自动隐藏的宽限（毫秒）。按钮逻辑本身没有计时器，
 // 是纯位置判断（到锚定底部立刻消失）；刻度条多留 2.5 秒，给刚到到底部的用户
 // 一个顺手点刻度跳回去的窗口。单点常量，真机可调。
@@ -757,6 +756,9 @@ private data class TurnFollowState(
     val firstVisibleFloat: Float,
     val totalItemsCount: Int,
 )
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
 internal fun AgentConversationMessages(
     visibleMessages: List<AgentChatMessageUi>,
     scrollState: LazyListState,

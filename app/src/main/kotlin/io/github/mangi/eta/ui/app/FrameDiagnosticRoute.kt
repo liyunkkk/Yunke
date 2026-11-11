@@ -18,6 +18,11 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     AppRoute.SystemEnhance -> FrameDiagnosticPage.SystemEnhance
     AppRoute.AssistantTakeover -> FrameDiagnosticPage.Settings
     AppRoute.Settings -> FrameDiagnosticPage.Settings
+    // 设置二级页（Number444 移植）：都从设置首页拆出，诊断归属统一按 Settings。
+    AppRoute.SettingsGeneral -> FrameDiagnosticPage.Settings
+    AppRoute.SettingsModel -> FrameDiagnosticPage.Settings
+    AppRoute.SettingsTools -> FrameDiagnosticPage.Settings
+    AppRoute.SettingsExtensions -> FrameDiagnosticPage.Settings
     AppRoute.SpeechSettings -> FrameDiagnosticPage.VoiceSettings
     AppRoute.TtsSettings -> FrameDiagnosticPage.VoiceSettings
     AppRoute.VoiceSettings -> FrameDiagnosticPage.VoiceSettings
