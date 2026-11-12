@@ -36,7 +36,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -84,7 +88,7 @@ internal fun VoiceReplyCard(
     maxHeightFraction: Float = 0.38f,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(VoiceGlassCorner)
+    val shape = RoundedCornerShape(VoiceReplyCardCorner)
     val scroll = rememberScrollState()
 
     // resetKey：只有「本轮回复开始 / 结束」（streaming 翻转）才重置跟随状态。
@@ -141,10 +145,11 @@ internal fun VoiceReplyCard(
                     stiffness = Spring.StiffnessMediumLow,
                 ),
             )
-            .voiceGlassShadow(shape)
-            .voiceGlass(backdrop, shape)
-            .voiceGlassRim(shape)
-            .padding(horizontal = 18.dp, vertical = 12.dp),
+            .voiceGlassShadow(shape, elevation = 18.dp)
+            // 奶白玻璃：参考图卡片内里实测 (197,199,218)，接近不透明白，只留一点点透色。
+            .voiceGlass(backdrop, shape, surfaceAlpha = 0.86f)
+            .voiceGlassRim(shape, alpha = 0.62f, width = 1.2.dp)
+            .padding(horizontal = 18.dp, vertical = 16.dp),
     ) {
         // 顶部拖动指示条（纯装饰，不参与无障碍朗读）。
         Box(
@@ -168,9 +173,10 @@ internal fun VoiceReplyCard(
             VoiceReplyStatusBadge(streaming = streaming)
             Text(
                 text = statusText,
-                modifier = Modifier.padding(start = 8.dp).weight(1f),
-                style = MiuixTheme.textStyles.body1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(start = 10.dp).weight(1f),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = CardTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -193,8 +199,8 @@ internal fun VoiceReplyCard(
                 .nestedScroll(connection)
                 .verticalScroll(scroll),
         ) {
-            if (bodyText.isEmpty() && streaming) {
-                // 空内容 + 生成中：三条呼吸骨架条占位（参考图一的骨架排版）。
+            if (bodyText.isEmpty()) {
+                // 空内容恒显骨架条（参考图一：聆听/识别/思考各阶段卡片均是骨架排版）。
                 VoiceReplySkeleton()
             } else {
                 Text(
@@ -220,13 +226,13 @@ private fun VoiceReplySkeleton() {
         label = "voice_reply_skeleton_pulse",
     )
     Column {
-        listOf(1f, 0.82f, 0.58f).forEachIndexed { index, widthFactor ->
+        listOf(1f, 0.72f, 0.55f, 0.62f).forEachIndexed { index, widthFactor ->
             Box(
                 modifier = Modifier
-                    .padding(top = if (index == 0) 0.dp else 8.dp)
+                    .padding(top = if (index == 0) 0.dp else 9.dp)
                     .fillMaxWidth(widthFactor)
-                    .height(12.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .height(7.dp)
+                    .clip(RoundedCornerShape(4.dp))
                     .background(
                         MiuixTheme.colorScheme.onSurface.copy(
                             alpha = 0.10f + pulse * 0.08f,
@@ -256,17 +262,17 @@ private fun VoiceReplyStatusBadge(streaming: Boolean) {
     )
     Box(
         modifier = Modifier
-            .size(16.dp)
+            .size(22.dp)
             .clip(CircleShape)
-            .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            .background(MiuixTheme.colorScheme.primary.copy(alpha = 0.10f)),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = Icons.Rounded.GraphicEq,
+            imageVector = Icons.Rounded.AutoAwesome,
             // 图标是装饰：状态文字由右侧 Text 读出，这里不重复朗读。
             contentDescription = null,
             modifier = Modifier
-                .size(10.dp)
+                .size(14.dp)
                 .graphicsLayer {
                     val t = if (streaming) pulse else 0f
                     scaleX = 1f + t * 0.18f
@@ -307,7 +313,15 @@ internal fun voiceReplyPhaseLabel(phase: VoiceModePhase, streaming: Boolean): St
 private const val PlaceholderEllipsis = "…"
 
 /** 正文区域的最小高度，防止 reply 为空时卡片塌成一条线。 */
-private val MinBodyHeight = 64.dp
+// 参考图量测换算（841px 宽 ≈ 360dp / 2.336 px-per-dp）：
+// 卡片 792×506px → 边距10dp、高216dp；骨架条 16px 高 ≈ 7dp、间距 22px ≈ 9dp、共 4 条。
+private val MinBodyHeight = 132.dp
 
 /** 正文区域限高的下限（`maxHeightFraction` 传了异常小值时兜底）。 */
 private val MinBodyMaxHeight = 56.dp
+
+/** 参考图卡片圆角 66px ≈ 28dp。 */
+private val VoiceReplyCardCorner = 28.dp
+
+/** 卡片正文主色：参考图的深灰蓝字色。 */
+private val CardTextPrimary = Color(0xFF3A3A3C)

@@ -30,7 +30,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.voice.EtaAssistantWave
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -40,10 +42,10 @@ import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** 语音输入态胶囊的圆角半径；与 [VoiceGlassCorner] 保持同一视觉语言（28.dp = 高度的一半）。 */
-private val CapsuleCornerRadius = 28.dp
+private val CapsuleCornerRadius = 32.dp
 
 /** 三个操作按钮的触控区，保证 44.dp 最小可点尺寸。 */
-private val CapsuleButtonTouchSize = 44.dp
+private val CapsuleButtonTouchSize = 40.dp
 
 /** 按钮内图标尺寸。 */
 private val CapsuleButtonIconSize = 20.dp
@@ -99,11 +101,12 @@ internal fun VoiceControlCapsule(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(56.dp)
-            .voiceGlassShadow(shape)
-            .voiceGlass(backdrop, shape)
-            .voiceGlassRim(shape)
-            .padding(horizontal = 12.dp),
+            .height(64.dp)
+            .voiceGlassShadow(shape, elevation = 16.dp)
+            // 胶囊比卡片更透（参考图能看到明显的背景色晕染）。
+            .voiceGlass(backdrop, shape, surfaceAlpha = 0.52f)
+            .voiceGlassRim(shape, alpha = 0.70f, width = 1.2.dp)
+            .padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
@@ -118,7 +121,8 @@ internal fun VoiceControlCapsule(
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = statusText,
-                style = MiuixTheme.textStyles.body1,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = MiuixTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

@@ -56,11 +56,14 @@ internal fun Modifier.voiceGlass(
         // 没有 backdrop（浮窗 / 设备不支持 RuntimeShader）时的液态玻璃降级：
         // 半透明渐变叠 surface 基色，透出背后的壁纸 / 内容，保持通透玻璃感，
         // 而不是一块不透明白板（与参考图一致：玻璃下方能看到模糊壁纸）。
+        // 奶白玻璃：上端更亮、下端略暗，整体接近不透明白但保留一点透色；
+        // surfaceAlpha 由调用方按用途给（卡片 0.86 偏实、胶囊 0.52 更透）。
         Modifier.background(
             brush = Brush.verticalGradient(
                 listOf(
-                    Color.White.copy(alpha = 0.46f).compositeOver(surfaceColor.copy(alpha = surfaceAlpha * 0.46f)),
-                    Color.White.copy(alpha = 0.30f).compositeOver(surfaceColor.copy(alpha = surfaceAlpha * 0.30f)),
+                    Color.White.copy(alpha = surfaceAlpha).compositeOver(surfaceColor.copy(alpha = 0.10f)),
+                    Color.White.copy(alpha = (surfaceAlpha - 0.10f).coerceAtLeast(0.28f))
+                        .compositeOver(surfaceColor.copy(alpha = 0.10f)),
                 ),
             ),
             shape = shape,
@@ -72,6 +75,7 @@ internal fun Modifier.voiceGlass(
 internal fun Modifier.voiceGlassRim(
     shape: Shape,
     alpha: Float = 0.30f,
+    width: Dp = 1.dp,
 ): Modifier {
     val onSurfaceTint = MiuixTheme.colorScheme.onSurface.copy(alpha = RimOnSurfaceAlpha)
     val rimBrush = Brush.verticalGradient(
@@ -79,7 +83,7 @@ internal fun Modifier.voiceGlassRim(
         1.0f to Color.White.copy(alpha = alpha * 0.25f).compositeOver(onSurfaceTint),
     )
     return border(
-        width = 1.dp,
+        width = width,
         brush = rimBrush,
         shape = shape,
     )

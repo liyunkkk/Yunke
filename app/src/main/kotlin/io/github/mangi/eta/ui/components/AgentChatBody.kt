@@ -776,31 +776,6 @@ internal fun AgentChatScaffold(
             )
         }
     }
-    // 语音态顶部 AI 实时回复卡片：流式正文 + 状态行；点「消息」可收起浮层。
-    AnimatedVisibility(
-        visible = voiceOverlayActive,
-        modifier = Modifier
-            .align(Alignment.TopCenter)
-            .statusBarsPadding()
-            .padding(start = 14.dp, end = 14.dp, top = 8.dp),
-        enter = slideInVertically(initialOffsetY = { -it / 2 }) + fadeIn(tween(180)),
-        exit = slideOutVertically(targetOffsetY = { -it / 2 }) + fadeOut(tween(140)),
-    ) {
-        val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
-            voiceState.phase == VoiceModePhase.Speaking
-        VoiceReplyCard(
-            statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
-            // 识别阶段展示识别中的文本，思考/朗读阶段展示 AI 回复（卡片内部跟随滚动）。
-            reply = when (voiceState.phase) {
-                VoiceModePhase.Connecting,
-                VoiceModePhase.Listening,
-                VoiceModePhase.Transcribing -> voiceState.transcript
-                else -> voiceState.reply
-            },
-            streaming = voiceStreaming,
-            backdrop = voiceGlassBackdrop,
-        )
-    }
     }
 }
 
@@ -2397,13 +2372,27 @@ private fun AgentChatBottomBar(
                     conversationId = collaborationConversationId,
                     runActive = isStreaming || isPaused,
                 )
-                // 语音态控制胶囊：状态文字 + 波形 + 消息/键盘/停止；
+                // 语音态：回复卡片压胶囊上方（参考图一布局），胶囊在最下层；
                 // 输入框本体与其内部按钮照常渲染，不再被语音态面板替换。
                 AnimatedVisibility(
                     visible = (voiceState.active || voiceState.error != null) && !voiceOverlayCollapsed,
                     enter = fadeIn(tween(160)) + expandVertically(tween(200)),
                     exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
                 ) {
+                    val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
+                        voiceState.phase == VoiceModePhase.Speaking
+                    VoiceReplyCard(
+                        statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
+                        reply = when (voiceState.phase) {
+                            VoiceModePhase.Connecting,
+                            VoiceModePhase.Listening,
+                            VoiceModePhase.Transcribing -> voiceState.transcript
+                            else -> voiceState.reply
+                        },
+                        streaming = voiceStreaming,
+                        backdrop = voiceGlassBackdrop,
+                        modifier = Modifier.padding(bottom = 20.dp),
+                    )
                     VoiceControlCapsule(
                         statusText = voiceReplyPhaseLabel(voiceState.phase, false),
                         level = voiceLevel,

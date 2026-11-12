@@ -400,31 +400,7 @@ internal fun EtaVoicePanel(
             level = { voiceLevel },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
-        // 语音态顶部 AI 实时回复卡片：识别中显示识别文本，思考/朗读显示流式回复。
-        AnimatedVisibility(
-            visible = voiceMode && voiceState.active,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(start = 14.dp, end = 14.dp, top = 8.dp),
-            enter = slideInVertically(initialOffsetY = { -it / 2 }) + fadeIn(tween(180)),
-            exit = slideOutVertically(targetOffsetY = { -it / 2 }) + fadeOut(tween(140)),
-        ) {
-            val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
-                voiceState.phase == VoiceModePhase.Speaking
-            VoiceReplyCard(
-                statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
-                reply = when (voiceState.phase) {
-                    VoiceModePhase.Connecting,
-                    VoiceModePhase.Listening,
-                    VoiceModePhase.Transcribing -> voiceState.transcript
-                    else -> voiceState.reply
-                },
-                streaming = voiceStreaming,
-                // 浮窗没有可供 textureBlur 取样的窗口内容，传 null 走实心玻璃降级。
-                backdrop = null,
-            )
-        }
+
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -1620,7 +1596,24 @@ private fun AssistantVoiceCapsule(
     onSelectMode: (VoiceEntryMode) -> Unit,
 ) {
     var modeMenu by remember { mutableStateOf(false) }
-    Box(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 参考图一：大卡片压胶囊上方；识别中显示识别文本，思考/朗读显示流式回复。
+        val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
+            voiceState.phase == VoiceModePhase.Speaking
+        VoiceReplyCard(
+            statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
+            reply = when (voiceState.phase) {
+                VoiceModePhase.Connecting,
+                VoiceModePhase.Listening,
+                VoiceModePhase.Transcribing -> voiceState.transcript
+                else -> voiceState.reply
+            },
+            streaming = voiceStreaming,
+            // 浮窗没有可供 textureBlur 取样的窗口内容，传 null 走半透明玻璃降级。
+            backdrop = null,
+            modifier = Modifier.padding(bottom = 20.dp),
+        )
+        Box(modifier = Modifier.fillMaxWidth()) {
         VoiceControlCapsule(
             statusText = voiceReplyPhaseLabel(voiceState.phase, false),
             level = level,
@@ -1673,6 +1666,7 @@ private fun AssistantVoiceCapsule(
                     }
                 }
             }
+        }
         }
     }
 }
