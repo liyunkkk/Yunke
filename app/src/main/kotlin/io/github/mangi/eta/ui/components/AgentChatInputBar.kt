@@ -434,7 +434,7 @@ internal fun AgentChatInputBar(
                     .squircleSurface(
                         // 浮窗里再压一档透明度，让壁纸色透出来（纯白会像塑料板）。
                         color = MiuixTheme.colorScheme.surfaceContainer.copy(
-                            alpha = if (overlayMode) 0.22f else 0.35f,
+                            alpha = if (overlayMode) 0.16f else 0.35f,
                         ),
                         cornerRadius = 20.dp,
                     )

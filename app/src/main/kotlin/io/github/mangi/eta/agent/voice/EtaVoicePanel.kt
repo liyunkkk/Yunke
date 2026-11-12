@@ -241,11 +241,11 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
     return remember(dark) {
         if (dark) {
             EtaVoicePanelColors(
-                content = Color(0x661C1F26),
+                content = Color(0x541C1F26),
                 contentGradientEnd = Color(0x40111317),
                 borderHighlight = Color(0x40FFFFFF),
                 // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
-                input = Color(0x59404040),
+                input = Color(0x3D404040),
                 inputPrimary = Color(0xE6FFFFFF),
                 inputSecondary = Color(0x8AFFFFFF),
                 inputTertiary = Color(0x4DFFFFFF),
@@ -254,11 +254,11 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
             )
         } else {
             EtaVoicePanelColors(
-                content = Color(0x5CFFFFFF),
+                content = Color(0x4AFFFFFF),
                 contentGradientEnd = Color(0x2EEFF3F8),
                 borderHighlight = Color(0x99FFFFFF),
                 // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
-                input = Color(0x59FFFFFF),
+                input = Color(0x3DFFFFFF),
                 inputPrimary = Color(0xE6000000),
                 inputSecondary = Color(0x8A000000),
                 inputTertiary = Color(0x42000000),
@@ -380,11 +380,10 @@ internal fun EtaVoicePanel(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer { alpha = exitAlpha }
-            // 语音态背景要求完全透明：不画 scrim，窗口级 blur 同步关闭（见 OverlayService）。
+            // 语音态只叠很轻的 scrim（配 55 的轻模糊），保证文字可读性又不糊成一片。
             .drawBehind {
-                if (!voiceMode) {
-                    drawRect(colors.scrim.copy(alpha = colors.scrim.alpha * scrimProgress.value))
-                }
+                val scrimAlpha = if (voiceMode) colors.scrim.alpha * 0.45f else colors.scrim.alpha
+                drawRect(colors.scrim.copy(alpha = scrimAlpha * scrimProgress.value))
             },
     ) {
         Box(
@@ -405,23 +404,7 @@ internal fun EtaVoicePanel(
             level = { voiceLevel },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
-        // 输入态：AI 正在执行/流式输出时，顶部同样浮一张玻璃回复卡片（参考图四）。
-        AnimatedVisibility(
-            visible = !voiceMode && state.phase == EtaVoicePhase.PROCESSING && !exitRequested,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(start = 10.dp, end = 10.dp, top = 8.dp),
-            enter = slideInVertically(initialOffsetY = { -it / 2 }) + fadeIn(tween(180)),
-            exit = slideOutVertically(targetOffsetY = { -it / 2 }) + fadeOut(tween(140)),
-        ) {
-            VoiceReplyCard(
-                statusText = voiceReplyPhaseLabel(VoiceModePhase.Thinking, true),
-                reply = voiceState.reply,
-                streaming = true,
-                backdrop = null,
-            )
-        }
+
 
         BoxWithConstraints(
             modifier = Modifier
@@ -969,7 +952,8 @@ private fun BoxScope.AssistantPanel(
                     start = 10.dp,
                     end = 10.dp,
                     top = 8.dp,
-                    bottom = bottomInset + 10.dp,
+                    // 输入框整体上移一档（原 10dp 太贴底）。
+                    bottom = bottomInset + 24.dp,
                 ),
         )
     }
@@ -1047,6 +1031,20 @@ private fun AssistantComposer(
                 // AnimatedContent 的内容槽是 Box 语义（子项叠放）；三胶囊、间距与
                 // 输入栏必须自己收进一层 Column，否则会叠在同一位置被输入栏盖住。
                 Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp)) {
+                    // 输入态唯一的面板：放在底部输入区上方（参考图三的单面板，只是移到下面）。
+                    AnimatedVisibility(
+                        visible = state.phase == EtaVoicePhase.PROCESSING,
+                        enter = fadeIn(tween(180)) + slideInVertically { it / 3 },
+                        exit = fadeOut(tween(140)) + slideOutVertically { it / 3 },
+                    ) {
+                        VoiceReplyCard(
+                            statusText = voiceReplyPhaseLabel(VoiceModePhase.Thinking, true),
+                            reply = voiceState.reply,
+                            streaming = true,
+                            backdrop = null,
+                            modifier = Modifier.padding(bottom = 12.dp),
+                        )
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

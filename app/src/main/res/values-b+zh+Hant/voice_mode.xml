@@ -16,7 +16,7 @@
     <string name="voice_mode_universal">語音對話</string>
     <string name="voice_mode_doubao">豆包即時通話</string>
     <string name="voice_mode_connecting">正在連線…</string>
-    <string name="voice_mode_listening">正在聽你說…</string>
+    <string name="voice_mode_listening">正在聆聽…</string>
     <string name="voice_mode_transcribing">正在完成識別…</string>
     <string name="voice_mode_thinking">YUNKe正在思考…</string>
     <string name="voice_mode_speaking">YUNKe正在說話</string>

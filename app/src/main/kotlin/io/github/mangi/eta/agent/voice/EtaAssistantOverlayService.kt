@@ -508,8 +508,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         val params = windowParams ?: return
         val voice = entryInVoiceMode
         if (voice) {
-            params.flags = params.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
-            params.blurBehindRadius = 0
+            // 语音态保留「轻模糊」：完全透明可读性太差，模糊压低到 55（输入态仍 110）。
+            if (wm.isCrossWindowBlurEnabled) {
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+                params.blurBehindRadius = 55
+            }
         } else if (wm.isCrossWindowBlurEnabled) {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
             params.blurBehindRadius = 110
