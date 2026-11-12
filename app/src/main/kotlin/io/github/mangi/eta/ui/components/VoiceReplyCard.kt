@@ -144,7 +144,7 @@ internal fun VoiceReplyCard(
             .voiceGlassShadow(shape)
             .voiceGlass(backdrop, shape)
             .voiceGlassRim(shape)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 18.dp, vertical = 12.dp),
     ) {
         // 顶部拖动指示条（纯装饰，不参与无障碍朗读）。
         Box(
@@ -169,7 +169,7 @@ internal fun VoiceReplyCard(
             Text(
                 text = statusText,
                 modifier = Modifier.padding(start = 8.dp).weight(1f),
-                style = MiuixTheme.textStyles.body2,
+                style = MiuixTheme.textStyles.body1,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -193,10 +193,45 @@ internal fun VoiceReplyCard(
                 .nestedScroll(connection)
                 .verticalScroll(scroll),
         ) {
-            Text(
-                text = bodyText,
-                style = MiuixTheme.textStyles.body1,
-                color = MiuixTheme.colorScheme.onSurface,
+            if (bodyText.isEmpty() && streaming) {
+                // 空内容 + 生成中：三条呼吸骨架条占位（参考图一的骨架排版）。
+                VoiceReplySkeleton()
+            } else {
+                Text(
+                    text = bodyText,
+                    style = MiuixTheme.textStyles.body1,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+/** 骨架条：透明度呼吸 + 宽度递减，纯视觉，不参与无障碍。 */
+@Composable
+private fun VoiceReplySkeleton() {
+    val pulse by rememberInfiniteTransition(label = "voice_reply_skeleton").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "voice_reply_skeleton_pulse",
+    )
+    Column {
+        listOf(1f, 0.82f, 0.58f).forEachIndexed { index, widthFactor ->
+            Box(
+                modifier = Modifier
+                    .padding(top = if (index == 0) 0.dp else 8.dp)
+                    .fillMaxWidth(widthFactor)
+                    .height(12.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(
+                        MiuixTheme.colorScheme.onSurface.copy(
+                            alpha = 0.10f + pulse * 0.08f,
+                        ),
+                    ),
             )
         }
     }
@@ -272,7 +307,7 @@ internal fun voiceReplyPhaseLabel(phase: VoiceModePhase, streaming: Boolean): St
 private const val PlaceholderEllipsis = "…"
 
 /** 正文区域的最小高度，防止 reply 为空时卡片塌成一条线。 */
-private val MinBodyHeight = 22.dp
+private val MinBodyHeight = 64.dp
 
 /** 正文区域限高的下限（`maxHeightFraction` 传了异常小值时兜底）。 */
 private val MinBodyMaxHeight = 56.dp

@@ -53,8 +53,16 @@ internal fun Modifier.voiceGlass(
             colors = BlurColors(listOf(BlendColorEntry(surfaceColor.copy(alpha = surfaceAlpha)))),
         )
     } else {
+        // 没有 backdrop（浮窗 / 设备不支持 RuntimeShader）时的液态玻璃降级：
+        // 半透明渐变叠 surface 基色，透出背后的壁纸 / 内容，保持通透玻璃感，
+        // 而不是一块不透明白板（与参考图一致：玻璃下方能看到模糊壁纸）。
         Modifier.background(
-            color = surfaceColor.copy(alpha = surfaceAlpha.coerceAtLeast(0.85f)),
+            brush = Brush.verticalGradient(
+                listOf(
+                    Color.White.copy(alpha = 0.46f).compositeOver(surfaceColor.copy(alpha = surfaceAlpha * 0.46f)),
+                    Color.White.copy(alpha = 0.30f).compositeOver(surfaceColor.copy(alpha = surfaceAlpha * 0.30f)),
+                ),
+            ),
             shape = shape,
         )
     }

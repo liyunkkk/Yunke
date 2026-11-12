@@ -48,6 +48,9 @@ private val CapsuleButtonTouchSize = 44.dp
 /** 按钮内图标尺寸。 */
 private val CapsuleButtonIconSize = 20.dp
 
+/** 三个按钮的白色圆底（参考图样式）。 */
+private val CapsuleButtonBackground = Color(0xFFF4F5F7)
+
 /**
  * 「语音输入态」底部统一控制胶囊。
  *
@@ -122,10 +125,11 @@ internal fun VoiceControlCapsule(
             )
         }
         VoiceCapsuleDivider()
+        // 参考图：三个按钮都是白色圆形底，停止键红图标，统一用白圆底。
         VoiceCapsuleButton(
             icon = Icons.Rounded.ChatBubbleOutline,
             description = "消息",
-            tint = MiuixTheme.colorScheme.onSurface,
+            tint = Color(0xE6000000.toInt()),
             onClick = {
                 TouchHaptics.click(view)
                 onMessage()
@@ -135,7 +139,7 @@ internal fun VoiceControlCapsule(
         VoiceCapsuleButton(
             icon = Icons.Rounded.Keyboard,
             description = "键盘输入",
-            tint = MiuixTheme.colorScheme.onSurface,
+            tint = Color(0xE6000000.toInt()),
             onClick = {
                 TouchHaptics.click(view)
                 onKeyboard()
@@ -183,6 +187,7 @@ private fun VoiceCapsuleButton(
         modifier = Modifier
             .size(CapsuleButtonTouchSize)
             .clip(CircleShape)
+            .background(CapsuleButtonBackground)
             .combinedClickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
