@@ -7,8 +7,10 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -34,6 +36,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -54,6 +57,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -115,7 +119,10 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.voice.VoiceChatSnapshot
 import io.github.mangi.eta.agent.voice.VoiceEntryMode
 import io.github.mangi.eta.agent.voice.VoiceModeController
+import io.github.mangi.eta.agent.voice.VoiceModePhase
 import io.github.mangi.eta.agent.voice.VoiceModeState
+import top.yukonga.miuix.kmp.blur.LayerBackdrop
+import top.yukonga.miuix.kmp.blur.layerBackdrop
 import io.github.mangi.eta.agent.voice.VOICE_MODE_SPEECH_OWNER_PREFIX
 import io.github.mangi.eta.data.model.AnswerFoldLevel
 import io.github.mangi.eta.data.model.ReasoningEffort
@@ -263,6 +270,7 @@ internal fun AgentChatBody(
     val view = LocalView.current
     val context = LocalContext.current
     val voiceState by voiceController.state.collectAsState()
+    val voiceLevel by voiceController.level.collectAsState()
     val density = LocalDensity.current
     val imeInsets = WindowInsets.ime
     val isKeyboardVisible by remember(imeInsets, density) {
@@ -475,6 +483,7 @@ internal fun AgentChatBody(
                 voiceState = voiceState,
                 onStartVoiceMode = voiceController::start,
                 onStopVoiceMode = voiceController::stop,
+                voiceLevel = voiceLevel,
                 showEmptySuggestions = !isKeyboardVisible,
                 keepBottomAnchored = keepBottomAnchored,
                 onBottomAnchorChanged = { keepBottomAnchored = it },
@@ -574,6 +583,7 @@ internal fun AgentChatScaffold(
     voiceState: VoiceModeState = VoiceModeState(),
     onStartVoiceMode: (VoiceEntryMode) -> Unit = {},
     onStopVoiceMode: () -> Unit = {},
+    voiceLevel: Float = 0f,
     showEmptySuggestions: Boolean,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
@@ -633,8 +643,20 @@ internal fun AgentChatScaffold(
         beforeResponseOnly = appearance.morphLoadingBeforeResponseOnly,
     )
 
+    // 语音态（voice mode）：顶部 AI 回复卡片与底部控制胶囊共用一份玻璃取样层；
+    // backdrop 记录的是整个聊天表面（消息 + 输入框），textureBlur 才能取到毛玻璃底色。
+    val voiceGlassBackdrop = rememberVoiceGlassBackdrop()
+    // 「消息」按钮收起的浮层；再次进入语音态自动复位。
+    var voiceOverlayCollapsed by remember { mutableStateOf(false) }
+    LaunchedEffect(voiceState.active) {
+        if (voiceState.active) voiceOverlayCollapsed = false
+    }
+    val voiceOverlayActive = (voiceState.active || voiceState.error != null) && !voiceOverlayCollapsed
+    Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
-        modifier = modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .then(if (voiceGlassBackdrop != null) Modifier.layerBackdrop(voiceGlassBackdrop) else Modifier),
         containerColor = Color.Transparent,
         contentWindowInsets = WindowInsets(
             left = 0.dp,
@@ -679,6 +701,10 @@ internal fun AgentChatScaffold(
                 voiceState = voiceState,
                 onStartVoiceMode = onStartVoiceMode,
                 onStopVoiceMode = onStopVoiceMode,
+                voiceLevel = voiceLevel,
+                voiceGlassBackdrop = voiceGlassBackdrop,
+                voiceOverlayCollapsed = voiceOverlayCollapsed,
+                onVoiceOverlayCollapsedChange = { voiceOverlayCollapsed = it },
                 onSubmit = onSubmit,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onModelSelected = onModelSelected,
@@ -749,6 +775,32 @@ internal fun AgentChatScaffold(
                     .fillMaxSize(),
             )
         }
+    }
+    // 语音态顶部 AI 实时回复卡片：流式正文 + 状态行；点「消息」可收起浮层。
+    AnimatedVisibility(
+        visible = voiceOverlayActive,
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .statusBarsPadding()
+            .padding(start = 14.dp, end = 14.dp, top = 8.dp),
+        enter = slideInVertically(initialOffsetY = { -it / 2 }) + fadeIn(tween(180)),
+        exit = slideOutVertically(targetOffsetY = { -it / 2 }) + fadeOut(tween(140)),
+    ) {
+        val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
+            voiceState.phase == VoiceModePhase.Speaking
+        VoiceReplyCard(
+            statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
+            // 识别阶段展示识别中的文本，思考/朗读阶段展示 AI 回复（卡片内部跟随滚动）。
+            reply = when (voiceState.phase) {
+                VoiceModePhase.Connecting,
+                VoiceModePhase.Listening,
+                VoiceModePhase.Transcribing -> voiceState.transcript
+                else -> voiceState.reply
+            },
+            streaming = voiceStreaming,
+            backdrop = voiceGlassBackdrop,
+        )
+    }
     }
 }
 
@@ -2251,6 +2303,11 @@ private fun AgentChatBottomBar(
     voiceState: VoiceModeState = VoiceModeState(),
     onStartVoiceMode: (VoiceEntryMode) -> Unit = {},
     onStopVoiceMode: () -> Unit = {},
+    // 语音态控制胶囊输入：麦克风电平、玻璃取样层、浮层收起状态。
+    voiceLevel: Float = 0f,
+    voiceGlassBackdrop: LayerBackdrop? = null,
+    voiceOverlayCollapsed: Boolean = false,
+    onVoiceOverlayCollapsedChange: (Boolean) -> Unit = {},
     onSubmit: (String) -> Unit,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
     onModelSelected: (String, String) -> Unit,
@@ -2277,6 +2334,8 @@ private fun AgentChatBottomBar(
     tickRailVisible: Boolean = false,
 ) {
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
+    // 语音态点「键盘」：停止语音态后把焦点还回输入框，普通输入能力立即可用。
+    val composerFocus = remember { FocusRequester() }
     // 底部栏实测高度：刻度气泡用它定位（浮层不参与布局，纯位移）。
     var dockHeightPx by remember { mutableIntStateOf(0) }
     Box(
@@ -2338,6 +2397,28 @@ private fun AgentChatBottomBar(
                     conversationId = collaborationConversationId,
                     runActive = isStreaming || isPaused,
                 )
+                // 语音态控制胶囊：状态文字 + 波形 + 消息/键盘/停止；
+                // 输入框本体与其内部按钮照常渲染，不再被语音态面板替换。
+                AnimatedVisibility(
+                    visible = (voiceState.active || voiceState.error != null) && !voiceOverlayCollapsed,
+                    enter = fadeIn(tween(160)) + expandVertically(tween(200)),
+                    exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
+                ) {
+                    VoiceControlCapsule(
+                        statusText = voiceReplyPhaseLabel(voiceState.phase, false),
+                        level = voiceLevel,
+                        listening = voiceState.phase == VoiceModePhase.Listening,
+                        backdrop = voiceGlassBackdrop,
+                        onMessage = { onVoiceOverlayCollapsedChange(true) },
+                        onKeyboard = {
+                            onStopVoiceMode()
+                            onVoiceOverlayCollapsedChange(false)
+                            composerFocus.requestFocus()
+                        },
+                        onStop = onStopVoiceMode,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
                 AgentChatInputBar(
                     collaborationConversationId = collaborationConversationId,
                     input = input,
@@ -2388,6 +2469,7 @@ private fun AgentChatBottomBar(
                     onAssistantSelected = onAssistantSelected,
                     gptSpeedMode = gptSpeedMode,
                     onCycleGptSpeedMode = onCycleGptSpeedMode,
+                    focusRequester = composerFocus,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

@@ -3,16 +3,8 @@ package io.github.mangi.eta.ui.components
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.shadow.Shadow
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.unit.Velocity
-import androidx.compose.runtime.snapshotFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import androidx.compose.material3.DropdownMenuItem
 import android.Manifest
@@ -450,45 +442,38 @@ internal fun AgentChatInputBar(
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
-                if (voiceState.active || voiceState.error != null) {
-                    VoiceModeStatusPanel(
-                        state = voiceState,
-                        onStop = onStopVoiceMode,
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 40.dp)
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                        contentAlignment = Alignment.TopStart,
-                    ) {
-                        if (textFieldState.text.isBlank()) {
-                            Text(
-                                text = if (isStreaming) stringResource(R.string.chat_eta_working) else stringResource(R.string.chat_input_hint),
-                                style = MiuixTheme.textStyles.body1,
-                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            )
-                        }
-                        BasicTextField(
-                            state = textFieldState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(focusRequester)
-                                .focusProperties { canFocus = !drawerBlocksIme },
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                            textStyle = TextStyle(
-                                color = MiuixTheme.colorScheme.onSurface,
-                                fontSize = 16.sp,
-                                lineHeight = 22.sp,
-                            ),
-                            cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
-                            lineLimits = TextFieldLineLimits.MultiLine(
-                                minHeightInLines = 1,
-                                maxHeightInLines = 6,
-                            ),
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 40.dp)
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    contentAlignment = Alignment.TopStart,
+                ) {
+                    if (textFieldState.text.isBlank()) {
+                        Text(
+                            text = if (isStreaming) stringResource(R.string.chat_eta_working) else stringResource(R.string.chat_input_hint),
+                            style = MiuixTheme.textStyles.body1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     }
+                    BasicTextField(
+                        state = textFieldState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester)
+                            .focusProperties { canFocus = !drawerBlocksIme },
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                        textStyle = TextStyle(
+                            color = MiuixTheme.colorScheme.onSurface,
+                            fontSize = 16.sp,
+                            lineHeight = 22.sp,
+                        ),
+                        cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
+                        lineLimits = TextFieldLineLimits.MultiLine(
+                            minHeightInLines = 1,
+                            maxHeightInLines = 6,
+                        ),
+                    )
                 }
 
                 ChatComposerActionRow(
@@ -1380,101 +1365,3 @@ private fun VoiceEntryPickerDialog(
     }
 }
 
-@Composable
-private fun VoiceModeStatusPanel(
-    state: VoiceModeState,
-    onStop: () -> Unit,
-) {
-    val phase = when {
-        state.error != null -> state.error
-        state.phase == VoiceModePhase.Connecting -> stringResource(R.string.voice_mode_connecting)
-        state.phase == VoiceModePhase.Listening -> stringResource(R.string.voice_mode_listening)
-        state.phase == VoiceModePhase.Transcribing -> stringResource(R.string.voice_mode_transcribing)
-        state.phase == VoiceModePhase.Thinking -> stringResource(R.string.voice_mode_thinking)
-        state.phase == VoiceModePhase.Speaking -> stringResource(R.string.voice_mode_speaking)
-        else -> stringResource(R.string.voice_mode_open)
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = if (state.mode == VoiceEntryMode.DOUBAO_DUPLEX) {
-                    Icons.Rounded.GraphicEq
-                } else {
-                    Icons.Rounded.RecordVoiceOver
-                },
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = if (state.error == null) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.error,
-            )
-            Text(
-                text = phase,
-                modifier = Modifier.padding(start = 10.dp).weight(1f),
-                style = MiuixTheme.textStyles.body1,
-                color = MiuixTheme.colorScheme.onSurface,
-            )
-            IconButton(onClick = onStop, minWidth = 36.dp, minHeight = 36.dp) {
-                Icon(
-                    imageVector = Icons.Rounded.Stop,
-                    contentDescription = stringResource(R.string.voice_mode_stop),
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-        }
-        val detail = listOfNotNull(
-            state.transcript.takeIf { it.isNotBlank() }?.let {
-                stringResource(R.string.voice_recognized_text, it)
-            },
-            state.reply.takeIf { it.isNotBlank() }?.let {
-                stringResource(R.string.voice_reply_text, it)
-            },
-        ).joinToString("\n")
-        if (detail.isNotBlank()) {
-            VoiceTranscript(detail, resetKey = state.mode)
-        }
-    }
-}
-
-@Composable
-private fun VoiceTranscript(detail: String, resetKey: Any?) {
-    val scroll = rememberScrollState()
-    var follow by remember(resetKey) { mutableStateOf(true) }
-    var userGesture by remember(resetKey) { mutableStateOf(false) }
-    val connection = remember(scroll, resetKey) {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.UserInput && available.y != 0f) {
-                    userGesture = true
-                    follow = false
-                }
-                return Offset.Zero
-            }
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.UserInput && userGesture) follow = !scroll.canScrollForward
-                return Offset.Zero
-            }
-            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
-                if (userGesture) {
-                    follow = !scroll.canScrollForward
-                    userGesture = false
-                }
-                return Velocity.Zero
-            }
-        }
-    }
-    LaunchedEffect(scroll, resetKey) {
-        snapshotFlow { Triple(scroll.maxValue, follow, scroll.isScrollInProgress) }.collectLatest { (end, enabled, moving) ->
-            if (enabled && !moving && end > 0) scroll.scrollTo(end)
-        }
-    }
-    Text(
-        text = detail,
-        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        style = MiuixTheme.textStyles.body2,
-        modifier = Modifier.padding(start = 30.dp, end = 8.dp, bottom = 4.dp)
-            .heightIn(max = 160.dp).nestedScroll(connection).verticalScroll(scroll),
-    )
-}
