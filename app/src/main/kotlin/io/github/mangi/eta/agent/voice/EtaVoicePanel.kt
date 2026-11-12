@@ -1623,7 +1623,12 @@ private fun AssistantVoiceCapsule(
         val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
             voiceState.phase == VoiceModePhase.Speaking
         VoiceReplyCard(
-            statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
+            // 暂停时卡片状态也要停在「已暂停」，否则 voiceState 已 Off 会显示成「打开语音模式」。
+            statusText = if (paused) {
+                stringResource(R.string.voice_mode_paused)
+            } else {
+                voiceReplyPhaseLabel(voiceState.phase, voiceStreaming)
+            },
             reply = when (voiceState.phase) {
                 VoiceModePhase.Connecting,
                 VoiceModePhase.Listening,
