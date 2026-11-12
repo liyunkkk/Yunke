@@ -432,7 +432,10 @@ internal fun AgentChatInputBar(
                     )
                     // Q2-A：半透明输入框底色，让浮窗 blurBehindRadius 透出来（本体与浮窗统一）。
                     .squircleSurface(
-                        color = MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.35f),
+                        // 浮窗里再压一档透明度，让壁纸色透出来（纯白会像塑料板）。
+                        color = MiuixTheme.colorScheme.surfaceContainer.copy(
+                            alpha = if (overlayMode) 0.22f else 0.35f,
+                        ),
                         cornerRadius = 20.dp,
                     )
                     .squircleBorder(

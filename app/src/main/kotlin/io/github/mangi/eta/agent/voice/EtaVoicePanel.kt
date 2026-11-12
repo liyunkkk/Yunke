@@ -241,8 +241,8 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
     return remember(dark) {
         if (dark) {
             EtaVoicePanelColors(
-                content = Color(0x8C1C1F26),
-                contentGradientEnd = Color(0x70111317),
+                content = Color(0x661C1F26),
+                contentGradientEnd = Color(0x40111317),
                 borderHighlight = Color(0x40FFFFFF),
                 // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
                 input = Color(0x59404040),
@@ -254,8 +254,8 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
             )
         } else {
             EtaVoicePanelColors(
-                content = Color(0x8AFFFFFF),
-                contentGradientEnd = Color(0x66EFF3F8),
+                content = Color(0x5CFFFFFF),
+                contentGradientEnd = Color(0x2EEFF3F8),
                 borderHighlight = Color(0x99FFFFFF),
                 // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
                 input = Color(0x59FFFFFF),
@@ -380,7 +380,12 @@ internal fun EtaVoicePanel(
         modifier = Modifier
             .fillMaxSize()
             .graphicsLayer { alpha = exitAlpha }
-            .drawBehind { drawRect(colors.scrim.copy(alpha = colors.scrim.alpha * scrimProgress.value)) },
+            // 语音态背景要求完全透明：不画 scrim，窗口级 blur 同步关闭（见 OverlayService）。
+            .drawBehind {
+                if (!voiceMode) {
+                    drawRect(colors.scrim.copy(alpha = colors.scrim.alpha * scrimProgress.value))
+                }
+            },
     ) {
         Box(
             modifier = Modifier
@@ -400,6 +405,23 @@ internal fun EtaVoicePanel(
             level = { voiceLevel },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
+        // 输入态：AI 正在执行/流式输出时，顶部同样浮一张玻璃回复卡片（参考图四）。
+        AnimatedVisibility(
+            visible = !voiceMode && state.phase == EtaVoicePhase.PROCESSING && !exitRequested,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(start = 10.dp, end = 10.dp, top = 8.dp),
+            enter = slideInVertically(initialOffsetY = { -it / 2 }) + fadeIn(tween(180)),
+            exit = slideOutVertically(targetOffsetY = { -it / 2 }) + fadeOut(tween(140)),
+        ) {
+            VoiceReplyCard(
+                statusText = voiceReplyPhaseLabel(VoiceModePhase.Thinking, true),
+                reply = voiceState.reply,
+                streaming = true,
+                backdrop = null,
+            )
+        }
 
         BoxWithConstraints(
             modifier = Modifier
@@ -944,8 +966,8 @@ private fun BoxScope.AssistantPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
-                    start = 16.dp,
-                    end = 16.dp,
+                    start = 10.dp,
+                    end = 10.dp,
                     top = 8.dp,
                     bottom = bottomInset + 10.dp,
                 ),
@@ -1024,7 +1046,7 @@ private fun AssistantComposer(
             } else {
                 // AnimatedContent 的内容槽是 Box 语义（子项叠放）；三胶囊、间距与
                 // 输入栏必须自己收进一层 Column，否则会叠在同一位置被输入栏盖住。
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp)) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1624,6 +1646,7 @@ private fun AssistantVoiceCapsule(
             onKeyboard = onKeyboard,
             onStop = onFinishSpeech,
             onStopLongClick = if (availableModes.size > 1) ({ modeMenu = true }) else null,
+            modifier = Modifier.padding(horizontal = 11.dp),
         )
         if (availableModes.size > 1) {
             EtaDropdownMenu(

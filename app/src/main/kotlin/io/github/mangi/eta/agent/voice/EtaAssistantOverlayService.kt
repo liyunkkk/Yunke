@@ -393,6 +393,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         ) { false }
                     }
                 }
+                // 语音态 <-> 输入态：窗口级模糊随模式开关（语音态要透明背景）。
+                LaunchedEffect(entryInVoiceMode) { applyWindowBlurForMode() }
                 CompositionLocalProvider(
                     LocalConversationSubAgentEditor provides panelSubAgentEditor,
                     LocalSquircleEnabled provides false,
@@ -491,6 +493,27 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         windowParams = params
         registerSystemBackCallback(view)
         view.requestFocus()
+        applyWindowBlurForMode()
+    }
+
+    /**
+     * 语音态要求背景完全透明：语音态下摘掉 FLAG_BLUR_BEHIND 并清零半径；
+     * 输入态恢复窗口级柔光玻璃。面板切换 voiceMode 时调用。
+     */
+    private fun applyWindowBlurForMode() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val wm = windowManager ?: return
+        val view = windowView ?: return
+        val params = windowParams ?: return
+        val voice = entryInVoiceMode
+        if (voice) {
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_BLUR_BEHIND.inv()
+            params.blurBehindRadius = 0
+        } else if (wm.isCrossWindowBlurEnabled) {
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_BLUR_BEHIND
+            params.blurBehindRadius = 110
+        }
+        runCatching { wm.updateViewLayout(view, params) }
     }
 
     private fun createComposeView(content: @Composable () -> Unit): ComposeView =

@@ -2,6 +2,7 @@ package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -23,8 +24,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -45,13 +50,19 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 private val CapsuleCornerRadius = 32.dp
 
 /** 三个操作按钮的触控区，保证 44.dp 最小可点尺寸。 */
-private val CapsuleButtonTouchSize = 40.dp
+private val CapsuleButtonTouchSize = 44.dp
 
 /** 按钮内图标尺寸。 */
 private val CapsuleButtonIconSize = 20.dp
 
-/** 三个按钮的白色圆底（参考图样式）。 */
-private val CapsuleButtonBackground = Color(0xFFF4F5F7)
+/** 按钮玻璃圆的直径；触控区仍按 44dp 由外层保证（参考图量测 ~96px ≈ 41dp）。 */
+private val CapsuleButtonVisualSize = 42.dp
+
+/** 圆钮与分割线之间的间隔：两侧各 8dp，圆钮间距 16dp（参考图 ~32px ≈ 14dp）。 */
+private val CapsuleButtonGap = 8.dp
+
+/** 圆钮图标色：近黑，和参考图一致。 */
+private val CapsuleIconTint = Color(0xE6000000.toInt())
 
 /**
  * 「语音输入态」底部统一控制胶囊。
@@ -103,10 +114,10 @@ internal fun VoiceControlCapsule(
             .fillMaxWidth()
             .height(64.dp)
             .voiceGlassShadow(shape, elevation = 16.dp)
-            // 胶囊比卡片更透（参考图能看到明显的背景色晕染）。
-            .voiceGlass(backdrop, shape, surfaceAlpha = 0.52f)
-            .voiceGlassRim(shape, alpha = 0.70f, width = 1.2.dp)
-            .padding(horizontal = 14.dp),
+            // 参考图胶囊几乎全透，颜色全靠背后壁纸晕染。
+            .voiceGlass(backdrop, shape, surfaceAlpha = 0.34f)
+            .voiceGlassRim(shape, alpha = 0.78f, width = 1.2.dp)
+            .padding(start = 21.dp, end = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
@@ -121,35 +132,46 @@ internal fun VoiceControlCapsule(
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = statusText,
-                fontSize = 16.sp,
+                fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = MiuixTheme.colorScheme.onSurface,
+                color = Color.White,
+                style = TextStyle(
+                    shadow = Shadow(
+                        color = Color.Black.copy(alpha = 0.35f),
+                        offset = Offset(0f, 1f),
+                        blurRadius = 3f,
+                    ),
+                ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
         VoiceCapsuleDivider()
-        // 参考图：三个按钮都是白色圆形底，停止键红图标，统一用白圆底。
+        Spacer(Modifier.width(CapsuleButtonGap))
         VoiceCapsuleButton(
             icon = Icons.Rounded.ChatBubbleOutline,
             description = "消息",
-            tint = Color(0xE6000000.toInt()),
+            tint = CapsuleIconTint,
             onClick = {
                 TouchHaptics.click(view)
                 onMessage()
             },
         )
+        Spacer(Modifier.width(CapsuleButtonGap))
         VoiceCapsuleDivider()
+        Spacer(Modifier.width(CapsuleButtonGap))
         VoiceCapsuleButton(
             icon = Icons.Rounded.Keyboard,
             description = "键盘输入",
-            tint = Color(0xE6000000.toInt()),
+            tint = CapsuleIconTint,
             onClick = {
                 TouchHaptics.click(view)
                 onKeyboard()
             },
         )
+        Spacer(Modifier.width(CapsuleButtonGap))
         VoiceCapsuleDivider()
+        Spacer(Modifier.width(CapsuleButtonGap))
         VoiceCapsuleButton(
             icon = Icons.Rounded.Stop,
             description = "停止语音",
@@ -163,14 +185,14 @@ internal fun VoiceControlCapsule(
     }
 }
 
-/** 胶囊内部的细分隔线。 */
+/** 胶囊内部的细分隔线：白色半透明，压在玻璃上更接近参考图。 */
 @Composable
 private fun VoiceCapsuleDivider() {
     Box(
         modifier = Modifier
             .width(1.dp)
-            .height(20.dp)
-            .background(MiuixTheme.colorScheme.onSurface.copy(alpha = 0.10f)),
+            .height(26.dp)
+            .background(Color.White.copy(alpha = 0.45f)),
     )
 }
 
@@ -189,9 +211,18 @@ private fun VoiceCapsuleButton(
 ) {
     Box(
         modifier = Modifier
-            .size(CapsuleButtonTouchSize)
+            .size(CapsuleButtonVisualSize)
             .clip(CircleShape)
-            .background(CapsuleButtonBackground)
+            // 液态玻璃圆钮：上亮下暗的半透明白渐变 + 白色细边，透过它能看到背后壁纸色。
+            .background(
+                brush = Brush.verticalGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.66f),
+                        Color.White.copy(alpha = 0.30f),
+                    ),
+                ),
+            )
+            .border(width = 1.dp, color = Color.White.copy(alpha = 0.55f), shape = CircleShape)
             .combinedClickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },

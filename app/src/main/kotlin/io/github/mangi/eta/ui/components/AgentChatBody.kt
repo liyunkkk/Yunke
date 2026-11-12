@@ -2405,7 +2405,9 @@ private fun AgentChatBottomBar(
                             composerFocus.requestFocus()
                         },
                         onStop = onStopVoiceMode,
-                        modifier = Modifier.padding(bottom = 8.dp),
+                        modifier = Modifier
+                            .padding(horizontal = 7.dp)
+                            .padding(bottom = 8.dp),
                     )
                 }
                 AgentChatInputBar(
