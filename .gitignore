@@ -43,3 +43,10 @@ google-services.json
 .tmp-art/
 # Runtime-owned collaboration workspaces and artifacts
 /.agent/
+
+# Python 字节码（本机跑 app/src/test/python 的契约测试会产生）
+__pycache__/
+*.pyc
+# 例外：随 APK 打包的 agent 资源原本就带这份预编译模块，已跟踪，保留
+!app/src/main/assets/agent/__pycache__/
+!app/src/main/assets/agent/__pycache__/*.pyc
