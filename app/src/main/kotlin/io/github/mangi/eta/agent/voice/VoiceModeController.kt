@@ -124,6 +124,8 @@ internal class VoiceModeController(
             return
         }
         stop()
+        // stop() 里 generation 会自增，必须在它之后取，否则守卫恒不相等、真错误会被吞掉。
+        val sessionGeneration = generation
         // Snapshot each feature's own choices once; read-aloud/dictation changes cannot leak in.
         val recognitionSettings = SpeechInputSession.configFor(VoiceEntryMode.UNIVERSAL)
         val playbackSettings = SpeechPlaybackProfile.CONVERSATION.snapshot()
@@ -220,6 +222,10 @@ internal class VoiceModeController(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
+                // 与 duplex 一样按 generation 守卫：用户点「停止」时 stop() 已经把
+                // state 复位成 Off，这里若继续写 Error 就会把 Off 覆盖掉，
+                // 表现为按钮又变回「停止」态、再点一下只是清错误——像点了没反应。
+                if (generation != sessionGeneration) return@launch
                 mutableState.value = VoiceModeState(
                     mode = VoiceEntryMode.UNIVERSAL,
                     phase = VoiceModePhase.Error,

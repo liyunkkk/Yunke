@@ -16,6 +16,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.SizeTransform
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -86,6 +87,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -103,6 +105,7 @@ import io.github.mangi.eta.agent.voice.doubao.DoubaoVoiceConfig
 import io.github.mangi.eta.agent.voice.VoiceModeController
 import io.github.mangi.eta.agent.voice.VoiceModeState
 import io.github.mangi.eta.R
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.components.AgentChatInputBar
@@ -314,13 +317,26 @@ internal fun EtaVoicePanel(
     val voiceState by voiceController.state.collectAsState()
     val voiceLevel by voiceController.level.collectAsState()
     val voiceConfig by DoubaoVoiceConfig.state.collectAsState()
-    val voiceUsable = remember(voiceConfig) { SpeechInputSession.ready(VoiceEntryMode.UNIVERSAL) }
+    // 浮条也支持三种模式（用户要求与输入框一致）：记录上次选择，按策略解析出本次实际使用的模式。
+    var voiceEntryRaw by remember {
+        mutableStateOf(Prefs.getString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY))
+    }
+    val appContext = LocalContext.current.applicationContext
+    LaunchedEffect(Unit) { DoubaoVoiceConfig.load(appContext) }
+    val voiceModes = io.github.mangi.eta.agent.voice.VoiceEntryPolicy.modes(voiceConfig)
+    val voiceEntry = io.github.mangi.eta.agent.voice.VoiceEntryPolicy
+        .directMode(voiceConfig, voiceEntryRaw)
+        ?: VoiceEntryMode.UNIVERSAL
+    val voiceUsable = remember(voiceConfig, voiceEntry) {
+        if (voiceEntry == VoiceEntryMode.DOUBAO_DUPLEX) true
+        else SpeechInputSession.ready(voiceEntry)
+    }
     val voiceFeedback = voiceState.error ?: voiceNotice
         ?: if (voiceMode && !voiceUsable) stringResource(R.string.voice_speech_unavailable) else null
     // 浮窗会话切换（语音态下点历史按钮）同样要重启聆听：controller 内部会在
     // conversationId 变化时 stop()，这里跟着把语音态重新拉起来，避免「假聆听」。
-    LaunchedEffect(voiceMode, state.conversationId) {
-        if (voiceMode) voiceController.start(VoiceEntryMode.UNIVERSAL) else voiceController.stop()
+    LaunchedEffect(voiceMode, state.conversationId, voiceEntry) {
+        if (voiceMode) voiceController.start(voiceEntry) else voiceController.stop()
     }
     // 浮窗侧把消息流喂给语音控制器：主界面在 AgentChatBody 里做同一件事；
     // 浮窗此前从未调用 updateChat，导致 voiceState.reply 恒为空（语音态看不到回复）。
@@ -398,6 +414,12 @@ internal fun EtaVoicePanel(
             }.coerceAtLeast(with(density) { 220.dp.toPx() })
             AssistantPanel(
                 voiceMode = voiceMode,
+                voiceEntry = voiceEntry,
+                voiceModes = voiceModes,
+                onSelectVoiceMode = { mode ->
+                    Prefs.putString(Prefs.Keys.AGENT_VOICE_LAST_ENTRY, mode.wireValue)
+                    voiceEntryRaw = mode.wireValue
+                },
                 voiceController = voiceController,
                 voiceState = voiceState,
                 voiceFeedback = voiceFeedback,
@@ -498,6 +520,9 @@ private fun BoxScope.AssistantPanel(
     autoCompressEnabled: Boolean,
     assistantId: String,
     voiceMode: Boolean = false,
+    voiceEntry: VoiceEntryMode? = null,
+    voiceModes: List<VoiceEntryMode> = emptyList(),
+    onSelectVoiceMode: (VoiceEntryMode) -> Unit = {},
     voiceController: VoiceModeController,
     voiceState: VoiceModeState,
     voiceFeedback: String? = null,
@@ -878,6 +903,9 @@ private fun BoxScope.AssistantPanel(
         )
         AssistantComposer(
             voiceMode = voiceMode,
+            voiceEntry = voiceEntry,
+            voiceModes = voiceModes,
+            onSelectVoiceMode = onSelectVoiceMode,
             voiceFeedback = voiceFeedback,
             onKeyboard = onKeyboard,
             state = state,
@@ -951,6 +979,9 @@ private fun AssistantComposer(
     voiceController: VoiceModeController,
     voiceState: VoiceModeState,
     voiceMode: Boolean = false,
+    voiceEntry: VoiceEntryMode? = null,
+    voiceModes: List<VoiceEntryMode> = emptyList(),
+    onSelectVoiceMode: (VoiceEntryMode) -> Unit = {},
     voiceFeedback: String? = null,
     onKeyboard: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -972,12 +1003,16 @@ private fun AssistantComposer(
             if (inVoiceMode) {
                 AssistantVoiceEntry(
                     voiceState = voiceState,
+                    colors = colors,
                     onKeyboard = {
                         voiceController.stop()
                         onKeyboard()
                     },
                     onFinishSpeech = { voiceController.finishSpeech() },
                     onHistory = onToggleHistoryMenu,
+                    selectedMode = voiceEntry,
+                    availableModes = voiceModes,
+                    onSelectMode = onSelectVoiceMode,
                 )
             } else {
                 // AnimatedContent 的内容槽是 Box 语义（子项叠放）；三胶囊、间距与
@@ -1544,10 +1579,15 @@ private fun HistoryConversationItemRow(
 @Composable
 private fun AssistantVoiceEntry(
     voiceState: VoiceModeState,
+    colors: EtaVoicePanelColors,
     onKeyboard: () -> Unit,
     onFinishSpeech: () -> Unit,
     onHistory: () -> Unit,
+    selectedMode: VoiceEntryMode?,
+    availableModes: List<VoiceEntryMode>,
+    onSelectMode: (VoiceEntryMode) -> Unit,
 ) {
+    var modeMenu by remember { mutableStateOf(false) }
     val controls = remember { Animatable(0f) }
     LaunchedEffect(Unit) {
         delay(400)
@@ -1591,7 +1631,8 @@ private fun AssistantVoiceEntry(
             imageVector = Icons.AutoMirrored.Rounded.Chat,
             contentDescription = stringResource(R.string.action_conversation_history),
             progress = controls.value,
-            enabled = controls.value >= 0.5f,
+            // 淡入动画只是视觉；不再用它拦点击，否则刚弹出时点一下没反应。
+            enabled = true,
             onClick = onHistory,
         )
         Spacer(Modifier.width(12.dp))
@@ -1599,19 +1640,67 @@ private fun AssistantVoiceEntry(
             iconRes = R.drawable.ic_assistant_keyboard_float,
             contentDescription = stringResource(R.string.voice_use_keyboard),
             progress = controls.value,
-            enabled = controls.value >= 0.5f,
+            enabled = true,
             onClick = onKeyboard,
         )
         Spacer(Modifier.width(12.dp))
-        AssistantRoundButton(
-            iconRes = R.drawable.ic_assistant_stop,
-            contentDescription = stringResource(R.string.voice_finish_speech),
-            progress = controls.value,
-            enabled = controls.value >= 0.5f && !recognizing,
-            onClick = onFinishSpeech,
-        )
+        Box {
+            AssistantRoundButton(
+                iconRes = R.drawable.ic_assistant_stop,
+                contentDescription = stringResource(R.string.voice_finish_speech),
+                progress = controls.value,
+                // 识别中/淡入期也要能点：之前 enabled 带 !recognizing 与动画阈值，
+                // 用户会觉得「点暂停没反应」。长按这里可以切换语音模式。
+                enabled = true,
+                onClick = onFinishSpeech,
+                onLongClick = if (availableModes.size > 1) ({ modeMenu = true }) else null,
+            )
+            if (availableModes.size > 1) {
+                EtaDropdownMenu(
+                    expanded = modeMenu,
+                    onDismissRequest = { modeMenu = false },
+                    alignEnd = true,
+                    preferAbove = true,
+                ) {
+                    availableModes.forEach { mode ->
+                        val label = when (mode) {
+                            VoiceEntryMode.DICTATION -> R.string.voice_mode_dictation
+                            VoiceEntryMode.UNIVERSAL -> R.string.voice_mode_universal
+                            VoiceEntryMode.DOUBAO_DUPLEX -> R.string.voice_mode_doubao
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    modeMenu = false
+                                    onSelectMode(mode)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = stringResource(label),
+                                fontSize = 13.sp,
+                                color = if (mode == selectedMode) colors.inputPrimary else colors.inputSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (mode == selectedMode) {
+                                Text(
+                                    text = "✓",
+                                    fontSize = 13.sp,
+                                    color = colors.inputPrimary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun AssistantRoundButton(
     iconRes: Int? = null,
@@ -1620,6 +1709,7 @@ private fun AssistantRoundButton(
     enabled: Boolean,
     onClick: () -> Unit,
     imageVector: ImageVector? = null,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Box(
         modifier = Modifier
@@ -1631,7 +1721,11 @@ private fun AssistantRoundButton(
             }
             .clip(CircleShape)
             .background(Color(0xFFF4F5F7))
-            .clickable(enabled = enabled, onClick = onClick),
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         if (imageVector != null) {
