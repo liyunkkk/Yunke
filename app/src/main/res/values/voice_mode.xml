@@ -28,4 +28,5 @@
     <string name="voice_mode_doubao_enable">Enable Doubao realtime calls</string>
     <string name="voice_conversation_cloud_asr">Doubao speech recognition</string>
     <string name="voice_conversation_asr_resource">Recognition service</string>
+    <string name="voice_mode_paused">Paused</string>
 </resources>

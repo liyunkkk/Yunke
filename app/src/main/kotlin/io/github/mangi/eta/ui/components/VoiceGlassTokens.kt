@@ -101,3 +101,9 @@ internal fun Modifier.voiceGlassShadow(
 )
 
 internal val VoiceGlassCorner: Dp = 26.dp
+
+/** 语音态统一的液态玻璃不透明度：卡片与胶囊必须同档，否则视觉会"两个材质"。 */
+internal const val VoiceGlassSurfaceAlpha = 0.55f
+
+/** 语音态统一的边缘高光强度。 */
+internal const val VoiceGlassRimAlpha = 0.78f

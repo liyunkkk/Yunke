@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Keyboard
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -105,6 +106,8 @@ internal fun VoiceControlCapsule(
     onKeyboard: () -> Unit,
     onStop: () -> Unit,
     onStopLongClick: (() -> Unit)? = null,
+    /** 语音已暂停时停止键变「恢复语音」（播放图标），再点一次继续聆听。 */
+    paused: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val view = LocalView.current
@@ -115,8 +118,8 @@ internal fun VoiceControlCapsule(
             .height(64.dp)
             .voiceGlassShadow(shape, elevation = 16.dp)
             // 参考图胶囊几乎全透，颜色全靠背后壁纸晕染。
-            .voiceGlass(backdrop, shape, surfaceAlpha = 0.34f)
-            .voiceGlassRim(shape, alpha = 0.78f, width = 1.2.dp)
+            .voiceGlass(backdrop, shape, surfaceAlpha = VoiceGlassSurfaceAlpha)
+            .voiceGlassRim(shape, alpha = VoiceGlassRimAlpha, width = 1.2.dp)
             .padding(start = 21.dp, end = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -173,8 +176,8 @@ internal fun VoiceControlCapsule(
         VoiceCapsuleDivider()
         Spacer(Modifier.width(CapsuleButtonGap))
         VoiceCapsuleButton(
-            icon = Icons.Rounded.Stop,
-            description = "停止语音",
+            icon = if (paused) Icons.Rounded.PlayArrow else Icons.Rounded.Stop,
+            description = if (paused) "恢复语音" else "暂停语音",
             tint = MiuixTheme.colorScheme.error,
             onClick = {
                 TouchHaptics.click(view)

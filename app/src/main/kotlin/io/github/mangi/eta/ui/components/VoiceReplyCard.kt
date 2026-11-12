@@ -147,8 +147,8 @@ internal fun VoiceReplyCard(
             )
             .voiceGlassShadow(shape, elevation = 18.dp)
             // 奶白玻璃：参考图卡片内里实测 (197,199,218)，接近不透明白，只留一点点透色。
-            .voiceGlass(backdrop, shape, surfaceAlpha = 0.86f)
-            .voiceGlassRim(shape, alpha = 0.62f, width = 1.2.dp)
+            .voiceGlass(backdrop, shape, surfaceAlpha = VoiceGlassSurfaceAlpha)
+            .voiceGlassRim(shape, alpha = VoiceGlassRimAlpha, width = 1.2.dp)
             .padding(horizontal = 18.dp, vertical = 16.dp),
     ) {
         // 顶部拖动指示条（纯装饰，不参与无障碍朗读）。

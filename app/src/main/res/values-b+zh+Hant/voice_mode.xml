@@ -30,4 +30,5 @@
     <string name="voice_mode_doubao_enable">啟用豆包即時通話</string>
     <string name="voice_conversation_cloud_asr">豆包語音辨識</string>
     <string name="voice_conversation_asr_resource">辨識服務</string>
+    <string name="voice_mode_paused">已暫停</string>
 </resources>

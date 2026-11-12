@@ -241,11 +241,11 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
     return remember(dark) {
         if (dark) {
             EtaVoicePanelColors(
-                content = Color(0x541C1F26),
+                content = Color(0x8C1C1F26),
                 contentGradientEnd = Color(0x40111317),
                 borderHighlight = Color(0x40FFFFFF),
                 // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
-                input = Color(0x3D404040),
+                input = Color(0x59404040),
                 inputPrimary = Color(0xE6FFFFFF),
                 inputSecondary = Color(0x8AFFFFFF),
                 inputTertiary = Color(0x4DFFFFFF),
@@ -254,11 +254,11 @@ private fun rememberEtaVoicePanelColors(): EtaVoicePanelColors {
             )
         } else {
             EtaVoicePanelColors(
-                content = Color(0x4AFFFFFF),
+                content = Color(0x8AFFFFFF),
                 contentGradientEnd = Color(0x2EEFF3F8),
                 borderHighlight = Color(0x99FFFFFF),
                 // Q2-A：半透明底色，让浮窗 blurBehindRadius 透出来（柔光玻璃）
-                input = Color(0x3DFFFFFF),
+                input = Color(0x59FFFFFF),
                 inputPrimary = Color(0xE6000000),
                 inputSecondary = Color(0x8A000000),
                 inputTertiary = Color(0x42000000),
@@ -949,11 +949,10 @@ private fun BoxScope.AssistantPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
-                    start = 10.dp,
-                    end = 10.dp,
+                    start = 16.dp,
+                    end = 16.dp,
                     top = 8.dp,
-                    // 输入框整体上移一档（原 10dp 太贴底）。
-                    bottom = bottomInset + 24.dp,
+                    bottom = bottomInset + 10.dp,
                 ),
         )
     }
@@ -998,6 +997,11 @@ private fun AssistantComposer(
     modifier: Modifier = Modifier,
 ) {
     val voiceLevel by voiceController.level.collectAsState()
+    // 语音态暂停：点停止=暂停（保留面板），再点=恢复聆听。
+    var voicePaused by remember { mutableStateOf(false) }
+    LaunchedEffect(voiceState.active) {
+        if (voiceState.active) voicePaused = false
+    }
     Column(
         modifier = modifier.animateContentSize(
             animationSpec = folmeSpring(damping = 0.92f, response = 0.34f),
@@ -1017,6 +1021,16 @@ private fun AssistantComposer(
                     voiceState = voiceState,
                     colors = colors,
                     level = voiceLevel,
+                    paused = voicePaused,
+                    onToggleStop = {
+                        if (voicePaused) {
+                            voiceEntry?.let { mode -> voiceController.start(mode) }
+                            voicePaused = false
+                        } else {
+                            voiceController.stop()
+                            voicePaused = true
+                        }
+                    },
                     onKeyboard = {
                         voiceController.stop()
                         onKeyboard()
@@ -1030,21 +1044,7 @@ private fun AssistantComposer(
             } else {
                 // AnimatedContent 的内容槽是 Box 语义（子项叠放）；三胶囊、间距与
                 // 输入栏必须自己收进一层 Column，否则会叠在同一位置被输入栏盖住。
-                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp)) {
-                    // 输入态唯一的面板：放在底部输入区上方（参考图三的单面板，只是移到下面）。
-                    AnimatedVisibility(
-                        visible = state.phase == EtaVoicePhase.PROCESSING,
-                        enter = fadeIn(tween(180)) + slideInVertically { it / 3 },
-                        exit = fadeOut(tween(140)) + slideOutVertically { it / 3 },
-                    ) {
-                        VoiceReplyCard(
-                            statusText = voiceReplyPhaseLabel(VoiceModePhase.Thinking, true),
-                            reply = voiceState.reply,
-                            streaming = true,
-                            backdrop = null,
-                            modifier = Modifier.padding(bottom = 12.dp),
-                        )
-                    }
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1608,6 +1608,8 @@ private fun AssistantVoiceCapsule(
     voiceState: VoiceModeState,
     colors: EtaVoicePanelColors,
     level: Float,
+    paused: Boolean,
+    onToggleStop: () -> Unit,
     onKeyboard: () -> Unit,
     onFinishSpeech: () -> Unit,
     onHistory: () -> Unit,
@@ -1635,14 +1637,19 @@ private fun AssistantVoiceCapsule(
         )
         Box(modifier = Modifier.fillMaxWidth()) {
         VoiceControlCapsule(
-            statusText = voiceReplyPhaseLabel(voiceState.phase, false),
+            statusText = if (paused) {
+                stringResource(R.string.voice_mode_paused)
+            } else {
+                voiceReplyPhaseLabel(voiceState.phase, false)
+            },
             level = level,
-            listening = voiceState.phase == VoiceModePhase.Listening,
+            listening = !paused && voiceState.phase == VoiceModePhase.Listening,
+            paused = paused,
             // 浮窗没有可供 textureBlur 取样的窗口内容，传 null 走实心玻璃降级。
             backdrop = null,
             onMessage = onHistory,
             onKeyboard = onKeyboard,
-            onStop = onFinishSpeech,
+            onStop = onToggleStop,
             onStopLongClick = if (availableModes.size > 1) ({ modeMenu = true }) else null,
             modifier = Modifier.padding(horizontal = 11.dp),
         )
