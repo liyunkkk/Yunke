@@ -1,14 +1,14 @@
 package io.github.mangi.eta.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -66,8 +66,8 @@ private val CapsuleButtonIconSize = 20.dp
  * 包住本组件即可拿到淡入淡出 / 滑动效果。组件自身除 [MutableInteractionSource] 外不持有任何
  * 可变 `remember` 状态，所以同样的入参重组时不会闪一下再稳定。
  *
- * 安全区：胶囊自己带 [navigationBarsPadding] 兜底；父容器如果已经加过底部 padding，
- * 这里叠加只会得到最大值，不会重复撑高可见区域。
+ * 安全区：胶囊自身**不加** navigationBarsPadding，由宿主统一处理底部 inset，
+ * 避免与父容器的 navigationBarsPadding 叠加出双倍间距。
  *
  * @param statusText 当前语音阶段文案（正在聆听 / 识别中 / 思考中 ……）。
  * @param level 实时音量归一化值（0f..1f），供波形使用。
@@ -76,6 +76,7 @@ private val CapsuleButtonIconSize = 20.dp
  * @param onMessage 点击「消息」按钮：回到消息 / 对话视图。
  * @param onKeyboard 点击「键盘」按钮：切回键盘输入。
  * @param onStop 点击「停止」按钮：结束本次语音输入。
+ * @param onStopLongClick 长按「停止」按钮（可选；悬浮面板用它呼出语音模式切换菜单）。
  * @param modifier 宿主追加的布局修饰符。
  */
 @Composable
@@ -87,6 +88,7 @@ internal fun VoiceControlCapsule(
     onMessage: () -> Unit,
     onKeyboard: () -> Unit,
     onStop: () -> Unit,
+    onStopLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val view = LocalView.current
@@ -94,7 +96,6 @@ internal fun VoiceControlCapsule(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
             .height(56.dp)
             .voiceGlassShadow(shape)
             .voiceGlass(backdrop, shape)
@@ -149,6 +150,7 @@ internal fun VoiceControlCapsule(
                 TouchHaptics.click(view)
                 onStop()
             },
+            onLongClick = onStopLongClick,
         )
     }
 }
@@ -168,20 +170,23 @@ private fun VoiceCapsuleDivider() {
  * 胶囊上的图标按钮：44.dp 触控区、20.dp 图标、无 Ripple、自带按钮语义。
  * 点击反馈（触感）由调用方在 onClick 里完成，便于和业务回调先后顺序一致。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun VoiceCapsuleButton(
     icon: ImageVector,
     description: String,
     tint: Color,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Box(
         modifier = Modifier
             .size(CapsuleButtonTouchSize)
             .clip(CircleShape)
-            .clickable(
+            .combinedClickable(
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
+                onLongClick = onLongClick,
             ) { onClick() }
             .semantics {
                 role = Role.Button

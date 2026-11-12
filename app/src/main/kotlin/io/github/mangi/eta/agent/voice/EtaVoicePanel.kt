@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -111,6 +112,9 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.components.AgentChatInputBar
 import io.github.mangi.eta.ui.components.EtaDropdownMenu
 import io.github.mangi.eta.ui.components.AgentConversationMessages
+import io.github.mangi.eta.ui.components.VoiceControlCapsule
+import io.github.mangi.eta.ui.components.VoiceReplyCard
+import io.github.mangi.eta.ui.components.voiceReplyPhaseLabel
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
@@ -396,6 +400,31 @@ internal fun EtaVoicePanel(
             level = { voiceLevel },
             modifier = Modifier.align(Alignment.BottomCenter),
         )
+        // 语音态顶部 AI 实时回复卡片：识别中显示识别文本，思考/朗读显示流式回复。
+        AnimatedVisibility(
+            visible = voiceMode && voiceState.active,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(start = 14.dp, end = 14.dp, top = 8.dp),
+            enter = slideInVertically(initialOffsetY = { -it / 2 }) + fadeIn(tween(180)),
+            exit = slideOutVertically(targetOffsetY = { -it / 2 }) + fadeOut(tween(140)),
+        ) {
+            val voiceStreaming = voiceState.phase == VoiceModePhase.Thinking ||
+                voiceState.phase == VoiceModePhase.Speaking
+            VoiceReplyCard(
+                statusText = voiceReplyPhaseLabel(voiceState.phase, voiceStreaming),
+                reply = when (voiceState.phase) {
+                    VoiceModePhase.Connecting,
+                    VoiceModePhase.Listening,
+                    VoiceModePhase.Transcribing -> voiceState.transcript
+                    else -> voiceState.reply
+                },
+                streaming = voiceStreaming,
+                // 浮窗没有可供 textureBlur 取样的窗口内容，传 null 走实心玻璃降级。
+                backdrop = null,
+            )
+        }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
@@ -986,6 +1015,7 @@ private fun AssistantComposer(
     onKeyboard: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val voiceLevel by voiceController.level.collectAsState()
     Column(
         modifier = modifier.animateContentSize(
             animationSpec = folmeSpring(damping = 0.92f, response = 0.34f),
@@ -1001,9 +1031,10 @@ private fun AssistantComposer(
             label = "assistant_input_mode",
         ) { inVoiceMode ->
             if (inVoiceMode) {
-                AssistantVoiceEntry(
+                AssistantVoiceCapsule(
                     voiceState = voiceState,
                     colors = colors,
+                    level = voiceLevel,
                     onKeyboard = {
                         voiceController.stop()
                         onKeyboard()
@@ -1577,9 +1608,10 @@ private fun HistoryConversationItemRow(
 }
 
 @Composable
-private fun AssistantVoiceEntry(
+private fun AssistantVoiceCapsule(
     voiceState: VoiceModeState,
     colors: EtaVoicePanelColors,
+    level: Float,
     onKeyboard: () -> Unit,
     onFinishSpeech: () -> Unit,
     onHistory: () -> Unit,
@@ -1588,111 +1620,55 @@ private fun AssistantVoiceEntry(
     onSelectMode: (VoiceEntryMode) -> Unit,
 ) {
     var modeMenu by remember { mutableStateOf(false) }
-    val controls = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        delay(400)
-        controls.animateTo(1f, tween(180))
-    }
-    val recognizing = voiceState.phase == VoiceModePhase.Transcribing ||
-        voiceState.phase == VoiceModePhase.Thinking ||
-        voiceState.phase == VoiceModePhase.Speaking
-
-    // 2-C：聆听中显示「你说的话」（便于确认识别结果）；进入识别收尾/思考/朗读后
-    // 改显当前这一轮的流式回复（reply 由 updateChat 写入），回复未产出时回落识别文本。
-    val voiceText = if (recognizing) {
-        voiceState.reply.ifBlank { voiceState.transcript }
-    } else {
-        voiceState.transcript
-    }
-
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-        Text(
-            text = voiceText.ifBlank {
-                stringResource(
-                    if (recognizing) R.string.voice_recognizing else R.string.voice_listening,
-                )
-            },
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = Color.White,
-            style = TextStyle(
-                shadow = Shadow(
-                    color = Color.Black.copy(alpha = 0.55f),
-                    offset = Offset(0f, 1.5f),
-                    blurRadius = 3f,
-                ),
-            ),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f).heightIn(min = 40.dp).padding(start = 6.dp, end = 14.dp, top = 8.dp),
+    Box(modifier = Modifier.fillMaxWidth()) {
+        VoiceControlCapsule(
+            statusText = voiceReplyPhaseLabel(voiceState.phase, false),
+            level = level,
+            listening = voiceState.phase == VoiceModePhase.Listening,
+            // 浮窗没有可供 textureBlur 取样的窗口内容，传 null 走实心玻璃降级。
+            backdrop = null,
+            onMessage = onHistory,
+            onKeyboard = onKeyboard,
+            onStop = onFinishSpeech,
+            onStopLongClick = if (availableModes.size > 1) ({ modeMenu = true }) else null,
         )
-        // 3-A：语音态也能切会话 / 新建对话，弹出与输入态同一个历史面板。
-        AssistantRoundButton(
-            imageVector = Icons.AutoMirrored.Rounded.Chat,
-            contentDescription = stringResource(R.string.action_conversation_history),
-            progress = controls.value,
-            // 淡入动画只是视觉；不再用它拦点击，否则刚弹出时点一下没反应。
-            enabled = true,
-            onClick = onHistory,
-        )
-        Spacer(Modifier.width(12.dp))
-        AssistantRoundButton(
-            iconRes = R.drawable.ic_assistant_keyboard_float,
-            contentDescription = stringResource(R.string.voice_use_keyboard),
-            progress = controls.value,
-            enabled = true,
-            onClick = onKeyboard,
-        )
-        Spacer(Modifier.width(12.dp))
-        Box {
-            AssistantRoundButton(
-                iconRes = R.drawable.ic_assistant_stop,
-                contentDescription = stringResource(R.string.voice_finish_speech),
-                progress = controls.value,
-                // 识别中/淡入期也要能点：之前 enabled 带 !recognizing 与动画阈值，
-                // 用户会觉得「点暂停没反应」。长按这里可以切换语音模式。
-                enabled = true,
-                onClick = onFinishSpeech,
-                onLongClick = if (availableModes.size > 1) ({ modeMenu = true }) else null,
-            )
-            if (availableModes.size > 1) {
-                EtaDropdownMenu(
-                    expanded = modeMenu,
-                    onDismissRequest = { modeMenu = false },
-                    alignEnd = true,
-                    preferAbove = true,
-                ) {
-                    availableModes.forEach { mode ->
-                        val label = when (mode) {
-                            VoiceEntryMode.DICTATION -> R.string.voice_mode_dictation
-                            VoiceEntryMode.UNIVERSAL -> R.string.voice_mode_universal
-                            VoiceEntryMode.DOUBAO_DUPLEX -> R.string.voice_mode_doubao
-                        }
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    modeMenu = false
-                                    onSelectMode(mode)
-                                }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = stringResource(label),
-                                fontSize = 13.sp,
-                                color = if (mode == selectedMode) colors.inputPrimary else colors.inputSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (mode == selectedMode) {
-                                Text(
-                                    text = "✓",
-                                    fontSize = 13.sp,
-                                    color = colors.inputPrimary,
-                                )
+        if (availableModes.size > 1) {
+            EtaDropdownMenu(
+                expanded = modeMenu,
+                onDismissRequest = { modeMenu = false },
+                alignEnd = true,
+                preferAbove = true,
+            ) {
+                availableModes.forEach { mode ->
+                    val label = when (mode) {
+                        VoiceEntryMode.DICTATION -> R.string.voice_mode_dictation
+                        VoiceEntryMode.UNIVERSAL -> R.string.voice_mode_universal
+                        VoiceEntryMode.DOUBAO_DUPLEX -> R.string.voice_mode_doubao
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                modeMenu = false
+                                onSelectMode(mode)
                             }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(label),
+                            fontSize = 13.sp,
+                            color = if (mode == selectedMode) colors.inputPrimary else colors.inputSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (mode == selectedMode) {
+                            Text(
+                                text = "✓",
+                                fontSize = 13.sp,
+                                color = colors.inputPrimary,
+                            )
                         }
                     }
                 }
@@ -1700,6 +1676,7 @@ private fun AssistantVoiceEntry(
         }
     }
 }
+
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun AssistantRoundButton(
