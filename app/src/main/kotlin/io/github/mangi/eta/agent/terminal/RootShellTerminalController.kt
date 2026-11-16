@@ -808,7 +808,17 @@ internal class RootShellTerminalController(
         }
         active()
         val backend = if (environment == TerminalEnvironment.ANDROID && identity == "user") {
-            LocalFileToolBackend(File(cwd), File(USER_STORAGE), isCancelled = { processSupervisor.isClosing })
+            LocalFileToolBackend(
+                File(cwd), File(USER_STORAGE),
+                isCancelled = { processSupervisor.isClosing },
+                validatePath = { path ->
+                    try {
+                        UserFileAccess.resolve(path)
+                    } catch (_: IllegalArgumentException) {
+                        throw FileToolException("INVALID_PATH", "路径不在普通终端可访问范围内")
+                    }
+                },
+            )
         } else {
             ShellFileToolBackend(
                 environment = if (environment.isLinux) "linux" else "android",
@@ -846,9 +856,34 @@ internal class RootShellTerminalController(
         "write_file", JSONObject().put("path", path).put("content", content).put("append", append),
     )
 
-    fun listDirectory(path: String, showHidden: Boolean, limit: Int): String = executeFileTool(
-        "list_directory", JSONObject().put("path", path).put("show_hidden", showHidden).put("limit", limit),
-    )
+    fun listDirectory(path: String, showHidden: Boolean, limit: Int): String {
+        // Legacy callers count visible entries, unlike the structured raw-offset protocol.
+        val maxEntries = limit.coerceIn(1, MAX_LIST_ENTRIES)
+        val entries = JSONArray()
+        var offset = 0
+        var revision: String? = null
+        while (true) {
+            val args = JSONObject().put("path", path).put("show_hidden", showHidden)
+                .put("limit", maxEntries - entries.length()).put("offset", offset)
+            revision?.let { args.put("expected_revision", it) }
+            val page = JSONObject(executeFileTool("list_directory", args))
+            if (!page.optBoolean("ok")) return page.toString()
+            val items = page.getJSONArray("entries")
+            for (index in 0 until items.length()) entries.put(items.getJSONObject(index))
+            val next = page.getInt("next_offset")
+            if (!page.getBoolean("has_more") || entries.length() >= maxEntries || next <= offset) {
+                val text = (0 until entries.length()).joinToString("\n") {
+                    val entry = entries.getJSONObject(it)
+                    (if (entry.getString("kind") == "directory") "d " else "- ") + entry.getString("name")
+                }
+                return page.put("entries", entries).put("offset", 0)
+                    .put("exit_code", 0).put("stderr", "").put("entries_text", text.take(MAX_OUTPUT_CHARS))
+                    .put("truncated", page.getBoolean("has_more") || text.length > MAX_OUTPUT_CHARS).toString()
+            }
+            revision = page.getString("revision")
+            offset = next
+        }
+    }
 
     private fun normalizeIdentity(identity: String): String {
         val normalized = identity.ifBlank { "root" }.lowercase()

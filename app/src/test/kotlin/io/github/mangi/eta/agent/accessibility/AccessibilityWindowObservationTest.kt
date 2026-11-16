@@ -30,7 +30,7 @@ import org.robolectric.shadows.ShadowAccessibilityService
 import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], application = Application::class, shadows = [WindowQueryShadow::class])
+@Config(sdk = [34], application = Application::class, shadows = [WindowQueryShadow::class])
 class AccessibilityWindowObservationTest {
     @Test
     fun mainDisplayQueryIgnoresActiveRootFromSecondaryDisplay() = withService { service ->

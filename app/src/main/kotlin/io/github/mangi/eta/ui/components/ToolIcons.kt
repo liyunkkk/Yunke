@@ -84,7 +84,7 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "open_uri" -> Icons.AutoMirrored.Rounded.OpenInNew
     "browser_use", "网页浏览" -> Icons.Rounded.Language
     "web_search", "web_search_call", "网页搜索" -> Icons.Rounded.TravelExplore
-    "browser_read" -> Icons.AutoMirrored.Rounded.MenuBook
+    "browser_read", "fetch_url" -> Icons.AutoMirrored.Rounded.MenuBook
     "browser_interact" -> Icons.Rounded.AdsClick
     "browser_screenshot" -> Icons.Rounded.ScreenshotMonitor
     "file_search", "file_search_call", "文件搜索" -> Icons.AutoMirrored.Rounded.ManageSearch
@@ -143,6 +143,10 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "skills_install_local" -> Icons.Rounded.FolderOpen
     "read_file" -> Icons.Rounded.Description
     "write_file" -> Icons.Rounded.EditNote
+    "edit_file" -> Icons.Rounded.FindReplace
+    "stat_file" -> Icons.Rounded.Info
+    "glob_files" -> Icons.Rounded.FolderOpen
+    "grep_files" -> Icons.AutoMirrored.Rounded.ManageSearch
     "list_directory" -> Icons.Rounded.FolderOpen
     else -> if (toolId.startsWith("mcp_")) Icons.Rounded.Extension else Icons.Rounded.Build
 }
