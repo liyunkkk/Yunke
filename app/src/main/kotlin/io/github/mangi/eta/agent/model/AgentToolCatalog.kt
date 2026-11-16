@@ -47,7 +47,7 @@ internal object AgentToolCatalog {
                 AgentFileVisionToolCatalog.appendTo(tools)
                 AgentTerminalToolCatalog.appendTo(tools)
             }
-        }).let { filterEnabled(it, disabledTools) }))
+        }).let { filterEnabled(it, disabledTools) })
 
     fun filterEnabled(tools: JSONArray, disabledTools: Set<String>): JSONArray = JSONArray().also { result ->
         for (index in 0 until tools.length()) {
