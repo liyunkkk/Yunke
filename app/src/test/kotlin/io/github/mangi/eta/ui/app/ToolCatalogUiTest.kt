@@ -46,13 +46,6 @@ class ToolCatalogUiTest {
     }
 
     @Test
-    fun fileAndWebToolsHaveExplicitSemanticIcons() {
-        val expected = mapOf(
-            "read_file" to androidx.compose.material.icons.rounded.Description,
-        )
-    }
-
-    @Test
     fun hostedSearchNamesAndDynamicMcpNamesUseTheirToolIcons() {
         assertEquals(Icons.Rounded.TravelExplore, iconForTool("网页搜索"))
         assertEquals(iconForTool("网页搜索"), iconForTool("web_search"))
