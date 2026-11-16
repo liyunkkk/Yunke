@@ -384,6 +384,8 @@ private fun titleForRoute(route: AppRoute?, currentConversationTitle: String? = 
     is AppRoute.SpeechSettings -> stringResource(R.string.speech_title)
     is AppRoute.AuxiliaryVision -> stringResource(R.string.auxiliary_vision_title)
     is AppRoute.SubAgents -> stringResource(R.string.route_subagents)
+    is AppRoute.AssistantOverlayModel -> "浮窗模型与思考"
+    is AppRoute.WebToolsSettings -> "Web 工具"
     is AppRoute.TitleModel -> stringResource(R.string.title_model_title)
     is AppRoute.ErrorReconnectSettings -> stringResource(R.string.error_reconnect_title)
     is AppRoute.TtsSettings -> stringResource(R.string.tts_title)

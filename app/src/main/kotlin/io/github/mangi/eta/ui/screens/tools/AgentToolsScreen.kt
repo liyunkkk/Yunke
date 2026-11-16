@@ -12,7 +12,16 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import android.content.SharedPreferences
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.Composable
+import io.github.mangi.eta.config.Prefs
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,7 +56,29 @@ fun AgentToolsScreen(
     var showAll by rememberSaveable { mutableStateOf(false) }
     val currentListState = rememberLazyListState()
     val allListState = rememberLazyListState()
-    val groups = projectToolGroups(state.groups, showAll, capabilities.root.isGranted, capabilities.tools.colorOs)
+    var disabled by remember { mutableStateOf(Prefs.disabledTools()) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    DisposableEffect(Unit) {
+        val prefs = Prefs.localAgentPreferences()
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == Prefs.Keys.AGENT_DISABLED_TOOLS_JSON) disabled = Prefs.disabledTools()
+        }
+        prefs?.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs?.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    fun setEnabled(names: Collection<String>, enabled: Boolean) {
+        if (saving) return
+        saving = true
+        disabled = disabled.toMutableSet().apply {
+            names.forEach { if (enabled) remove(Prefs.canonicalToolSwitchId(it)) else add(Prefs.canonicalToolSwitchId(it)) }
+        }
+        scope.launch {
+            try { withContext(Dispatchers.IO) { Prefs.setToolsEnabled(names, enabled) } }
+            finally { disabled = Prefs.disabledTools(); saving = false }
+        }
+    }
+    val groups = projectToolGroups(AgentToolsCatalogUi.complete(state.groups), showAll, capabilities.root.isGranted, capabilities.tools.colorOs)
     MiuixScaffoldPage(
         title = stringResource(R.string.ui_tool_ability_9f0f80),
         onBack = { onAction(AgentToolsAction.NavigateBack) },
@@ -64,7 +95,13 @@ fun AgentToolsScreen(
         }
         groups.forEach { group ->
             item(key = "${group.id}-title") {
-                SmallTitle(group.title)
+                SwitchPreference(
+                    title = group.title,
+                    summary = "${group.tools.count { Prefs.isToolEnabledInSet(it.id, disabled) }} / ${group.tools.size} 已开启",
+                    checked = group.tools.all { Prefs.isToolEnabledInSet(it.id, disabled) },
+                    enabled = !saving,
+                    onCheckedChange = { setEnabled(group.tools.map { it.id }, it) },
+                )
             }
             items(
                 items = group.tools.chunked(2),
@@ -75,6 +112,9 @@ fun AgentToolsScreen(
                     rootGranted = capabilities.root.isGranted,
                     capabilities = capabilities.tools,
                     onAction = onAction,
+                    disabled = disabled,
+                    saving = saving,
+                    onToggle = { name, enabled -> setEnabled(listOf(name), enabled) },
                 )
             }
         }
@@ -87,6 +127,9 @@ private fun ToolGridRow(
     rootGranted: Boolean,
     capabilities: AgentToolCapabilities,
     onAction: (AgentToolsAction) -> Unit,
+    disabled: Set<String>,
+    saving: Boolean,
+    onToggle: (String, Boolean) -> Unit,
 ) {
     BoxWithConstraints(
         modifier = Modifier
@@ -103,6 +146,9 @@ private fun ToolGridRow(
                         rootGranted = rootGranted,
                         capabilities = capabilities,
                         onAction = onAction,
+                        enabled = Prefs.isToolEnabledInSet(tool.id, disabled),
+                        saving = saving,
+                        onToggle = { onToggle(tool.id, it) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -120,6 +166,9 @@ private fun ToolGridRow(
                         rootGranted = rootGranted,
                         capabilities = capabilities,
                         onAction = onAction,
+                        enabled = Prefs.isToolEnabledInSet(tool.id, disabled),
+                        saving = saving,
+                        onToggle = { onToggle(tool.id, it) },
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight(),

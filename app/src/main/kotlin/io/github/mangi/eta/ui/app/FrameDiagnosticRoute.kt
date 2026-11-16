@@ -27,6 +27,8 @@ internal fun AppRoute.frameDiagnosticPage(): FrameDiagnosticPage = when (this) {
     AppRoute.TtsSettings -> FrameDiagnosticPage.VoiceSettings
     AppRoute.VoiceSettings -> FrameDiagnosticPage.VoiceSettings
     AppRoute.AuxiliaryVision -> FrameDiagnosticPage.AuxiliaryVision
+    AppRoute.AssistantOverlayModel -> FrameDiagnosticPage.Settings
+    AppRoute.WebToolsSettings -> FrameDiagnosticPage.Settings
     AppRoute.TitleModel -> FrameDiagnosticPage.TitleModel
     AppRoute.ErrorReconnectSettings -> FrameDiagnosticPage.ErrorReconnectSettings
     AppRoute.SubAgents -> FrameDiagnosticPage.SubAgents

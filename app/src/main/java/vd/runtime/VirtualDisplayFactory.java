@@ -63,6 +63,11 @@ final class VirtualDisplayFactory {
 
     /** 最近一次 IME 策略设置结果（null=未尝试），供状态回报。 */
     private static volatile Boolean lastImePolicyHidden = null;
+    private static volatile String lastImePolicyReason = "NOT_ATTEMPTED";
+    private static volatile Integer lastImePolicyActual = null;
+
+    static String imeDiagnosticReason() { return lastImePolicyReason; }
+    static Integer imeDiagnosticActual() { return lastImePolicyActual; }
 
     static Object imeDiagnostics() {
         return lastImePolicyHidden;
@@ -197,42 +202,43 @@ final class VirtualDisplayFactory {
      * input 注入与任务管理）；调用失败只记录，不抛给调用方。
      */
     private static void applyDisplayImePolicyHide(int displayId) {
-        Boolean applied = Boolean.FALSE;
+        lastImePolicyHidden = Boolean.FALSE;
+        lastImePolicyActual = null;
+        lastImePolicyReason = "WMS_LOOKUP_FAILED";
         try {
-            Class<?> wmgClass = Class.forName("android.view.WindowManagerGlobal");
-            Method getService = wmgClass.getMethod("getWindowManagerService");
-            access(getService);
-            Object wms = getService.invoke(null);
-            if (wms != null) {
-                Method setPolicy = null;
-                Method getPolicy = null;
-                for (Method candidate : wms.getClass().getMethods()) {
-                    if ("setDisplayImePolicy".equals(candidate.getName())
-                            && candidate.getParameterTypes().length == 2) {
-                        setPolicy = candidate;
-                    } else if ("getDisplayImePolicy".equals(candidate.getName())
-                            && candidate.getParameterTypes().length == 1) {
-                        getPolicy = candidate;
-                    }
-                }
-                if (setPolicy != null) {
-                    access(setPolicy);
-                    setPolicy.invoke(wms, displayId, DISPLAY_IME_POLICY_HIDE);
-                    if (getPolicy != null) {
-                        access(getPolicy);
-                        Object actual = getPolicy.invoke(wms, displayId);
-                        applied = actual == null
-                                || ((Number) actual).intValue() == DISPLAY_IME_POLICY_HIDE;
-                    } else {
-                        // 没有回读接口时以「调用未抛异常」为准。
-                        applied = Boolean.TRUE;
-                    }
-                }
+            Object wms = WindowManagerCompat.resolve();
+            if (wms == null) return;
+            Method setPolicy;
+            Method getPolicy;
+            try {
+                setPolicy = WindowManagerCompat.method(wms, "setDisplayImePolicy", int.class, int.class);
+                getPolicy = WindowManagerCompat.method(wms, "getDisplayImePolicy", int.class);
+            } catch (NoSuchMethodException missing) {
+                lastImePolicyReason = "IME_METHOD_MISSING";
+                return;
             }
-        } catch (Throwable ignored) {
-            applied = Boolean.FALSE;
+            // DisplayContent and the policy cache are initialized asynchronously on some ROMs.
+            int[] delays = {0, 15, 30, 50};
+            for (int delay : delays) {
+                if (delay > 0) Thread.sleep(delay);
+                setPolicy.invoke(wms, displayId, DISPLAY_IME_POLICY_HIDE);
+                Object actual = getPolicy.invoke(wms, displayId);
+                lastImePolicyActual = actual instanceof Number ? ((Number) actual).intValue() : null;
+                if (lastImePolicyActual != null && lastImePolicyActual == DISPLAY_IME_POLICY_HIDE) {
+                    lastImePolicyHidden = Boolean.TRUE;
+                    lastImePolicyReason = "VERIFIED";
+                    return;
+                }
+                lastImePolicyReason = "IME_READBACK_MISMATCH";
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            lastImePolicyReason = "INTERRUPTED";
+        } catch (Throwable error) {
+            Throwable cause = error instanceof InvocationTargetException && error.getCause() != null
+                    ? error.getCause() : error;
+            lastImePolicyReason = "IME_EXCEPTION:" + cause.getClass().getSimpleName();
         }
-        lastImePolicyHidden = applied;
     }
 
     static void releaseQuietly(VirtualDisplay display) {

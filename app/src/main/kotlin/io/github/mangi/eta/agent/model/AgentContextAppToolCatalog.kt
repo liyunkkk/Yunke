@@ -244,14 +244,14 @@ internal object AgentContextAppToolCatalog {
                                     "action",
                                     JSONObject()
                                         .put("type", "string")
-                                        .put("enum", JSONArray().put("switch_model").put("switch_provider").put("toggle_setting"))
+                                        .put("enum", JSONArray().put("switch_model").put("switch_provider").put("toggle_setting").put("toggle_tool"))
                                         .put("description", "修改动作类型：switch_model（切换模型）、switch_provider（切换服务商）、toggle_setting（切换开关）")
                                 )
                                 .put(
                                     "target",
                                     JSONObject()
                                         .put("type", "string")
-                                        .put("description", "目标标识：若为 switch_model 则传入 model_id 或模型名称；若为 switch_provider 则传入 provider_id 或服务商名称；若为 toggle_setting 则传入开关名称（如 thinking_mode, terminal_tools, browser_tools, device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools, kimi_builtin_browser）")
+                                        .put("description", "目标标识：若为 switch_model 则传入 model_id 或模型名称；若为 switch_provider 则传入 provider_id 或服务商名称；若为 toggle_setting 则传入开关名称（如 thinking_mode, terminal_tools, browser_tools, device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools, kimi_builtin_browser；toggle_tool 时传入工具名）")
                                 )
                                 .put(
                                     "value",

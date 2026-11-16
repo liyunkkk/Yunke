@@ -491,7 +491,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     request
                 } else {
                     val runtimeConfig = runBlocking {
-                        RuntimeConfigRepository.currentRuntimeConfig()
+                        RuntimeConfigRepository.assistantOverlayRuntimeConfig()
                     } ?: throw RuntimeConfigUnavailableException()
                     AgentRuntimeRequestConfigResolver.applyRuntimeConfig(request, runtimeConfig)
                 }
@@ -507,7 +507,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         )
                         startRun(
                             request.copy(
-                                config = AgentRuntimePolicy.constrain(request.config, permissions),
+                                config = AgentRuntimePolicy.constrain(request.config,
+                                    if (AgentRuntimeRequestConfigResolver.requiresRuntimeConfig(request)) {
+                                        // This config was resolved in Runtime, not trusted from the caller.
+                                        // An explicit overlay effort is independent of the main chat switch.
+                                        permissions.copy(thinking = request.config.effectiveReasoningEffort.enablesReasoning)
+                                    } else permissions),
                             ),
                             replyTo,
                         )

@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
@@ -48,19 +49,21 @@ internal object AgentRequestOverhead {
             skillGitHubDiscovery = true,
             skillGitHubInstall = true,
             memoryTools = memoryContext.enabled,
+            disabledTools = Prefs.disabledTools(),
             capabilities = capabilities,
         )
         for (index in 0 until additionalTools.length()) {
             additionalTools.opt(index)?.let(tools::put)
         }
-        if (tools.length() > 0) {
-            tokens += AgentContextBudget.countTokens(tools.toString())
+        val visibleTools = AgentToolCatalog.filterEnabled(tools, Prefs.disabledTools())
+        if (visibleTools.length() > 0) {
+            tokens += AgentContextBudget.countTokens(visibleTools.toString())
         }
         onProtocolPreview?.let { publish ->
             // A preview failure must not change the legacy silent budget or trigger network IO.
             runCatching {
                 AgentWireRequestEstimate.measure(
-                    AgentWireRequestEstimate.previewBody(config, systemMessages, tools),
+                    AgentWireRequestEstimate.previewBody(config, systemMessages, visibleTools),
                     AgentWireRequestEstimate.endpoint(config)).tokens
             }.getOrNull()?.let(publish)
         }

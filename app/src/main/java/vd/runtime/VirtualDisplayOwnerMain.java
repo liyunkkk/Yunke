@@ -70,6 +70,7 @@ public final class VirtualDisplayOwnerMain {
             return 3;
         }
 
+        WindowManagerCompat.exemptHiddenApis();
         VirtualDisplayFactory.setAlwaysUnlocked(parsed.allowScreenOff);
 
         Looper.prepareMainLooper();

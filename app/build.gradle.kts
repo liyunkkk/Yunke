@@ -143,6 +143,7 @@ composeCompiler {
 }
 
 dependencies {
+    implementation("org.jsoup:jsoup:1.24.1")
     implementation(libs.commons.compress)
     implementation(libs.xz)
     compileOnly(libs.libxposed.api)

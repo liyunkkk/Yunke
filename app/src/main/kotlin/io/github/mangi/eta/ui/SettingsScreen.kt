@@ -165,6 +165,11 @@ internal fun SettingsScreen(
                         onClick = { onNavigate(AppRoute.SettingsExtensions) },
                     )
                     ArrowPreference(
+                        title = "Web 工具",
+                        startAction = { PreferenceIcon(icon = Icons.Rounded.Build) },
+                        onClick = { onNavigate(AppRoute.WebToolsSettings) },
+                    )
+                    ArrowPreference(
                         title = stringResource(R.string.ui_tool_a72ef1),
                         startAction = {
                             PreferenceIcon(icon = Icons.Rounded.Build)

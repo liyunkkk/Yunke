@@ -1046,8 +1046,13 @@ fun AgentAppRoot(
                     isCurrentRoute = backStack.lastOrNull() == AppRoute.SubAgents)
             }
             entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
-                    feature = io.github.mangi.eta.agent.model.ModelFeature.TITLE, onBack = ::popRoute)
+                io.github.mangi.eta.ui.IndependentModelSettingsScreen(overlay = false, onBack = ::popRoute)
+            }
+            entry<AppRoute.AssistantOverlayModel>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.ui.IndependentModelSettingsScreen(overlay = true, onBack = ::popRoute)
+            }
+            entry<AppRoute.WebToolsSettings>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.ui.screens.tools.WebToolsSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.ErrorReconnectSettings>(swipeDismiss = swipeDismiss) {
                 ErrorReconnectSettingsScreen(onBack = ::popRoute)

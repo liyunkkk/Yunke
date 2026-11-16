@@ -6,7 +6,11 @@ import io.github.mangi.eta.data.db.toDomain
 import io.github.mangi.eta.data.db.toEntity
 import io.github.mangi.eta.data.model.McpAuthorizationType
 import io.github.mangi.eta.data.model.McpServerSetting
+import io.github.mangi.eta.data.model.withToolSelection
+import io.github.mangi.eta.data.model.withDiscoveredTools
 import java.util.UUID
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -67,11 +71,26 @@ internal object McpServerRepository {
         }
     }
 
-    suspend fun setToolEnabled(serverId: String, toolName: String, enabled: Boolean) {
+    private val switchMutex = Mutex()
+
+    suspend fun setServerEnabled(serverId: String, enabled: Boolean) = switchMutex.withLock {
         val server = requireNotNull(serverById(serverId)) { "MCP 服务器不存在" }
-        val names = server.enabledToolNames.toMutableSet()
-        if (enabled) names += toolName else names -= toolName
-        update(server.copy(enabledToolNames = names))
+        update(server.copy(enabled = enabled))
+    }
+
+    suspend fun setToolEnabled(serverId: String, toolName: String, enabled: Boolean) =
+        setToolsEnabled(serverId, listOf(toolName), enabled)
+
+    suspend fun setToolsEnabled(serverId: String, toolNames: Collection<String>, enabled: Boolean) = switchMutex.withLock {
+        val server = requireNotNull(serverById(serverId)) { "MCP 服务器不存在" }
+        update(server.withToolSelection(toolNames, enabled))
+    }
+
+    suspend fun updateDiscoveredTools(discovered: McpServerSetting): McpServerSetting = switchMutex.withLock {
+        val current = requireNotNull(serverById(discovered.id)) { "MCP 服务器不存在" }
+        val merged = current.withDiscoveredTools(discovered)
+        update(merged)
+        merged
     }
 
     suspend fun delete(serverId: String) {

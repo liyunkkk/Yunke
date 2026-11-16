@@ -105,6 +105,63 @@ internal object RuntimeConfigRepository {
         )
     }
 
+    fun conversationTitleSettingsFlow() = SettingsDataStore.conversationTitleSettingsFlow()
+    suspend fun setConversationTitleSettings(value: io.github.mangi.eta.data.model.ConversationTitleSettings) = SettingsDataStore.setConversationTitleSettings(value)
+    fun assistantOverlaySettingsFlow() = SettingsDataStore.assistantOverlaySettingsFlow()
+    suspend fun setAssistantOverlaySettings(value: io.github.mangi.eta.data.model.AssistantOverlaySettings) = SettingsDataStore.setAssistantOverlaySettings(value)
+
+    private suspend fun enabledTextConfig(modelId: String?): AgentModelClient.ModelConfig? {
+        if (modelId.isNullOrBlank()) return null
+        ProviderRepository.ensureBuiltInsMerged()
+        val provider = ProviderRepository.providerByModelId(modelId)?.takeIf { it.isEnabled } ?: return null
+        val model = provider.models.firstOrNull { it.id == modelId && it.isEnabled &&
+            !it.supportsSpeechSynthesis && !it.supportsImageGeneration && !it.supportsVideoGeneration } ?: return null
+        // Use Yunke's OAuth/assistant/custom header path, not Eta's incompatible provider hierarchy.
+        return configForProviderAndModel(provider.id, model.id, AssistantRepository.active())
+    }
+
+    suspend fun assistantOverlayRuntimeConfig(): AgentModelClient.ModelConfig? {
+        val settings = SettingsDataStore.assistantOverlaySettings()
+        val base = enabledTextConfig(settings.modelId) ?: currentRuntimeConfig() ?: return null
+        return applyAssistantOverlaySettings(base, settings)
+    }
+
+    internal fun applyAssistantOverlaySettings(
+        base: AgentModelClient.ModelConfig,
+        settings: io.github.mangi.eta.data.model.AssistantOverlaySettings,
+        defaultThinkingEnabled: Boolean = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED),
+    ): AgentModelClient.ModelConfig {
+        val requested = settings.resolvedReasoningEffort
+            ?: if (defaultThinkingEnabled) base.effectiveReasoningEffort else ReasoningEffort.OFF
+        val effort = base.reasoningCapabilities?.normalize(requested)
+            ?: if (requested == ReasoningEffort.OFF) ReasoningEffort.OFF else base.effectiveReasoningEffort
+        return base.copy(thinkingEnabled = effort.enablesReasoning, reasoningEffort = effort)
+    }
+
+    suspend fun titleGeneratorConfig(conversationModelId: String? = null): AgentModelClient.ModelConfig? {
+        val settings = SettingsDataStore.conversationTitleSettings()
+        if (!settings.enabled) return null
+        val base = enabledTextConfig(settings.modelId) ?: enabledTextConfig(conversationModelId)
+            ?: currentRuntimeConfig() ?: return null
+        return applyTitleGenerationSettings(base, settings)
+    }
+
+    internal fun applyTitleGenerationSettings(
+        base: AgentModelClient.ModelConfig,
+        settings: io.github.mangi.eta.data.model.ConversationTitleSettings,
+    ): AgentModelClient.ModelConfig {
+        val capabilities = base.reasoningCapabilities
+        val requested = settings.resolvedReasoningEffort
+            ?: capabilities?.selectableEfforts?.minByOrNull { it.rank }
+            ?: if (capabilities?.mandatory == true) ReasoningEffort.DEFAULT else ReasoningEffort.OFF
+        val effort = capabilities?.normalize(requested) ?: ReasoningEffort.OFF
+        return base.copy(terminalTools = false, browserTools = false, deviceDirectTools = false,
+            deviceSensitiveReadTools = false, deviceSensitiveActionTools = false,
+            hostedWebSearchEnabled = false, thinkingEnabled = effort.enablesReasoning,
+            reasoningEffort = effort, summaryOutputLimit = 128,
+            errorReconnectPolicy = io.github.mangi.eta.data.model.ErrorReconnectPolicy.NONE.persistedValue)
+    }
+
     suspend fun currentRuntimeConfig(): AgentModelClient.ModelConfig? {
         ProviderRepository.ensureBuiltInsMerged()
         val settings = ProviderRepository.repairSelection()

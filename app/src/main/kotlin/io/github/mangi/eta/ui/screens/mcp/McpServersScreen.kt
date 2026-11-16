@@ -12,6 +12,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -228,6 +230,28 @@ internal fun McpServerDetailScreen(
     val server = servers.firstOrNull { it.id == serverId }
     var working by remember { mutableStateOf(false) }
     var pendingRiskyTool by remember { mutableStateOf<McpToolDefinition?>(null) }
+    var pendingBulkEnable by remember { mutableStateOf(false) }
+    var pendingTools by remember(serverId) { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var pendingServer by remember(serverId) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(server?.enabledToolNames, server?.enabled) {
+        server?.let { current ->
+            pendingTools = pendingTools.filter { (name, target) -> (name in current.enabledToolNames) != target }
+            if (pendingServer == current.enabled) pendingServer = null
+        }
+    }
+    fun changeTools(names: Collection<String>, enabled: Boolean) {
+        if (working) return
+        working = true
+        pendingTools = pendingTools + names.associateWith { enabled }
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) { McpServerRepository.setToolsEnabled(serverId, names, enabled) }
+            } catch (failure: Exception) {
+                pendingTools = pendingTools - names.toSet()
+                Toast.makeText(context, failure.message ?: "保存失败", Toast.LENGTH_SHORT).show()
+            } finally { working = false }
+        }
+    }
     var showDelete by remember { mutableStateOf(false) }
     var showToken by remember { mutableStateOf(false) }
     var token by remember { mutableStateOf("") }
@@ -275,10 +299,17 @@ internal fun McpServerDetailScreen(
                 SwitchPreference(
                     title = stringResource(R.string.mcp_enable_server),
                     summary = server.url,
-                    checked = server.enabled,
+                    checked = pendingServer ?: server.enabled,
+                    enabled = !working,
                     onCheckedChange = { enabled ->
-                        scope.launch(Dispatchers.IO) {
-                            McpServerRepository.update(server.copy(enabled = enabled))
+                        working = true
+                        pendingServer = enabled
+                        scope.launch {
+                            try { withContext(Dispatchers.IO) { McpServerRepository.setServerEnabled(serverId, enabled) } }
+                            catch (failure: Exception) {
+                                pendingServer = null
+                                Toast.makeText(context, failure.message ?: "保存失败", Toast.LENGTH_SHORT).show()
+                            } finally { working = false }
                         }
                     },
                 )
@@ -305,21 +336,36 @@ internal fun McpServerDetailScreen(
                         summary = stringResource(R.string.mcp_refresh_tools_hint),
                     )
                 } else {
+                    SwitchPreference(
+                        title = "全部工具",
+                        summary = "批量开启或关闭此服务器的工具",
+                        checked = server.tools.all { pendingTools[it.name] ?: (it.name in server.enabledToolNames) },
+                        enabled = !working,
+                        onCheckedChange = { enabled ->
+                            if (enabled && server.tools.any { it.readOnlyHint != true }) pendingBulkEnable = true
+                            else changeTools(server.tools.map { it.name }, enabled)
+                        },
+                    )
                     server.tools.forEach { tool ->
-                        val checked = tool.name in server.enabledToolNames
+                        var expanded by rememberSaveable(serverId, tool.name) { mutableStateOf(false) }
+                        val checked = pendingTools[tool.name] ?: (tool.name in server.enabledToolNames)
                         SwitchPreference(
                             title = tool.title.ifBlank { tool.name },
-                            summary = toolSummary(tool),
+                            summary = if (expanded) toolSummary(tool) else toolSummary(tool).lineSequence().first().take(120),
+                            enabled = !working,
                             checked = checked,
                             onCheckedChange = { enabled ->
                                 if (enabled && tool.readOnlyHint != true) {
                                     pendingRiskyTool = tool
                                 } else {
-                                    scope.launch(Dispatchers.IO) {
-                                        McpServerRepository.setToolEnabled(serverId, tool.name, enabled)
-                                    }
+                                    changeTools(listOf(tool.name), enabled)
                                 }
                             },
+                        )
+                        TextButton(
+                            text = if (expanded) "收起说明" else "展开说明",
+                            onClick = { expanded = !expanded },
+                            modifier = Modifier.padding(horizontal = 16.dp),
                         )
                     }
                 }
@@ -336,6 +382,23 @@ internal fun McpServerDetailScreen(
         }
     }
 
+    WindowDialog(
+        show = pendingBulkEnable,
+        title = "开启全部 MCP 工具",
+        summary = "此操作包含未标记为只读的工具。确认后将开启此服务器全部工具。",
+        onDismissRequest = { pendingBulkEnable = false },
+    ) {
+        MiuixDialogActions(
+            confirmText = "全部开启",
+            destructive = true,
+            onCancel = { pendingBulkEnable = false },
+            onConfirm = {
+                pendingBulkEnable = false
+                server?.let { changeTools(it.tools.map { tool -> tool.name }, true) }
+            },
+        )
+    }
+
     pendingRiskyTool?.let { tool ->
         WindowDialog(
             show = true,
@@ -348,9 +411,7 @@ internal fun McpServerDetailScreen(
                 destructive = true,
                 onCancel = { pendingRiskyTool = null },
                 onConfirm = {
-                    scope.launch(Dispatchers.IO) {
-                        McpServerRepository.setToolEnabled(serverId, tool.name, true)
-                    }
+                    changeTools(listOf(tool.name), true)
                     pendingRiskyTool = null
                 },
             )

@@ -116,10 +116,15 @@ open class AgentAccessibilityService : AccessibilityService() {
         },
         ThreadPoolExecutor.DiscardOldestPolicy(),
     )
-    private val windowContentGenerations = mutableMapOf<Int, Long>()
-    private val serviceToken = SERVICE_TOKENS.incrementAndGet()
+    private val windowContentGenerations = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private val queryExecutor = AccessibilityQueryExecutor()
+    private val actionConnectionToken = ThreadLocal<Long>()
+    @Volatile private var connectionActive = false
+    @Volatile private var serviceToken = SERVICE_TOKENS.incrementAndGet()
 
     override fun onServiceConnected() {
+        serviceToken = SERVICE_TOKENS.incrementAndGet()
+        connectionActive = true
         instance = this
     }
 
@@ -131,10 +136,14 @@ open class AgentAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         clearCurrentInstance()
         scrollEventExecutor.shutdownNow()
+        queryExecutor.close()
         super.onDestroy()
     }
 
     private fun clearCurrentInstance() {
+        connectionActive = false
+        serviceToken = SERVICE_TOKENS.incrementAndGet()
+        windowContentGenerations.clear()
         if (instance === this) instance = null
         scrollEventObservationGate.clear()
         signalWindowChanged()
@@ -144,7 +153,13 @@ open class AgentAccessibilityService : AccessibilityService() {
         when (event?.eventType) {
             AccessibilityEvent.TYPE_WINDOWS_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                pruneWindowContentGenerations()
+                // Event delivery runs on main: never enumerate remote windows here.
+                if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+                    event.windowChanges and AccessibilityEvent.WINDOWS_CHANGE_REMOVED != 0) {
+                    windowContentGenerations.remove(event.windowId)
+                } else {
+                    bumpWindowContentGeneration(event.windowId)
+                }
                 signalWindowChanged()
                 notifyScreenTranslationActivity()
             }
@@ -183,31 +198,90 @@ open class AgentAccessibilityService : AccessibilityService() {
      */
     /** 诊断用：该 display 上系统报告的无障碍窗口数量。 */
     fun windowsOnDisplayCount(displayId: Int): Int =
-        runCatching { windowsOnAllDisplays.get(displayId)?.size ?: 0 }.getOrDefault(0)
+        runAccessibilityQuery { windowsOnAllDisplays.get(displayId)?.size ?: 0 } ?: 0
+
+    private fun windowsForDisplay(displayId: Int): List<AccessibilityWindowInfo> {
+        queryExecutor.ensureActive()
+        val candidates = windowsOnAllDisplays.get(displayId).orEmpty()
+        queryExecutor.ensureActive()
+        return candidates.filter {
+            it.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY &&
+                it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD &&
+                (it.type == AccessibilityWindowInfo.TYPE_APPLICATION || it.isFocused || it.isActive)
+        }.sortedWith(compareByDescending<AccessibilityWindowInfo> { it.layer }
+            .thenByDescending { it.isFocused || it.isActive })
+    }
 
     private fun rootForDisplay(displayId: Int): AccessibilityNodeInfo? {
-        if (displayId == android.view.Display.DEFAULT_DISPLAY) return rootInActiveWindow
-        val windows = windowsOnAllDisplays.get(displayId).orEmpty()
-        if (windows.isEmpty()) return null
-        // 副屏上「聚焦的应用窗口」未必是唯一能取到 root 的那个：
-        // 有的 ROM 会给部分窗口返回 null 的 root（例如刚建立、还没首帧的窗口）。
-        // 这里按优先级依次尝试，取到第一个非空 root 就用，不再因为首选窗口为 null 就整体放弃。
-        val ordered = windows
-            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
-            .sortedByDescending { it.isFocused } + windows.filter { it.type != AccessibilityWindowInfo.TYPE_APPLICATION }
-        for (window in ordered) {
+        val candidates = windowsForDisplay(displayId)
+        // Main screen never uses the global active root from a virtual display.
+        // Keep Yunke's secondary-display null-root retry across candidate windows.
+        for (window in candidates) {
+            queryExecutor.ensureActive()
             val root = runCatching { window.root }.getOrNull()
+            queryExecutor.ensureActive()
             if (root != null) return root
+            if (displayId == android.view.Display.DEFAULT_DISPLAY) return null
         }
         return null
+    }
+
+    fun observeNodeSnapshot(
+        maxNodes: Int,
+        displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+        includeNodes: Boolean = true,
+        timeoutMillis: Long = 3_000L,
+    ): NodeSnapshotObservation {
+        if (!connectionActive || instance !== this) return NodeSnapshotObservation(NodeSnapshotStatus.SERVICE_UNAVAILABLE)
+        if (Looper.myLooper() == Looper.getMainLooper()) return NodeSnapshotObservation(NodeSnapshotStatus.BUSY)
+        val connectionToken = serviceToken
+        val result = queryExecutor.query(
+            timeoutMillis.coerceIn(1L, 3_000L),
+            isActive = { connectionActive && instance === this && connectionToken == serviceToken },
+        ) { captureNodeObservationOnce(maxNodes, displayId, includeNodes, connectionToken) }
+        if (!connectionActive || instance !== this || connectionToken != serviceToken) {
+            return NodeSnapshotObservation(NodeSnapshotStatus.SERVICE_UNAVAILABLE)
+        }
+        return when (result) {
+            is AccessibilityQueryExecutor.Result.Completed -> result.value
+            is AccessibilityQueryExecutor.Result.Failed -> NodeSnapshotObservation(NodeSnapshotStatus.QUERY_FAILED)
+            AccessibilityQueryExecutor.Result.Busy -> NodeSnapshotObservation(NodeSnapshotStatus.BUSY)
+            AccessibilityQueryExecutor.Result.TimedOut -> NodeSnapshotObservation(NodeSnapshotStatus.TIMEOUT)
+            AccessibilityQueryExecutor.Result.Closed -> NodeSnapshotObservation(NodeSnapshotStatus.SERVICE_UNAVAILABLE)
+        }
     }
 
     fun captureNodeSnapshot(
         maxNodes: Int,
         displayId: Int = android.view.Display.DEFAULT_DISPLAY,
-    ): NodeSnapshot? = runOnMainSync {
+    ): NodeSnapshot? = observeNodeSnapshot(maxNodes, displayId).snapshot
+
+    private fun captureNodeObservationOnce(
+        maxNodes: Int,
+        displayId: Int,
+        includeNodes: Boolean,
+        connectionToken: Long,
+    ): NodeSnapshotObservation {
         val startedAt = SystemClock.elapsedRealtime()
-        val root = rootForDisplay(displayId) ?: return@runOnMainSync null
+        queryExecutor.ensureActive()
+        val candidates = windowsForDisplay(displayId)
+        if (candidates.isEmpty()) return NodeSnapshotObservation(NodeSnapshotStatus.NO_WINDOW)
+        var selected = candidates.first()
+        var root: AccessibilityNodeInfo? = null
+        for (window in candidates) {
+            queryExecutor.ensureActive()
+            root = window.root
+            queryExecutor.ensureActive()
+            if (root != null) { selected = window; break }
+            if (displayId == android.view.Display.DEFAULT_DISPLAY) break
+        }
+        val observedWindow = ObservedWindow(
+            root?.packageName?.toString()?.takeIf(String::isNotBlank), selected.id, displayId,
+            focused = selected.isFocused, active = selected.isActive,
+        )
+        val selectedRoot = root ?: return NodeSnapshotObservation(NodeSnapshotStatus.ROOT_UNAVAILABLE, window = observedWindow)
+        if (!includeNodes) return NodeSnapshotObservation(NodeSnapshotStatus.AVAILABLE, window = observedWindow)
+        val contentGeneration = windowContentGeneration(selectedRoot.windowId)
         val nodeLimit = maxNodes.coerceIn(1, 120)
         val indexedNodes = mutableListOf<IndexedNode>()
         val traversal = NodeTraversalState(
@@ -215,7 +289,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 .coerceIn(MIN_UI_TREE_VISITED_NODES, MAX_UI_TREE_VISITED_NODES),
         )
         collectNodes(
-            node = root,
+            node = selectedRoot,
             out = indexedNodes,
             maxNodes = nodeLimit,
             depth = 0,
@@ -224,13 +298,13 @@ open class AgentAccessibilityService : AccessibilityService() {
             // 按它剪枝会得到空树；只有主屏才按可见性剪枝。
             requireVisible = displayId == android.view.Display.DEFAULT_DISPLAY,
         )
-        NodeSnapshot(
+        val snapshot = NodeSnapshot(
             id = "o${SNAPSHOT_IDS.incrementAndGet()}",
-            serviceToken = serviceToken,
-            packageName = root.packageName?.toString().orEmpty(),
-            windowId = root.windowId,
+            serviceToken = connectionToken,
+            packageName = selectedRoot.packageName?.toString().orEmpty(),
+            windowId = selectedRoot.windowId,
             displayId = displayId,
-            contentGeneration = windowContentGeneration(root.windowId),
+            contentGeneration = contentGeneration,
             capturedAtElapsedMs = startedAt,
             truncated = traversal.truncated,
             indexedNodes = indexedNodes.toList(),
@@ -242,6 +316,12 @@ open class AgentAccessibilityService : AccessibilityService() {
                     "elapsed_ms=${SystemClock.elapsedRealtime() - startedAt}"
             }
         }
+        queryExecutor.ensureActive()
+        return NodeSnapshotObservation(
+            if (snapshot.nodes.isEmpty()) NodeSnapshotStatus.EMPTY else NodeSnapshotStatus.AVAILABLE,
+            snapshot = snapshot,
+            window = observedWindow,
+        )
     }
 
     /** 临时查询不发布任何全局节点状态，适用于 wait_for_text。 */
@@ -249,28 +329,28 @@ open class AgentAccessibilityService : AccessibilityService() {
         captureNodeSnapshot(maxNodes)?.nodes.orEmpty()
 
     fun currentPackageName(): String? =
-        rootInActiveWindow?.packageName?.toString()
+        observeNodeSnapshot(1, includeNodes = false).window?.packageName
 
     /** Default-display focus only; a visible Eta window or global focus on a virtual display
      * is not authority to operate another application on the main screen. Unknown fails closed.
      */
-    internal fun currentMainDisplayPackageName(): String? = runOnMainSync {
+    internal fun currentMainDisplayPackageName(): String? = runAccessibilityQuery {
         val mainWindows = windowsOnAllDisplays.get(android.view.Display.DEFAULT_DISPLAY).orEmpty()
         val focused = mainWindows.filter {
             it.displayId == android.view.Display.DEFAULT_DISPLAY &&
                 it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused
         }
-        if (focused.size != 1) return@runOnMainSync null
+        if (focused.size != 1) return@runAccessibilityQuery null
         val active = mainWindows.filter { it.isActive }
         if (active.size != 1 || (active.single().id != focused.single().id &&
-                active.single().type != AccessibilityWindowInfo.TYPE_INPUT_METHOD)) return@runOnMainSync null
+                active.single().type != AccessibilityWindowInfo.TYPE_INPUT_METHOD)) return@runAccessibilityQuery null
         // Existing node tools use rootInActiveWindow. Do not authorize them using a different
         // display's root even when Eta is focused on display 0.
-        val root = rootInActiveWindow ?: return@runOnMainSync null
+        val root = rootInActiveWindow ?: return@runAccessibilityQuery null
         if (root.window?.displayId != android.view.Display.DEFAULT_DISPLAY ||
-            root.windowId != focused.single().id) return@runOnMainSync null
+            root.windowId != focused.single().id) return@runAccessibilityQuery null
         val focusedPackage = focused.single().root?.packageName?.toString()?.takeIf { it.isNotBlank() }
-            ?: return@runOnMainSync null
+            ?: return@runAccessibilityQuery null
         focusedPackage.takeIf { root.packageName?.toString() == it }
     }
 
@@ -281,16 +361,9 @@ open class AgentAccessibilityService : AccessibilityService() {
      * 此时节点工具与自身前台判据都会静默失效，只有重新绑定才能恢复。
      * 主线程超时返回 null（未知），调用方按保守值处理。
      */
-    internal fun canEnumerateDefaultDisplayWindows(): Boolean? =
-        when (
-            val result = callOnMainSync {
-                windowsOnAllDisplays.get(android.view.Display.DEFAULT_DISPLAY).orEmpty().isNotEmpty()
-            }
-        ) {
-            is MainThreadCallResult.Completed -> result.value
-            MainThreadCallResult.NOT_STARTED,
-            MainThreadCallResult.OUTCOME_UNKNOWN -> null
-        }
+    internal fun canEnumerateDefaultDisplayWindows(): Boolean? = runAccessibilityQuery {
+        windowsOnAllDisplays.get(android.view.Display.DEFAULT_DISPLAY).orEmpty().isNotEmpty()
+    }
 
     fun displaySize(): Pair<Int, Int>? = runCatching {
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -301,14 +374,15 @@ open class AgentAccessibilityService : AccessibilityService() {
     }.getOrNull()
 
     internal fun packageWindowVisibility(packageName: String): PackageWindowVisibility =
-        runOnMainSync {
-            val activeRoot = rootInActiveWindow
+        runAccessibilityQuery {
+            val activeRoot = rootForDisplay(android.view.Display.DEFAULT_DISPLAY)
             if (activeRoot?.packageName?.toString() == packageName) {
-                return@runOnMainSync PackageWindowVisibility.VISIBLE
+                return@runAccessibilityQuery PackageWindowVisibility.VISIBLE
             }
             var inspectedRoot = activeRoot != null
             var hasUnknownRelevantWindow = false
-            for (window in windows.orEmpty()) {
+            for (window in windowsOnAllDisplays.get(android.view.Display.DEFAULT_DISPLAY).orEmpty()) {
+                queryExecutor.ensureActive()
                 val root = window.root
                 if (root == null) {
                     if (
@@ -322,7 +396,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 }
                 inspectedRoot = true
                 if (root.packageName?.toString() == packageName) {
-                    return@runOnMainSync PackageWindowVisibility.VISIBLE
+                    return@runAccessibilityQuery PackageWindowVisibility.VISIBLE
                 }
             }
             if (inspectedRoot && !hasUnknownRelevantWindow) {
@@ -462,25 +536,26 @@ open class AgentAccessibilityService : AccessibilityService() {
 
     private fun bumpWindowContentGeneration(windowId: Int) {
         if (windowId < 0) return
-        windowContentGenerations[windowId] = windowContentGeneration(windowId) + 1L
+        windowContentGenerations.compute(windowId) { _, previous -> (previous ?: 0L) + 1L }
     }
 
     private fun windowContentGeneration(windowId: Int): Long =
         windowContentGenerations[windowId] ?: 0L
 
-    private fun pruneWindowContentGenerations() {
-        if (windowContentGenerations.isEmpty()) return
-        // windows 只含默认屏。若仍按它裁剪，副屏窗口的代数会在任何一次主屏窗口变化时
-        // 被整体清掉，随后 validateNode 比较 contentGeneration 就会误判 STALE_CONTENT。
-        val liveWindowIds = hashSetOf<Int>()
-        val all = windowsOnAllDisplays
-        for (index in 0 until all.size()) {
-            all.valueAt(index).forEach { liveWindowIds.add(it.id) }
+    private fun <T> runAccessibilityQuery(block: () -> T): T? {
+        if (!connectionActive || instance !== this || Looper.myLooper() == Looper.getMainLooper()) return null
+        val connectionToken = actionConnectionToken.get() ?: serviceToken
+        if (connectionToken != serviceToken) return null
+        return when (val result = queryExecutor.query(
+            MAIN_SYNC_TIMEOUT_SECONDS * 1_000L,
+            isActive = { connectionActive && instance === this && connectionToken == serviceToken },
+            block = block,
+        )) {
+            is AccessibilityQueryExecutor.Result.Completed -> result.value.takeIf {
+                connectionActive && instance === this && connectionToken == serviceToken && !Thread.currentThread().isInterrupted
+            }
+            else -> null
         }
-        if (liveWindowIds.isEmpty()) {
-            windows.orEmpty().mapTo(liveWindowIds) { window -> window.id }
-        }
-        windowContentGenerations.keys.retainAll(liveWindowIds)
     }
 
     private fun currentScrollEventSequence(): Long {
@@ -598,11 +673,11 @@ open class AgentAccessibilityService : AccessibilityService() {
         index: Int,
         direction: ScrollDirection,
     ): ScrollActionResult {
-        val validation = runOnMainSync { validateNode(snapshot, index) }
+        val validation = runAccessibilityQuery { validateNode(snapshot, index) }
             ?: return ScrollActionResult.failure(
                 direction = direction,
                 code = "SERVICE_TIMEOUT",
-                message = "无障碍服务主线程无响应",
+                message = "无障碍节点查询未完成",
                 targetIndex = index,
             )
         val validationNode = when (validation) {
@@ -629,18 +704,19 @@ open class AgentAccessibilityService : AccessibilityService() {
             message = "指定节点及其父节点不可滚动",
             targetIndex = index,
         )
-        return executeScroll(scrollable, direction, targetIndex = index)
+        return withConnectionToken(snapshot.serviceToken) { executeScroll(scrollable, direction, targetIndex = index) }
     }
 
     internal fun scrollCurrent(direction: ScrollDirection): ScrollActionResult {
-        val target = runOnMainSync {
-            rootInActiveWindow?.let { root -> findBestScrollableNode(root, direction) }
+        val connectionToken = serviceToken
+        val target = runAccessibilityQuery {
+            rootForDisplay(android.view.Display.DEFAULT_DISPLAY)?.let { root -> findBestScrollableNode(root, direction) }
         } ?: return ScrollActionResult.failure(
             direction = direction,
             code = "NO_ACTIVE_WINDOW",
             message = "当前活动窗口不可访问",
         )
-        return executeScroll(target, direction, targetIndex = null)
+        return withConnectionToken(connectionToken) { executeScroll(target, direction, targetIndex = null) }
     }
 
     private fun executeScroll(
@@ -649,7 +725,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         targetIndex: Int?,
     ): ScrollActionResult = scrollActionLock.withLock {
         val startedAt = SystemClock.elapsedRealtime()
-        val refreshed = runOnMainSync { target.refresh() } == true
+        val refreshed = runAccessibilityQuery { target.refresh() } == true
         if (!refreshed || !target.visibleEnoughForAction() || !target.isEnabled) {
             return ScrollActionResult.failure(
                 direction = direction,
@@ -669,7 +745,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         }
         val packageName = target.packageName?.toString().orEmpty()
         val windowId = target.windowId
-        val beforeAnchors = scrollContentAnchors(target)
+        val beforeAnchors = runAccessibilityQuery { scrollContentAnchors(target) }.orEmpty()
         val targetIdentity = ScrollTargetIdentity.from(target)
         val beforeSequence = currentScrollEventSequence()
         val method = chooseScrollMethod(target, direction)
@@ -691,7 +767,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             var accepted = nodeDispatch == ActionDispatch.ACCEPTED
 
             if (!accepted) {
-                val boundaryBeforeGesture = runOnMainSync {
+                val boundaryBeforeGesture = runAccessibilityQuery {
                     target.refresh() && isAtScrollBoundary(target, direction)
                 } == true
                 if (boundaryBeforeGesture) {
@@ -733,7 +809,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 accepted = true
             }
             if (!accepted) {
-                val boundary = runOnMainSync {
+                val boundary = runAccessibilityQuery {
                     target.refresh() && isAtScrollBoundary(target, direction)
                 } == true
                 if (boundary) {
@@ -761,7 +837,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 targetIdentity = targetIdentity,
                 timeoutMillis = SCROLL_VERIFY_TIMEOUT_MS,
             )
-            val afterAnchors = runOnMainSync {
+            val afterAnchors = runAccessibilityQuery {
                 if (target.refresh()) scrollContentAnchors(target) else emptyList()
             }.orEmpty()
             val eventDelta = signal?.axisDelta(direction.axis)?.takeIf { delta -> delta != 0 }
@@ -772,7 +848,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 anchorDelta != null -> ScrollMovementSource.ANCHOR_MOTION
                 else -> null
             }
-            val boundary = runOnMainSync {
+            val boundary = runAccessibilityQuery {
                 target.refresh() && isAtScrollBoundary(target, direction, signal)
             } == true
             val evidence = ScrollEvidenceContract.classify(
@@ -853,25 +929,32 @@ open class AgentAccessibilityService : AccessibilityService() {
         }
     }
 
-    fun inputTextFocused(text: String): NodeActionResult = runNodeActionOnMainSync {
-        val node = findFocusedEditableNode()
-            ?: return@runNodeActionOnMainSync NodeActionResult.failure(
-                "NO_FOCUSED_EDITABLE",
-                "没有获得输入焦点的可编辑节点",
-            )
-        node.incrementalTextValidationError()?.let { error ->
-            return@runNodeActionOnMainSync error
-        }
-        val plan = TextEditPlanner.insertAtSelection(
-            currentText = node.realText(),
-            insertedText = text,
-            selectionStart = node.textSelectionStart,
-            selectionEnd = node.textSelectionEnd,
-        ) ?: return@runNodeActionOnMainSync NodeActionResult.failure(
-            "TEXT_SELECTION_UNAVAILABLE",
-            "当前输入框未提供可靠光标或选区；请用 replace_text 提供完整值",
+    private data class FocusedTextPreparation(
+        val node: AccessibilityNodeInfo? = null,
+        val plan: TextEditPlanner.Plan? = null,
+        val error: NodeActionResult? = null,
+    )
+
+    private fun prepareFocusedText(text: String): FocusedTextPreparation? = runAccessibilityQuery {
+        val node = findFocusedEditableNode() ?: return@runAccessibilityQuery FocusedTextPreparation(
+            error = NodeActionResult.failure("NO_FOCUSED_EDITABLE", "没有获得输入焦点的可编辑节点"),
         )
-        setNodeText(node, plan.text, plan.cursor)
+        node.incrementalTextValidationError()?.let { return@runAccessibilityQuery FocusedTextPreparation(error = it) }
+        val plan = TextEditPlanner.insertAtSelection(node.realText(), text, node.textSelectionStart, node.textSelectionEnd)
+            ?: return@runAccessibilityQuery FocusedTextPreparation(error = NodeActionResult.failure(
+                "TEXT_SELECTION_UNAVAILABLE", "当前输入框未提供可靠光标或选区；请用 replace_text 提供完整值",
+            ))
+        FocusedTextPreparation(node, plan)
+    }
+
+    fun inputTextFocused(text: String): NodeActionResult {
+        val token = serviceToken
+        val prepared = prepareFocusedText(text) ?: return NodeActionResult.failure("SERVICE_TIMEOUT", "无障碍节点查询未完成")
+        prepared.error?.let { return it }
+        return withConnectionToken(token) {
+            val plan = prepared.plan!!
+            runNodeActionOnMainSync { setNodeText(prepared.node!!, plan.text, plan.cursor) }
+        }
     }
 
     fun setTextNode(
@@ -886,87 +969,75 @@ open class AgentAccessibilityService : AccessibilityService() {
                 if (!node.isEditable) {
                     NodeActionResult.failure("NOT_EDITABLE", "指定节点不可编辑")
                 } else {
-                    setNodeText(node, text, text.length)
+                    runNodeActionOnMainSync { setNodeText(node, text, text.length) }
                 }
             }
         }
-        return runNodeActionOnMainSync {
-            val node = findFocusedEditableNode()
-                ?: return@runNodeActionOnMainSync NodeActionResult.failure(
-                    "NO_FOCUSED_EDITABLE",
-                    "没有获得输入焦点的可编辑节点",
-                )
-            setNodeText(node, text, text.length)
-        }
+        val token = serviceToken
+        val node = runAccessibilityQuery { findFocusedEditableNode() }
+            ?: return NodeActionResult.failure("NO_FOCUSED_EDITABLE", "没有获得输入焦点的可编辑节点或查询未完成")
+        return withConnectionToken(token) { runNodeActionOnMainSync { setNodeText(node, text, text.length) } }
     }
 
     /** 优先直接按选区写入，只有目标拒绝 SET_TEXT 时才回退系统粘贴。 */
-    fun pasteText(text: String): NodeActionResult = runNodeActionOnMainSync {
-        val node = findFocusedEditableNode()
-            ?: return@runNodeActionOnMainSync NodeActionResult.failure(
-                "NO_FOCUSED_EDITABLE",
-                "没有获得输入焦点的可编辑节点",
-            )
-        node.incrementalTextValidationError()?.let { error ->
-            return@runNodeActionOnMainSync error
-        }
-        val plan = TextEditPlanner.insertAtSelection(
-            currentText = node.realText(),
-            insertedText = text,
-            selectionStart = node.textSelectionStart,
-            selectionEnd = node.textSelectionEnd,
-        ) ?: return@runNodeActionOnMainSync NodeActionResult.failure(
-            "TEXT_SELECTION_UNAVAILABLE",
-            "当前输入框未提供可靠光标或选区；请用 replace_text 提供完整值",
-        )
-        val directResult = setNodeText(node, plan.text, plan.cursor)
-        if (directResult.ok) {
-            return@runNodeActionOnMainSync directResult.copy(method = "ACTION_SET_TEXT_PASTE")
-        }
-        if (directResult.code != "ACTION_FAILED") {
-            return@runNodeActionOnMainSync directResult
-        }
-        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val originalClip = runCatching { clipboard.primaryClip }.getOrNull()
-        val temporaryLabel = "$CLIP_LABEL:${CLIP_IDS.incrementAndGet()}"
-        val temporaryClip = ClipData.newPlainText(temporaryLabel, text).apply {
-            description.extras = PersistableBundle().apply {
-                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
-            }
-        }
-        val copied = runCatching {
-            clipboard.setPrimaryClip(temporaryClip)
-        }.isSuccess
-        if (!copied) {
-            return@runNodeActionOnMainSync NodeActionResult.failure(
-                "CLIPBOARD_WRITE_FAILED",
-                "写入剪贴板失败",
-            )
-        }
-        val pasteResult = try {
-            if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
-                val verified = runCatching { node.refresh() }.getOrDefault(false) &&
-                    node.text?.toString() == plan.text
-                if (verified) {
-                    NodeActionResult.success(method = "ACTION_PASTE", verified = true)
-                } else {
+    fun pasteText(text: String): NodeActionResult {
+        val token = serviceToken
+        val prepared = prepareFocusedText(text) ?: return NodeActionResult.failure("SERVICE_TIMEOUT", "无障碍节点查询未完成")
+        prepared.error?.let { return it }
+        val node = prepared.node!!
+        val plan = prepared.plan!!
+        return withConnectionToken(token) {
+            runNodeActionOnMainSync {
+                val directResult = setNodeText(node, plan.text, plan.cursor)
+                if (directResult.ok) {
+                    return@runNodeActionOnMainSync directResult.copy(method = "ACTION_SET_TEXT_PASTE")
+                }
+                if (directResult.code != "ACTION_FAILED") {
+                    return@runNodeActionOnMainSync directResult
+                }
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val originalClip = runCatching { clipboard.primaryClip }.getOrNull()
+                val temporaryLabel = "$CLIP_LABEL:${CLIP_IDS.incrementAndGet()}"
+                val temporaryClip = ClipData.newPlainText(temporaryLabel, text).apply {
+                    description.extras = PersistableBundle().apply {
+                        putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                    }
+                }
+                val copied = runCatching {
+                    clipboard.setPrimaryClip(temporaryClip)
+                }.isSuccess
+                if (!copied) {
+                    return@runNodeActionOnMainSync NodeActionResult.failure(
+                        "CLIPBOARD_WRITE_FAILED",
+                        "写入剪贴板失败",
+                    )
+                }
+                val pasteResult = try {
+                    if (node.performAction(AccessibilityNodeInfo.ACTION_PASTE)) {
+                        val verified = runCatching { node.refresh() }.getOrDefault(false) &&
+                            node.text?.toString() == plan.text
+                        if (verified) {
+                            NodeActionResult.success(method = "ACTION_PASTE", verified = true)
+                        } else {
+                            NodeActionResult.outcomeUnknown()
+                        }
+                    } else {
+                        NodeActionResult.failure("ACTION_FAILED", "输入节点拒绝粘贴动作")
+                    }
+                } catch (_: Throwable) {
                     NodeActionResult.outcomeUnknown()
                 }
-            } else {
-                NodeActionResult.failure("ACTION_FAILED", "输入节点拒绝粘贴动作")
+                val restored = restoreClipboardIfStillOwned(
+                    clipboard = clipboard,
+                    temporaryLabel = temporaryLabel,
+                    originalClip = originalClip,
+                )
+                if (!restored) {
+                    NodeActionResult.outcomeUnknown().copy(clipboardWritten = true)
+                } else {
+                    pasteResult.copy(clipboardWritten = true)
+                }
             }
-        } catch (_: Throwable) {
-            NodeActionResult.outcomeUnknown()
-        }
-        val restored = restoreClipboardIfStillOwned(
-            clipboard = clipboard,
-            temporaryLabel = temporaryLabel,
-            originalClip = originalClip,
-        )
-        if (!restored) {
-            NodeActionResult.outcomeUnknown().copy(clipboardWritten = true)
-        } else {
-            pasteResult.copy(clipboardWritten = true)
         }
     }
 
@@ -990,17 +1061,15 @@ open class AgentAccessibilityService : AccessibilityService() {
         }.isSuccess
     }
 
-    fun imeEnter(): NodeActionResult = runNodeActionOnMainSync {
-        val node = findFocusedEditableNode()
-            ?: return@runNodeActionOnMainSync NodeActionResult.failure(
-                "NO_FOCUSED_EDITABLE",
-                "没有获得输入焦点的可编辑节点",
-            )
-        if (node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)) {
-            NodeActionResult.success(method = "ACTION_IME_ENTER")
-        } else {
-            NodeActionResult.failure("ACTION_FAILED", "输入节点拒绝回车动作")
-        }
+    fun imeEnter(): NodeActionResult {
+        val token = serviceToken
+        val node = runAccessibilityQuery { findFocusedEditableNode() }
+            ?: return NodeActionResult.failure("NO_FOCUSED_EDITABLE", "没有获得输入焦点的可编辑节点或查询未完成")
+        return withConnectionToken(token) { runNodeActionOnMainSync {
+            if (node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)) {
+                NodeActionResult.success(method = "ACTION_IME_ENTER")
+            } else NodeActionResult.failure("ACTION_FAILED", "输入节点拒绝回车动作")
+        } }
     }
 
     fun gestureTap(
@@ -1099,7 +1168,8 @@ open class AgentAccessibilityService : AccessibilityService() {
             return ScreenshotCaptureResult.unavailable().also { signalWindowsSubmitted() }
         }
         val startedAt = SystemClock.elapsedRealtime()
-        val allWindows = windows
+        val connectionToken = serviceToken
+        val allWindows = runAccessibilityQuery { windows }
             ?: return ScreenshotCaptureResult.unavailable().also { signalWindowsSubmitted() }
         val wm = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
             ?: return ScreenshotCaptureResult.unavailable().also {
@@ -1119,8 +1189,14 @@ open class AgentAccessibilityService : AccessibilityService() {
 
         // 只过滤能确认属于 Eta 的无障碍 overlay；第三方 overlay 必须保留，
         // 否则截图与实际接收坐标手势的窗口会不一致。
-        val windowPackages = allWindows.associate { window ->
-            window.id to window.root?.packageName?.toString()
+        val windowPackages = runAccessibilityQuery {
+            allWindows.associate { window ->
+                queryExecutor.ensureActive()
+                window.id to window.root?.packageName?.toString()
+            }
+        } ?: return ScreenshotCaptureResult.unavailable().also {
+            allWindows.forEach { window -> runCatching { window.recycle() } }
+            signalWindowsSubmitted()
         }
         val windowDecisions = allWindows.associate { window ->
             window.id to ScreenshotWindowPolicy.decide(
@@ -1200,6 +1276,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         val acceptingResults = AtomicBoolean(true)
 
         for (window in captureWindows) {
+            if (!connectionActive || serviceToken != connectionToken || Thread.currentThread().isInterrupted) break
             runCatching {
                 takeScreenshotOfWindow(window.id, screenshotExecutor, object : TakeScreenshotCallback {
                     override fun onSuccess(screenshot: ScreenshotResult) {
@@ -1208,7 +1285,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                                 ?: throw IllegalStateException("screenshot bitmap unavailable")
                             var retained = false
                             synchronized(lock) {
-                                if (acceptingResults.get()) {
+                                if (acceptingResults.get() && connectionActive && serviceToken == connectionToken) {
                                     screenshots[window.id] = sw to Rect(window.bounds)
                                     retained = true
                                 }
@@ -1216,7 +1293,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                             if (!retained && !sw.isRecycled) sw.recycle()
                         } catch (_: Exception) {
                             synchronized(lock) {
-                                if (acceptingResults.get()) {
+                                if (acceptingResults.get() && connectionActive && serviceToken == connectionToken) {
                                     failures[window.id] = ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR
                                 }
                             }
@@ -1234,7 +1311,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 })
             }.onFailure {
                 synchronized(lock) {
-                    if (acceptingResults.get()) {
+                    if (acceptingResults.get() && connectionActive && serviceToken == connectionToken) {
                         failures[window.id] = ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR
                     }
                 }
@@ -1256,7 +1333,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         val capturedIds = captured.keys
         val missingIds = captureWindows.map(ScreenshotWindow::id).filterNot(capturedIds::contains)
         val criticalWindowMissing = missingIds.any(criticalWindowIds::contains)
-        val merged = if (captured.isEmpty() || criticalWindowMissing) {
+        val merged = if (!connectionActive || serviceToken != connectionToken || Thread.currentThread().isInterrupted || captured.isEmpty() || criticalWindowMissing) {
             null
         } else {
             mergeScreenshots(captured, captureWindows, screenW, screenH)
@@ -1379,7 +1456,9 @@ open class AgentAccessibilityService : AccessibilityService() {
     }
 
     private fun findFocusedEditableNode(): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
+        queryExecutor.ensureActive()
+        val root = rootForDisplay(android.view.Display.DEFAULT_DISPLAY) ?: return null
+        queryExecutor.ensureActive()
         val inputFocus = runCatching {
             root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         }.getOrNull()
@@ -1424,6 +1503,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         var visitedNodes = 0
 
         fun visit(node: AccessibilityNodeInfo, depth: Int) {
+            queryExecutor.ensureActive()
             if (
                 depth > MAX_UI_TREE_DEPTH ||
                 visitedNodes >= MAX_SCROLL_SEARCH_NODES ||
@@ -1449,6 +1529,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     }
                 }
                 for (childIndex in 0 until node.childCount) {
+                    queryExecutor.ensureActive()
                     val child = runCatching { node.getChild(childIndex) }.getOrNull() ?: continue
                     visit(child, depth + 1)
                 }
@@ -1601,6 +1682,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         val rootBounds = root.bounds()
 
         fun visit(node: AccessibilityNodeInfo, depth: Int) {
+            queryExecutor.ensureActive()
             if (
                 depth > MAX_UI_TREE_DEPTH ||
                 anchors.size >= SCROLL_ANCHOR_NODE_LIMIT ||
@@ -1633,6 +1715,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                     )
                 }
                 for (childIndex in 0 until node.childCount) {
+                    queryExecutor.ensureActive()
                     val child = runCatching { node.getChild(childIndex) }.getOrNull() ?: continue
                     visit(child, depth + 1)
                 }
@@ -1708,16 +1791,21 @@ open class AgentAccessibilityService : AccessibilityService() {
         index: Int,
         block: (IndexedNode) -> NodeActionResult,
     ): NodeActionResult {
-        val validation = runOnMainSync { validateNode(snapshot, index) }
-            ?: return NodeActionResult.failure("SERVICE_TIMEOUT", "无障碍服务主线程无响应")
+        val validation = runAccessibilityQuery { validateNode(snapshot, index) }
+            ?: return NodeActionResult.failure("SERVICE_TIMEOUT", "无障碍节点查询未完成")
         return when (validation) {
             is NodeValidation.Invalid -> validation.result
-            is NodeValidation.Valid -> block(validation.indexedNode)
+            is NodeValidation.Valid -> withConnectionToken(snapshot.serviceToken) {
+                if (!connectionActive || instance !== this || snapshot.serviceToken != serviceToken || Thread.currentThread().isInterrupted) {
+                    NodeActionResult.failure("SERVICE_RECONNECTED", "无障碍连接已变化，请重新观察屏幕")
+                } else block(validation.indexedNode)
+            }
         }
     }
 
     private fun validateNode(snapshot: NodeSnapshot, index: Int): NodeValidation {
-        if (snapshot.serviceToken != serviceToken) {
+        queryExecutor.ensureActive()
+        if (!connectionActive || instance !== this || snapshot.serviceToken != serviceToken) {
             return NodeValidation.Invalid(
                 NodeActionResult.failure("SERVICE_RECONNECTED", "无障碍服务已重连，请重新观察屏幕"),
             )
@@ -1728,11 +1816,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             )
         // 默认屏沿用 rootInActiveWindow；副屏等非默认屏必须用该 display 自己的根，
         // 否则副屏快照永远对不上默认屏的活动窗口，文本动作会被误判成 STALE_WINDOW。
-        val activeRoot = if (NodeValidationDisplay.usesDisplayScopedRoot(snapshot.displayId)) {
-            rootForDisplay(snapshot.displayId)
-        } else {
-            rootInActiveWindow
-        } ?: return NodeValidation.Invalid(
+        val activeRoot = rootForDisplay(snapshot.displayId) ?: return NodeValidation.Invalid(
             NodeActionResult.failure("STALE_WINDOW", "当前活动窗口不可访问，请重新观察屏幕"),
         )
         val activePackage = activeRoot.packageName?.toString().orEmpty()
@@ -1750,6 +1834,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             )
         }
         val node = indexed.node
+        queryExecutor.ensureActive()
         if (!runCatching { node.refresh() }.getOrDefault(false)) {
             return NodeValidation.Invalid(
                 NodeActionResult.failure("STALE_NODE", "目标节点已经失效，请重新观察屏幕"),
@@ -1784,11 +1869,13 @@ open class AgentAccessibilityService : AccessibilityService() {
         val visited = hashSetOf<AccessibilityNodeInfo>()
         queue.addLast(node to 0)
         while (queue.isNotEmpty() && visited.size < MAX_FOCUS_SEARCH_NODES) {
+            queryExecutor.ensureActive()
             val (current, depth) = queue.removeFirst()
             if (!visited.add(current)) continue
             if (predicate(current)) return current
             if (depth >= MAX_UI_TREE_DEPTH) continue
             for (childIndex in 0 until current.childCount) {
+                queryExecutor.ensureActive()
                 val child = runCatching { current.getChild(childIndex) }.getOrNull() ?: continue
                 queue.addLast(child to depth + 1)
             }
@@ -1815,6 +1902,7 @@ open class AgentAccessibilityService : AccessibilityService() {
          */
         requireVisible: Boolean = true,
     ) {
+        queryExecutor.ensureActive()
         if (out.size >= maxNodes) {
             traversal.truncated = true
             return
@@ -1897,6 +1985,7 @@ open class AgentAccessibilityService : AccessibilityService() {
                 )
             }
             for (index in 0 until node.childCount) {
+                queryExecutor.ensureActive()
                 if (
                     out.size >= maxNodes ||
                     traversal.visitedNodes >= traversal.maxVisitedNodes
@@ -1952,11 +2041,16 @@ open class AgentAccessibilityService : AccessibilityService() {
                 "不能在无障碍主线程同步等待手势",
             )
         }
+        val expectedToken = actionConnectionToken.get() ?: serviceToken
+        fun active() = connectionActive && instance === this && serviceToken == expectedToken
+        if (!active() || Thread.currentThread().isInterrupted) {
+            return NodeActionResult.failure("GESTURE_NOT_DISPATCHED", "无障碍连接已变化或操作已取消")
+        }
         val latch = CountDownLatch(1)
         val gate = MainThreadCallGate()
         val outcome = java.util.concurrent.atomic.AtomicReference<GestureDispatch>()
         val posted = mainHandler.post {
-            if (!gate.tryStart()) {
+            if (!active() || !gate.tryStart()) {
                 latch.countDown()
                 return@post
             }
@@ -2023,12 +2117,21 @@ open class AgentAccessibilityService : AccessibilityService() {
             }
             return NodeActionResult.outcomeUnknown()
         }
+        if (!active()) return NodeActionResult.outcomeUnknown()
         return when (outcome.get()) {
             GestureDispatch.COMPLETED -> NodeActionResult.success(successMethod)
             GestureDispatch.CANCELLED -> NodeActionResult.outcomeUnknown()
             GestureDispatch.OUTCOME_UNKNOWN -> NodeActionResult.outcomeUnknown()
             GestureDispatch.NOT_DISPATCHED,
             null -> NodeActionResult.failure("GESTURE_NOT_DISPATCHED", "系统拒绝手势任务")
+        }
+    }
+
+    private inline fun <T> withConnectionToken(token: Long, block: () -> T): T {
+        val previous = actionConnectionToken.get()
+        actionConnectionToken.set(token)
+        return try { block() } finally {
+            if (previous == null) actionConnectionToken.remove() else actionConnectionToken.set(previous)
         }
     }
 
@@ -2049,6 +2152,9 @@ open class AgentAccessibilityService : AccessibilityService() {
         }
 
     private fun <T> callOnMainSync(block: () -> T): MainThreadCallResult<T> {
+        val expectedToken = actionConnectionToken.get() ?: serviceToken
+        fun active() = connectionActive && instance === this && serviceToken == expectedToken
+        if (!active() || Thread.currentThread().isInterrupted) return MainThreadCallResult.NOT_STARTED
         if (Looper.myLooper() == Looper.getMainLooper()) {
             return try {
                 MainThreadCallResult.Completed(block())
@@ -2062,7 +2168,7 @@ open class AgentAccessibilityService : AccessibilityService() {
         var value: T? = null
         var failed = false
         val posted = mainHandler.post {
-            if (gate.tryStart()) {
+            if (active() && gate.tryStart()) {
                 try {
                     value = block()
                 } catch (_: Throwable) {
@@ -2085,7 +2191,7 @@ open class AgentAccessibilityService : AccessibilityService() {
             // 已开始的副作用不得由调用方回退重做；返回未知结果，让模型先重新观察。
             return MainThreadCallResult.OUTCOME_UNKNOWN
         }
-        if (failed) return MainThreadCallResult.OUTCOME_UNKNOWN
+        if (failed || !active()) return MainThreadCallResult.OUTCOME_UNKNOWN
         return MainThreadCallResult.Completed(value)
     }
 
@@ -2236,6 +2342,21 @@ open class AgentAccessibilityService : AccessibilityService() {
             )
         }
     }
+
+    enum class NodeSnapshotStatus {
+        AVAILABLE, EMPTY, NO_WINDOW, ROOT_UNAVAILABLE, TIMEOUT, BUSY, SERVICE_UNAVAILABLE, QUERY_FAILED,
+    }
+
+    data class ObservedWindow(
+        val packageName: String?, val windowId: Int, val displayId: Int,
+        val focused: Boolean, val active: Boolean,
+    )
+
+    data class NodeSnapshotObservation(
+        val status: NodeSnapshotStatus,
+        val snapshot: NodeSnapshot? = null,
+        val window: ObservedWindow? = null,
+    )
 
     class NodeSnapshot internal constructor(
         val id: String,

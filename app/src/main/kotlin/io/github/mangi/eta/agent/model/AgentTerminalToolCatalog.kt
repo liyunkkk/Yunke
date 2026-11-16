@@ -149,73 +149,7 @@ internal object AgentTerminalToolCatalog {
                         .put("required", JSONArray().put("command"))
                 )
             )
-            .put(
-                AgentToolSchema.function(
-                    name = "read_file",
-                    description = "读取 Android 文件内容；支持当前所选 Linux 的 /workspace、/var/minis 和 minis:// 路径，自动映射到宿主文件。适合配置、日志、小文本文件；大文件用 offset_bytes/max_bytes 分段读取。",
-                    parameters = JSONObject()
-                        .put("type", "object")
-                        .put(
-                            "properties",
-                            JSONObject()
-                                .put("path", JSONObject().put("type", "string"))
-                                .put(
-                                    "offset_bytes",
-                                    JSONObject()
-                                        .put("type", "integer")
-                                        .put("description", "从第几个字节开始，默认 0。")
-                                )
-                                .put(
-                                    "max_bytes",
-                                    JSONObject()
-                                        .put("type", "integer")
-                                        .put("description", "最多读取字节数，1 到 262144，默认 65536。")
-                                )
-                        )
-                        .put("required", JSONArray().put("path"))
-                )
-            )
-            .put(
-                AgentToolSchema.function(
-                    name = "write_file",
-                    description = "写入 Android 文件。可覆盖或追加；会自动创建父目录。用于明确需要修改文件的任务。",
-                    parameters = JSONObject()
-                        .put("type", "object")
-                        .put(
-                            "properties",
-                            JSONObject()
-                                .put("path", JSONObject().put("type", "string"))
-                                .put("content", JSONObject().put("type", "string"))
-                                .put(
-                                    "append",
-                                    JSONObject()
-                                        .put("type", "boolean")
-                                        .put("description", "true 追加，false 覆盖，默认 false。")
-                                )
-                        )
-                        .put("required", JSONArray().put("path").put("content"))
-                )
-            )
-            .put(
-                AgentToolSchema.function(
-                    name = "list_directory",
-                    description = "列出目录内容；支持当前所选 Linux 的 /workspace、/var/minis 和 minis:// 路径，自动映射到宿主目录。默认 /data/local/tmp/eta，输出类似 ls -l。",
-                    parameters = JSONObject()
-                        .put("type", "object")
-                        .put(
-                            "properties",
-                            JSONObject()
-                                .put("path", JSONObject().put("type", "string"))
-                                .put("show_hidden", JSONObject().put("type", "boolean"))
-                                .put(
-                                    "limit",
-                                    JSONObject()
-                                        .put("type", "integer")
-                                        .put("description", "最多返回 1 到 200 行，默认 80。")
-                                )
-                        )
-                )
-            )
+        AgentFileToolCatalog.appendTo(tools)
     }
 
 }

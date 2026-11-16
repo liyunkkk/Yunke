@@ -169,13 +169,14 @@ internal object AgentModelClient {
                 skillGitHubDiscovery = true,
                 skillGitHubInstall = true,
                 memoryTools = memoryEnabled,
+                disabledTools = Prefs.disabledTools(),
                 capabilities = capabilities,
             )
             for (index in 0 until additionalTools.length()) {
                 tools.put(additionalTools.opt(index))
             }
             if (compactionArchive != null) tools.put(AgentCompactionArchive.tool())
-            return AgentToolCatalog.filterAdvertised(tools)
+            return AgentToolCatalog.filterAdvertised(AgentToolCatalog.filterEnabled(tools, Prefs.disabledTools()))
         }
         val tools = toolsFor(initialCapabilities)
         val traceFormatter = AgentTraceFormatter(

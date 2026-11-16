@@ -38,14 +38,14 @@ internal object AgentToolRequirements {
             "get_current_location", "get_device_environment", "memory_get", "memory_write",
             "skills_list", "skills_read", "skills_read_resource", "skills_list_curated",
             "skills_inspect_github", "skills_install_from_github", "delegate_to_kimi_code",
-            "get_assistant_config", "update_assistant_config",
+            "get_assistant_config", "update_assistant_config", "web_search", "fetch_url",
             "skills_install_local", "eta_manage_models", "eta_manage_subagents", "eta_configure_mcp",
         )
         register(
             RootRequirement.PARTIAL,
             "press_key", "network_info", "get_setting", "recent_notifications",
             "search_personal_orders", "terminal", "run_command", "read_file",
-            "write_file", "list_directory", "read_image",
+            "write_file", "list_directory", "read_image", "edit_file", "stat_file", "glob_files", "grep_files",
         )
         register(
             RootRequirement.REQUIRED,
@@ -95,7 +95,8 @@ internal object AgentToolRequirements {
         if (rootAvailable) return false
         if (rootRequirement(name) == RootRequirement.REQUIRED) return true
         return when (name) {
-            "terminal" -> arguments.optString("identity").equals("root", ignoreCase = true)
+            "terminal", "read_file", "write_file", "list_directory", "edit_file", "stat_file", "glob_files", "grep_files" ->
+                arguments.optString("identity").equals("root", ignoreCase = true)
             "press_key" -> arguments.optString("button").equals("PASTE", ignoreCase = true)
             else -> false
         }

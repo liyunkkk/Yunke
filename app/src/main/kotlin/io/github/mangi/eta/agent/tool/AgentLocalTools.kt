@@ -204,6 +204,16 @@ internal class AgentLocalTools(
         },
     )
 
+    private val webToolsDelegate = lazy {
+        io.github.mangi.eta.agent.web.AgentWebTools(
+            io.github.mangi.eta.agent.web.WebHttpTransport(io.github.mangi.eta.agent.model.AgentHttpClient.client),
+            runtimeConfig = {
+                kotlinx.coroutines.runBlocking {
+                    io.github.mangi.eta.data.repository.WebToolsSettingsRepository.resolveRuntimeConfig(context)
+                }
+            },
+        )
+    }
     private val selfConfigTool = AssistantSelfConfigTool(context)
     private val selfMcpTools = AgentSelfMcpTools(context)
 
@@ -259,6 +269,7 @@ internal class AgentLocalTools(
             }
         }
         rootCommandExecutor.close()
+        if (webToolsDelegate.isInitialized()) webToolsDelegate.value.close()
         githubSkillSource?.close()
         inspectedGitHubSnapshots.clear()
         ForegroundExclusiveGate.release(browserRunId)
@@ -271,6 +282,12 @@ internal class AgentLocalTools(
         terminalController.sessionIdentity(sessionId)
 
     override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult {
+        if (!io.github.mangi.eta.config.Prefs.isToolEnabled(toolCall.name)) {
+            return textResult(errorResult("TOOL_DISABLED", "此工具已关闭，本次未执行"))
+        }
+        if (toolCall.name == "launch_app" || toolCall.name == "open_uri") {
+            io.github.mangi.eta.agent.device.RootAccess.awaitOrRetryIfPreviouslyGranted(context)
+        }
         val gui = io.github.mangi.eta.agent.device.AgentTaskSurface.isTraditionalScreenGuiTool(toolCall.name) ||
             toolCall.name in virtualLifecycle
         if (!gui) return executeOnSurface(toolCall, AgentSelfAppSurface.Route.BASE)
@@ -500,6 +517,10 @@ internal class AgentLocalTools(
                 "keep_virtual_result" -> textResult(keepVirtualResult(args))
                 "open_uri" -> textResult(openUri(args))
                 "delegate_to_kimi_code" -> textResult(kimiCodeSubagentTool.delegate(args))
+                "web_search", "fetch_url" -> textResult(
+                    if (!browserToolsEnabled()) errorResult("BROWSER_TOOLS_DISABLED", "网页工具已关闭，本次未执行")
+                    else webToolsDelegate.value.execute(toolCall.name, args)
+                )
                 "browser_use" -> browserUse(args, toolCall.id)
                 "observe_screen" -> observeScreen(args)
                 "tap" -> textResult(tap(args))
@@ -528,9 +549,8 @@ internal class AgentLocalTools(
                 "read_image" -> fileVisionTool { imageTools.readImage(args) }
                 "terminal" -> textResult(terminalTool { terminal(args) })
                 "run_command" -> textResult(terminalTool { runCommand(args) })
-                "read_file" -> textResult(terminalTool { readFile(args) })
-                "write_file" -> textResult(terminalTool { writeFile(args) })
-                "list_directory" -> textResult(terminalTool { listDirectory(args) })
+                "read_file", "write_file", "list_directory", "edit_file", "stat_file", "glob_files", "grep_files" ->
+                    textResult(terminalTool { terminalController.executeFileTool(toolCall.name, args) })
                 "todowrite" -> textResult(todoWrite(args))
                 "memory_get" -> textResult(memoryGet(args))
                 "memory_write" -> textResult(memoryWrite(args))

@@ -31,6 +31,41 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 internal object SettingsDataStore {
+    private val CONVERSATION_TITLE_SETTINGS = stringPreferencesKey("conversation_title_settings")
+    private val ASSISTANT_OVERLAY_SETTINGS = stringPreferencesKey("assistant_overlay_settings")
+    private val routingJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    fun conversationTitleSettingsFlow(): Flow<io.github.mangi.eta.data.model.ConversationTitleSettings> {
+        ensureInitialized()
+        return dataStore.data.map { prefs ->
+            prefs[CONVERSATION_TITLE_SETTINGS]?.let { value ->
+                runCatching { routingJson.decodeFromString<io.github.mangi.eta.data.model.ConversationTitleSettings>(value) }.getOrNull()
+            } ?: run {
+                // Preserve the pre-port custom title selection until the user explicitly saves new settings.
+                val legacy = io.github.mangi.eta.agent.model.ModelFeaturePreferences.selection(io.github.mangi.eta.agent.model.ModelFeature.TITLE)
+                io.github.mangi.eta.data.model.ConversationTitleSettings(modelId = legacy.modelId.takeIf { legacy.custom && it.isNotBlank() })
+            }
+        }.distinctUntilChanged()
+    }
+    suspend fun conversationTitleSettings() = conversationTitleSettingsFlow().first()
+    suspend fun setConversationTitleSettings(value: io.github.mangi.eta.data.model.ConversationTitleSettings) {
+        ensureInitialized()
+        dataStore.edit { it[CONVERSATION_TITLE_SETTINGS] = routingJson.encodeToString(io.github.mangi.eta.data.model.ConversationTitleSettings.serializer(), value) }
+    }
+    fun assistantOverlaySettingsFlow(): Flow<io.github.mangi.eta.data.model.AssistantOverlaySettings> {
+        ensureInitialized()
+        return dataStore.data.map { prefs ->
+            prefs[ASSISTANT_OVERLAY_SETTINGS]?.let { value ->
+                runCatching { routingJson.decodeFromString<io.github.mangi.eta.data.model.AssistantOverlaySettings>(value) }.getOrNull()
+            } ?: io.github.mangi.eta.data.model.AssistantOverlaySettings()
+        }.distinctUntilChanged()
+    }
+    suspend fun assistantOverlaySettings() = assistantOverlaySettingsFlow().first()
+    suspend fun setAssistantOverlaySettings(value: io.github.mangi.eta.data.model.AssistantOverlaySettings) {
+        ensureInitialized()
+        dataStore.edit { it[ASSISTANT_OVERLAY_SETTINGS] = routingJson.encodeToString(io.github.mangi.eta.data.model.AssistantOverlaySettings.serializer(), value) }
+    }
+
     private const val STORE_NAME = "eta_settings"
 
     private val SELECTED_PROVIDER_ID = stringPreferencesKey("selected_provider_id")
@@ -276,6 +311,8 @@ internal object SettingsDataStore {
             fileLoggingEnabled = settings.fileLoggingEnabled,
             errorReconnectPolicy = prefs[ERROR_RECONNECT_POLICY],
             errorReconnectPolicyVersion = prefs[ERROR_RECONNECT_POLICY_VERSION],
+            conversationTitleSettingsJson = prefs[CONVERSATION_TITLE_SETTINGS],
+            assistantOverlaySettingsJson = prefs[ASSISTANT_OVERLAY_SETTINGS],
             linuxDistribution = prefs[LINUX_DISTRIBUTION],
             linuxBackends = stringMap(prefs, LINUX_BACKEND_PREFIX),
             selectedModelByProvider = stringMap(prefs, SELECTED_MODEL_BY_PROVIDER_PREFIX),
@@ -314,6 +351,8 @@ internal object SettingsDataStore {
                     snapshot.errorReconnectPolicy, snapshot.errorReconnectPolicyVersion,
                 ).persistedValue
             prefs[ERROR_RECONNECT_POLICY_VERSION] = ErrorReconnectPolicy.STORAGE_VERSION
+            snapshot.conversationTitleSettingsJson?.let { prefs[CONVERSATION_TITLE_SETTINGS] = it }
+            snapshot.assistantOverlaySettingsJson?.let { prefs[ASSISTANT_OVERLAY_SETTINGS] = it }
             prefs.putOrRemove(LINUX_DISTRIBUTION, snapshot.linuxDistribution)
             prefs.putAppearance(snapshot.appearance.normalized())
             snapshot.linuxBackends.forEach { (distribution, backend) ->
@@ -669,6 +708,9 @@ internal data class EtaSettingsBackup(
     // An old backup has no choice version; only its legacy off/missing default is upgraded.
     val errorReconnectPolicy: String? = null,
     val errorReconnectPolicyVersion: Int? = null,
+    // Absent in an older backup means preserve the independent model routing.
+    val conversationTitleSettingsJson: String? = null,
+    val assistantOverlaySettingsJson: String? = null,
 )
 
 internal data class RetiredUsage(

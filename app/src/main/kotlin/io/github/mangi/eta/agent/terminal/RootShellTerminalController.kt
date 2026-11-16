@@ -786,95 +786,69 @@ internal class RootShellTerminalController(
             .toString()
     }
 
-    fun readFile(path: String, offsetBytes: Int, maxBytes: Int): String {
-        val mappedPath = resolveReadPath(path)
-        if (!rootAvailable()) return UserFileAccess.read(mappedPath, offsetBytes, maxBytes)
-        val safePath = normalizePath(mappedPath)
-        val offset = offsetBytes.coerceAtLeast(0)
-        val limit = maxBytes.coerceIn(1, MAX_READ_BYTES)
-        val command = "dd if=${shellQuote(safePath)} bs=1 skip=$offset count=$limit 2>/dev/null"
-        val result = runSuBytes(command, timeoutSeconds = 20)
-        if (result.exitCode != 0) {
-            logger.warn(
-                "Agent terminal action=read_file outcome=failed offsetBytes=$offset " +
-                    "maxBytes=$limit exitCode=${result.exitCode} errorChars=${result.stderr.length}"
-            )
-            return errorJson("READ_FAILED", result.stderr.ifBlank { "exit=${result.exitCode}" })
+    /** Structured file operations reuse Yunke's selected runtime and process supervisor. */
+    fun executeFileTool(name: String, args: JSONObject): String = fileToolOperation(name) {
+        val environment = normalizeEnvironment(args.optString("environment", "android"))
+        // Pin settings for this operation; each stat/read/write must stay in one namespace.
+        val rootfs = if (environment.isLinux) rootfsPathFor(environment) else null
+        val identity = normalizeIdentity(args.optString("identity").ifBlank {
+            if (environment.isLinux) TerminalRuntime.defaultIdentity(environment, rootfs) else defaultIdentity(environment)
+        })
+        val preflight = environmentPreflight(identity, environment, rootfs)
+        if (preflight != null) return@fileToolOperation JSONObject(preflight).put("tool", name)
+        val sharedMounts = sharedMountsFor(environment)
+        val cwd = normalizeCwd(args.optString("cwd").takeIf { it.isNotBlank() }, environment, identity)
+        val active = {
+            if (processSupervisor.isClosing || Thread.currentThread().isInterrupted) {
+                throw FileToolException("CANCELLED", "文件操作已取消")
+            }
+            if (identity == "root" && !rootAvailable()) {
+                throw FileToolException("ROOT_REQUIRED", "Root 授权不可用")
+            }
         }
-        logger.info(
-            "Agent terminal action=read_file outcome=succeeded offsetBytes=$offset " +
-                "maxBytes=$limit bytesRead=${result.output.size} exitCode=${result.exitCode}"
-        )
-        val text = result.output.decodeToString()
-        val truncated = result.output.size >= limit
-        return JSONObject()
-            .put("ok", true)
-            .put("tool", "read_file")
-            .put("path", safePath)
-            .put("offset_bytes", offset)
-            .put("bytes_read", result.output.size)
-            .put("truncated", truncated)
-            .put("content", text.truncateForJson())
-            .toString()
+        active()
+        val backend = if (environment == TerminalEnvironment.ANDROID && identity == "user") {
+            LocalFileToolBackend(File(cwd), File(USER_STORAGE), isCancelled = { processSupervisor.isClosing })
+        } else {
+            ShellFileToolBackend(
+                environment = if (environment.isLinux) "linux" else "android",
+                identity = identity,
+                cwd = cwd,
+                home = if (environment.isLinux) "/root" else USER_STORAGE,
+                ensureActive = active,
+            ) { command, stdin, maxOutputBytes ->
+                runOneShotShell(
+                    processSupervisor = processSupervisor,
+                    identity = identity,
+                    command = command,
+                    timeoutSeconds = 20,
+                    stdin = stdin,
+                    environment = environment,
+                    linuxRootfsPath = rootfs,
+                    linuxSharedMounts = sharedMounts,
+                    maxOutputBytes = maxOutputBytes,
+                )
+            }
+        }
+        // Preserve the old imported/guest-path mapping only for legacy read/list calls.
+        val effectiveArgs = JSONObject(args.toString())
+        if (!args.has("environment") && name in setOf("read_file", "list_directory") && args.has("path")) {
+            effectiveArgs.put("path", resolveReadPath(args.getString("path")))
+        }
+        JSONObject(FileToolDispatcher.execute(backend, name, effectiveArgs))
     }
 
-    fun writeFile(path: String, content: String, append: Boolean): String {
-        if (!rootAvailable()) return UserFileAccess.write(path, content, append)
-        val safePath = normalizePath(path)
-        val bytes = content.toByteArray(Charsets.UTF_8)
-        require(bytes.size <= MAX_WRITE_BYTES) { "写入内容过大：${bytes.size} bytes" }
-        val mode = if (append) ">>" else ">"
-        val command = "mkdir -p ${shellQuote(File(safePath).parent ?: "/")} && cat $mode ${shellQuote(safePath)}"
-        val result = runSuTextWithStdin(command, bytes, timeoutSeconds = 20)
-        return if (result.exitCode == 0) {
-            logger.info(
-                "Agent terminal action=write_file outcome=succeeded append=$append " +
-                    "bytesWritten=${bytes.size} exitCode=${result.exitCode}"
-            )
-            JSONObject()
-                .put("ok", true)
-                .put("tool", "write_file")
-                .put("path", safePath)
-                .put("mode", if (append) "append" else "overwrite")
-                .put("bytes_written", bytes.size)
-                .toString()
-        } else {
-            logger.warn(
-                "Agent terminal action=write_file outcome=failed append=$append " +
-                    "inputBytes=${bytes.size} exitCode=${result.exitCode} " +
-                    "outputChars=${result.output.length} errorChars=${result.stderr.length}"
-            )
-            errorJson("WRITE_FAILED", result.stderr.ifBlank { result.output.ifBlank { "exit=${result.exitCode}" } })
-        }
-    }
+    fun readFile(path: String, offsetBytes: Int, maxBytes: Int): String = executeFileTool(
+        "read_file", JSONObject().put("path", path).put("offset_bytes", offsetBytes).put("max_bytes", maxBytes),
+    )
 
-    fun listDirectory(path: String, showHidden: Boolean, limit: Int): String {
-        val mappedPath = resolveReadPath(path)
-        if (!rootAvailable()) return UserFileAccess.list(mappedPath, showHidden, limit)
-        val safePath = normalizePath(mappedPath.ifBlank { DEFAULT_CWD })
-        val maxEntries = limit.coerceIn(1, MAX_LIST_ENTRIES)
-        val flags = if (showHidden) "-la" else "-l"
-        val command = "cd ${shellQuote(safePath)} && ls $flags | head -n $maxEntries"
-        val result = runSuText(command, timeoutSeconds = 15)
-        val logMessage =
-            "Agent terminal action=list_directory " +
-                "outcome=${if (result.exitCode == 0) "succeeded" else "failed"} " +
-                "showHidden=$showHidden limit=$maxEntries exitCode=${result.exitCode} " +
-                "outputChars=${result.output.length} errorChars=${result.stderr.length}"
-        if (result.exitCode == 0) {
-            logger.info(logMessage)
-        } else {
-            logger.warn(logMessage)
-        }
-        return JSONObject()
-            .put("ok", result.exitCode == 0)
-            .put("tool", "list_directory")
-            .put("path", safePath)
-            .put("exit_code", result.exitCode)
-            .put("entries_text", result.output.truncateForJson())
-            .put("stderr", result.stderr.truncateForJson())
-            .toString()
-    }
+    fun writeFile(path: String, content: String, append: Boolean): String = executeFileTool(
+        "write_file", JSONObject().put("path", path).put("content", content).put("append", append),
+    )
+
+    fun listDirectory(path: String, showHidden: Boolean, limit: Int): String = executeFileTool(
+        "list_directory", JSONObject().put("path", path).put("show_hidden", showHidden).put("limit", limit),
+    )
 
     private fun normalizeIdentity(identity: String): String {
         val normalized = identity.ifBlank { "root" }.lowercase()
