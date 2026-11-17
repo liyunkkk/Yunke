@@ -85,6 +85,7 @@ jobs:
           python3 -m unittest discover -s app/src/test/python -p 'test_top_bar_interactive_mode_contract.py' -v
           python3 -m unittest discover -s app/src/test/python -p 'test_eta_file_tools_port_contract.py' -v
           python3 -m unittest discover -s app/src/test/python -p 'test_promoted_notification_contract.py' -v
+          python3 -m unittest discover -s app/src/test/python -p 'test_system_operations_contract.py' -v
 
       - name: 运行单元测试
         timeout-minutes: 20

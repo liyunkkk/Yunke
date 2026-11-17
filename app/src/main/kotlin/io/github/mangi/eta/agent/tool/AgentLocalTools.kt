@@ -528,6 +528,8 @@ internal class AgentLocalTools(
                 in DEVICE_TOOL_NAMES ->
                     structuredDeviceTools.execute(toolCall.name, args)
                         ?: textResult(errorResult("UNKNOWN_TOOL", "未知设备工具"))
+                in io.github.mangi.eta.agent.model.AgentPhoneToolCatalog.names ->
+                    textResult(phoneTool(toolCall.name, args))
                 "read_image" -> fileVisionTool { imageTools.readImage(args) }
                 "terminal" -> textResult(terminalTool { terminal(args) })
                 "run_command" -> textResult(terminalTool { runCommand(args) })
@@ -573,6 +575,17 @@ internal class AgentLocalTools(
                 result.copy(sensitive = true)
             }
         }
+
+    /** 系统与一方应用操作：统一把失败转成稳定的错误码 JSON，不把异常抛给循环。 */
+    private fun phoneTool(name: String, args: JSONObject): String = try {
+        io.github.mangi.eta.agent.phone.PhoneOperations.execute(context, name, args).toString()
+    } catch (failure: io.github.mangi.eta.agent.phone.PhoneOperationFailure) {
+        errorResult(failure.code, failure.message ?: "系统操作失败")
+    } catch (failure: SecurityException) {
+        errorResult("PERMISSION_DENIED", failure.message ?: "缺少系统权限，本次未执行")
+    } catch (failure: Throwable) {
+        errorResult("SYSTEM_OPERATION_FAILED", failure.message ?: failure.javaClass.simpleName)
+    }
 
     private fun deviceToolPermissionError(
         toolName: String,
