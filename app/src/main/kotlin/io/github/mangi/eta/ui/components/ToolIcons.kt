@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.KeyboardCommandKey
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.LocationOn
 import androidx.compose.material.icons.rounded.Mic
@@ -100,6 +101,16 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "skills_list", "skills_read", "skills_read_resource",
     "skills_list_curated", "skills_inspect_github", "skills_install_from_github",
         -> Icons.Rounded.Extension
+    "update_alarm_time", "set_alarm_enabled", "delete_alarm" -> Icons.Rounded.Alarm
+    "list_calendars", "read_calendar_event", "create_calendar_event",
+    "create_calendar_events", "update_calendar_event", "delete_calendar_event" ->
+        Icons.Rounded.CalendarMonth
+    "create_note", "read_note", "delete_note" -> Icons.AutoMirrored.Rounded.StickyNote2
+    "get_flashlight", "set_flashlight" -> Icons.Rounded.Lightbulb
+    "get_device_state", "get_display_state", "set_brightness", "set_screen_timeout" ->
+        Icons.Rounded.Smartphone
+    "get_sound_state", "set_sound_mode" -> Icons.AutoMirrored.Rounded.VolumeUp
+    "get_hotspot", "set_hotspot" -> Icons.Rounded.Wifi
     "set_alarm", "set_timer", "list_alarms", "list_active_timers" ->
         Icons.Rounded.Alarm
     "device_status", "set_device_state", "get_device_environment" ->
