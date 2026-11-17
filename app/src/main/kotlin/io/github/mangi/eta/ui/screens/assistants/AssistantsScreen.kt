@@ -61,14 +61,21 @@ internal fun AssistantsScreen(
         }
     }
 
-    val createAssistant = {
+    val createAssistant: () -> Unit = {
         scope.launch {
             val created = withContext(Dispatchers.IO) {
                 AssistantRepository.create()
             }
             onNavigate(AppRoute.AssistantEdit(created.id))
         }
+        Unit
     }
+
+    // 双列竖版肖像卡：末尾补一张「新建」占位卡（搜索时不补，避免挤掉结果）。
+    // 必须在组合作用域内算好——LazyListScope 的 DSL 不是 @Composable，不能放 remember。
+    val tiles: List<AssistantProfile?> =
+        filtered + if (searchQuery.isBlank()) listOf(null as AssistantProfile?) else emptyList()
+    val rows = tiles.chunked(2)
 
     MiuixScaffoldPage(
         title = stringResource(R.string.assistant_list_title),
@@ -96,11 +103,7 @@ internal fun AssistantsScreen(
                     .padding(top = 12.dp, bottom = 10.dp),
             )
         }
-        // 双列竖版肖像卡：末尾补一张「新建」占位卡（搜索时不补，避免挤掉结果）。
-        val tiles: List<AssistantProfile?> = remember(filtered, searchQuery) {
-            filtered + if (searchQuery.isBlank()) listOf(null as AssistantProfile?) else emptyList()
-        }
-        val rows = remember(tiles) { tiles.chunked(2) }
+        // 双列肖像卡网格（rows 已在组合作用域内算好）。
         items(rows, key = { row -> row.joinToString("|") { it?.id ?: "add" } }) { row ->
             Row(
                 modifier = Modifier
