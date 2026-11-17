@@ -167,6 +167,7 @@ internal fun AgentChatInputBar(
     activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
+    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     isStreaming: Boolean,
     isCompressingContext: Boolean = false,
     showMorphLoading: Boolean = false,
@@ -537,6 +538,7 @@ internal fun AgentChatInputBar(
                         // Keep context details accessible even for an empty draft or an unknown limit.
                         if (showContextUsage) {
                             AgentContextUsageButton(
+                                conversationUsage = conversationUsage,
                                 usage = liveUsage,
                                 popupMaxHeight = thinkingPopupMaxHeight,
                                 sendBlocked = contextSendBlocked,

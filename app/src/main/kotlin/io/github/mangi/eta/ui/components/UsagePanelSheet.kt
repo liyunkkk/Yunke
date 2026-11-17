@@ -1,6 +1,8 @@
 package io.github.mangi.eta.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
+import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -44,6 +48,7 @@ internal fun UsagePanelSheet(
     usage: AgentContextUsageUi,
     modelName: String,
     onDismiss: () -> Unit,
+    conversationUsage: ConversationTokenUsageUi? = null,
 ) {
     val colors = MiuixTheme.colorScheme
     val percent = usage.progress?.let { (it * 100f).roundToInt().coerceIn(0, 100) }
@@ -62,11 +67,16 @@ internal fun UsagePanelSheet(
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-            // 点击遮罩关闭（Dialog 自带 dismiss，这里只补视觉留白）。
+            // 不加暗色遮罩：点面板外的空白直接关闭，背景保持原来的界面。
+            val dismissSource = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.28f)),
+                    .clickable(
+                        interactionSource = dismissSource,
+                        indication = null,
+                        onClick = onDismiss,
+                    ),
             )
             Column(
                 modifier = Modifier
@@ -76,6 +86,11 @@ internal fun UsagePanelSheet(
                     .background(colors.surface)
                     .navigationBarsPadding()
                     .verticalScroll(rememberScrollState())
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {},
+                    )
                     .padding(horizontal = 20.dp)
                     .padding(top = 10.dp, bottom = 20.dp),
             ) {
@@ -86,7 +101,7 @@ internal fun UsagePanelSheet(
                         .width(40.dp)
                         .height(4.dp)
                         .clip(RoundedCornerShape(2.dp))
-                        .background(colors.outline.copy(alpha = 0.35f)),
+                        .background(colors.onSurface.copy(alpha = 0.14f)),
                 )
                 Spacer(Modifier.height(16.dp))
                 Text(
@@ -167,6 +182,14 @@ internal fun UsagePanelSheet(
                         StatCell("已用", formatTokenShort(contextTokens))
                         StatCell("消息", formatTokenShort(history))
                         StatCell("剩余", formatTokenShort(remaining))
+                    }
+                    if (conversationUsage != null && conversationUsage.hasUsage) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            StatCell("累计输入", formatTokenShort(conversationUsage.inputTokens.toInt()))
+                            StatCell("输出", formatTokenShort(conversationUsage.outputTokens.toInt()))
+                            StatCell("缓存命中", conversationUsage.cachePercent?.let { "${it.roundToInt()}%" } ?: "—")
+                        }
                     }
                     Spacer(Modifier.height(10.dp))
                     Text(

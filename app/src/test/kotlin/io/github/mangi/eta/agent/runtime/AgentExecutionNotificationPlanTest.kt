@@ -80,4 +80,52 @@ class AgentExecutionNotificationPlanTest {
         assertFalse(idlePromote)
         assertEquals(expectedMiuiKeys, ExecutionNotificationPlan.miuiFocusKeys(idlePromote))
     }
+
+    @Test
+    fun testCompletionBodyKeepsShortReply() {
+        val short = "已把截图存到相册，另外帮你整理了三条待办。"
+        assertEquals(short, ExecutionNotificationPlan.completionBody(short))
+        assertEquals("", ExecutionNotificationPlan.completionBody(""))
+        assertEquals("", ExecutionNotificationPlan.completionBody("   "))
+        assertEquals("去掉首尾空白", ExecutionNotificationPlan.completionBody("\n 去掉首尾空白 \n"))
+    }
+
+    @Test
+    fun testCompletionBodyIsBoundedButLongerThanBefore() {
+        // 提交流程过去把正文砍到 200 字；现在上限拉到 800，展开卡能看完整一段回复。
+        assertEquals(800, ExecutionNotificationPlan.MAX_COMPLETION_BODY_CHARS)
+        val medium = "一".repeat(400)
+        assertEquals(medium, ExecutionNotificationPlan.completionBody(medium))
+
+        val huge = "回".repeat(5000)
+        val body = ExecutionNotificationPlan.completionBody(huge)
+        assertEquals(ExecutionNotificationPlan.MAX_COMPLETION_BODY_CHARS, body.codePointCount(0, body.length))
+        assertTrue(body.endsWith("…"))
+    }
+
+    @Test
+    fun testCompletionBodyDoesNotSplitSurrogatePairs() {
+        val text = "总结" + "😀".repeat(2000)
+        val body = ExecutionNotificationPlan.completionBody(text)
+        assertEquals(ExecutionNotificationPlan.MAX_COMPLETION_BODY_CHARS, body.codePointCount(0, body.length))
+        assertTrue(body.startsWith("总结"))
+        assertTrue(body.endsWith("…"))
+        assertFalse(hasUnpairedSurrogate(body))
+    }
+
+    private fun hasUnpairedSurrogate(text: String): Boolean {
+        var index = 0
+        while (index < text.length) {
+            val char = text[index]
+            when {
+                Character.isHighSurrogate(char) -> {
+                    if (index + 1 >= text.length || !Character.isLowSurrogate(text[index + 1])) return true
+                    index += 2
+                }
+                Character.isLowSurrogate(char) -> return true
+                else -> index++
+            }
+        }
+        return false
+    }
 }

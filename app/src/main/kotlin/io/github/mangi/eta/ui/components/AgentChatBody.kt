@@ -368,6 +368,10 @@ internal fun AgentChatBody(
     // 轮数 < MIN_TURN_TICKS（3）时 tickRail 为 null，刻度条不显示，短会话只留
     // ConversationTurnNavigationButton（见 README「按钮为什么保留」）。
     val turnTicks = remember(timelineEntries) { buildTurnTicks(timelineEntries) }
+    // 本对话累计用量：用量面板展示输入/输出与缓存命中率。
+    val conversationUsage = remember(visibleMessages) {
+        io.github.mangi.eta.ui.model.conversationTokenUsage(visibleMessages)
+    }
     // 列表视口同步来的浮点当前轮；刻度条刮擦期间由刻度条接管，松手后回到这里。
     val visibleTurn = remember { mutableFloatStateOf(-1f) }
     // 刮擦气泡目标轮；气泡渲染在底部栏带子 Box 之外（带子 Box 会裁剪子内容溢出）。
@@ -488,6 +492,7 @@ internal fun AgentChatBody(
                 showEmptySuggestions = !isKeyboardVisible,
                 keepBottomAnchored = keepBottomAnchored,
                 onBottomAnchorChanged = { keepBottomAnchored = it },
+                conversationUsage = conversationUsage,
                 tickRail = tickRail,
                 tickBubble = tickBubbleTick,
                 turnTicks = turnTicks,
@@ -588,6 +593,8 @@ internal fun AgentChatScaffold(
     showEmptySuggestions: Boolean,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
+    /** 本对话累计用量（输入/输出/缓存），只给用量面板展示。 */
+    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     // Eta Mod：轮次刻度轨——外层 AgentChatBody 派生，只做透传。
     tickRail: (@Composable () -> Unit)? = null,
     tickBubble: TurnTick? = null,
@@ -684,6 +691,7 @@ internal fun AgentChatScaffold(
                 activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 showContextUsage = hasMessages,
+                conversationUsage = conversationUsage,
                 isStreaming = isStreaming,
                 isPaused = isPaused,
                 canContinueDisconnected = canContinueDisconnectedRun(visibleMessages),
@@ -2283,6 +2291,7 @@ private fun AgentChatBottomBar(
     activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
+    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     isStreaming: Boolean,
     isPaused: Boolean = false,
     canContinueDisconnected: Boolean = false,
@@ -2399,6 +2408,7 @@ private fun AgentChatBottomBar(
                     activeRunContextWindow = activeRunContextWindow,
                     autoCompressEnabled = autoCompressEnabled,
                     showContextUsage = showContextUsage,
+                    conversationUsage = conversationUsage,
                     isStreaming = isStreaming,
                     isPaused = isPaused,
                     canContinueDisconnected = canContinueDisconnected,

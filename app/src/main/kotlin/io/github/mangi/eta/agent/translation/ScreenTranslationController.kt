@@ -105,9 +105,10 @@ internal object ScreenTranslationController {
         translationCache.clear()
         activeTranslationCount.set(0)
 
-        // 释放灵动岛与前台保活
-        AgentExecutionService.release(LEASE_ID)
+        // 释放灵动岛与前台保活。先清状态再 release：release 里的刷新会用清空后的状态重画，
+        // 避免先把通知刷回运行态文字（resetExecutionState 本身不再主动重发通知）。
         AgentExecutionService.resetExecutionState()
+        AgentExecutionService.release(LEASE_ID)
         ScreenTranslationOverlayService.hide(context)
         AndroidAgentLogger.info("$TAG_PREFIX stopped")
     }
@@ -126,8 +127,8 @@ internal object ScreenTranslationController {
         activeTranslationCount.set(0)
         workerHandler?.removeCallbacksAndMessages(null)
         clearOverlay()
-        AgentExecutionService.release(LEASE_ID)
         AgentExecutionService.resetExecutionState()
+        AgentExecutionService.release(LEASE_ID)
         updateOverlayStatus(context.getString(io.github.mangi.eta.R.string.screen_translation_btn_translate))
     }
 

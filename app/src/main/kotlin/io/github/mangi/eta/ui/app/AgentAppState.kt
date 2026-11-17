@@ -3473,7 +3473,7 @@ internal class AgentAppState(
                 if (!MainActivity.isForeground && result.error != LEGACY_STOPPED_ERROR && result.error != SYNTHETIC_STATUS_STOPPED) {
                     val title = prompt.lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
                     val content = if (result.ok) {
-                        result.content.trim().take(200)
+                        result.content.trim()
                     } else {
                         result.error.orEmpty()
                     }

@@ -74,6 +74,36 @@ class PromotedNotificationContract(unittest.TestCase):
         self.assertIn("Notification.BigTextStyle()", SERVICE)
         self.assertIn("ExecutionNotificationPlan.style(promote, expanded != null)", SERVICE)
 
+    def test_no_brand_color_and_no_large_icon(self):
+        # 用户实测：setColor 会让卡片渲染成深色不透明底，大图标渲染成白方块；两者都去掉。
+        self.assertNotIn("setColor(", SERVICE)
+        self.assertNotIn("setLargeIcon(", SERVICE)
+        self.assertNotIn("launcherLargeIcon", SERVICE)
+        self.assertNotIn("BRAND_COLOR", SERVICE)
+
+    def test_completion_notification_never_promotes_or_expands(self):
+        source = squeeze(SERVICE)
+        # 完成态：不占常驻位、只提醒一次、明确不申请提升。
+        self.assertIn(".setOngoing(false) .setOnlyAlertOnce(true)", source)
+        self.assertIn("builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, false)", source)
+        # 运行结束时只清状态、不主动重发通知（否则非提升态会带 miui.focus.* 把岛重新展开）。
+        self.assertIn(
+            "fun resetExecutionState() { executionState = AgentExecutionState() publishedExecutionState = null }",
+            source,
+        )
+
+    def test_completion_body_is_bounded_not_twenty_chars(self):
+        source = squeeze(SERVICE)
+        self.assertIn("MAX_COMPLETION_BODY_CHARS = 800", source)
+        self.assertIn("ExecutionNotificationPlan::completionBody", source)
+        for path in (
+            "app/src/main/kotlin/io/github/mangi/eta/ui/app/AgentAppState.kt",
+            "app/src/main/kotlin/io/github/mangi/eta/agent/voice/EtaAssistantOverlayService.kt",
+        ):
+            text = (ROOT / path).read_text(encoding="utf-8")
+            self.assertNotIn("result.content.trim().take(200)", text)
+            self.assertIn("result.content.trim()", text)
+
 
 if __name__ == "__main__":
     unittest.main()

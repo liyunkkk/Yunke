@@ -8,9 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
@@ -23,7 +20,6 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.roundToInt
 import org.json.JSONObject
 
 /** 只在用户任务存活期间持有前台执行生命周期；进程被系统停止后不重放任务。 */
@@ -34,7 +30,6 @@ internal class AgentExecutionService : Service() {
     private val owner = ownerSequence.incrementAndGet()
     private var foregroundActive = false
     @Volatile private var startRejected = false
-    private var cachedLargeIcon: Icon? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -74,7 +69,6 @@ internal class AgentExecutionService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
-        cachedLargeIcon = null
         // 销毁时同样收回本服务拥有的任务。回收在独立有界工作线程上完成，不阻塞 Main。
         stopQueue.close(leases.drainOwner(owner))
         super.onDestroy()
@@ -154,11 +148,9 @@ internal class AgentExecutionService : Service() {
         if (!promote) {
             builder.setSubText(actionText)
         }
-        if (promote) {
-            // Agent run 在跑：品牌色 + 提升为 Live Update（状态栏胶囊 / 锁屏实时活动）。
-            builder.setColor(BRAND_COLOR)
-        }
         // 一律 BigTextStyle：刻意不用无进度的 ProgressStyle，否则提升卡下方会渲染出一条空进度白条。
+        // 不设 setColor：用户实测这台机器会把品牌色渲染成深色不透明卡片（纯黑底看不清字），
+        // 去掉后由系统按液态玻璃样式着色。
         if (ExecutionNotificationPlan.style(promote, expanded != null) == ExecutionNotificationStyle.BIG_TEXT) {
             builder.setStyle(
                 Notification.BigTextStyle()
@@ -230,36 +222,19 @@ internal class AgentExecutionService : Service() {
     }
 
     /**
-     * 把通知标记为 Live Update：胶囊短文本 + 桌面同款大图标 + 提升 extra。
+     * 把通知标记为 Live Update：胶囊短文本 + 提升 extra。
      *
      * 请求提升的公开方法（requestPromotedOngoing）到 API 36.1 才公开，所以这里按 Eta 的做法
      * 用标准 extra `android.requestPromotedOngoing`，API 36 的系统同样读取它。
+     *
+     * 不设大图标：用户实测这张卡上大图标会渲染成突兀的白色方块，按用户要求去掉。
      */
     @RequiresApi(Build.VERSION_CODES.BAKLAVA)
     private fun promoteToLiveUpdate(builder: Notification.Builder, shortText: String) {
         if (shortText.isNotEmpty()) {
             builder.setShortCriticalText(shortText)
         }
-        launcherLargeIcon()?.let(builder::setLargeIcon)
         builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)
-    }
-
-    /**
-     * 桌面同款自适应图标（白底 + 前景）作为 Live Update 大图标，给卡片一个视觉锚点。
-     * 位图按当前密度生成一次并缓存，避免每次刷新通知都重新画。
-     */
-    private fun launcherLargeIcon(): Icon? {
-        cachedLargeIcon?.let { return it }
-        val foreground = getDrawable(R.drawable.ic_launcher_foreground) ?: return null
-        val sizePx = (resources.displayMetrics.density * LARGE_ICON_DP).roundToInt().coerceIn(96, 192)
-        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        canvas.drawColor(Color.WHITE)
-        // AdaptiveIcon 前景画布为 108dp，中间 72dp 对应桌面视口；外扩 1/4 边距使构图与桌面图标一致。
-        val inset = sizePx / 4
-        foreground.setBounds(-inset, -inset, sizePx + inset, sizePx + inset)
-        foreground.draw(canvas)
-        return Icon.createWithBitmap(bitmap).also { cachedLargeIcon = it }
     }
 
     /** HyperOS 4 焦点通知 protocol 3 参数；结构对齐系统实测样本，只保留文字与一个图标。 */
@@ -330,10 +305,6 @@ internal class AgentExecutionService : Service() {
         const val CHANNEL = "eta_execution"
         private const val NOTIFICATION_ID = 1107
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
-        /** 品牌色，沿用主题种子 #3482FF（0xFF3482FF 作 UInt32 字面量会溢出，用 val 而非 const）。 */
-        private val BRAND_COLOR = 0xFF3482FF.toInt()
-        /** 大图标边长（dp），按密度换算后夹在 96–192px。 */
-        private const val LARGE_ICON_DP = 48f
         /** API 36 系统读取的提升标记；公开的 requestPromotedOngoing() 到 36.1 才存在。 */
         private const val PROMOTED_ONGOING_EXTRA = "android.requestPromotedOngoing"
         private val leases = ExecutionLeaseRegistry()
@@ -449,7 +420,7 @@ internal class AgentExecutionService : Service() {
             }
             val displayContent = content.ifBlank {
                 if (isError) "" else context.getString(R.string.execution_completed_default)
-            }
+            }.let(ExecutionNotificationPlan::completionBody)
             val builder = Notification.Builder(context, CHANNEL_COMPLETED)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(displayTitle)
@@ -458,6 +429,11 @@ internal class AgentExecutionService : Service() {
                 .setContentIntent(open)
                 .setAutoCancel(true)
                 .setShowWhen(true)
+                // 完成态不申请提升、不占常驻位、不重复提醒：用户要求"需要时自己点开才展开"。
+                .setOngoing(false)
+                .setOnlyAlertOnce(true)
+            // 显式写 false（不是省略）：同一套 extras 模板里避免继承/复制粘贴出提升标记。
+            builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, false)
             val notificationId = COMPLETION_NOTIFICATION_ID_BASE + (runId.hashCode() and 0x7FFF)
             manager.notify(notificationId, builder.build())
         }
@@ -471,10 +447,16 @@ internal class AgentExecutionService : Service() {
             mainHandler.post { instance?.refreshNotification() }
         }
 
+        /**
+         * 只清状态，不主动重发通知。
+         *
+         * 运行结束时 Runtime 紧接着调 [release]，由那里决定"还有别的会话 → 重画"或"没有会话 →
+         * 撤掉前台通知"。此前这里也刷一次，会把 1107 号通知从运行态改成空闲态再刷一遍（非提升态会带
+         * miui.focus.* 参数），HyperOS 见到焦点通知就把灵动岛展开——正是用户反馈的"任务完成自动展开"。
+         */
         fun resetExecutionState() {
             executionState = AgentExecutionState()
             publishedExecutionState = null
-            mainHandler.post { instance?.refreshNotification() }
         }
 
         /** 必须从有效的用户入口取得引用，再创建会话或子进程；失败时调用方不启动任务。 */
@@ -565,6 +547,21 @@ internal object ExecutionNotificationPlan {
     /** 提升态与「有展开正文」态用 BigTextStyle；其余不设样式（改动前行为）。 */
     internal fun style(promoted: Boolean, hasExpandedSnippet: Boolean): ExecutionNotificationStyle =
         if (promoted || hasExpandedSnippet) ExecutionNotificationStyle.BIG_TEXT else ExecutionNotificationStyle.NONE
+
+    /**
+     * 完成通知正文字数上限：展开卡片够读一段完整回复，同时保持有界
+     * （通知 extras 会被系统跨进程复制，不能塞进整篇输出）。
+     */
+    internal const val MAX_COMPLETION_BODY_CHARS = 800
+
+    /** 完成通知正文：去首尾空白，按码点截断（不切代理对），超长补省略号。 */
+    internal fun completionBody(text: String): String {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return ""
+        if (trimmed.codePointCount(0, trimmed.length) <= MAX_COMPLETION_BODY_CHARS) return trimmed
+        val end = trimmed.offsetByCodePoints(0, MAX_COMPLETION_BODY_CHARS - 1)
+        return trimmed.substring(0, end).trimEnd() + "…"
+    }
 }
 
 /** 执行通知的样式种类；刻意不提供无进度的 ProgressStyle（会渲染空进度白条）。 */

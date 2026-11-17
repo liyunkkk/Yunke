@@ -54,6 +54,7 @@ import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.data.repository.ProviderBalanceStore
 import io.github.mangi.eta.ui.pages.providers.ProviderBalanceAmount
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
+import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.defaultExpandedModelProviderIds
@@ -393,6 +394,7 @@ internal fun AgentContextUsageButton(
     usage: AgentContextUsageUi,
     sendBlocked: Boolean = false,
     popupMaxHeight: Dp = 360.dp,
+    conversationUsage: ConversationTokenUsageUi? = null,
     modifier: Modifier = Modifier,
 ) {
     val menuState = rememberEtaMenuState()
@@ -496,6 +498,7 @@ internal fun AgentContextUsageButton(
                 usage = displayedUsage,
                 modelName = selectedLabel,
                 onDismiss = { showUsagePanel = false },
+                conversationUsage = conversationUsage,
             )
         }
         EtaDropdownMenu(
