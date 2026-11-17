@@ -65,7 +65,8 @@ class AgentConversationUsageTimingsPersistenceTest {
         val message = restored.single() as AgentMessageUi
         assertEquals(usage, message.usage)
         assertTrue(requireNotNull(message.usage).hasPerformanceStats)
-        assertEquals(300L, message.usage?.averageTtftMs)
+        // ttftMs 1200 / ttftSteps 3
+        assertEquals(400L, message.usage?.averageTtftMs)
         assertEquals(20.0, requireNotNull(message.usage?.tokensPerSecond), 0.0001)
     }
 

@@ -100,7 +100,7 @@ class EtaDatabaseMigrationTest {
                 database.conversationDao().contextCheckpoint("conv-1")
             }
             assertEquals("", retainedCheckpoint?.cloudUsageJson)
-            assertEquals(35, database.openHelper.readableDatabase.version)
+            assertEquals(36, database.openHelper.readableDatabase.version)
             val todoTableCount = database.openHelper.readableDatabase
                 .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'conversation_todos'")
                 .use { cursor -> cursor.count }
