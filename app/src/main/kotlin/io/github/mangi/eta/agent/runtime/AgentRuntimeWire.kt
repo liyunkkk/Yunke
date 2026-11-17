@@ -335,6 +335,8 @@ internal object AgentRuntimeWire {
         val reasoningContent: String = "",
         val transcript: List<AgentModelClient.ConversationMessage> = emptyList(),
         val virtualDeliveryCompleted: Boolean = false,
+        /** 整轮展示用耗时与步数；旧记录没有这个字段，读回为 null。 */
+        val timings: AgentTokenUsage? = null,
     )
 
     data class EntryHandoff(
@@ -646,6 +648,7 @@ internal object AgentRuntimeWire {
         } else {
             putString(KEY_TRANSCRIPT_JSON, AgentConversationCodec.encodeTranscriptForIpc(transcript))
         }
+        timings?.let { putTokenUsage(it) }
     }
 
     fun runResultFromBundle(bundle: Bundle): RunResult =
@@ -657,6 +660,7 @@ internal object AgentRuntimeWire {
             reasoningContent = bundle.getString(KEY_REASONING_CONTENT).orEmpty(),
             transcript = AgentRuntimeTranscriptTransfer.readFromBundle(bundle),
             virtualDeliveryCompleted = bundle.getBoolean(KEY_VIRTUAL_DELIVERY_COMPLETED, false),
+            timings = bundle.getTokenUsage().takeIf { it.stepCount != null || it.llmMs != null },
         )
 
     fun toBundle(completedRun: CompletedRun): Bundle = completedRun.toBundle(compactForDrain = false)

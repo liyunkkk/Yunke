@@ -5910,6 +5910,23 @@ internal class AgentAppState(
                 result.error,
             )
         }
+        // 整轮耗时随结果一起回来，挂到最后一条回答上供统计胶囊展示。
+        result.timings?.let { timings ->
+            if (result.ok) {
+                val timingUi = timings.toUi()
+                updateMessages(runId, updateTimestamp = false, normalizeTerminalOrder = false) { messages ->
+                    val index = messages.indexOfLast { it is AgentMessageUi && it.content.isNotBlank() }
+                    if (index < 0) {
+                        messages
+                    } else {
+                        val message = messages[index] as AgentMessageUi
+                        messages.toMutableList().also { list ->
+                            list[index] = message.copy(usage = (message.usage ?: TokenUsageUi()).withTimingsFrom(timingUi))
+                        }
+                    }
+                }
+            }
+        }
         if (stoppedDuringRetry == null) {
             updateMessages(runId) { VirtualCompletionNotice.append(it, runId, result) }
             if (acknowledgeRuntimeResult && !completionAlreadyApplied) {

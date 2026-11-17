@@ -69,6 +69,8 @@ internal class AgentLoop(
         val content: String,
         val reasoningContent: String,
         val sensitiveToolCallIds: Set<String>,
+        /** 整轮展示用耗时与步数；不参与计费、压缩与上下文判定。 */
+        val timings: AgentTokenUsage? = null,
     )
 
     private data class ToolOutcome(
@@ -118,6 +120,8 @@ internal class AgentLoop(
     private var lastUsage: AgentTokenUsage? = null
     /** 整轮（本次用户请求内所有 step）的展示用耗时与 token 累加器。 */
     private val turnMetrics = AgentTurnMetrics()
+    /** 整轮累计统计，随 Result 返回给 UI；不再额外发用量事件。 */
+    private var turnTimings: AgentTokenUsage? = null
     private var hasDisplayCloudReceipt = false
     private val requestBudget = AgentRequestBudgetPolicy()
     private val silentBudget = AgentSilentContextBudget()
@@ -562,13 +566,9 @@ internal class AgentLoop(
                 stepDecodeMs = stepDecodeMs,
                 stepUsage = lastUsage,
             )
-            // token 字段只放本步回执（会话级汇总按消息累加，放累计值会重复计数）；
-            // 耗时字段放整轮累计值（胶囊展示的是「这一轮问答」的性能）。
-            val displayUsage = (lastUsage ?: AgentTokenUsage()).withTimingsFrom(accumulatedUsage)
-            // 空回合（无正文/无思考/无工具）多半会被重发：只累计不进 UI，避免留下空壳消息。
-            if (hasAssistantPayload) {
-                onEvent(AgentEvent.UsageReceived(round = round, usage = displayUsage))
-            }
+            // 耗时不再额外发一条 UsageReceived：那会改变用量事件计数与压缩判定。
+            // 整轮累计值随最终结果返回，由 UI 挂到最后一条回答上。
+            turnTimings = accumulatedUsage
 
             runController.throwIfCancelled()
             if (toolCalls.isNotEmpty()) {
@@ -733,6 +733,7 @@ internal class AgentLoop(
                 content = (interruptedTextPrefix.toString() + assistantMessage.optString("content")).trim(),
                 reasoningContent = reasoningSnapshot(),
                 sensitiveToolCallIds = sensitiveToolCallIds.toSet(),
+                timings = turnTimings,
             )
         }
         } catch (failure: Throwable) {

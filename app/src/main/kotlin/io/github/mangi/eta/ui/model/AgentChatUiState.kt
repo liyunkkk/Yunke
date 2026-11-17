@@ -218,7 +218,18 @@ data class TokenUsageUi(
             inputTokens == null &&
             outputTokens == null &&
             reasoningTokens == null &&
-            cachedTokens == null &&
+            cachedTokens == null
+
+    /** 只并入展示用耗时，保留已有 token 字段（不参与计费与上下文判定）。 */
+    fun withTimingsFrom(source: TokenUsageUi): TokenUsageUi = copy(
+        stepCount = source.stepCount ?: stepCount,
+        llmMs = source.llmMs ?: llmMs,
+        toolMs = source.toolMs ?: toolMs,
+        ttftMs = source.ttftMs ?: ttftMs,
+        ttftSteps = source.ttftSteps ?: ttftSteps,
+        decodeMs = source.decodeMs ?: decodeMs,
+        decodeTokens = source.decodeTokens ?: decodeTokens,
+    ) &&
             stepCount == null &&
             llmMs == null &&
             toolMs == null &&

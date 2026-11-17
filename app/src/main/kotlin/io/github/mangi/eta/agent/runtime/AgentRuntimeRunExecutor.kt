@@ -422,7 +422,8 @@ internal class AgentRuntimeRunExecutor(
             response = completedResponse
             modelCompleted = true
             AgentRuntimeWire.RunResult(runId = request.runId, ok = true, content = completedResponse.content,
-                reasoningContent = completedResponse.reasoningContent, transcript = completedResponse.transcript)
+                reasoningContent = completedResponse.reasoningContent, transcript = completedResponse.transcript,
+                timings = completedResponse.timings)
         } catch (throwable: Throwable) {
             cancelled = runController.isCancelled || throwable is AgentRunCancelledException ||
                 throwable is java.util.concurrent.CancellationException || throwable is InterruptedException
