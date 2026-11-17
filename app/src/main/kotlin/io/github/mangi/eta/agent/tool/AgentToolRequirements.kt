@@ -41,6 +41,13 @@ internal object AgentToolRequirements {
             "get_assistant_config", "update_assistant_config", "web_search", "fetch_url",
             "skills_install_local", "eta_manage_models", "eta_manage_subagents", "eta_configure_mcp",
         )
+        // 系统与一方应用操作：按目录自带的 Root/ColorOS 标注登记，避免手工漏项。
+        io.github.mangi.eta.agent.model.AgentPhoneToolCatalog.entries.forEach { entry ->
+            putIfAbsent(
+                entry.name,
+                LocalToolRequirement(entry.root, colorOs = entry.colorOs),
+            )
+        }
         register(
             RootRequirement.PARTIAL,
             "press_key", "network_info", "get_setting", "recent_notifications",

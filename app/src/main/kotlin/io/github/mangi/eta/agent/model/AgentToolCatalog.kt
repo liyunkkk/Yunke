@@ -43,6 +43,8 @@ internal object AgentToolCatalog {
                 githubInstall = skillGitHubInstall,
             )
             if (memoryTools) AgentMemoryToolCatalog.appendTo(tools)
+            // 系统与一方应用操作：手电筒、音量、日历、闹钟、便签、系统开关。
+            AgentPhoneToolCatalog.appendTo(tools, direct = true, reads = true, writes = true)
             if (terminalTools) {
                 AgentFileVisionToolCatalog.appendTo(tools)
                 AgentTerminalToolCatalog.appendTo(tools)
