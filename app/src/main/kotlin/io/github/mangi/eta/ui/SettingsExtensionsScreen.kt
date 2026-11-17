@@ -5,7 +5,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Extension
-import androidx.compose.material.icons.rounded.Pets
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -26,7 +25,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
  * 只在首位加了“记忆”入口（Number444 扩展页的第一项；Yunke 已有 AppRoute.Memory，
  * 文案 ui_memory_b55ff5 在中/英/繁三处都有）。
  * 不搬 Number444 的“角色”行：Yunke 没有角色系统（无 Characters 路由、无后端）。
- * 顺序按 Yunke 现有扩展分组（鲸鱼女仆、助手、Skills、MCP），不按 Number444 的
+ * 顺序按 Yunke 现有扩展分组（助手、Skills、MCP），不按 Number444 的
  * 记忆、Skills、MCP、角色。
  */
 @Composable
@@ -49,12 +48,6 @@ internal fun SettingsExtensionsScreen(
                         )
                     },
                     onClick = { onNavigate(AppRoute.Memory) },
-                )
-
-                ArrowPreference(
-                    title = stringResource(R.string.whale_maid_title),
-                    startAction = { PreferenceIcon(icon = Icons.Rounded.Pets) },
-                    onClick = { onNavigate(AppRoute.WhaleMaid) },
                 )
 
                 ArrowPreference(

@@ -3469,7 +3469,7 @@ internal class AgentAppState(
                 )
             }
             withContext(Dispatchers.Main) {
-                applyRunResult(runId, result, acknowledgeRuntimeResult = true, petReaction = true)
+                applyRunResult(runId, result, acknowledgeRuntimeResult = true)
                 if (!MainActivity.isForeground && result.error != LEGACY_STOPPED_ERROR && result.error != SYNTHETIC_STATUS_STOPPED) {
                     val title = prompt.lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
                     val content = if (result.ok) {
@@ -3718,11 +3718,6 @@ internal class AgentAppState(
         if (conversationId != null) {
             ConversationCompletionNotice.show(appContext, runId,
                 conversationTitles[conversationId].orEmpty(), AgentRuntimeWire.RunResult(runId, true, content))
-            val petTitle = conversationTitles[conversationId].orEmpty()
-            val petContext = appContext
-            scope.launch(Dispatchers.IO) {
-                io.github.mangi.eta.agent.pet.WhaleMaidController.onWorkDone(petContext, petTitle)
-            }
             onConversationRunSettled(conversationId)
         }
     }
@@ -5880,7 +5875,6 @@ internal class AgentAppState(
         runId: String,
         result: AgentRuntimeWire.RunResult,
         acknowledgeRuntimeResult: Boolean = false,
-        petReaction: Boolean = false,
     ) {
         val completionConversationId = conversationIdForRun(runId)
         val completionAlreadyApplied = completionConversationId?.let(::conversationState)
@@ -5956,13 +5950,6 @@ internal class AgentAppState(
         pendingConversationTitles.remove(runId)?.let { pending ->
             if (result.ok && stoppedDuringRetry == null && result.content.isNotBlank()) {
                 requestConversationTitle(pending, result.content, completedPersistence)
-            }
-        }
-        if (petReaction && result.ok && stoppedDuringRetry == null && conversationId != null) {
-            val petTitle = conversationTitles[conversationId].orEmpty()
-            val petContext = appContext
-            scope.launch(Dispatchers.IO) {
-                io.github.mangi.eta.agent.pet.WhaleMaidController.onWorkDone(petContext, petTitle)
             }
         }
         if (conversationId != null) {

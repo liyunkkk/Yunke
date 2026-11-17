@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -39,9 +40,10 @@ internal fun AssistantAvatar(
     assistant: AssistantProfile?,
     size: Dp,
     modifier: Modifier = Modifier,
+    shape: Shape = CircleShape,
 ) {
     val bitmap = rememberAssistantAvatarBitmap(assistant?.id, assistant?.avatarFileName)
-    AssistantAvatar(bitmap = bitmap, size = size, modifier = modifier)
+    AssistantAvatar(bitmap = bitmap, size = size, modifier = modifier, shape = shape)
 }
 
 /** A new request owns a new state: late results cannot flash the previous assistant. */
@@ -59,11 +61,16 @@ internal fun rememberAssistantAvatarBitmap(assistantId: String?, fileName: Strin
     return result.value
 }
 
+/**
+ * 助手头像。[size] 为 null 时不再强制正方形，由调用方 modifier 决定尺寸（竖版肖像卡、
+ * Hero 大图需要 2:3）；[shape] 决定裁切形状，默认圆形。
+ */
 @Composable
 internal fun AssistantAvatar(
     bitmap: Bitmap?,
-    size: Dp,
+    size: Dp?,
     modifier: Modifier = Modifier,
+    shape: Shape = CircleShape,
 ) {
     val context = LocalContext.current
     val imageBitmap = remember(bitmap, context) {
@@ -74,8 +81,8 @@ internal fun AssistantAvatar(
     }
     Box(
         modifier = modifier
-            .size(size)
-            .clip(CircleShape)
+            .then(if (size != null) Modifier.size(size) else Modifier)
+            .clip(shape)
             .background(MiuixTheme.colorScheme.secondaryContainer),
         contentAlignment = Alignment.Center,
     ) {
