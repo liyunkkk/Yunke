@@ -172,6 +172,19 @@ internal class AgentExecutionService : Service() {
             promoteToLiveUpdate(builder, state.shortText())
         }
 
+        // 浅色半透明自定义卡片：HyperOS 的原生实时活动模板会把背景画成深色，
+        // 与壁纸混在一起后正文几乎看不清。这里自绘一层浅色底，标题/状态/正文都够对比度；
+        // 系统若不接受自定义内容视图，会回落到上面的标准模板。
+        val executionCard = agentNotificationCard(
+            context = this,
+            title = appTitle,
+            status = actionText,
+            body = expanded ?: detailWithVirtualDisplay,
+            actionLabel = getString(R.string.execution_stop),
+            actionIntent = stop,
+        )
+        builder.setCustomContentView(executionCard)
+        builder.setCustomBigContentView(executionCard)
         return builder.build()
     }
 
@@ -389,6 +402,27 @@ internal class AgentExecutionService : Service() {
             manager.createNotificationChannel(completedChannel)
         }
 
+        fun agentNotificationCard(
+            context: Context,
+            title: String,
+            status: String,
+            body: String,
+            actionLabel: String?,
+            actionIntent: android.app.PendingIntent?,
+        ): android.widget.RemoteViews =
+            android.widget.RemoteViews(context.packageName, R.layout.notification_agent_card).apply {
+                setTextViewText(R.id.agent_notification_title, title)
+                setTextViewText(R.id.agent_notification_status, status)
+                setTextViewText(R.id.agent_notification_body, body)
+                if (!actionLabel.isNullOrBlank() && actionIntent != null) {
+                    setTextViewText(R.id.agent_notification_action, actionLabel)
+                    setViewVisibility(R.id.agent_notification_action, android.view.View.VISIBLE)
+                    setOnClickPendingIntent(R.id.agent_notification_action, actionIntent)
+                } else {
+                    setViewVisibility(R.id.agent_notification_action, android.view.View.GONE)
+                }
+            }
+
         fun postCompletionNotification(
             context: Context,
             runId: String,
@@ -435,6 +469,22 @@ internal class AgentExecutionService : Service() {
             // 显式写 false（不是省略）：同一套 extras 模板里避免继承/复制粘贴出提升标记。
             builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, false)
             val notificationId = COMPLETION_NOTIFICATION_ID_BASE + (runId.hashCode() and 0x7FFF)
+            builder.setCustomContentView(agentNotificationCard(
+                context = context,
+                title = displayTitle,
+                status = "已完成",
+                body = displayContent,
+                actionLabel = "查看",
+                actionIntent = open,
+            ))
+            builder.setCustomBigContentView(agentNotificationCard(
+                context = context,
+                title = displayTitle,
+                status = "已完成",
+                body = displayContent,
+                actionLabel = "查看",
+                actionIntent = open,
+            ))
             manager.notify(notificationId, builder.build())
         }
 
