@@ -127,4 +127,9 @@ internal data class ConversationMessageEntity(
     @ColumnInfo(name = "image_count") val imageCount: Int = 0,
     @ColumnInfo(name = "tools_json") val toolsJson: String = "[]",
     @ColumnInfo(name = "generated_at_millis") val generatedAtMillis: Long? = null,
+    /**
+     * 展示用耗时（步数/模型用时/工具用时/首 token/解码）的紧凑 JSON，见 UsageTimingsJson。
+     * null 或空串 = 旧记录或不带耗时；token 用量仍在上面各自的列，不重复存。
+     */
+    @ColumnInfo(name = "usage_timings_json") val usageTimingsJson: String? = null,
 )

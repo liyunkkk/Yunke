@@ -83,6 +83,9 @@ sealed interface AppRoute : NavKey {
     data object TitleModel : AppRoute
 
     @Serializable
+    data object WebToolsSettings : AppRoute
+
+    @Serializable
     data object ErrorReconnectSettings : AppRoute
 
     @Serializable
@@ -93,9 +96,6 @@ sealed interface AppRoute : NavKey {
 
     @Serializable
     data object AppearanceSettings : AppRoute
-
-    @Serializable
-    data object WhaleMaid : AppRoute
 
     @Serializable
     data object DataBackup : AppRoute

@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.tool
 
 import android.content.Context
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.agent.model.AgentToolCatalog
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import kotlinx.coroutines.runBlocking
@@ -51,6 +52,19 @@ internal class AssistantSelfConfigTool(
             return errorJson("INVALID_ARGUMENTS", "必须提供 action 与 target 参数")
         }
 
+        if (action == "toggle_tool") {
+            val tools = AgentToolCatalog.allForSwitches()
+            val canonical = Prefs.canonicalToolSwitchId(target)
+            val known = (0 until tools.length()).any {
+                Prefs.canonicalToolSwitchId(tools.getJSONObject(it).getJSONObject("function").getString("name")) == canonical
+            }
+            if (!known) return errorJson("UNKNOWN_TOOL", "工具未注册：$target")
+            val enabled = if (valueStr.isBlank()) !Prefs.isToolEnabled(target)
+                else valueStr.toBooleanStrictOrNull() ?: return errorJson("INVALID_ARGUMENTS", "value 应为 true 或 false")
+            if (!Prefs.setToolEnabled(target, enabled)) return errorJson("SAVE_FAILED", "工具开关保存失败")
+            return JSONObject().put("ok", true).put("tool", "update_assistant_config")
+                .put("tool_name", canonical).put("enabled", enabled).toString()
+        }
         // 强防注入护栏：严禁任何涉及凭据明文的修改
         val targetLower = target.lowercase()
         if (targetLower.contains("key") || targetLower.contains("secret") ||
@@ -68,7 +82,7 @@ internal class AssistantSelfConfigTool(
             "toggle_setting" -> handleToggleSetting(target, valueStr)
             else -> errorJson(
                 "UNSUPPORTED_ACTION",
-                "不支持的 action: $action。仅支持 switch_model、switch_provider、toggle_setting"
+                "不支持的 action: $action。仅支持 switch_model、switch_provider、toggle_setting、toggle_tool"
             )
         }
     }
@@ -153,14 +167,13 @@ internal class AssistantSelfConfigTool(
                 Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS
             "device_sensitive_action_tools", "agent_device_sensitive_action_tools" ->
                 Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS
-            "kimi_web_builtin_browser", "kimi_builtin_browser" -> Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER
             else -> null
         }
         if (key == null) {
             return errorJson(
                 "UNSUPPORTED_SETTING",
                 "不支持修改该配置项：$target。允许的受控开关：thinking_mode, terminal_tools, browser_tools, " +
-                    "device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools, kimi_builtin_browser"
+                    "device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools"
             )
         }
         val newValue = if (valueStr.isNotBlank()) {
@@ -169,10 +182,10 @@ internal class AssistantSelfConfigTool(
             // 未传 value 则自动取反
             !Prefs.isEnabled(key)
         }
-        val local = Prefs.localAgentPreferences()
-        if (local != null) {
-            local.edit().putBoolean(key, newValue).commit()
-        }
+        val groupTools = AgentToolCatalog.legacyGroupToolNames(key)
+        val saved = if (groupTools.isNotEmpty()) Prefs.setToolsEnabled(groupTools, newValue)
+            else Prefs.localAgentPreferences()?.edit()?.putBoolean(key, newValue)?.commit() == true
+        if (!saved) return errorJson("SAVE_FAILED", "配置保存失败")
         return JSONObject()
             .put("ok", true)
             .put("tool", "update_assistant_config")

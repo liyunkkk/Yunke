@@ -23,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.kimi.KimiPermissionMode
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.ui.components.ArrowPreference
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -53,10 +52,6 @@ internal fun SettingsToolsScreen(
 ) {
     val taskBackendInstalled = rememberTaskBackendInstalled()
     val agentPrefs = remember { Prefs.localAgentPreferences() }
-    var kimiPermissionMode by remember(agentPrefs) {
-        mutableStateOf(KimiPermissionMode.resolve(agentPrefs?.getString(Prefs.Keys.KIMI_PERMISSION_MODE, KimiPermissionMode.YOLO)))
-    }
-
     MiuixScaffoldPage(
         title = stringResource(R.string.ui_tool_a72ef1),
         onBack = onBack,
@@ -117,43 +112,6 @@ internal fun SettingsToolsScreen(
                     key = Prefs.Keys.AGENT_TERMINAL_TOOLS,
                     icon = Icons.Rounded.Terminal,
                 )
-                SwitchPref(
-                    context = context,
-                    prefs = agentPrefs,
-                    title = stringResource(R.string.settings_kimi_web_builtin_browser),
-                    key = Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER,
-                    icon = Icons.Rounded.Language,
-                )
-
-                WindowSpinnerPreference(
-                    title = stringResource(R.string.settings_kimi_auth_title),
-                    summary = stringResource(R.string.settings_kimi_auth_summary),
-                    items = listOf(
-                        stringResource(R.string.settings_kimi_auth_yolo),
-                        stringResource(R.string.settings_kimi_auth_auto),
-                        stringResource(R.string.settings_kimi_auth_manual),
-                    ).map { DropdownItem(text = it) },
-                    selectedIndex = KimiPermissionMode.all.indexOf(kimiPermissionMode).coerceAtLeast(0),
-                    onSelectedIndexChange = { index ->
-                        val mode = KimiPermissionMode.all.getOrNull(index)
-                            ?: return@WindowSpinnerPreference
-                        val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
-                        if (putStringSync(targetPrefs, Prefs.Keys.KIMI_PERMISSION_MODE, mode)) {
-                            kimiPermissionMode = mode
-                        } else {
-                            Toast.makeText(
-                                context.applicationContext,
-                                context.getString(R.string.settings_write_failed),
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        }
-                    },
-                    startAction = {
-                        PreferenceIcon(icon = Icons.Rounded.Lock, enabled = agentPrefs != null)
-                    },
-                    enabled = agentPrefs != null,
-                )
-
                 ArrowPreference(
                     title = stringResource(R.string.ui_linux_tool_environment_314d22),
                     startAction = {

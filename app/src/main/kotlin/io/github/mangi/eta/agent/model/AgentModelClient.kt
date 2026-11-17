@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.media.isVideoMedia
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.config.Prefs
@@ -169,13 +170,14 @@ internal object AgentModelClient {
                 skillGitHubDiscovery = true,
                 skillGitHubInstall = true,
                 memoryTools = memoryEnabled,
+                disabledTools = Prefs.disabledTools(),
                 capabilities = capabilities,
             )
             for (index in 0 until additionalTools.length()) {
                 tools.put(additionalTools.opt(index))
             }
             if (compactionArchive != null) tools.put(AgentCompactionArchive.tool())
-            return AgentToolCatalog.filterAdvertised(tools)
+            return AgentToolCatalog.filterAdvertised(AgentToolCatalog.filterEnabled(tools, Prefs.disabledTools()))
         }
         val tools = toolsFor(initialCapabilities)
         val traceFormatter = AgentTraceFormatter(
@@ -272,6 +274,7 @@ internal object AgentModelClient {
                 transcriptStartIndex,
                 result.sensitiveToolCallIds,
             ),
+            timings = result.timings,
         )
     }
 
@@ -403,6 +406,8 @@ internal object AgentModelClient {
             val content: String,
             val reasoningContent: String = "",
             val transcript: List<ConversationMessage> = emptyList(),
+            /** 整轮展示用耗时与步数，交给 UI 画统计胶囊。 */
+            val timings: AgentTokenUsage? = null,
         ) : ModelResponse
     }
 

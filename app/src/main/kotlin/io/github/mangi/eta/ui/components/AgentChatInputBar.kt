@@ -167,6 +167,7 @@ internal fun AgentChatInputBar(
     activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
+    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     isStreaming: Boolean,
     isCompressingContext: Boolean = false,
     showMorphLoading: Boolean = false,
@@ -236,13 +237,15 @@ internal fun AgentChatInputBar(
     // 思考图标才具备长按切速度语义。非 GPT 立即走普通原色分支，不给长按语义，也不做旋转/缩放。
     val gptSpeedSupported = modelPickerState.selectedModel?.gptSpeedSupported == true
     val liveUsage = remember(contextDisplayPolicy, billedContextTokens, modelPickerState.selectedModel,
-        activeRunContextWindow) {
+        activeRunContextWindow, billedHistoryTokens, billedOverheadTokens) {
         // 圆环只显示真实云端回执：没有实测回执时不投影任何本地估算。
         liveContextUsage(
             billedContextTokens = billedContextTokens,
             selectedModel = modelPickerState.selectedModel,
             contextDisplayPolicy = contextDisplayPolicy,
             activeRunContextWindow = activeRunContextWindow,
+            billedHistoryTokens = billedHistoryTokens,
+            billedOverheadTokens = billedOverheadTokens,
         )
     }
     // The budget only serves manual send blocking. Skip all local history work
@@ -535,6 +538,7 @@ internal fun AgentChatInputBar(
                         // Keep context details accessible even for an empty draft or an unknown limit.
                         if (showContextUsage) {
                             AgentContextUsageButton(
+                                conversationUsage = conversationUsage,
                                 usage = liveUsage,
                                 popupMaxHeight = thinkingPopupMaxHeight,
                                 sendBlocked = contextSendBlocked,

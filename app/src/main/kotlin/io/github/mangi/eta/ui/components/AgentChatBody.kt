@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -367,6 +368,10 @@ internal fun AgentChatBody(
     // 轮数 < MIN_TURN_TICKS（3）时 tickRail 为 null，刻度条不显示，短会话只留
     // ConversationTurnNavigationButton（见 README「按钮为什么保留」）。
     val turnTicks = remember(timelineEntries) { buildTurnTicks(timelineEntries) }
+    // 本对话累计用量：用量面板展示输入/输出与缓存命中率。
+    val conversationUsage = remember(visibleMessages) {
+        io.github.mangi.eta.ui.model.conversationTokenUsage(visibleMessages)
+    }
     // 列表视口同步来的浮点当前轮；刻度条刮擦期间由刻度条接管，松手后回到这里。
     val visibleTurn = remember { mutableFloatStateOf(-1f) }
     // 刮擦气泡目标轮；气泡渲染在底部栏带子 Box 之外（带子 Box 会裁剪子内容溢出）。
@@ -487,6 +492,7 @@ internal fun AgentChatBody(
                 showEmptySuggestions = !isKeyboardVisible,
                 keepBottomAnchored = keepBottomAnchored,
                 onBottomAnchorChanged = { keepBottomAnchored = it },
+                conversationUsage = conversationUsage,
                 tickRail = tickRail,
                 tickBubble = tickBubbleTick,
                 turnTicks = turnTicks,
@@ -587,6 +593,8 @@ internal fun AgentChatScaffold(
     showEmptySuggestions: Boolean,
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
+    /** 本对话累计用量（输入/输出/缓存），只给用量面板展示。 */
+    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     // Eta Mod：轮次刻度轨——外层 AgentChatBody 派生，只做透传。
     tickRail: (@Composable () -> Unit)? = null,
     tickBubble: TurnTick? = null,
@@ -666,9 +674,6 @@ internal fun AgentChatScaffold(
         ),
         bottomBar = {
             AgentChatBottomBar(
-                tickRail = tickRail,
-                tickBubble = tickBubble,
-                tickRailVisible = tickRailVisible,
                 collaborationConversationId = collaborationConversationId,
                 input = input,
                 draftField = draftField,
@@ -686,6 +691,7 @@ internal fun AgentChatScaffold(
                 activeRunContextWindow = activeRunContextWindow,
                 autoCompressEnabled = autoCompressEnabled,
                 showContextUsage = hasMessages,
+                conversationUsage = conversationUsage,
                 isStreaming = isStreaming,
                 isPaused = isPaused,
                 canContinueDisconnected = canContinueDisconnectedRun(visibleMessages),
@@ -727,6 +733,7 @@ internal fun AgentChatScaffold(
         },
     ) { innerPadding ->
         val bottomPadding = innerPadding.calculateBottomPadding()
+        Box(modifier = Modifier.fillMaxSize()) {
         if (!hasMessages) {
             EmptyChatState(
                 showSuggestions = showEmptySuggestions,
@@ -774,6 +781,31 @@ internal fun AgentChatScaffold(
                 modifier = Modifier
                     .fillMaxSize(),
             )
+        }
+        // Eta Mod：轮次刻度轨改为纵向，浮在对话记录右侧、垂直居中。
+        // 气泡必须渲染在轨的 Box 之外会遮蔽的位置：这里放在轨左侧，随轨一起淡入淡出。
+        if (tickRail != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .padding(vertical = 8.dp)
+                    .padding(end = 2.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                if (tickRailVisible) {
+                    tickBubble?.let { bubble ->
+                        TurnTickBubble(
+                            tick = bubble,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = TurnTickRailWidth + 8.dp),
+                        )
+                    }
+                }
+                tickRail()
+            }
+        }
         }
     }
     }
@@ -2243,9 +2275,6 @@ internal fun visibleTurnSpeechPreface(
 }
 
 
-/** Eta Mod：刻度带高度——刻度 28dp + 底部 2dp + 上方 6dp 渐变淡出（无玻璃纯渐变）。 */
-private val ChatBottomRailBandHeight = 36.dp
-
 @Composable
 private fun AgentChatBottomBar(
     input: String,
@@ -2262,6 +2291,7 @@ private fun AgentChatBottomBar(
     activeRunContextWindow: Int? = null,
     autoCompressEnabled: Boolean,
     showContextUsage: Boolean,
+    conversationUsage: io.github.mangi.eta.ui.model.ConversationTokenUsageUi? = null,
     isStreaming: Boolean,
     isPaused: Boolean = false,
     canContinueDisconnected: Boolean = false,
@@ -2301,66 +2331,18 @@ private fun AgentChatBottomBar(
     onAssistantSelected: (String) -> Unit = {},
     gptSpeedMode: io.github.mangi.eta.data.model.GptSpeedMode = io.github.mangi.eta.data.model.GptSpeedMode.NORMAL,
     onCycleGptSpeedMode: () -> Unit = {},
-    // Eta Mod：轮次刻度轨插槽——无玻璃版；气泡渲染在带子 Box 之外。
-    tickRail: (@Composable () -> Unit)? = null,
-    tickBubble: TurnTick? = null,
-    // Eta Mod：刻度轨可见性——平时不常驻，抄上一条/下一条按钮的逻辑；
-    // 带子随它淡入淡出 + 高度收起，隐藏时不占 36dp 位置。
-    tickRailVisible: Boolean = false,
 ) {
     val drawerBlocksIme = LocalConversationDrawerBlocksIme.current
     // 语音态点「键盘」：停止语音态后把焦点还回输入框，普通输入能力立即可用。
     val composerFocus = remember { FocusRequester() }
-    // 底部栏实测高度：刻度气泡用它定位（浮层不参与布局，纯位移）。
-    var dockHeightPx by remember { mutableIntStateOf(0) }
     Box(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (drawerBlocksIme) Modifier else Modifier.imePadding())
-                .onSizeChanged { dockHeightPx = it.height },
+                .then(if (drawerBlocksIme) Modifier else Modifier.imePadding()),
         ) {
-            // Eta Mod：刻度带——Yunke 底部栏本就是透明的，只做 36dp 透明→surface 渐变，
-            // 不另起磨砂层、不照抄 Number444 的 50dp 玻璃带；tickRail 为 null 时不渲染。
-            // 可见性动画：透明度与高度同为 250ms tween，与 TurnTickRail 内部的
-            // railAlpha 同步起落；隐藏时高度收到 0，不在输入框上方留一条空带子。
-            val railBandAlpha by animateFloatAsState(
-                targetValue = if (tickRailVisible) 1f else 0f,
-                animationSpec = tween(durationMillis = 250),
-                label = "tickRailBandAlpha",
-            )
-            val railBandHeight by animateDpAsState(
-                targetValue = if (tickRailVisible) ChatBottomRailBandHeight else 0.dp,
-                animationSpec = tween(durationMillis = 250),
-                label = "tickRailBandHeight",
-            )
-            if (tickRail != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(railBandHeight)
-                        .graphicsLayer { alpha = railBandAlpha }
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    MiuixTheme.colorScheme.surface,
-                                ),
-                            ),
-                        ),
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(start = 14.dp, end = 14.dp, bottom = 2.dp),
-                    ) {
-                        tickRail()
-                    }
-                }
-            }
             // 输入框周围保持透明：消息列表延伸到底栏之后，只有输入框本体不透明。
             Column(
                 modifier = Modifier
@@ -2426,6 +2408,7 @@ private fun AgentChatBottomBar(
                     activeRunContextWindow = activeRunContextWindow,
                     autoCompressEnabled = autoCompressEnabled,
                     showContextUsage = showContextUsage,
+                    conversationUsage = conversationUsage,
                     isStreaming = isStreaming,
                     isPaused = isPaused,
                     canContinueDisconnected = canContinueDisconnected,
@@ -2462,23 +2445,6 @@ private fun AgentChatBottomBar(
                     onCycleGptSpeedMode = onCycleGptSpeedMode,
                     focusRequester = composerFocus,
                     modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-        // Eta Mod：刻度刮擦气泡——渲染在带子 Box 之外（带子 Box 会裁剪子内容溢出），
-        // 底部对齐 dock 底后整体上移，气泡底落在刻度顶上 8dp、水平居中。
-        // 气泡只在刻度条可见时出现：刮擦时外层强制可见，松手后随刻度条一起淡出。
-        if (tickRailVisible) {
-            tickBubble?.let { bubble ->
-                val density = LocalDensity.current
-                val bubbleBottomFromDockTop =
-                    ChatBottomRailBandHeight - 2.dp - TurnTickRailHeight - 8.dp
-                val liftPx = with(density) { bubbleBottomFromDockTop.toPx() } - dockHeightPx
-                TurnTickBubble(
-                    tick = bubble,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .graphicsLayer { translationY = liftPx },
                 )
             }
         }

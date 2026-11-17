@@ -136,7 +136,7 @@ internal object AgentBrowserSession {
     /**
      * 用户主动请求、等待浏览器页面接管后打开的地址。
      *
-     * 调用方（如 Kimi Web 启动）此时页面尚未创建，直接导航会与接管流程竞态，
+     * 调用方（如本机 Web 服务入口）此时页面尚未创建，直接导航会与接管流程竞态，
      * 因此只登记地址，由 [acquireUserControl] 在标签页就绪后消费。
      */
     @Volatile

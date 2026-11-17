@@ -147,7 +147,9 @@ internal sealed interface AgentEvent {
         val requestOverheadTokens: Int? = null,
     ) : AgentEvent {
         override fun toLogLine(): String =
-            "usage_received round=$round, projected=$projected, ctx=${usage.contextTokens}, in=${usage.inputTokens}, out=${usage.outputTokens}, reasoning=${usage.reasoningTokens}, cache=${usage.cachedTokens}"
+            "usage_received round=$round, projected=$projected, ctx=${usage.contextTokens}, in=${usage.inputTokens}, out=${usage.outputTokens}, reasoning=${usage.reasoningTokens}, cache=${usage.cachedTokens}" +
+                ", steps=${usage.stepCount}, llm_ms=${usage.llmMs}, tool_ms=${usage.toolMs}, " +
+                "ttft_ms=${usage.ttftMs}/${usage.ttftSteps}, decode_ms=${usage.decodeMs}/${usage.decodeTokens}"
     }
 
     data class UserSupplementReceived(

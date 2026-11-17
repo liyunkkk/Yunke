@@ -26,15 +26,16 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.awaitVerticalTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -146,11 +147,17 @@ private const val MAX_SUMMARY_CHARS = 160
 /** 轮数下限：少于 3 轮不显示刻度条。 */
 internal const val MIN_TURN_TICKS = 3
 
-/** 刻度条总高度（含触控余量）。 */
-internal val TurnTickRailHeight = 28.dp
+/** 纵向刻度轨总宽度（含触控余量）。 */
+internal val TurnTickRailWidth = 28.dp
 
+/** 兼容旧引用：纵向轨的宽度与原先横向条的高度同为 28dp。 */
+internal val TurnTickRailHeight = TurnTickRailWidth
+
+/** 纵向相邻刻度间距。 */
 private val TickSlot = 8.dp
-private val EdgeFadeWidth = 28.dp
+
+/** 轨首尾各 28dp 的 alpha 渐隐。 */
+private val EdgeFadeLength = 28.dp
 
 /** 分档（纯数量判断）：当前轮 / 最新第 2~11 轮 / 更早。 */
 private val Tier1Width = 3.dp
@@ -159,12 +166,11 @@ private val Tier2Width = 2.5.dp
 private val Tier2Height = 11.dp
 private val Tier3Width = 2.dp
 private val Tier3Height = 7.dp
-private val TickBottomPadding = 4.dp
 
 /** 手指按下时全体刻度等比放大倍数（避免被手指挡住）。 */
 private const val TOUCH_SCALE = 1.65f
 
-/** 虚刻度（延伸占位）：真实刻度带左端之外的延伸刻度，仅按住期间淡入，不可选中、纯视觉。 */
+/** 虚刻度（延伸占位）：真实刻度带上端之外的延伸刻度，仅按住期间淡入，不可选中、纯视觉。 */
 private val GhostTickWidth = 1.5.dp
 private val GhostTickHeight = 5.dp
 private const val GHOST_TICK_ALPHA = 0.25f
@@ -194,19 +200,18 @@ internal fun resolveVisibleTurn(
 }
 
 /**
- * 横向刻度条：并入输入框浮层 dock、位于输入框正上方，左右边界与输入框一致。
- * 无玻璃版：刻度只用 Canvas 画，颜色走 Miuix 主题，不依赖任何 Kyant / backdrop。
+ * 纵向刻度轨：浮在对话记录右侧、垂直居中，手势与视觉沿用横向版的锁定模型。 无玻璃版：刻度只用 Canvas 画，颜色走 Miuix 主题，不依赖任何 Kyant / backdrop。
  *
  * 标尺式中心锁定模型：
- * - 选中轮（蓝条）永远居中，刻度带作为整体在下方滑动
+ * - 选中轮（主色条）永远居中，刻度带作为整体上下滑动
  * - 列表滚动时 [currentTurn] 跟随视口位置（浮点），刻度带随之平滑滑动
  * - 轻点刻度 → [onTap] 跳到该轮（末轮即"回到底部"，由调用方判定）
- * - 按住横向拖动 → 刻度带随手整体移动，中心蓝条为目标轮，列表实时刮擦跟随，
+ * - 按住纵向拖动 → 刻度带随手整体移动，中心主色条为目标轮，列表实时刮擦跟随，
  *   回调 [onScrubStart] / [onScrubTick] / [onScrubEnd]
- * - 手指按下期间全体刻度等比放大（×[TOUCH_SCALE]），刻度带左端之外淡入虚刻度
+ * - 手指按下期间全体刻度等比放大（×[TOUCH_SCALE]），刻度带上端之外淡入虚刻度
  *   （延伸占位，不可选中、纯视觉，松手淡出）
- * - 刮擦期间经 [onBubbleChanged] 上报目标轮（气泡由调用方渲染在带子 Box 之外，
- *   带子 Box 会裁剪子内容溢出，气泡不能放在刻度条内部）
+ * - 刮擦期间经 [onBubbleChanged] 上报目标轮（气泡由调用方渲染在轨左侧，
+ *   带子 Box 会裁剪子内容溢出，气泡不能放在刻度轨内部）
  */
 @Composable
 internal fun TurnTickRail(
@@ -235,8 +240,7 @@ internal fun TurnTickRail(
     val density = LocalDensity.current
     val haptics = LocalHapticFeedback.current
     val slotPx = with(density) { TickSlot.toPx() }
-    val edgeFadePx = with(density) { EdgeFadeWidth.toPx() }
-    val tickBottomPadPx = with(density) { TickBottomPadding.toPx() }
+    val edgeFadePx = with(density) { EdgeFadeLength.toPx() }
     val tier1WidthPx = with(density) { Tier1Width.toPx() }
     val tier1HeightPx = with(density) { Tier1Height.toPx() }
     val tier2WidthPx = with(density) { Tier2Width.toPx() }
@@ -246,7 +250,7 @@ internal fun TurnTickRail(
     val ghostTickWidthPx = with(density) { GhostTickWidth.toPx() }
     val ghostTickHeightPx = with(density) { GhostTickHeight.toPx() }
 
-    var railWidthPx by remember { mutableFloatStateOf(0f) }
+    var railLengthPx by remember { mutableFloatStateOf(0f) }
     // >=0 表示正在刮擦（手指驱动的浮点轮次）；<0 表示跟随列表视口。
     var scrubTurn by remember { mutableFloatStateOf(-1f) }
     var scrubTarget by remember { mutableIntStateOf(-1) }
@@ -284,16 +288,16 @@ internal fun TurnTickRail(
 
     Box(
         modifier = modifier
-            .fillMaxWidth()
-            .height(TurnTickRailHeight)
+            .width(TurnTickRailWidth)
+            .fillMaxHeight()
             .graphicsLayer { alpha = railAlpha },
     ) {
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .onSizeChanged { railWidthPx = it.width.toFloat() }
+                .onSizeChanged { railLengthPx = it.height.toFloat() }
             .pointerInput(slotPx, visible) {
-                // 隐藏时不接手势：淡出后刻度条不可点、不可刮，避免透明层挡住输入框。
+                // 隐藏时不接手势：淡出后刻度轨不可点、不可刮，避免透明层挡住右侧内容。
                 // 刮擦期间调用方强制 visible=true，key 不会在手势中途翻转。
                 if (!visible) return@pointerInput
                 awaitEachGesture {
@@ -302,7 +306,7 @@ internal fun TurnTickRail(
                     val startTurn = displayTurn()
                     var dragDistance = 0f
                     var scrubbing = false
-                    val dragChange = awaitHorizontalTouchSlopOrCancellation(down.id) { change, overSlop ->
+                    val dragChange = awaitVerticalTouchSlopOrCancellation(down.id) { change, overSlop ->
                         if (!scrubbing) {
                             scrubbing = true
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -314,8 +318,8 @@ internal fun TurnTickRail(
                     if (dragChange == null) {
                         // 未过滑动阈值即松手：轻点跳轮。
                         touching = false
-                        val center = railWidthPx / 2f
-                        val index = (displayTurn() + (down.position.x - center) / slotPx)
+                        val center = railLengthPx / 2f
+                        val index = (displayTurn() + (down.position.y - center) / slotPx)
                             .roundToInt()
                             .coerceIn(0, currentTicks.lastIndex)
                         haptics.performHapticFeedback(HapticFeedbackType.KeyboardTap)
@@ -327,7 +331,7 @@ internal fun TurnTickRail(
                     fireScrubTarget()
                     while (true) {
                         val continued = drag(dragChange.id) { dragEvent ->
-                            dragDistance += dragEvent.position.x - dragEvent.previousPosition.x
+                            dragDistance += dragEvent.position.y - dragEvent.previousPosition.y
                             scrubTurn = (startTurn - dragDistance / slotPx)
                                 .coerceIn(0f, currentTicks.lastIndex.toFloat())
                             fireScrubTarget()
@@ -345,9 +349,10 @@ internal fun TurnTickRail(
             },
         ) {
             val count = currentTicks.size
-            if (count == 0 || size.width <= 0f) return@Canvas
-            val windowed = count * slotPx > size.width
-            val center = size.width / 2f
+            if (count == 0 || size.height <= 0f) return@Canvas
+            val windowed = count * slotPx > size.height
+            val centerY = size.height / 2f
+            val centerX = size.width / 2f
             val turn = when {
                 scrubTurn >= 0f -> scrubTurn
                 currentTurn.value >= 0f -> currentTurn.value.coerceIn(0f, (count - 1).toFloat())
@@ -355,39 +360,38 @@ internal fun TurnTickRail(
             }
             val highlight = turn.roundToInt().coerceIn(0, count - 1)
             val scale = 1f + (TOUCH_SCALE - 1f) * touchAnim
-            val baseline = size.height - tickBottomPadPx
 
-            // 虚刻度：真实刻度带左端之外的延伸占位（更低一级，不可选中，纯视觉），
+            // 虚刻度：真实刻度带上端之外的延伸占位（更低一级，不可选中，纯视觉），
             // 仅按住期间淡入，松手淡出。
             val ghostWidth = ghostTickWidthPx * scale
             val ghostHeight = ghostTickHeightPx * scale
-            val bandStart = center + (0f - turn) * slotPx
-            fun drawGhost(x: Float, alphaScale: Float, fadeLeft: Float, fadeRight: Float) {
+            val bandStart = centerY + (0f - turn) * slotPx
+            fun drawGhost(y: Float, alphaScale: Float, fadeTop: Float, fadeBottom: Float) {
                 var alpha = GHOST_TICK_ALPHA * alphaScale
-                alpha *= ((x - fadeLeft) / edgeFadePx).coerceIn(0f, 1f)
-                alpha *= ((fadeRight - x) / edgeFadePx).coerceIn(0f, 1f)
+                alpha *= ((y - fadeTop) / edgeFadePx).coerceIn(0f, 1f)
+                alpha *= ((fadeBottom - y) / edgeFadePx).coerceIn(0f, 1f)
                 if (alpha <= 0.004f) return
                 drawRoundRect(
                     color = tickColor,
-                    topLeft = Offset(x - ghostWidth / 2f, baseline - ghostHeight),
+                    topLeft = Offset(centerX - ghostWidth / 2f, y - ghostHeight / 2f),
                     size = Size(ghostWidth, ghostHeight),
                     cornerRadius = CornerRadius(ghostWidth / 2f),
                     alpha = alpha,
                 )
             }
             if (touchAnim > 0.01f && count > 0) {
-                val leftSlots = ((bandStart - slotPx) / slotPx).toInt().coerceIn(0, 12)
-                for (k in 1..leftSlots) {
-                    val x = bandStart - k * slotPx
-                    val fadeLeft = if (windowed) 0f else Float.NEGATIVE_INFINITY
-                    val fadeRight = if (windowed) size.width else Float.POSITIVE_INFINITY
-                    drawGhost(x, touchAnim, fadeLeft, fadeRight)
+                val leadingSlots = ((bandStart - slotPx) / slotPx).toInt().coerceIn(0, 12)
+                for (k in 1..leadingSlots) {
+                    val y = bandStart - k * slotPx
+                    val fadeTop = if (windowed) 0f else Float.NEGATIVE_INFINITY
+                    val fadeBottom = if (windowed) size.height else Float.POSITIVE_INFINITY
+                    drawGhost(y, touchAnim, fadeTop, fadeBottom)
                 }
             }
 
             for (i in 0 until count) {
-                val x = center + (i - turn) * slotPx
-                if (x < -slotPx || x > size.width + slotPx) continue
+                val y = centerY + (i - turn) * slotPx
+                if (y < -slotPx || y > size.height + slotPx) continue
                 val tier = when {
                     i == highlight -> 1
                     i >= count - 11 -> 2
@@ -400,8 +404,8 @@ internal fun TurnTickRail(
                 }
                 // 两端 28dp alpha 渐隐（窗口化时）。
                 if (windowed) {
-                    alpha *= (x / edgeFadePx).coerceIn(0f, 1f)
-                    alpha *= ((size.width - x) / edgeFadePx).coerceIn(0f, 1f)
+                    alpha *= (y / edgeFadePx).coerceIn(0f, 1f)
+                    alpha *= ((size.height - y) / edgeFadePx).coerceIn(0f, 1f)
                 }
                 if (alpha <= 0.004f) continue
                 val (baseWidth, baseHeight) = when (tier) {
@@ -413,7 +417,7 @@ internal fun TurnTickRail(
                 val tickHeight = baseHeight * scale
                 drawRoundRect(
                     color = if (tier == 1) primaryColor else tickColor,
-                    topLeft = Offset(x - tickWidth / 2f, baseline - tickHeight),
+                    topLeft = Offset(centerX - tickWidth / 2f, y - tickHeight / 2f),
                     size = Size(tickWidth, tickHeight),
                     cornerRadius = CornerRadius(tickWidth / 2f),
                     alpha = alpha,

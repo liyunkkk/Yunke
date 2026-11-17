@@ -50,12 +50,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
-import io.github.mangi.eta.agent.kimi.KimiSubAgentStatus
-import io.github.mangi.eta.agent.kimi.KimiSubAgentStatusAccess
 import io.github.mangi.eta.ui.haptics.TouchHaptics
 import io.github.mangi.eta.data.repository.ProviderBalanceStore
 import io.github.mangi.eta.ui.pages.providers.ProviderBalanceAmount
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
+import io.github.mangi.eta.ui.model.ConversationTokenUsageUi
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.defaultExpandedModelProviderIds
@@ -395,10 +394,13 @@ internal fun AgentContextUsageButton(
     usage: AgentContextUsageUi,
     sendBlocked: Boolean = false,
     popupMaxHeight: Dp = 360.dp,
+    conversationUsage: ConversationTokenUsageUi? = null,
     modifier: Modifier = Modifier,
 ) {
     val menuState = rememberEtaMenuState()
     val selectorState = rememberEtaMenuState()
+    // 单击圆环打开完整用量面板；长按仍保留「选择上下文统计对象」。
+    var showUsagePanel by remember { mutableStateOf(false) }
     val telemetry = LocalAgentContextTelemetry.current
     val owner = LocalConversationSubAgentEditor.current?.owner
     var localSelectedTaskId by remember(owner) { mutableStateOf<String?>(null) }
@@ -407,16 +409,6 @@ internal fun AgentContextUsageButton(
         if (telemetry.onTaskSelected != null) telemetry.onTaskSelected.invoke(id) else localSelectedTaskId = id
     }
     val child = telemetry.children.firstOrNull { it.taskId == selectedTaskId }
-    val kimiContext = LocalContext.current
-    val kimiBinding = kimiConversationBinding(owner)
-    var kimiStatus by remember(kimiBinding) { mutableStateOf<KimiSubAgentStatus?>(null) }
-    // 只在弹层打开时按需刷新一次；无运行中的 Kimi 会话时不启动、显示「未启动」。
-    LaunchedEffect(menuState.expanded, kimiBinding) {
-        if (!menuState.expanded || kimiBinding == null) return@LaunchedEffect
-        withContext(Dispatchers.IO) {
-            kimiStatus = KimiSubAgentStatusAccess.readStatus(kimiContext, kimiBinding)
-        }
-    }
     LaunchedEffect(telemetry.children, selectedTaskId, owner) {
         // Controlled selection belongs to the owner reducer: a refresh effect must not
         // replay an old null selection over a newer explicit user choice.
@@ -455,9 +447,9 @@ internal fun AgentContextUsageButton(
     Box(modifier = modifier) {
         ChatInputNonFocusableIconButton(
             onClick = {
-                keepIme()
                 selectorState.dismiss()
-                menuState.onAnchorClick()
+                menuState.dismiss()
+                showUsagePanel = true
             },
             longClickLabel = "选择上下文统计对象",
             onLongClick = {
@@ -500,18 +492,13 @@ internal fun AgentContextUsageButton(
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
             )
-            HorizontalDivider(color = MiuixTheme.colorScheme.outline.copy(alpha = 0.3f))
-            Text(
-                text = "Kimi Code",
-                style = MiuixTheme.textStyles.body2,
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 6.dp),
-            )
-            Text(
-                text = kimiStatus?.let { "${it.model ?: "跟随默认模型"} · ${it.statusLabel()} · ${it.contextSummary(locale)}" }
-                    ?: "未启动",
-                style = MiuixTheme.textStyles.footnote1,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+        }
+        if (showUsagePanel) {
+            UsagePanelSheet(
+                usage = displayedUsage,
+                modelName = selectedLabel,
+                onDismiss = { showUsagePanel = false },
+                conversationUsage = conversationUsage,
             )
         }
         EtaDropdownMenu(

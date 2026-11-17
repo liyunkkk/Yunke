@@ -6,20 +6,18 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -35,7 +33,6 @@ import io.github.mangi.eta.data.repository.AssistantRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.components.EditorScrollIsolation
 import io.github.mangi.eta.ui.components.isolateEditorScroll
-import io.github.mangi.eta.ui.components.AssistantAvatar
 import io.github.mangi.eta.ui.components.rememberAssistantAvatarBitmap
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.model.SkillItemUi
@@ -57,6 +54,7 @@ internal fun AssistantEditScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val activeId by AssistantRepository.activeId.collectAsState()
     val editorScrollIsolation = remember(assistantId) { EditorScrollIsolation() }
     val original = remember(assistantId) { AssistantRepository.profile(assistantId) }
     if (original == null) {
@@ -169,90 +167,68 @@ internal fun AssistantEditScreen(
             )
         },
     ) {
-        item(key = "preview_title") {
-            SmallTitle(stringResource(R.string.assistant_preview))
-        }
-        item(key = "preview") {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    AssistantAvatar(
-                        bitmap = avatarBitmap,
-                        size = 56.dp,
-                        modifier = Modifier.clickable {
-                            picker.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                            )
-                        },
+        item(key = "hero") {
+            AssistantHero(
+                profile = original.copy(name = name.trim().ifBlank { original.name }),
+                bitmap = avatarBitmap,
+                isCurrent = activeId == assistantId,
+                busy = saving,
+                onChangeAvatar = {
+                    picker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                     )
-                    Text(
-                        text = name.trim().ifBlank { stringResource(R.string.assistant_unnamed) },
-                        style = MiuixTheme.textStyles.title3,
-                    )
-                }
-            }
+                },
+                onSetCurrent = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            AssistantRepository.select(assistantId)
+                            RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
+                        }
+                    }
+                },
+            )
         }
         item(key = "identity_title") {
             SmallTitle(stringResource(R.string.assistant_identity))
         }
         item(key = "identity") {
-            Card(
+            TextField(
+                value = name,
+                onValueChange = { name = it },
+                label = stringResource(R.string.assistant_name),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
                     .padding(bottom = 12.dp),
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    TextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = stringResource(R.string.assistant_name),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                    )
-                }
-            }
+                singleLine = true,
+            )
         }
         item(key = "prompt_title") {
             SmallTitle(stringResource(R.string.assistant_prompt_title))
         }
         item(key = "prompt") {
-            Card(
+            TextField(
+                value = prompt,
+                onValueChange = { prompt = it },
+                label = "",
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
-            ) {
-                TextField(
-                    value = prompt,
-                    onValueChange = { prompt = it },
-                    label = "",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                        .height(240.dp)
-                        .isolateEditorScroll(editorScrollIsolation),
-                    singleLine = false,
-                )
-            }
+                    .padding(bottom = 12.dp)
+                    .height(240.dp)
+                    .isolateEditorScroll(editorScrollIsolation),
+                singleLine = false,
+            )
         }
         item(key = "memory_title") {
             SmallTitle(stringResource(R.string.ui_memory_b55ff5))
         }
-        item(key = "memory") {
+        item(key = "memory_switch") {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
-                    .padding(bottom = 12.dp),
+                    .padding(bottom = 10.dp),
             ) {
                 SwitchPreference(
                     title = stringResource(R.string.ui_enable_memory_4b69b7),
@@ -263,26 +239,28 @@ internal fun AssistantEditScreen(
                         persistAssistantToggles(nextMemory = it)
                     },
                 )
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    TextField(
-                        value = memoryDraft,
-                        onValueChange = { memoryDraft = it },
-                        label = "MEMORY.md",
-                        useLabelAsPlaceholder = true,
-                        singleLine = false,
-                        minLines = 6,
-                        maxLines = 12,
-                        textStyle = MiuixTheme.textStyles.body2.copy(fontFamily = FontFamily.Monospace),
-                        modifier = Modifier.fillMaxWidth().isolateEditorScroll(editorScrollIsolation),
+            }
+        }
+        item(key = "memory") {
+            Column(modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                TextField(
+                    value = memoryDraft,
+                    onValueChange = { memoryDraft = it },
+                    label = "MEMORY.md",
+                    useLabelAsPlaceholder = true,
+                    singleLine = false,
+                    minLines = 6,
+                    maxLines = 12,
+                    textStyle = MiuixTheme.textStyles.body2.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.fillMaxWidth().isolateEditorScroll(editorScrollIsolation),
+                )
+                if (memoryOverLimit) {
+                    Text(
+                        text = stringResource(R.string.memory_over_limit),
+                        color = MiuixTheme.colorScheme.error,
+                        style = MiuixTheme.textStyles.footnote1,
+                        modifier = Modifier.padding(top = 8.dp),
                     )
-                    if (memoryOverLimit) {
-                        Text(
-                            text = stringResource(R.string.memory_over_limit),
-                            color = MiuixTheme.colorScheme.error,
-                            style = MiuixTheme.textStyles.footnote1,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                    }
                 }
             }
         }

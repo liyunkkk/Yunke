@@ -262,6 +262,15 @@ internal object AgentRuntimeWire {
     private const val TRUNCATED_SUFFIX = "\n\n[跨进程结果过长，已截断]"
     private const val MAX_START_REQUEST_PARCEL_BYTES = 768 * 1024
 
+    // 展示用耗时字段。旧帧没有这些 key，读取端一律当 null，不参与任何计费/压缩判定。
+    private const val KEY_USAGE_STEP_COUNT = "usage_step_count"
+    private const val KEY_USAGE_LLM_MS = "usage_llm_ms"
+    private const val KEY_USAGE_TOOL_MS = "usage_tool_ms"
+    private const val KEY_USAGE_TTFT_MS = "usage_ttft_ms"
+    private const val KEY_USAGE_TTFT_STEPS = "usage_ttft_steps"
+    private const val KEY_USAGE_DECODE_MS = "usage_decode_ms"
+    private const val KEY_USAGE_DECODE_TOKENS = "usage_decode_tokens"
+
     data class RunRequest(
         val runId: String,
         val prompt: String,
@@ -326,6 +335,8 @@ internal object AgentRuntimeWire {
         val reasoningContent: String = "",
         val transcript: List<AgentModelClient.ConversationMessage> = emptyList(),
         val virtualDeliveryCompleted: Boolean = false,
+        /** 整轮展示用耗时与步数；旧记录没有这个字段，读回为 null。 */
+        val timings: AgentTokenUsage? = null,
     )
 
     data class EntryHandoff(
@@ -637,6 +648,7 @@ internal object AgentRuntimeWire {
         } else {
             putString(KEY_TRANSCRIPT_JSON, AgentConversationCodec.encodeTranscriptForIpc(transcript))
         }
+        timings?.let { putTokenUsage(it) }
     }
 
     fun runResultFromBundle(bundle: Bundle): RunResult =
@@ -648,6 +660,7 @@ internal object AgentRuntimeWire {
             reasoningContent = bundle.getString(KEY_REASONING_CONTENT).orEmpty(),
             transcript = AgentRuntimeTranscriptTransfer.readFromBundle(bundle),
             virtualDeliveryCompleted = bundle.getBoolean(KEY_VIRTUAL_DELIVERY_COMPLETED, false),
+            timings = bundle.getTokenUsage().takeIf { it.stepCount != null || it.llmMs != null },
         )
 
     fun toBundle(completedRun: CompletedRun): Bundle = completedRun.toBundle(compactForDrain = false)
@@ -1176,16 +1189,39 @@ internal object AgentRuntimeWire {
         usage.reasoningTokens?.let { putInt("usage_reasoning_tokens", it) }
         usage.cachedTokens?.let { putInt("usage_cached_tokens", it) }
         usage.cacheCreationTokens?.let { putInt("usage_cache_creation_tokens", it) }
+        // 展示用耗时。老版本 runtime 不写这些 key，老版本 UI 也不读，双向都安全。
+        usage.stepCount?.let { putInt(KEY_USAGE_STEP_COUNT, it) }
+        usage.llmMs?.let { putLong(KEY_USAGE_LLM_MS, it) }
+        usage.toolMs?.let { putLong(KEY_USAGE_TOOL_MS, it) }
+        usage.ttftMs?.let { putLong(KEY_USAGE_TTFT_MS, it) }
+        usage.ttftSteps?.let { putInt(KEY_USAGE_TTFT_STEPS, it) }
+        usage.decodeMs?.let { putLong(KEY_USAGE_DECODE_MS, it) }
+        usage.decodeTokens?.let { putInt(KEY_USAGE_DECODE_TOKENS, it) }
     }
 
     private fun Bundle.getTokenUsage(): AgentTokenUsage = AgentTokenUsage(
-        contextTokens = if (containsKey("usage_context_tokens")) getInt("usage_context_tokens") else null,
-        inputTokens = if (containsKey("usage_input_tokens")) getInt("usage_input_tokens") else null,
-        outputTokens = if (containsKey("usage_output_tokens")) getInt("usage_output_tokens") else null,
-        reasoningTokens = if (containsKey("usage_reasoning_tokens")) getInt("usage_reasoning_tokens") else null,
-        cachedTokens = if (containsKey("usage_cached_tokens")) getInt("usage_cached_tokens") else null,
-        cacheCreationTokens = if (containsKey("usage_cache_creation_tokens")) getInt("usage_cache_creation_tokens") else null,
+        contextTokens = optionalInt("usage_context_tokens"),
+        inputTokens = optionalInt("usage_input_tokens"),
+        outputTokens = optionalInt("usage_output_tokens"),
+        reasoningTokens = optionalInt("usage_reasoning_tokens"),
+        cachedTokens = optionalInt("usage_cached_tokens"),
+        cacheCreationTokens = optionalInt("usage_cache_creation_tokens"),
+        stepCount = optionalInt(KEY_USAGE_STEP_COUNT),
+        llmMs = optionalLong(KEY_USAGE_LLM_MS),
+        toolMs = optionalLong(KEY_USAGE_TOOL_MS),
+        ttftMs = optionalLong(KEY_USAGE_TTFT_MS),
+        ttftSteps = optionalInt(KEY_USAGE_TTFT_STEPS),
+        decodeMs = optionalLong(KEY_USAGE_DECODE_MS),
+        decodeTokens = optionalInt(KEY_USAGE_DECODE_TOKENS),
     )
+
+    /** Bundle 里类型可能因 JSON 往返变成 Int（小整数）或被写成 String，读取时按值判定，绝不直接强转。 */
+    private fun Bundle.optionalLong(key: String): Long? = when (val value = get(key)) {
+        is Long -> value
+        is Int -> value.toLong()
+        is String -> value.toLongOrNull()
+        else -> null
+    }
 
     private fun decodeReasoningCapabilities(raw: String?): ModelReasoningCapabilities? =
         runCatching {
@@ -1202,6 +1238,11 @@ internal object AgentRuntimeWire {
             raw?.let { json.decodeFromString<List<CustomBody>>(it) } ?: emptyList()
         }.getOrDefault(emptyList())
 
-    private fun Bundle.optionalInt(key: String): Int? =
-        if (containsKey(key)) getInt(key) else null
+    /** 缺 key = null；存在时按值判定类型，JSON 往返把 long 变小整数也不会强转崩溃。 */
+    private fun Bundle.optionalInt(key: String): Int? = when (val value = get(key)) {
+        is Int -> value
+        is Long -> value.toInt()
+        is String -> value.toIntOrNull()
+        else -> null
+    }
 }

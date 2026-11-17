@@ -69,6 +69,8 @@ internal class AgentLoop(
         val content: String,
         val reasoningContent: String,
         val sensitiveToolCallIds: Set<String>,
+        /** 整轮展示用耗时与步数；不参与计费、压缩与上下文判定。 */
+        val timings: AgentTokenUsage? = null,
     )
 
     private data class ToolOutcome(
@@ -116,6 +118,10 @@ internal class AgentLoop(
         }
     }
     private var lastUsage: AgentTokenUsage? = null
+    /** 整轮（本次用户请求内所有 step）的展示用耗时与 token 累加器。 */
+    private val turnMetrics = AgentTurnMetrics()
+    /** 整轮累计统计，随 Result 返回给 UI；不再额外发用量事件。 */
+    private var turnTimings: AgentTokenUsage? = null
     private var hasDisplayCloudReceipt = false
     private val requestBudget = AgentRequestBudgetPolicy()
     private val silentBudget = AgentSilentContextBudget()
@@ -264,6 +270,10 @@ internal class AgentLoop(
             toolCallValidator = AgentToolCallValidator(roundTools)
             incompleteText.clear()
             responseStored = false
+            // 本步（本次模型请求）的计时锚点。重试会在 RequestStarted 里重设，
+            // 因此 llmMs 只包含「真正在等模型」的那段时间。
+            var stepStartedAtMs = monotonicNowMs()
+            var firstTokenAtMs: Long? = null
             val reasoningLengthBeforeRound = accumulatedReasoning.length
             val continuationText = AgentContinuationTextEvents(
                 if (continuingInterruptedRequest) interruptedTextPrefix.toString() else "")
@@ -319,7 +329,17 @@ internal class AgentLoop(
                         }.orEmpty() }.getOrDefault("")
                     },
                     onProviderEvent = { attemptRound, providerEvent ->
-                        if (providerEvent is ProviderEvent.RequestStarted) lastUsage = null
+                        if (providerEvent is ProviderEvent.RequestStarted) {
+                            lastUsage = null
+                            stepStartedAtMs = monotonicNowMs()
+                            firstTokenAtMs = null
+                        }
+                        if (firstTokenAtMs == null &&
+                            providerEvent is ProviderEvent.BlockDelta &&
+                            providerEvent.delta.isNotEmpty()
+                        ) {
+                            firstTokenAtMs = monotonicNowMs()
+                        }
                         if (providerEvent is ProviderEvent.RequestEstimate) {
                             preparedRequestTokens = providerEvent.tokens
                             // Existing UI reducer keeps cloud receipts authoritative, including
@@ -420,6 +440,13 @@ internal class AgentLoop(
                 roundTools = roundTools,
                 usage = lastUsage,
             )
+
+            // 本步耗时：请求发出（或最后一次重试）→ 响应结束。工具与等待用户都不在这里，
+            // 所以 llmMs 不会被工具时间稀释，TPS 才可信。
+            val stepCompletedAtMs = monotonicNowMs()
+            val stepLlmMs = (stepCompletedAtMs - stepStartedAtMs).coerceAtLeast(0L)
+            val stepTtftMs = firstTokenAtMs?.let { (it - stepStartedAtMs).coerceAtLeast(0L) }
+            val stepDecodeMs = firstTokenAtMs?.let { (stepCompletedAtMs - it).coerceAtLeast(0L) }
 
             // Keep a fully returned response before observing a concurrent user stop.
             continuationText.finish().forEach { textEvent ->
@@ -530,6 +557,18 @@ internal class AgentLoop(
                 round += 1
                 continue
             }
+
+            // 累计用量（token + 耗时）盖到刚发出的这条助手消息上。UI 只读它来画统计胶囊，
+            // 不参与计费、压缩与上下文判定。
+            val accumulatedUsage = turnMetrics.recordStep(
+                stepLlmMs = stepLlmMs,
+                stepTtftMs = stepTtftMs,
+                stepDecodeMs = stepDecodeMs,
+                stepUsage = lastUsage,
+            )
+            // 耗时不再额外发一条 UsageReceived：那会改变用量事件计数与压缩判定。
+            // 整轮累计值随最终结果返回，由 UI 挂到最后一条回答上。
+            turnTimings = accumulatedUsage
 
             runController.throwIfCancelled()
             if (toolCalls.isNotEmpty()) {
@@ -694,6 +733,7 @@ internal class AgentLoop(
                 content = (interruptedTextPrefix.toString() + assistantMessage.optString("content")).trim(),
                 reasoningContent = reasoningSnapshot(),
                 sensitiveToolCallIds = sensitiveToolCallIds.toSet(),
+                timings = turnTimings,
             )
         }
         } catch (failure: Throwable) {
@@ -1293,6 +1333,8 @@ internal class AgentLoop(
         )
 
         toolDiagnosticAttempt?.dispatch(toolCall, toolIndex)
+        // 工具耗时单独一路累计；被校验拦下、未真正执行的调用不计。
+        val toolStartedAtMs = monotonicNowMs()
         val rawResult = try {
             if (toolCall.name == AgentCompactionArchive.TOOL && compactionArchive != null) {
                 compactionArchive.read(toolCall.argumentsJson)
@@ -1309,6 +1351,8 @@ internal class AgentLoop(
                     .toString(),
             )
         }
+        val toolElapsedMs = (monotonicNowMs() - toolStartedAtMs).coerceAtLeast(0L)
+        turnMetrics.recordToolMs(toolElapsedMs)
         val shellDecision = AgentShellFailureGuard.observe(shellFailureState, toolCall, rawResult)
         shellFailureState = shellDecision.state
         if (shellFailureStopMessage == null) shellFailureStopMessage = shellDecision.stopMessage
@@ -1483,6 +1527,9 @@ internal class AgentLoop(
             AssistantBlockKind.THINKING -> AgentEvent.AssistantBlockKind.THINKING
             AssistantBlockKind.TOOL_CALL -> AgentEvent.AssistantBlockKind.TOOL_CALL
         }
+
+    /** 单调时钟毫秒；不受系统时间跳变影响，只用于展示用耗时统计。 */
+    private fun monotonicNowMs(): Long = System.nanoTime() / 1_000_000L
 
     private companion object {
         /** 上游在输出上限处截断且正文为空时，同一 round 内最多自动重发的次数。 */

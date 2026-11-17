@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import org.json.JSONArray
+import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.delegation.SubAgentPollGuard
 
@@ -16,6 +17,7 @@ internal object AgentToolCatalog {
         skillGitHubInstall: Boolean = false,
         memoryTools: Boolean = false,
         capabilities: AgentToolCapabilities = AgentToolCapabilities(rootAvailable = true),
+        disabledTools: Set<String> = emptySet(),
     ): JSONArray =
         filterAdvertised(capabilities.project(JSONArray().also { tools ->
             AgentQuestionToolCatalog.appendTo(tools)
@@ -31,7 +33,10 @@ internal object AgentToolCatalog {
                 sensitiveReadTools = deviceSensitiveReadTools,
                 sensitiveActionTools = deviceSensitiveActionTools,
             )
-            if (browserTools) AgentBrowserToolCatalog.appendTo(tools)
+            if (browserTools) {
+                AgentWebToolCatalog.appendTo(tools)
+                AgentBrowserToolCatalog.appendTo(tools)
+            }
             AgentSkillToolCatalog.appendTo(
                 tools,
                 githubDiscovery = skillGitHubDiscovery,
@@ -42,7 +47,38 @@ internal object AgentToolCatalog {
                 AgentFileVisionToolCatalog.appendTo(tools)
                 AgentTerminalToolCatalog.appendTo(tools)
             }
-        }))
+        }).let { filterEnabled(it, disabledTools) })
+
+    fun filterEnabled(tools: JSONArray, disabledTools: Set<String>): JSONArray = JSONArray().also { result ->
+        for (index in 0 until tools.length()) {
+            val tool = tools.getJSONObject(index)
+            if (Prefs.isToolEnabledInSet(tool.getJSONObject("function").getString("name"), disabledTools)) result.put(tool)
+        }
+    }
+
+    fun allForSwitches(): JSONArray = build(
+        true, true, true, true, true,
+        skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true,
+        capabilities = AgentToolCapabilities(rootAvailable = true, lsposedAvailable = true, virtualDisplay = true),
+    )
+
+    fun legacyGroupToolNames(key: String): Set<String> {
+        fun names(tools: JSONArray) = (0 until tools.length()).map {
+            tools.getJSONObject(it).getJSONObject("function").getString("name")
+        }.toSet()
+        val all = names(allForSwitches())
+        if (key !in setOf(Prefs.Keys.AGENT_TERMINAL_TOOLS, Prefs.Keys.AGENT_BROWSER_TOOLS, Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS, Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS, Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS)) return emptySet()
+        val without = names(build(
+            terminalTools = key != Prefs.Keys.AGENT_TERMINAL_TOOLS,
+            browserTools = key != Prefs.Keys.AGENT_BROWSER_TOOLS,
+            deviceDirectTools = key != Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS,
+            deviceSensitiveReadTools = key != Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS,
+            deviceSensitiveActionTools = key != Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS,
+            skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true,
+            capabilities = AgentToolCapabilities(rootAvailable = true, lsposedAvailable = true, virtualDisplay = true),
+        ))
+        return (all - without).map(Prefs::canonicalToolSwitchId).toSet()
+    }
 
     /**
      * 轮询退避门禁挂起期从主代理目录里摘除 `get_task_result`。

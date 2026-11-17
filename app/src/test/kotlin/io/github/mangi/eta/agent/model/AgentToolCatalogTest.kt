@@ -239,7 +239,7 @@ class AgentToolCatalogTest {
     )
 
     private companion object {
-        val BROWSER_TOOLS = setOf("browser_use")
+        val BROWSER_TOOLS = setOf("browser_use", "web_search", "fetch_url")
         val TERMINAL_TOOLS = setOf(
             "read_image",
             "terminal",
@@ -247,6 +247,10 @@ class AgentToolCatalogTest {
             "read_file",
             "write_file",
             "list_directory",
+            "edit_file",
+            "stat_file",
+            "glob_files",
+            "grep_files",
         )
     }
 }

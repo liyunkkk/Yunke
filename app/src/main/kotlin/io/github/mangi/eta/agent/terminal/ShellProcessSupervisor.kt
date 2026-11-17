@@ -670,7 +670,11 @@ internal data class OneShotShellResult(
     val exitCode: Int,
     val output: ByteArray,
     val stderr: ByteArray,
+    val outputTruncated: Boolean = false,
+    val stderrTruncated: Boolean = false,
 )
+
+internal const val SHELL_STDIN_FAILED_EXIT_CODE = -4
 
 /**
  * 探测控制台 PTY 的前提：Root 侧 BusyBox 带 script applet。
@@ -702,6 +706,7 @@ internal fun runOneShotShell(
     environment: TerminalEnvironment = TerminalEnvironment.ANDROID,
     linuxRootfsPath: String? = null,
     linuxSharedMounts: List<SharedFolderMount> = emptyList(),
+    maxOutputBytes: Int = ONE_SHOT_OUTPUT_MAX_BYTES,
 ): OneShotShellResult {
     var startFailure: String? = null
     val process = processSupervisor.startShellProcess(
@@ -724,14 +729,19 @@ internal fun runOneShotShell(
         val output = ByteArrayOutputCollector()
         val stderr = ByteArrayOutputCollector()
         val outputThread = thread(name = "agent-terminal-stdout") {
-            process.inputStream.use { input -> output.readFrom(input, ONE_SHOT_OUTPUT_MAX_BYTES) }
+            process.inputStream.use { input -> output.readFrom(input, maxOutputBytes) }
         }
         val stderrThread = thread(name = "agent-terminal-stderr") {
-            process.errorStream.use { input -> stderr.readFrom(input, ONE_SHOT_OUTPUT_MAX_BYTES) }
+            process.errorStream.use { input -> stderr.readFrom(input, minOf(maxOutputBytes, 64 * 1024)) }
         }
+        val stdinFailed = java.util.concurrent.atomic.AtomicBoolean(false)
         val stdinThread = thread(name = "agent-terminal-stdin") {
-            process.outputStream.use { out ->
-                if (stdin != null) out.write(stdin)
+            try {
+                process.outputStream.use { out ->
+                    if (stdin != null) out.write(stdin)
+                }
+            } catch (_: java.io.IOException) {
+                stdinFailed.set(true)
             }
         }
 
@@ -748,7 +758,18 @@ internal fun runOneShotShell(
         outputThread.join(500)
         stderrThread.join(500)
         stdinThread.join(500)
-        return OneShotShellResult(process.exitValue(), output.bytes(), stderr.bytes())
+        val exitCode = process.exitValue()
+        if (exitCode == 0 && stdin?.isNotEmpty() == true && (stdinFailed.get() || stdinThread.isAlive)) {
+            return OneShotShellResult(
+                SHELL_STDIN_FAILED_EXIT_CODE, output.bytes(), "命令输入传输失败".toByteArray(),
+                output.isTruncated(), stderr.isTruncated(),
+            )
+        }
+        return OneShotShellResult(
+            exitCode, output.bytes(), stderr.bytes(),
+            output.isTruncated() || outputThread.isAlive,
+            stderr.isTruncated() || stderrThread.isAlive,
+        )
     } finally {
         if (processSupervisor.isClosing) {
             processSupervisor.terminateAndReap(process)

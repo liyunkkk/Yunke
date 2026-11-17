@@ -61,6 +61,8 @@ internal class AgentRuntimeRunExecutor(
 
     fun execute(session: AgentRuntimeSession, request: AgentRuntimeWire.RunRequest): Outcome {
         val runController = session.controller
+        io.github.mangi.eta.agent.device.RootAccess.awaitOrRetryIfPreviouslyGranted(appContext)
+        runController.throwIfCancelled()
         val archivedEvents = mutableListOf<AgentEvent>()
         var entrySurfaceGuard: EntrySurfaceGuard? = null
         var localTools: AgentLocalTools? = null
@@ -252,6 +254,7 @@ internal class AgentRuntimeRunExecutor(
                                 deviceDirectTools = allowDirect && currentPermissions().deviceDirectTools,
                                 deviceSensitiveReadTools = allowSensitiveRead && currentPermissions().deviceSensitiveReadTools,
                                 memoryTools = memoryEnabled,
+                                disabledTools = Prefs.disabledTools(),
                                 capabilities = AgentToolCapabilities.capture(appContext).copy(virtualDisplay = runVirtualDisplay())))
                             return SubAgentRunner.run(config, prompt, readTools, executor, controller,
                                 sessionId = childSessionId, onProgress = progress, browserExecutor = browser?.executor)
@@ -330,7 +333,10 @@ internal class AgentRuntimeRunExecutor(
             session.questionCoordinator = questionCoordinator
             val delegatedExecutor = AgentModelClient.ToolExecutor { call ->
                 runController.throwIfCancelled()
-                if (call.name == "ask_user") {
+                if (!Prefs.isToolEnabled(call.name)) {
+                    AgentModelClient.ToolResult(org.json.JSONObject().put("ok", false)
+                        .put("code", "TOOL_DISABLED").put("message", "此工具已关闭，本次未执行").toString())
+                } else if (call.name == "ask_user") {
                     val question = AgentQuestionCodec.parseArguments(call.argumentsJson,
                         conversationId = request.effectiveModelSessionId,
                         runId = request.runId, toolCallId = call.id,
@@ -416,7 +422,8 @@ internal class AgentRuntimeRunExecutor(
             response = completedResponse
             modelCompleted = true
             AgentRuntimeWire.RunResult(runId = request.runId, ok = true, content = completedResponse.content,
-                reasoningContent = completedResponse.reasoningContent, transcript = completedResponse.transcript)
+                reasoningContent = completedResponse.reasoningContent, transcript = completedResponse.transcript,
+                timings = completedResponse.timings)
         } catch (throwable: Throwable) {
             cancelled = runController.isCancelled || throwable is AgentRunCancelledException ||
                 throwable is java.util.concurrent.CancellationException || throwable is InterruptedException

@@ -1036,7 +1036,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         val notifyTitle = runtimePrompt
                             .lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
                         val notifyContent = if (result.ok) {
-                            result.content.trim().take(200)
+                            result.content.trim()
                         } else {
                             result.error.orEmpty()
                         }

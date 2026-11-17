@@ -50,7 +50,6 @@ import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
-import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
 import io.github.mangi.eta.agent.device.DeviceLocationProvider
 import io.github.mangi.eta.agent.device.RootAccess
@@ -63,7 +62,6 @@ import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.AgentTaskPreferenceScreen
 import io.github.mangi.eta.ui.AgentTaskSurfacePrompt
 import io.github.mangi.eta.ui.AppearanceSettingsScreen
-import io.github.mangi.eta.ui.WhaleMaidSettingsScreen
 import io.github.mangi.eta.ui.HapticsSettingsScreen
 import io.github.mangi.eta.ui.ErrorReconnectSettingsScreen
 import io.github.mangi.eta.ui.ContextCompressionSettingsScreen
@@ -118,7 +116,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import top.yukonga.miuix.kmp.basic.TextField
-import io.github.mangi.eta.agent.pet.WhaleMaidInAppHost
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
 import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
@@ -215,7 +212,6 @@ fun AgentAppRoot(
                 }
                 Lifecycle.Event.ON_RESUME -> {
                     RootAccess.refresh(context)
-                    appViewModel.refreshKimiWeb()
                     agentState.refreshPermissionHealth()
                     agentState.refreshRuntimeResults()
                     agentState.refreshRequestOverhead()
@@ -467,34 +463,6 @@ fun AgentAppRoot(
             onSearchConversations = { query -> agentState.updateSearchQuery(query) },
             onNewConversation = { createConversation() },
             onOpenTerminal = { pushRoute(AppRoute.Terminal) },
-            onLaunchKimiWeb = {
-                requestExecutionNotifications()
-                if (appViewModel.kimiWebState.phase != KimiWebPhase.NOT_INSTALLED) {
-                    appViewModel.launchKimiWeb { result ->
-                        when (result) {
-                            is KimiWebLaunchResult.Opened -> {
-                                if (Prefs.isEnabled(Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER)) {
-                                    AgentBrowserSession.requestUserNavigation(result.url)
-                                    pushRoute(AppRoute.Browser)
-                                }
-                            }
-                            is KimiWebLaunchResult.Failed -> {
-                                Toast.makeText(
-                                    context,
-                                    result.message(context),
-                                    Toast.LENGTH_LONG,
-                                ).show()
-                            }
-                        }
-                    }
-                } else {
-                    pushRoute(AppRoute.LinuxEnvironment)
-                }
-            },
-            kimiWebLabel = appViewModel.kimiWebState.actionLabel(context),
-            canStopKimiWeb = appViewModel.kimiWebState.canStop,
-            onStopKimiWeb = appViewModel::stopKimiWeb,
-            onRefreshKimiWeb = appViewModel::refreshKimiWeb,
             onOpenBrowser = { pushRoute(AppRoute.Browser) },
             onOpenWorkspace = { pushRoute(AppRoute.Workspace) },
             autoCompressEnabled = agentState.autoCompressEnabled,
@@ -1007,6 +975,8 @@ fun AgentAppRoot(
                     context = context,
                     onNavigate = { route -> pushRoute(route) },
                     onBack = ::popRoute,
+                    currentProviderId = shellHomeState.providerId,
+                    currentModelId = shellHomeState.modelId,
                 )
             }
             entry<AppRoute.SettingsModel>(swipeDismiss = swipeDismiss) {
@@ -1046,8 +1016,10 @@ fun AgentAppRoot(
                     isCurrentRoute = backStack.lastOrNull() == AppRoute.SubAgents)
             }
             entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.ModelFeatureSettingsScreen(
-                    feature = io.github.mangi.eta.agent.model.ModelFeature.TITLE, onBack = ::popRoute)
+                io.github.mangi.eta.ui.IndependentModelSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.WebToolsSettings>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.ui.screens.tools.WebToolsSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.ErrorReconnectSettings>(swipeDismiss = swipeDismiss) {
                 ErrorReconnectSettingsScreen(onBack = ::popRoute)
@@ -1070,9 +1042,6 @@ fun AgentAppRoot(
             entry<AppRoute.AppearanceSettings>(swipeDismiss = swipeDismiss) {
                 AppearanceSettingsScreen(onBack = ::popRoute)
             }
-            entry<AppRoute.WhaleMaid>(swipeDismiss = swipeDismiss) {
-                WhaleMaidSettingsScreen(onBack = ::popRoute)
-            }
             entry<AppRoute.DataBackup>(swipeDismiss = swipeDismiss) {
                 DataBackupScreen(
                     context = context,
@@ -1080,8 +1049,7 @@ fun AgentAppRoot(
                     onExport = agentState::exportBackup,
                     onImport = { input ->
                         val summary = agentState.importBackup(input)
-                        appViewModel.refreshKimiWeb()
-                        summary
+                            summary
                     },
                 )
             }
@@ -1194,8 +1162,6 @@ fun AgentAppRoot(
     if (browserSheetVisible) {
         AgentBrowserScreen(onDismiss = { browserSheetVisible = false }, conversationId = agentState.conversationPaneState.selectedConversationId)
     }
-
-    WhaleMaidInAppHost()
 
     conversationRenameTarget?.let { conversation ->
         var renameInput by remember(conversation.id) { mutableStateOf(conversation.title) }

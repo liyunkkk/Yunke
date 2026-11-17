@@ -111,6 +111,9 @@ public final class VirtualDisplayOwner {
             // 输入法策略是否成功设为 HIDE：null=未尝试，false=设置失败（会抢前台输入法）。
             Object ime = VirtualDisplayFactory.imeDiagnostics();
             out.put("imePolicyHide", ime == null ? JSONObject.NULL : ime);
+            out.put("imePolicyReason", VirtualDisplayFactory.imeDiagnosticReason());
+            Integer actualIme = VirtualDisplayFactory.imeDiagnosticActual();
+            out.put("imePolicyActual", actualIme == null ? JSONObject.NULL : actualIme);
             out.put("width", geometry[0]);
             out.put("height", geometry[1]);
             out.put("densityDpi", created.densityDpi);

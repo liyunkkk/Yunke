@@ -1199,6 +1199,9 @@ internal class AgentAppState(
             ) { "请先等待对话任务或恢复完成" }
         }
         conversationArchiveBusy = true
+        pendingConversationTitles.clear()
+        titleGenerationJobs.values.forEach { it.cancel() }
+        titleGenerationJobs.clear()
         try {
             // Force a fresh save, and inspect its Boolean result instead of only joining a Job.
             val saved = withContext(Dispatchers.Main.immediate) { persistConversations(allowArchive = true) }
@@ -2141,6 +2144,7 @@ internal class AgentAppState(
         }
         conversationDrafts.remove(conversationId)
         conversationsById = conversationsById - conversationId
+        cancelConversationTitle(conversationId)
         conversationTitles = conversationTitles - conversationId
         conversationUpdatedAt = conversationUpdatedAt - conversationId
         conversationCreatedAt = conversationCreatedAt - conversationId
@@ -2177,11 +2181,22 @@ internal class AgentAppState(
     }
 
     private val manuallyRenamedDuringTitleRequest = mutableSetOf<String>()
+    private data class PendingConversationTitle(val conversationId: String, val prompt: String,
+        val firstMessageId: String, val expectedTitle: String)
+    private val pendingConversationTitles = mutableMapOf<String, PendingConversationTitle>()
+    private val titleGenerationJobs = mutableMapOf<String, Job>()
+    private val branchedTitleIds = mutableSetOf<String>()
+
+    private fun cancelConversationTitle(conversationId: String) {
+        pendingConversationTitles.entries.removeAll { it.value.conversationId == conversationId }
+        titleGenerationJobs.remove(conversationId)?.cancel()
+    }
 
     fun renameConversation(conversationId: String, title: String) {
         if (rejectConversationArchiveMutation(protectStoppingRun = false)) return
         val trimmed = title.trim()
         if (trimmed.isBlank()) return
+        cancelConversationTitle(conversationId)
         manuallyRenamedDuringTitleRequest += conversationId
         conversationTitles = conversationTitles + (conversationId to trimmed)
         conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
@@ -2642,6 +2657,7 @@ internal class AgentAppState(
         if (revised.messages.isEmpty()) {
             retainDeletedConversation(snapshot.messages, conversationUpdatedAt[conversationId])
             conversationsById = conversationsById - conversationId
+            cancelConversationTitle(conversationId)
             conversationTitles = conversationTitles - conversationId
             conversationUpdatedAt = conversationUpdatedAt - conversationId
         conversationCreatedAt = conversationCreatedAt - conversationId
@@ -2766,6 +2782,7 @@ internal class AgentAppState(
         conversationSubAgentPreferences.createConversation(
             SubAgentConfigKey.Conversation(newId), SubAgentConfigKey.Conversation(sourceId),
         )
+        branchedTitleIds += newId
         conversationsById = conversationsById + (newId to branched)
         conversationTitles = conversationTitles + (
             newId to appContext.getString(R.string.conversation_branch_title, sourceTitle)
@@ -3452,11 +3469,11 @@ internal class AgentAppState(
                 )
             }
             withContext(Dispatchers.Main) {
-                applyRunResult(runId, result, acknowledgeRuntimeResult = true, petReaction = true)
+                applyRunResult(runId, result, acknowledgeRuntimeResult = true)
                 if (!MainActivity.isForeground && result.error != LEGACY_STOPPED_ERROR && result.error != SYNTHETIC_STATUS_STOPPED) {
                     val title = prompt.lineSequence().firstOrNull()?.trim()?.take(30).orEmpty()
                     val content = if (result.ok) {
-                        result.content.trim().take(200)
+                        result.content.trim()
                     } else {
                         result.error.orEmpty()
                     }
@@ -3493,52 +3510,56 @@ internal class AgentAppState(
             preparationJob.invokeOnCompletion { AgentExecutionService.release(leaseId) }
         }
         if (mediaController != null) preparationJob.invokeOnCompletion { directMediaRuns.cancel(runId) }
-        preparationJob.start()
-        if (history.isEmpty() && !generateImage && !generateVideo) {
-            requestConversationTitle(conversationId, state, prompt, messages.lastOrNull()?.id,
-                initialPersistence)
+        if (history.isEmpty() && !generateImage && !generateVideo &&
+            conversationId !in manuallyRenamedDuringTitleRequest && conversationId !in branchedTitleIds) {
+            messages.lastOrNull()?.id?.let { firstId ->
+                pendingConversationTitles[runId] = PendingConversationTitle(conversationId, prompt,
+                    firstId, conversationTitles[conversationId].orEmpty())
+            }
         }
+        preparationJob.start()
     }
 
     private fun requestConversationTitle(
-        conversationId: String,
-        state: AgentChatHomeUiState,
-        prompt: String,
-        firstMessageId: String?,
+        pending: PendingConversationTitle,
+        assistantReply: String,
         persisted: Deferred<Boolean>,
     ) {
-        if (firstMessageId == null || conversationId in manuallyRenamedDuringTitleRequest) return
-        val expectedTitle = conversationTitles[conversationId] ?: return
-        val selection = io.github.mangi.eta.agent.model.ModelFeaturePreferences.selection(
-            io.github.mangi.eta.agent.model.ModelFeature.TITLE)
-        // Only send the visible question, never hidden tool snapshots, file bytes or system prompts.
-        val question = AgentFileReferencePromptCodec.parse(prompt).request.ifBlank { expectedTitle }
-        scope.launch {
+        val conversationId = pending.conversationId
+        if (conversationArchiveBusy || conversationId in branchedTitleIds ||
+            conversationId in manuallyRenamedDuringTitleRequest) return
+        titleGenerationJobs.remove(conversationId)?.cancel()
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
+                // The completed first turn must be durable before any optional network request.
                 if (!persisted.await()) return@launch
-                val title = withContext(Dispatchers.IO) {
-                    val current = runtimeConfigForBoundModel(state, assistant = null) ?: return@withContext null
-                    val config = io.github.mangi.eta.agent.model.ConversationTitleModel.resolve(selection, current)
-                    kotlinx.coroutines.runInterruptible {
-                        io.github.mangi.eta.agent.model.ConversationTitleModel.generate(
-                            config, question, io.github.mangi.eta.agent.runtime.AgentRunController(), conversationId)
-                    }
-                } ?: return@launch
+                val completed = conversationState(conversationId) ?: return@launch
+                if (completed.isStreaming || completed.messages.firstOrNull()?.id != pending.firstMessageId) return@launch
+                val title = io.github.mangi.eta.agent.model.ConversationTitleGenerator().generate(
+                    pending.prompt, assistantReply, completed.modelId) ?: return@launch
                 val current = conversationState(conversationId)
-                if (conversationArchiveBusy || !io.github.mangi.eta.agent.model.ConversationTitleModel.mayApply(
+                if (conversationArchiveBusy || conversationId in branchedTitleIds ||
+                    !io.github.mangi.eta.agent.model.ConversationTitleModel.mayApply(
                         current != null, conversationId in manuallyRenamedDuringTitleRequest,
-                        conversationTitles[conversationId], expectedTitle,
-                        current?.messages?.firstOrNull()?.id, firstMessageId)) return@launch
+                        conversationTitles[conversationId], pending.expectedTitle,
+                        current?.messages?.firstOrNull()?.id, pending.firstMessageId)) return@launch
+                if (current?.isStreaming == true || current?.history != completed.history) return@launch
                 conversationTitles = conversationTitles + (conversationId to title)
                 refreshConversationSummaries()
                 persistConversations()
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
-                // Title requests are optional: preserve the local title and the chat run.
                 AndroidAgentLogger.warn("标题生成失败，保留本地标题")
             }
         }
+        titleGenerationJobs[conversationId] = job
+        job.invokeOnCompletion {
+            scope.launch {
+                if (titleGenerationJobs[conversationId] === job) titleGenerationJobs.remove(conversationId)
+            }
+        }
+        job.start()
     }
 
     private fun selectedModelGeneratesImages(): Boolean =
@@ -3697,11 +3718,6 @@ internal class AgentAppState(
         if (conversationId != null) {
             ConversationCompletionNotice.show(appContext, runId,
                 conversationTitles[conversationId].orEmpty(), AgentRuntimeWire.RunResult(runId, true, content))
-            val petTitle = conversationTitles[conversationId].orEmpty()
-            val petContext = appContext
-            scope.launch(Dispatchers.IO) {
-                io.github.mangi.eta.agent.pet.WhaleMaidController.onWorkDone(petContext, petTitle)
-            }
             onConversationRunSettled(conversationId)
         }
     }
@@ -5859,7 +5875,6 @@ internal class AgentAppState(
         runId: String,
         result: AgentRuntimeWire.RunResult,
         acknowledgeRuntimeResult: Boolean = false,
-        petReaction: Boolean = false,
     ) {
         val completionConversationId = conversationIdForRun(runId)
         val completionAlreadyApplied = completionConversationId?.let(::conversationState)
@@ -5895,6 +5910,23 @@ internal class AgentAppState(
                 result.error,
             )
         }
+        // 整轮耗时随结果一起回来，挂到最后一条回答上供统计胶囊展示。
+        result.timings?.let { timings ->
+            if (result.ok) {
+                val timingUi = timings.toUi()
+                updateMessages(runId, updateTimestamp = false, normalizeTerminalOrder = false) { messages ->
+                    val index = messages.indexOfLast { it is AgentMessageUi && it.content.isNotBlank() }
+                    if (index < 0) {
+                        messages
+                    } else {
+                        val message = messages[index] as AgentMessageUi
+                        messages.toMutableList().also { list ->
+                            list[index] = message.copy(usage = (message.usage ?: TokenUsageUi()).withTimingsFrom(timingUi))
+                        }
+                    }
+                }
+            }
+        }
         if (stoppedDuringRetry == null) {
             updateMessages(runId) { VirtualCompletionNotice.append(it, runId, result) }
             if (acknowledgeRuntimeResult && !completionAlreadyApplied) {
@@ -5923,7 +5955,7 @@ internal class AgentAppState(
         contextEstimateDiagnostics.clear(runId)
         runCompressedDuringRun.remove(runId)
         refreshConversationSummaries()
-        persistConversations(
+        val completedPersistence = persistConversations(
             onSaved = if (acknowledgeRuntimeResult) {
                 {
                     AgentRuntimeClient(appContext, AndroidAgentLogger).ackResult(runId)
@@ -5932,11 +5964,9 @@ internal class AgentAppState(
                 null
             }
         )
-        if (petReaction && result.ok && stoppedDuringRetry == null && conversationId != null) {
-            val petTitle = conversationTitles[conversationId].orEmpty()
-            val petContext = appContext
-            scope.launch(Dispatchers.IO) {
-                io.github.mangi.eta.agent.pet.WhaleMaidController.onWorkDone(petContext, petTitle)
+        pendingConversationTitles.remove(runId)?.let { pending ->
+            if (result.ok && stoppedDuringRetry == null && result.content.isNotBlank()) {
+                requestConversationTitle(pending, result.content, completedPersistence)
             }
         }
         if (conversationId != null) {
@@ -7523,6 +7553,13 @@ private fun AgentTokenUsage.toUi(): TokenUsageUi =
         outputTokens = outputTokens,
         reasoningTokens = reasoningTokens,
         cachedTokens = cachedTokens,
+        stepCount = stepCount,
+        llmMs = llmMs,
+        toolMs = toolMs,
+        ttftMs = ttftMs,
+        ttftSteps = ttftSteps,
+        decodeMs = decodeMs,
+        decodeTokens = decodeTokens,
     )
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {

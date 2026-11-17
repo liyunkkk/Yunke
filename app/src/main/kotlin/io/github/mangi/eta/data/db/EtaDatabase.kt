@@ -27,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SubAgentRunEntity::class,
         ConversationTodoEntity::class,
     ],
-    version = 35,
+    version = 36,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -80,6 +80,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_32_33,
                         MIGRATION_33_34,
                         MIGRATION_34_35,
+                        MIGRATION_35_36,
                     )
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
@@ -254,6 +255,18 @@ internal abstract class EtaDatabase : RoomDatabase() {
                 "CREATE INDEX IF NOT EXISTS index_conversation_todos_conversation_id " +
                     "ON conversation_todos (conversation_id)"
             )
+        }
+
+        /**
+         * 单轮统计胶囊持久化：消息表新增一列存放耗时 JSON（token 用量已有既有列，不重复存）。
+         * 可空列 + 先查列是否存在，旧记录读回 null，重复执行不会因列已存在而失败。
+         */
+        internal val MIGRATION_35_36 = Migration(35, 36) { database ->
+            if (!tableHasColumn(database, "conversation_messages", "usage_timings_json")) {
+                database.execSQL(
+                    "ALTER TABLE conversation_messages ADD COLUMN usage_timings_json TEXT",
+                )
+            }
         }
 
         internal val MIGRATION_30_31 = Migration(30, 31) { database ->

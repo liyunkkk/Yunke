@@ -107,7 +107,7 @@ internal fun SettingsModelScreen(
                     onClick = { onNavigate(AppRoute.SubAgents) },
                 )
                 ArrowPreference(
-                    title = stringResource(R.string.title_model_title),
+                    title = "自动会话标题",
                     startAction = { PreferenceIcon(icon = Icons.Rounded.AutoAwesome) },
                     onClick = { onNavigate(AppRoute.TitleModel) },
                 )

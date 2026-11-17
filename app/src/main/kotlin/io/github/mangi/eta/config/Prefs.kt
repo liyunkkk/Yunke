@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import io.github.libxposed.service.XposedService
 import io.github.mangi.eta.agent.device.AgentTaskSurface
+import io.github.mangi.eta.agent.model.AgentToolCatalog
+import org.json.JSONArray
 
 /**
  * 模块配置中枢。
@@ -38,6 +40,7 @@ internal object Prefs {
         const val SCREEN_ON_VOICE_COMMAND = "screen_on_voice_command"
         const val AGENT_CUSTOM_MODEL = "agent_custom_model"
         const val AGENT_REQUIRE_PREFIX = "agent_require_prefix"
+        const val AGENT_DISABLED_TOOLS_JSON = "agent_disabled_tools_json"
         const val AGENT_TERMINAL_TOOLS = "agent_terminal_tools"
         const val AGENT_BROWSER_TOOLS = "agent_browser_tools"
         const val AGENT_DEVICE_DIRECT_TOOLS = "agent_device_direct_tools"
@@ -48,8 +51,6 @@ internal object Prefs {
         const val AGENT_AUTO_COMPRESS_ENABLED = "agent_auto_compress_enabled"
         /** 子代理轮询退避门禁；默认关闭，需在子代理设置页显式开启。 */
         const val SUBAGENT_POLL_GUARD = "agent_subagent_poll_guard"
-        /** Kimi Code 授权模式：yolo（默认，自动批准）/ auto / manual。 */
-        const val KIMI_PERMISSION_MODE = "kimi_permission_mode"
         /** 模型请求重试次数；仅支持 0/3/5/8，默认 3。 */
         const val MODEL_RETRY_COUNT = "model_retry_count"
         /** 模型请求重试退避是否叠加 ±20% 抖动；默认开启。 */
@@ -73,8 +74,6 @@ internal object Prefs {
         const val AGENT_VOICE_DOUBAO_PROVIDER_ID = "agent_voice_doubao_provider_id"
         const val AGENT_VOICE_DOUBAO_VOICE = "agent_voice_doubao_voice"
         const val AGENT_VOICE_DOUBAO_INSTRUCTIONS = "agent_voice_doubao_instructions"
-        /** Kimi Web UI 是否优先使用内置浏览器打开，而不是交给系统浏览器。 */
-        const val KIMI_WEB_USE_BUILTIN_BROWSER = "kimi_web_use_builtin_browser"
         const val HAPTIC_TOUCH_FEEDBACK = "haptic_touch_feedback"
         const val HAPTIC_MESSAGE_GENERATION = "haptic_message_generation"
         const val HAPTIC_BACKGROUND = "haptic_background"
@@ -102,7 +101,6 @@ internal object Prefs {
             SUBAGENT_POLL_GUARD to false,
             MODEL_RETRY_JITTER to false,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
-            KIMI_WEB_USE_BUILTIN_BROWSER to true,
             HAPTIC_TOUCH_FEEDBACK to true,
             HAPTIC_MESSAGE_GENERATION to true,
             HAPTIC_BACKGROUND to true,
@@ -121,7 +119,6 @@ internal object Prefs {
             SUBAGENT_POLL_GUARD,
             MODEL_RETRY_JITTER,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED,
-            KIMI_WEB_USE_BUILTIN_BROWSER,
             HAPTIC_TOUCH_FEEDBACK,
             HAPTIC_MESSAGE_GENERATION,
             HAPTIC_BACKGROUND,
@@ -177,6 +174,7 @@ internal object Prefs {
             }
         }
         // 一次性迁移必须在任何 Agent 偏好读取之前完成；固定标记保证只跑一次。
+        localAgent?.let(::migrateLegacyGroupSwitchesIfNeeded)
         AgentTaskSurface.migrateAskToForegroundOnce()
     }
 
@@ -258,6 +256,7 @@ internal object Prefs {
         // 恢复会清空并重写全部本地标量，可能抹掉刚写的一次性标记。
         // 落盘后重新套用迁移：带标记的备份（迁移后导出）原样保留用户选择，
         // 无标记的旧备份若存过 ASK 则补做一次迁移。
+        localAgent?.let(::migrateLegacyGroupSwitchesIfNeeded)
         AgentTaskSurface.migrateAskToForegroundOnce()
     }
 
@@ -283,5 +282,105 @@ internal object Prefs {
         val local = localAgent ?: return
         val remotePreferences = remotePreferencesForUi(service) ?: return
         agentPreferenceReconciler.reconcile(requireNotNull(service), local, remotePreferences)
+        migrateLegacyGroupSwitchesIfNeeded(local)
     }
+
+    /** 将运行时工具名映射为工具列表中的主开关标识，确保同一能力的不同动作变体受同一开关约束。 */
+    fun canonicalToolSwitchId(toolName: String): String = when (toolName) {
+        "tap" -> "tap_area"
+        "long_press_element" -> "long_press"
+        "scroll_element" -> "scroll"
+        "input_text", "replace_text", "clear_text", "paste_text" -> "type_text"
+        "wait", "wait_for_package" -> "wait_for_text"
+        "browser_read", "browser_interact", "browser_screenshot" -> "browser_use"
+        "search_coloros_notes" -> "search_notes"
+        "search_coloros_memories" -> "search_system_memories"
+        else -> toolName
+    }
+
+    fun disabledTools(preferences: SharedPreferences? = localAgent ?: remote): Set<String> {
+        val raw = runCatching {
+            preferences?.getString(Keys.AGENT_DISABLED_TOOLS_JSON, null)
+        }.getOrNull().orEmpty()
+        if (raw.isBlank()) return emptySet()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildSet(array.length()) {
+                for (index in 0 until array.length()) {
+                    val item = array.optString(index).trim()
+                    if (item.isNotEmpty()) add(canonicalToolSwitchId(item))
+                }
+            }
+        }.getOrDefault(emptySet())
+    }
+
+    fun isToolEnabledInSet(toolName: String, disabled: Set<String>): Boolean {
+        if (disabled.isEmpty()) return true
+        val canonical = canonicalToolSwitchId(toolName)
+        return toolName !in disabled && canonical !in disabled
+    }
+
+    fun isToolEnabled(
+        toolName: String,
+        preferences: SharedPreferences? = localAgent ?: remote,
+    ): Boolean = isToolEnabledInSet(toolName, disabledTools(preferences))
+
+    fun setToolEnabled(
+        toolName: String,
+        enabled: Boolean,
+        service: XposedService? = null,
+    ): Boolean = setToolsEnabled(listOf(toolName), enabled, service)
+
+    @Synchronized
+    fun setToolsEnabled(
+        toolNames: Collection<String>,
+        enabled: Boolean,
+        service: XposedService? = null,
+    ): Boolean {
+        val local = localAgent ?: return false
+        migrateLegacyGroupSwitchesIfNeeded(local)
+        val updated = disabledTools(local).toMutableSet()
+        toolNames.forEach { rawName ->
+            val canonical = canonicalToolSwitchId(rawName)
+            if (enabled) {
+                updated -= rawName
+                updated -= canonical
+            } else {
+                updated += canonical
+            }
+        }
+        val encoded = JSONArray(updated.sorted()).toString()
+        val editor = local.edit().putString(Keys.AGENT_DISABLED_TOOLS_JSON, encoded)
+        LEGACY_TOOL_GROUP_KEYS.forEach { key ->
+            if (local.contains(key) && !local.getBoolean(key, true)) {
+                editor.putBoolean(key, true)
+            }
+        }
+        val committed = runCatching { editor.commit() }.getOrDefault(false)
+        if (committed && service != null) {
+            reconcileAgentPreferences(service)
+        }
+        return committed
+    }
+
+    internal fun migrateLegacyGroupSwitchesIfNeeded(local: SharedPreferences) {
+        if (local.contains(Keys.AGENT_DISABLED_TOOLS_JSON)) return
+        val disabledLegacyGroups = LEGACY_TOOL_GROUP_KEYS.filter { key ->
+            local.contains(key) && !local.getBoolean(key, true)
+        }
+        if (disabledLegacyGroups.isEmpty()) return
+        val migratedDisabled = disabledLegacyGroups.flatMap { AgentToolCatalog.legacyGroupToolNames(it) }.toSet()
+        val editor = local.edit()
+            .putString(Keys.AGENT_DISABLED_TOOLS_JSON, JSONArray(migratedDisabled.sorted()).toString())
+        disabledLegacyGroups.forEach { key -> editor.putBoolean(key, true) }
+        runCatching { editor.commit() }
+    }
+
+    private val LEGACY_TOOL_GROUP_KEYS = listOf(
+        Keys.AGENT_TERMINAL_TOOLS,
+        Keys.AGENT_BROWSER_TOOLS,
+        Keys.AGENT_DEVICE_DIRECT_TOOLS,
+        Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS,
+        Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS,
+    )
 }

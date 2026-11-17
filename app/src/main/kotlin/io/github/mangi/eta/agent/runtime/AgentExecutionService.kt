@@ -9,11 +9,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import androidx.annotation.RequiresApi
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
@@ -124,7 +126,6 @@ internal class AgentExecutionService : Service() {
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(appTitle)
-            .setSubText(actionText)
             .setContentText(detailWithVirtualDisplay)
             .setContentIntent(open)
             .setOngoing(true)
@@ -141,38 +142,112 @@ internal class AgentExecutionService : Service() {
         }
 
         val expanded = state.expandedSnippet?.takeIf { it.isNotBlank() }
-        if (expanded != null) {
+        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT)
+        // 提升态不设 subText：Eta 的构建链里只有 title/contentText，没有 subText；而且 subText 与
+        // BigTextStyle().setSummaryText(actionText) 是同一句话，展开卡上会重复一行。非提升态保持原样。
+        if (!promote) {
+            builder.setSubText(actionText)
+        }
+        // 一律 BigTextStyle：刻意不用无进度的 ProgressStyle，否则提升卡下方会渲染出一条空进度白条。
+        // 不设 setColor：用户实测这台机器会把品牌色渲染成深色不透明卡片（纯黑底看不清字），
+        // 去掉后由系统按液态玻璃样式着色。
+        if (ExecutionNotificationPlan.style(promote, expanded != null) == ExecutionNotificationStyle.BIG_TEXT) {
             builder.setStyle(
                 Notification.BigTextStyle()
                     .setBigContentTitle(appTitle)
-                    .bigText(expanded)
+                    .bigText(expanded ?: detailWithVirtualDisplay)
                     .setSummaryText(actionText),
             )
         }
 
-        // 小米焦点通知（灵动岛）扩展。HyperOS 4 的上岛判定分两个进程、两道闸门：
-        //   ① SystemUI 主进程 FocusUtils.isFocusNotification：只认
-        //      extras["miui.focus.rv"] 是 RemoteViews，或 extras["miui.focus.isFocus"] 为 true；
-        //      随后 showOnStatusBar 还要求 miui.focus.ticker 非空（或 miui.focus.rvBar 是 RemoteViews）。
-        //   ② 系统插件 miui.systemui.plugin 的 FocusNotifPreHandler.onNotificationPosted：
-        //      有 miui.focus.rv 走 buildNoParamsFocusNotification，
-        //      否则读 extras["miui.focus.param"]（protocol 3 JSON）走 buildParamsFocusNotification；
-        //      两者都没有则直接 return false，通知永远渲染不出岛。
-        // 只写 isFocus / ticker 只能过①，过不了②，所以必须同时提供 miui.focus.param。
-        // 下方 JSON 按 param_v2（protocol 3）组织，命中 V3 模板路径（不需要 scene）。
-        // 图片经 miui.focus.pics（Bundle: pic 名 -> Icon）提供，JSON 中 pic/src/aodPic 引用同名键。
-        // 旧 key（miui.focusNotification / .subTitle）保留，兼容 HyperOS 3 / MIUI 14-15。
-        // miui.enableFloat 在 HyperOS 3/4 的 ExpandedNotification.canFloat() 中均被读取，保持 false 不弹浮窗。
-        builder.extras.putBoolean("miui.focusNotification", true)
-        builder.extras.putString("miui.focusNotification.subTitle", actionText)
-        builder.extras.putBoolean("miui.focus.isFocus", true)
-        builder.extras.putString("miui.focus.ticker", actionText)
-        builder.extras.putBoolean("miui.enableFloat", false)
-        builder.extras.putString("miui.focus.param", focusParamJson(appTitle, actionText))
-        builder.extras.putBundle("miui.focus.pics", focusPics())
-        builder.extras.putBundle("miui.focus.actions", Bundle.EMPTY)
+        // 提升态一个 miui.* 扩展都不写：HyperOS 的 FocusNotifPreHandler 只要看到 miui.focus.* 就自己接管渲染，
+        // 原生 Live Update 提升会被压掉。非提升态保持原有 MIUI 焦点通知（超级岛）行为，键集合与写入顺序不变。
+        val miuiFocusKeys = ExecutionNotificationPlan.miuiFocusKeys(promote)
+        if (miuiFocusKeys.isNotEmpty()) {
+            applyMiuiFocusExtras(builder, miuiFocusKeys, appTitle, actionText)
+        }
 
+        // 判断逻辑是纯函数（可单测）；这里同时保留显式版本闸门，保证低版本一行 API 36 代码都不碰。
+        if (promote && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            promoteToLiveUpdate(builder, state.shortText())
+        }
+
+        // 浅色半透明自定义卡片：HyperOS 的原生实时活动模板会把背景画成深色，
+        // 与壁纸混在一起后正文几乎看不清。这里自绘一层浅色底，标题/状态/正文都够对比度；
+        // 系统若不接受自定义内容视图，会回落到上面的标准模板。
+        val executionCard = agentNotificationCard(
+            context = this,
+            title = appTitle,
+            status = actionText,
+            body = expanded ?: detailWithVirtualDisplay,
+            actionLabel = getString(R.string.execution_stop),
+            actionIntent = stop,
+        )
+        builder.setCustomContentView(executionCard)
+        builder.setCustomBigContentView(executionCard)
         return builder.build()
+    }
+
+    /**
+     * 写入 MIUI 焦点通知（灵动岛）扩展。HyperOS 4 的上岛判定分两个进程、两道闸门：
+     *   ① SystemUI 主进程 FocusUtils.isFocusNotification：只认
+     *      extras["miui.focus.rv"] 是 RemoteViews，或 extras["miui.focus.isFocus"] 为 true；
+     *      随后 showOnStatusBar 还要求 miui.focus.ticker 非空（或 miui.focus.rvBar 是 RemoteViews）。
+     *   ② 系统插件 miui.systemui.plugin 的 FocusNotifPreHandler.onNotificationPosted：
+     *      有 miui.focus.rv 走 buildNoParamsFocusNotification，
+     *      否则读 extras["miui.focus.param"]（protocol 3 JSON）走 buildParamsFocusNotification；
+     *      两者都没有则直接 return false，通知永远渲染不出岛。
+     * 只写 isFocus / ticker 只能过①，过不了②，所以必须同时提供 miui.focus.param。
+     * 下方 JSON 按 param_v2（protocol 3）组织，命中 V3 模板路径（不需要 scene）。
+     * 图片经 miui.focus.pics（Bundle: pic 名 -> Icon）提供，JSON 中 pic/src/aodPic 引用同名键。
+     * 旧 key（miui.focusNotification / .subTitle）保留，兼容 HyperOS 3 / MIUI 14-15。
+     * miui.enableFloat 在 HyperOS 3/4 的 ExpandedNotification.canFloat() 中均被读取，保持 false 不弹浮窗。
+     *
+     * 只在非提升态调用；提升态交给系统原生 Live Update，这些键一个都不写。
+     */
+    private fun applyMiuiFocusExtras(
+        builder: Notification.Builder,
+        keys: List<String>,
+        appTitle: String,
+        actionText: String,
+    ) {
+        for (key in keys) {
+            when (key) {
+                ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION ->
+                    builder.extras.putBoolean(key, true)
+                ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION_SUBTITLE ->
+                    builder.extras.putString(key, actionText)
+                ExecutionNotificationPlan.MIUI_FOCUS_IS_FOCUS ->
+                    builder.extras.putBoolean(key, true)
+                ExecutionNotificationPlan.MIUI_FOCUS_TICKER ->
+                    builder.extras.putString(key, actionText)
+                ExecutionNotificationPlan.MIUI_ENABLE_FLOAT ->
+                    builder.extras.putBoolean(key, false)
+                ExecutionNotificationPlan.MIUI_FOCUS_PARAM ->
+                    builder.extras.putString(key, focusParamJson(appTitle, actionText))
+                ExecutionNotificationPlan.MIUI_FOCUS_PICS ->
+                    builder.extras.putBundle(key, focusPics())
+                ExecutionNotificationPlan.MIUI_FOCUS_ACTIONS ->
+                    builder.extras.putBundle(key, Bundle.EMPTY)
+                else -> Unit
+            }
+        }
+    }
+
+    /**
+     * 把通知标记为 Live Update：胶囊短文本 + 提升 extra。
+     *
+     * 请求提升的公开方法（requestPromotedOngoing）到 API 36.1 才公开，所以这里按 Eta 的做法
+     * 用标准 extra `android.requestPromotedOngoing`，API 36 的系统同样读取它。
+     *
+     * 不设大图标：用户实测这张卡上大图标会渲染成突兀的白色方块，按用户要求去掉。
+     */
+    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
+    private fun promoteToLiveUpdate(builder: Notification.Builder, shortText: String) {
+        if (shortText.isNotEmpty()) {
+            builder.setShortCriticalText(shortText)
+        }
+        builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)
     }
 
     /** HyperOS 4 焦点通知 protocol 3 参数；结构对齐系统实测样本，只保留文字与一个图标。 */
@@ -243,6 +318,8 @@ internal class AgentExecutionService : Service() {
         const val CHANNEL = "eta_execution"
         private const val NOTIFICATION_ID = 1107
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
+        /** API 36 系统读取的提升标记；公开的 requestPromotedOngoing() 到 36.1 才存在。 */
+        private const val PROMOTED_ONGOING_EXTRA = "android.requestPromotedOngoing"
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()
         private val mainHandler = Handler(Looper.getMainLooper())
@@ -267,6 +344,8 @@ internal class AgentExecutionService : Service() {
         private const val COMPLETION_NOTIFICATION_ID_BASE = 20000
         private const val FOCUS_PIC_ICON = "eta_island_icon"
         @Volatile private var executionState = AgentExecutionState()
+        /** 最近一次真正下发给通知的执行状态，用于同值去重（避免流式增量把通知推到系统限流）。 */
+        @Volatile private var publishedExecutionState: AgentExecutionState? = null
         /**
          * 副屏是否活跃。由 AgentRuntimeService 在快照变化时写入；
          * 通知构建路径只读这个标记，避免在主线程上抢 VirtualDisplaySession 的监视器锁。
@@ -323,6 +402,27 @@ internal class AgentExecutionService : Service() {
             manager.createNotificationChannel(completedChannel)
         }
 
+        fun agentNotificationCard(
+            context: Context,
+            title: String,
+            status: String,
+            body: String,
+            actionLabel: String?,
+            actionIntent: android.app.PendingIntent?,
+        ): android.widget.RemoteViews =
+            android.widget.RemoteViews(context.packageName, R.layout.notification_agent_card).apply {
+                setTextViewText(R.id.agent_notification_title, title)
+                setTextViewText(R.id.agent_notification_status, status)
+                setTextViewText(R.id.agent_notification_body, body)
+                if (!actionLabel.isNullOrBlank() && actionIntent != null) {
+                    setTextViewText(R.id.agent_notification_action, actionLabel)
+                    setViewVisibility(R.id.agent_notification_action, android.view.View.VISIBLE)
+                    setOnClickPendingIntent(R.id.agent_notification_action, actionIntent)
+                } else {
+                    setViewVisibility(R.id.agent_notification_action, android.view.View.GONE)
+                }
+            }
+
         fun postCompletionNotification(
             context: Context,
             runId: String,
@@ -354,7 +454,7 @@ internal class AgentExecutionService : Service() {
             }
             val displayContent = content.ifBlank {
                 if (isError) "" else context.getString(R.string.execution_completed_default)
-            }
+            }.let(ExecutionNotificationPlan::completionBody)
             val builder = Notification.Builder(context, CHANNEL_COMPLETED)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(displayTitle)
@@ -363,18 +463,50 @@ internal class AgentExecutionService : Service() {
                 .setContentIntent(open)
                 .setAutoCancel(true)
                 .setShowWhen(true)
+                // 完成态不申请提升、不占常驻位、不重复提醒：用户要求"需要时自己点开才展开"。
+                .setOngoing(false)
+                .setOnlyAlertOnce(true)
+            // 显式写 false（不是省略）：同一套 extras 模板里避免继承/复制粘贴出提升标记。
+            builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, false)
             val notificationId = COMPLETION_NOTIFICATION_ID_BASE + (runId.hashCode() and 0x7FFF)
+            builder.setCustomContentView(agentNotificationCard(
+                context = context,
+                title = displayTitle,
+                status = "已完成",
+                body = displayContent,
+                actionLabel = "查看",
+                actionIntent = open,
+            ))
+            builder.setCustomBigContentView(agentNotificationCard(
+                context = context,
+                title = displayTitle,
+                status = "已完成",
+                body = displayContent,
+                actionLabel = "查看",
+                actionIntent = open,
+            ))
             manager.notify(notificationId, builder.build())
         }
 
         fun updateExecutionState(state: AgentExecutionState) {
             executionState = state
+            // 流式增量常常产出完全相同的状态（同一段文案、同一 phase），重复下发只会撞系统限流；
+            // 真正的节流在 AgentExecutionNotificationTracker 里（≥1s 一次），这里只做同值去重。
+            if (publishedExecutionState == state) return
+            publishedExecutionState = state
             mainHandler.post { instance?.refreshNotification() }
         }
 
+        /**
+         * 只清状态，不主动重发通知。
+         *
+         * 运行结束时 Runtime 紧接着调 [release]，由那里决定"还有别的会话 → 重画"或"没有会话 →
+         * 撤掉前台通知"。此前这里也刷一次，会把 1107 号通知从运行态改成空闲态再刷一遍（非提升态会带
+         * miui.focus.* 参数），HyperOS 见到焦点通知就把灵动岛展开——正是用户反馈的"任务完成自动展开"。
+         */
         fun resetExecutionState() {
             executionState = AgentExecutionState()
-            mainHandler.post { instance?.refreshNotification() }
+            publishedExecutionState = null
         }
 
         /** 必须从有效的用户入口取得引用，再创建会话或子进程；失败时调用方不启动任务。 */
@@ -403,6 +535,7 @@ internal class AgentExecutionService : Service() {
             leases.release(id)
             if (leases.count() == 0) {
                 executionState = AgentExecutionState()
+                publishedExecutionState = null
                 currentSource = AgentNotificationTrampolineActivity.SOURCE_MAIN
             }
             mainHandler.post { instance?.refreshNotification() }
@@ -424,4 +557,65 @@ enum class IslandAvailability {
     NO_PERMISSION,
     /** 非小米系/HyperOS 系统，或版本过低，焦点通知不会上岛。 */
     UNSUPPORTED,
+}
+
+/**
+ * 执行通知的构建规划：哪些 extras 该写、用哪种样式。
+ *
+ * 抽成纯函数是为了让「提升态不写 miui.*」「低版本样式不变」这两条能在 JVM 单测里直接断言，
+ * 不必把 Notification.Builder / Bundle 拖进测试。
+ */
+internal object ExecutionNotificationPlan {
+    internal const val MIUI_FOCUS_NOTIFICATION = "miui.focusNotification"
+    internal const val MIUI_FOCUS_NOTIFICATION_SUBTITLE = "miui.focusNotification.subTitle"
+    internal const val MIUI_FOCUS_IS_FOCUS = "miui.focus.isFocus"
+    internal const val MIUI_FOCUS_TICKER = "miui.focus.ticker"
+    internal const val MIUI_ENABLE_FLOAT = "miui.enableFloat"
+    internal const val MIUI_FOCUS_PARAM = "miui.focus.param"
+    internal const val MIUI_FOCUS_PICS = "miui.focus.pics"
+    internal const val MIUI_FOCUS_ACTIONS = "miui.focus.actions"
+
+    /** 非提升态要写的 MIUI 焦点通知键，顺序即写入顺序。 */
+    internal val MIUI_FOCUS_KEYS = listOf(
+        MIUI_FOCUS_NOTIFICATION,
+        MIUI_FOCUS_NOTIFICATION_SUBTITLE,
+        MIUI_FOCUS_IS_FOCUS,
+        MIUI_FOCUS_TICKER,
+        MIUI_ENABLE_FLOAT,
+        MIUI_FOCUS_PARAM,
+        MIUI_FOCUS_PICS,
+        MIUI_FOCUS_ACTIONS,
+    )
+
+    /**
+     * 提升态恒为空：HyperOS 的 FocusNotifPreHandler 见到 miui.focus.* 就接管渲染，
+     * 原生 Live Update 会被压掉。非提升态保持原有全部键。
+     */
+    internal fun miuiFocusKeys(promoted: Boolean): List<String> =
+        if (promoted) emptyList() else MIUI_FOCUS_KEYS
+
+    /** 提升态与「有展开正文」态用 BigTextStyle；其余不设样式（改动前行为）。 */
+    internal fun style(promoted: Boolean, hasExpandedSnippet: Boolean): ExecutionNotificationStyle =
+        if (promoted || hasExpandedSnippet) ExecutionNotificationStyle.BIG_TEXT else ExecutionNotificationStyle.NONE
+
+    /**
+     * 完成通知正文字数上限：展开卡片够读一段完整回复，同时保持有界
+     * （通知 extras 会被系统跨进程复制，不能塞进整篇输出）。
+     */
+    internal const val MAX_COMPLETION_BODY_CHARS = 800
+
+    /** 完成通知正文：去首尾空白，按码点截断（不切代理对），超长补省略号。 */
+    internal fun completionBody(text: String): String {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return ""
+        if (trimmed.codePointCount(0, trimmed.length) <= MAX_COMPLETION_BODY_CHARS) return trimmed
+        val end = trimmed.offsetByCodePoints(0, MAX_COMPLETION_BODY_CHARS - 1)
+        return trimmed.substring(0, end).trimEnd() + "…"
+    }
+}
+
+/** 执行通知的样式种类；刻意不提供无进度的 ProgressStyle（会渲染空进度白条）。 */
+internal enum class ExecutionNotificationStyle {
+    BIG_TEXT,
+    NONE,
 }

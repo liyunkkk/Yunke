@@ -31,6 +31,7 @@ import io.github.mangi.eta.ui.model.ToolItemUi
 import io.github.mangi.eta.ui.model.actualToolName
 import io.github.mangi.eta.ui.model.toolCardAction
 import io.github.mangi.eta.ui.model.toolCardRequirement
+import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -45,6 +46,9 @@ internal fun ToolCard(
     rootGranted: Boolean,
     capabilities: AgentToolCapabilities,
     onAction: (AgentToolsAction) -> Unit,
+    enabled: Boolean = true,
+    saving: Boolean = false,
+    onToggle: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var showDescription by remember(tool.id) { mutableStateOf(false) }
@@ -85,6 +89,7 @@ internal fun ToolCard(
                 tint = MiuixTheme.colorScheme.onSurfaceContainer,
             )
             Spacer(modifier = Modifier.weight(1f))
+            Switch(checked = enabled, enabled = !saving, onCheckedChange = onToggle)
             if (action != null) {
                 IconButton(onClick = { showDescription = true }) {
                     Icon(

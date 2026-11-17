@@ -27,7 +27,6 @@ internal object McpServerManager {
             "MCP 服务器不存在"
         }
         val refreshed = discover(server, McpServerRepository.bearerToken(serverId))
-        McpServerRepository.update(refreshed)
-        return refreshed
+        return McpServerRepository.updateDiscoveredTools(refreshed)
     }
 }
