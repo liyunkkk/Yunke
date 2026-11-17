@@ -37,7 +37,7 @@ internal object AgentToolRequirements {
             "search_notification_history", "recent_app_activity", "app_usage_summary",
             "get_current_location", "get_device_environment", "memory_get", "memory_write",
             "skills_list", "skills_read", "skills_read_resource", "skills_list_curated",
-            "skills_inspect_github", "skills_install_from_github", "delegate_to_kimi_code",
+            "skills_inspect_github", "skills_install_from_github",
             "get_assistant_config", "update_assistant_config", "web_search", "fetch_url",
             "skills_install_local", "eta_manage_models", "eta_manage_subagents", "eta_configure_mcp",
         )

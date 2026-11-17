@@ -83,9 +83,6 @@ sealed interface AppRoute : NavKey {
     data object TitleModel : AppRoute
 
     @Serializable
-    data object AssistantOverlayModel : AppRoute
-
-    @Serializable
     data object WebToolsSettings : AppRoute
 
     @Serializable

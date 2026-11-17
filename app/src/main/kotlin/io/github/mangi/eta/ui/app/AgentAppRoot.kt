@@ -50,7 +50,6 @@ import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
-import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
 import io.github.mangi.eta.agent.device.DeviceLocationProvider
 import io.github.mangi.eta.agent.device.RootAccess
@@ -215,7 +214,6 @@ fun AgentAppRoot(
                 }
                 Lifecycle.Event.ON_RESUME -> {
                     RootAccess.refresh(context)
-                    appViewModel.refreshKimiWeb()
                     agentState.refreshPermissionHealth()
                     agentState.refreshRuntimeResults()
                     agentState.refreshRequestOverhead()
@@ -467,34 +465,6 @@ fun AgentAppRoot(
             onSearchConversations = { query -> agentState.updateSearchQuery(query) },
             onNewConversation = { createConversation() },
             onOpenTerminal = { pushRoute(AppRoute.Terminal) },
-            onLaunchKimiWeb = {
-                requestExecutionNotifications()
-                if (appViewModel.kimiWebState.phase != KimiWebPhase.NOT_INSTALLED) {
-                    appViewModel.launchKimiWeb { result ->
-                        when (result) {
-                            is KimiWebLaunchResult.Opened -> {
-                                if (Prefs.isEnabled(Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER)) {
-                                    AgentBrowserSession.requestUserNavigation(result.url)
-                                    pushRoute(AppRoute.Browser)
-                                }
-                            }
-                            is KimiWebLaunchResult.Failed -> {
-                                Toast.makeText(
-                                    context,
-                                    result.message(context),
-                                    Toast.LENGTH_LONG,
-                                ).show()
-                            }
-                        }
-                    }
-                } else {
-                    pushRoute(AppRoute.LinuxEnvironment)
-                }
-            },
-            kimiWebLabel = appViewModel.kimiWebState.actionLabel(context),
-            canStopKimiWeb = appViewModel.kimiWebState.canStop,
-            onStopKimiWeb = appViewModel::stopKimiWeb,
-            onRefreshKimiWeb = appViewModel::refreshKimiWeb,
             onOpenBrowser = { pushRoute(AppRoute.Browser) },
             onOpenWorkspace = { pushRoute(AppRoute.Workspace) },
             autoCompressEnabled = agentState.autoCompressEnabled,
@@ -1046,10 +1016,7 @@ fun AgentAppRoot(
                     isCurrentRoute = backStack.lastOrNull() == AppRoute.SubAgents)
             }
             entry<AppRoute.TitleModel>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.IndependentModelSettingsScreen(overlay = false, onBack = ::popRoute)
-            }
-            entry<AppRoute.AssistantOverlayModel>(swipeDismiss = swipeDismiss) {
-                io.github.mangi.eta.ui.IndependentModelSettingsScreen(overlay = true, onBack = ::popRoute)
+                io.github.mangi.eta.ui.IndependentModelSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.WebToolsSettings>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.ui.screens.tools.WebToolsSettingsScreen(onBack = ::popRoute)
@@ -1085,8 +1052,7 @@ fun AgentAppRoot(
                     onExport = agentState::exportBackup,
                     onImport = { input ->
                         val summary = agentState.importBackup(input)
-                        appViewModel.refreshKimiWeb()
-                        summary
+                            summary
                     },
                 )
             }

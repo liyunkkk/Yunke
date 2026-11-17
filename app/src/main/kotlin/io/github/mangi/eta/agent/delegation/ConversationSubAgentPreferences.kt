@@ -34,8 +34,6 @@ internal data class ConversationSubAgentConfig(
     val enabled: Boolean = true,
     val parallelLimits: Map<SubAgentParallelModel, Int> = emptyMap(),
     val legacyParallelLimits: Map<String, Int> = emptyMap(),
-    /** 本会话委派给 Kimi Code 时使用的模型别名；null/空表示跟随服务端 default_model。 */
-    val kimiModel: String? = null,
     val appliedPresetId: String? = null,
     val appliedPresetName: String? = null,
     val presetApplicationToken: String? = null,
@@ -565,7 +563,6 @@ internal class ConversationSubAgentPreferences(
                 JSONObject().put("hash", hash).put("limit", limit)
             }))
         // 空值不落字段：既保持旧存档字节不变，也避免把"跟随默认"写成一个具体别名。
-        config.kimiModel?.takeIf { it.isNotBlank() }?.let { json.put("kimi_model", it) }
         return json.toString()
     }
     private fun string(j: JSONObject, name: String): String {
@@ -649,10 +646,7 @@ internal class ConversationSubAgentPreferences(
             appliedPresetId = optionalString(json, "applied_preset_id"),
             appliedPresetName = optionalString(json, "applied_preset_name"),
             presetApplicationToken = optionalString(json, "preset_application_token"),
-            // 旧存档没有该字段；存在时必须是非空字符串（类型错误不被忽略）。
-            kimiModel = if (json.has("kimi_model") && !json.isNull("kimi_model")) {
-                string(json, "kimi_model").trim().takeIf { it.isNotBlank() }
-            } else null)
+        )
         config.validate()
         return config.detached()
     }

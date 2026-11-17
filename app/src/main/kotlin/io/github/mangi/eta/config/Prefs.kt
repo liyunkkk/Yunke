@@ -51,8 +51,6 @@ internal object Prefs {
         const val AGENT_AUTO_COMPRESS_ENABLED = "agent_auto_compress_enabled"
         /** 子代理轮询退避门禁；默认关闭，需在子代理设置页显式开启。 */
         const val SUBAGENT_POLL_GUARD = "agent_subagent_poll_guard"
-        /** Kimi Code 授权模式：yolo（默认，自动批准）/ auto / manual。 */
-        const val KIMI_PERMISSION_MODE = "kimi_permission_mode"
         /** 模型请求重试次数；仅支持 0/3/5/8，默认 3。 */
         const val MODEL_RETRY_COUNT = "model_retry_count"
         /** 模型请求重试退避是否叠加 ±20% 抖动；默认开启。 */
@@ -76,8 +74,6 @@ internal object Prefs {
         const val AGENT_VOICE_DOUBAO_PROVIDER_ID = "agent_voice_doubao_provider_id"
         const val AGENT_VOICE_DOUBAO_VOICE = "agent_voice_doubao_voice"
         const val AGENT_VOICE_DOUBAO_INSTRUCTIONS = "agent_voice_doubao_instructions"
-        /** Kimi Web UI 是否优先使用内置浏览器打开，而不是交给系统浏览器。 */
-        const val KIMI_WEB_USE_BUILTIN_BROWSER = "kimi_web_use_builtin_browser"
         const val HAPTIC_TOUCH_FEEDBACK = "haptic_touch_feedback"
         const val HAPTIC_MESSAGE_GENERATION = "haptic_message_generation"
         const val HAPTIC_BACKGROUND = "haptic_background"
@@ -105,7 +101,6 @@ internal object Prefs {
             SUBAGENT_POLL_GUARD to false,
             MODEL_RETRY_JITTER to false,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED to false,
-            KIMI_WEB_USE_BUILTIN_BROWSER to true,
             HAPTIC_TOUCH_FEEDBACK to true,
             HAPTIC_MESSAGE_GENERATION to true,
             HAPTIC_BACKGROUND to true,
@@ -124,7 +119,6 @@ internal object Prefs {
             SUBAGENT_POLL_GUARD,
             MODEL_RETRY_JITTER,
             AGENT_COMPRESS_CUSTOM_MODEL_ENABLED,
-            KIMI_WEB_USE_BUILTIN_BROWSER,
             HAPTIC_TOUCH_FEEDBACK,
             HAPTIC_MESSAGE_GENERATION,
             HAPTIC_BACKGROUND,

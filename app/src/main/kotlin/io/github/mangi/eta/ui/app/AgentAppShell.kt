@@ -80,11 +80,6 @@ internal fun AgentAppShell(
     onSearchConversations: (String) -> Unit,
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
-    onLaunchKimiWeb: () -> Unit,
-    kimiWebLabel: String,
-    canStopKimiWeb: Boolean,
-    onStopKimiWeb: () -> Unit,
-    onRefreshKimiWeb: () -> Unit,
     onOpenBrowser: () -> Unit,
     onOpenWorkspace: () -> Unit,
     autoCompressEnabled: Boolean = false,
@@ -173,11 +168,6 @@ internal fun AgentAppShell(
                             onOpenConversationPane = onOpenConversationPane,
                             onNewConversation = onNewConversation,
                             onOpenTerminal = onOpenTerminal,
-                            onLaunchKimiWeb = onLaunchKimiWeb,
-                            kimiWebLabel = kimiWebLabel,
-                            canStopKimiWeb = canStopKimiWeb,
-                            onStopKimiWeb = onStopKimiWeb,
-                            onRefreshKimiWeb = onRefreshKimiWeb,
                             onOpenBrowser = onOpenBrowser,
                             onOpenWorkspace = onOpenWorkspace,
                             currentConversationTitle = currentConversationTitle,
@@ -256,11 +246,6 @@ private fun AgentTopBar(
     onOpenConversationPane: () -> Unit,
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
-    onLaunchKimiWeb: () -> Unit,
-    kimiWebLabel: String,
-    canStopKimiWeb: Boolean,
-    onStopKimiWeb: () -> Unit,
-    onRefreshKimiWeb: () -> Unit,
     onOpenBrowser: () -> Unit,
     onOpenWorkspace: () -> Unit,
     autoCompressEnabled: Boolean = false,
@@ -322,11 +307,6 @@ private fun AgentTopBar(
             TopBarOverflowMenu(
                 onNewConversation = onNewConversation,
                 onOpenTerminal = onOpenTerminal,
-                onLaunchKimiWeb = onLaunchKimiWeb,
-                kimiWebLabel = kimiWebLabel,
-                canStopKimiWeb = canStopKimiWeb,
-                onStopKimiWeb = onStopKimiWeb,
-                onRefreshKimiWeb = onRefreshKimiWeb,
                 onOpenBrowser = onOpenBrowser,
                 onOpenWorkspace = onOpenWorkspace,
                 autoCompressEnabled = autoCompressEnabled,
@@ -384,7 +364,6 @@ private fun titleForRoute(route: AppRoute?, currentConversationTitle: String? = 
     is AppRoute.SpeechSettings -> stringResource(R.string.speech_title)
     is AppRoute.AuxiliaryVision -> stringResource(R.string.auxiliary_vision_title)
     is AppRoute.SubAgents -> stringResource(R.string.route_subagents)
-    is AppRoute.AssistantOverlayModel -> "浮窗模型与思考"
     is AppRoute.WebToolsSettings -> "Web 工具"
     is AppRoute.TitleModel -> stringResource(R.string.title_model_title)
     is AppRoute.ErrorReconnectSettings -> stringResource(R.string.error_reconnect_title)

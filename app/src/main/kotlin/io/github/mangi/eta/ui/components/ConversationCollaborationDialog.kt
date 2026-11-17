@@ -24,8 +24,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.github.mangi.eta.agent.delegation.SubAgentConfigKey
-import io.github.mangi.eta.agent.kimi.KimiSubAgentStatus
-import io.github.mangi.eta.agent.kimi.KimiSubAgentStatusAccess
 import io.github.mangi.eta.agent.delegation.ConversationSubAgentPreferences
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.ui.haptics.TouchHaptics
@@ -80,22 +78,6 @@ internal fun ConversationCollaborationDialog(
     val maximumHeight = (LocalConfiguration.current.screenHeightDp - 48).coerceAtLeast(160).dp
     val view = LocalView.current
     val context = LocalContext.current
-    val kimiBinding = kimiConversationBinding(editor?.owner)
-    var kimiStatus by remember(kimiBinding) { mutableStateOf<KimiSubAgentStatus?>(null) }
-    var kimiDefaultModel by remember(kimiBinding) { mutableStateOf<String?>(null) }
-    var kimiModelDialog by remember(editor) { mutableStateOf(false) }
-    // 打开面板时按需刷新一次；无运行中的 Kimi 会话时状态为 null（显示「未启动」）。
-    LaunchedEffect(show, kimiBinding, current?.kimiModel) {
-        if (kimiBinding == null) {
-            kimiStatus = null
-            kimiDefaultModel = null
-            return@LaunchedEffect
-        }
-        withContext(Dispatchers.IO) {
-            kimiStatus = KimiSubAgentStatusAccess.readStatus(context, kimiBinding)
-            kimiDefaultModel = KimiSubAgentStatusAccess.defaultModel(context)
-        }
-    }
     // Share the same lifetime-bound chooser/panel with the non-scrolling footer.
     val chooserPopup = if (choosing && directory != null && editor != null) {
         val popup = remember(editor) { OwnerBoundPopup(editor.owner) }
@@ -207,29 +189,6 @@ internal fun ConversationCollaborationDialog(
                                             }
                                         }
                                         HorizontalDivider(Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-                                        val locale = LocalConfiguration.current.locales[0]
-                                        val kimiModelLabel = (panelConfig ?: current).kimiModel
-                                            ?: kimiDefaultModel?.takeIf { it.isNotBlank() }
-                                            ?: "跟随默认模型"
-                                        val kimiStatusText = kimiStatus?.let { "${it.statusLabel()} · ${it.contextSummary(locale)}" }
-                                            ?: "未启动"
-                                        Row(Modifier.fillMaxWidth().heightIn(min = 64.dp)
-                                            .clickable(enabled = panelEnabled) {
-                                                if (latestOwnerMatches() && !latestTaskRunning && !latestChoosing && panelEditor.enabled) {
-                                                    TouchHaptics.click(view); kimiModelDialog = true
-                                                }
-                                            }, verticalAlignment = Alignment.CenterVertically) {
-                                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text("Kimi Code", style = MaterialTheme.typography.bodyLarge)
-                                                Text("重度编码 / 需要编译验证的任务", style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurface)
-                                                Text(kimiModelLabel, style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                                Text(kimiStatusText, style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                            }
-                                            KimiStatusDot(busy = kimiStatus?.busy == true)
-                                        }
                                         Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp),
                                             verticalAlignment = Alignment.CenterVertically) {
                                             Text("点按模型切换 · 长按调整思考", style = MaterialTheme.typography.labelSmall,
@@ -296,20 +255,6 @@ internal fun ConversationCollaborationDialog(
                     }
                 }
             }
-        }
-        if (kimiModelDialog && current != null) {
-            KimiSubAgentModelDialog(
-                currentModel = current.kimiModel,
-                defaultModel = kimiDefaultModel,
-                onDismiss = { kimiModelDialog = false },
-                onSave = { model ->
-                    if (ownerMatches() && editor?.enabled == true && !taskRunning) {
-                        TouchHaptics.click(view)
-                        editor.saveKimiModel(model)
-                    }
-                    kimiModelDialog = false
-                },
-            )
         }
     }
 }

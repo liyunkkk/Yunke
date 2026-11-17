@@ -106,7 +106,6 @@ internal object AssistantConfigSanitizer {
         switchesObj.put("device_direct_tools", Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_DIRECT_TOOLS))
         switchesObj.put("device_sensitive_read_tools", Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS))
         switchesObj.put("device_sensitive_action_tools", Prefs.isEnabled(Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS))
-        switchesObj.put("kimi_web_builtin_browser", Prefs.isEnabled(Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER))
         root.put("disabled_tools", org.json.JSONArray(Prefs.disabledTools().sorted()))
         root.put("switches", switchesObj)
         return root

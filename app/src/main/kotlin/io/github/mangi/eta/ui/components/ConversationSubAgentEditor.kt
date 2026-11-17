@@ -220,8 +220,6 @@ internal class ConversationSubAgentEditor(
         old.copy(profiles = old.profiles.filterNot { profile -> profile.id == id })
     }
     fun setEnabled(value: Boolean) = update { it.copy(enabled = value) }
-    /** 保存本会话的 Kimi Code 模型别名；null/空白表示跟随服务端 default_model。 */
-    fun saveKimiModel(model: String?) = update { it.copy(kimiModel = model?.trim()?.takeIf { value -> value.isNotBlank() }) }
     fun saveParallelLimit(id: String, providerId: String, modelId: String, apiModel: String, limit: Int): ConversationSubAgentPreferences.WriteResult {
         if (limit < 0 || providerId.isBlank() || apiModel.isBlank()) return ConversationSubAgentPreferences.WriteResult.Rejected
         val binding = SubAgentParallelModel(providerId, apiModel)

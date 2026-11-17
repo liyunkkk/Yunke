@@ -47,7 +47,6 @@
   <string name="token_usage_cache_percent">Cache rate</string>
   <string name="token_usage_empty">No token usage in this conversation yet</string>
   <string name="action_browse_workspace_files">Browse workspace files</string>
-  <string name="action_launch_kimi_web">Launch Kimi Web</string>
   <string name="action_sub_agent_status">Sub-agent status</string>
   <string name="sub_agent_status_empty">This conversation has no sub-agents</string>
   <string name="sub_agent_status_close">Close</string>
@@ -1146,15 +1145,7 @@
   <string name="linux_ssh_tools">SSH remote access</string>
   <string name="linux_ssh_tools_summary">Install the full OpenSSH suite (sshd, ssh-keygen, ssh-agent, and sftp-server); the base environment already includes the ssh/scp/sftp client</string>
   <string name="linux_ssh_tools_ready">sshd, ssh-keygen, and ssh-agent are ready</string>
-  <string name="linux_kimi_tools">Kimi Code</string>
-  <string name="linux_kimi_tools_summary">Install the latest Kimi Code release via npm; requires the Node.js environment first</string>
-  <string name="linux_kimi_tools_ready">Kimi Code is ready; run kimi in the terminal</string>
   <string name="linux_profile_dependency_missing">Install %1$s first</string>
-  <string name="linux_kimi_web_launch">Launch Web UI</string>
-  <string name="linux_kimi_web_starting">Starting…</string>
-  <string name="linux_kimi_web_failed_start">Failed to start Kimi Web</string>
-  <string name="linux_kimi_web_failed_url">Web UI address not found; check background task logs</string>
-  <string name="linux_kimi_web_failed_browser">No browser available</string>
   <string name="linux_profile_stage_checking">Checking the Linux base environment</string>
   <string name="linux_profile_stage_downloading">Downloading %1$s</string>
   <string name="linux_profile_stage_downloading_percent">Downloading %1$s · %2$d%%</string>
@@ -1557,7 +1548,6 @@
   <string name="functional_model_translation">Screen Translation</string>
   <string name="functional_model_set_as_translation">Set as Screen Translation Model</string>
   <string name="screen_translation_cleared_translation_api">Cleared dedicated translation API</string>
-  <string name="settings_kimi_web_builtin_browser">Open Kimi Web in built-in browser</string>
   <string name="settings_model_features">Model features</string>
   <string name="auxiliary_vision_title">Auxiliary vision model</string>
   <string name="title_model_title">Title model</string>
@@ -1665,11 +1655,6 @@
   <string name="route_subagents">Sub-agents</string>
   <string name="settings_model_retry_title">Model request retries</string>
   <string name="settings_model_retry_summary">Raise it when the network or relay is unstable; 0 disables automatic retries.</string>
-  <string name="settings_kimi_auth_title">Kimi authorization mode</string>
-  <string name="settings_kimi_auth_summary">Approves automatically by default; use confirm-each-time for high-risk actions.</string>
-  <string name="settings_kimi_auth_yolo">Auto approve (yolo)</string>
-  <string name="settings_kimi_auth_auto">Auto</string>
-  <string name="settings_kimi_auth_manual">Confirm each time</string>
   <string name="settings_about_version">Version</string>
   <string name="settings_about_feedback">Send feedback</string>
 </resources>

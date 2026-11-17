@@ -177,53 +177,6 @@ internal object AgentContextAppToolCatalog {
             )
             .put(
                 AgentToolSchema.function(
-                    name = "delegate_to_kimi_code",
-                    description = "将复杂代码编写、重构或项目文件批量修改任务委派给内置的 Kimi Code 编程子代理执行。子代理运行在隔离的 Linux 环境中，能够就地读写代码、运行测试并汇报变更。适用于多文件代码修改、逻辑重构、写脚本等重型编码任务。只在需要就地改代码并验证（编译/跑测试/跑命令）时使用；需要多路并行调查、审查、总结或生成媒体时，改用 delegate_task。同一份任务不要同时派给两边。",
-                    parameters = JSONObject()
-                        .put("type", "object")
-                        .put(
-                            "properties",
-                            JSONObject()
-                                .put(
-                                    "task",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("description", "具体的重构或编码任务描述与指令")
-                                )
-                                .put(
-                                    "project_path",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("description", "工作目录绝对路径，默认 /workspace")
-                                )
-                                .put(
-                                    "timeout_seconds",
-                                    JSONObject()
-                                        .put("type", "integer")
-                                        .put("description", "执行超时时间（秒），默认 120，范围 10 到 600")
-                                )
-                                .put(
-                                    "conversation_id",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put(
-                                            "description",
-                                            "会话绑定键，同一对话的多轮委派复用同一个 Kimi 上下文；" +
-                                                "通常无需填写，由运行时自动注入当前对话 id"
-                                        )
-                                )
-                                .put(
-                                    "conversation_title",
-                                    JSONObject()
-                                        .put("type", "string")
-                                        .put("description", "Kimi 会话标题，便于在 Kimi 面板中定位；缺省用工作目录名")
-                                )
-                        )
-                        .put("required", JSONArray().put("task"))
-                )
-            )
-            .put(
-                AgentToolSchema.function(
                     name = "get_assistant_config",
                     description = "获取YUNKe自身当前的运行状态、模型配置与功能开关（已自动进行脱敏保护）。当用户询问当前使用的是什么模型、中转站/服务商、思考模式开关或自身设置时调用此工具直接静默读取，严禁操控屏幕去设置界面翻找。",
                     parameters = JSONObject()
@@ -251,7 +204,7 @@ internal object AgentContextAppToolCatalog {
                                     "target",
                                     JSONObject()
                                         .put("type", "string")
-                                        .put("description", "目标标识：若为 switch_model 则传入 model_id 或模型名称；若为 switch_provider 则传入 provider_id 或服务商名称；若为 toggle_setting 则传入开关名称（如 thinking_mode, terminal_tools, browser_tools, device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools, kimi_builtin_browser；toggle_tool 时传入工具名）")
+                                        .put("description", "目标标识：若为 switch_model 则传入 model_id 或模型名称；若为 switch_provider 则传入 provider_id 或服务商名称；若为 toggle_setting 则传入开关名称（如 thinking_mode, terminal_tools, browser_tools, device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools；toggle_tool 时传入工具名）")
                                 )
                                 .put(
                                     "value",

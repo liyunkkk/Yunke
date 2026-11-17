@@ -14,7 +14,7 @@ Eta 使用同一个 APK，根据实际授权提供能力。基础功能不会等
 | 当前通知与通知历史 | 授予通知使用权；当前通知要求监听服务已连接 | Root 用户保留已有系统来源 |
 | 应用使用情况、位置 | 授予对应 Android 访问权限 | 后台位置需要始终允许 |
 | Android Shell、文件与图片 | App UID，私有工作区或已授权来源 | Root 用户保留特权路径 |
-| Alpine、Debian、PTY、Kimi Web | 通过 PRoot 运行 | 可另外安装 chroot |
+| Alpine、Debian、PTY | 通过 PRoot 运行 | 可另外安装 chroot |
 | 系统修改、冻结应用、私有数据读取 | 不向模型提供 | 需要 Root；部分数据还要求对应 ROM |
 | 厂商助手接管、Gemini 与一圈即搜 | 可在系统增强中了解 | 需要 LSPosed 与对应 ROM，系统化另需 Root |
 

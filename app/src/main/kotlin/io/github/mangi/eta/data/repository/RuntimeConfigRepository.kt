@@ -107,8 +107,6 @@ internal object RuntimeConfigRepository {
 
     fun conversationTitleSettingsFlow() = SettingsDataStore.conversationTitleSettingsFlow()
     suspend fun setConversationTitleSettings(value: io.github.mangi.eta.data.model.ConversationTitleSettings) = SettingsDataStore.setConversationTitleSettings(value)
-    fun assistantOverlaySettingsFlow() = SettingsDataStore.assistantOverlaySettingsFlow()
-    suspend fun setAssistantOverlaySettings(value: io.github.mangi.eta.data.model.AssistantOverlaySettings) = SettingsDataStore.setAssistantOverlaySettings(value)
 
     private suspend fun enabledTextConfig(modelId: String?): AgentModelClient.ModelConfig? {
         if (modelId.isNullOrBlank()) return null
@@ -118,24 +116,6 @@ internal object RuntimeConfigRepository {
             !it.supportsSpeechSynthesis && !it.supportsImageGeneration && !it.supportsVideoGeneration } ?: return null
         // Use Yunke's OAuth/assistant/custom header path, not Eta's incompatible provider hierarchy.
         return configForProviderAndModel(provider.id, model.id, AssistantRepository.active())
-    }
-
-    suspend fun assistantOverlayRuntimeConfig(): AgentModelClient.ModelConfig? {
-        val settings = SettingsDataStore.assistantOverlaySettings()
-        val base = enabledTextConfig(settings.modelId) ?: currentRuntimeConfig() ?: return null
-        return applyAssistantOverlaySettings(base, settings)
-    }
-
-    internal fun applyAssistantOverlaySettings(
-        base: AgentModelClient.ModelConfig,
-        settings: io.github.mangi.eta.data.model.AssistantOverlaySettings,
-        defaultThinkingEnabled: Boolean = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED),
-    ): AgentModelClient.ModelConfig {
-        val requested = settings.resolvedReasoningEffort
-            ?: if (defaultThinkingEnabled) base.effectiveReasoningEffort else ReasoningEffort.OFF
-        val effort = base.reasoningCapabilities?.normalize(requested)
-            ?: if (requested == ReasoningEffort.OFF) ReasoningEffort.OFF else base.effectiveReasoningEffort
-        return base.copy(thinkingEnabled = effort.enablesReasoning, reasoningEffort = effort)
     }
 
     suspend fun titleGeneratorConfig(conversationModelId: String? = null): AgentModelClient.ModelConfig? {

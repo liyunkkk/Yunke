@@ -167,14 +167,13 @@ internal class AssistantSelfConfigTool(
                 Prefs.Keys.AGENT_DEVICE_SENSITIVE_READ_TOOLS
             "device_sensitive_action_tools", "agent_device_sensitive_action_tools" ->
                 Prefs.Keys.AGENT_DEVICE_SENSITIVE_ACTION_TOOLS
-            "kimi_web_builtin_browser", "kimi_builtin_browser" -> Prefs.Keys.KIMI_WEB_USE_BUILTIN_BROWSER
             else -> null
         }
         if (key == null) {
             return errorJson(
                 "UNSUPPORTED_SETTING",
                 "不支持修改该配置项：$target。允许的受控开关：thinking_mode, terminal_tools, browser_tools, " +
-                    "device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools, kimi_builtin_browser"
+                    "device_direct_tools, device_sensitive_read_tools, device_sensitive_action_tools"
             )
         }
         val newValue = if (valueStr.isNotBlank()) {

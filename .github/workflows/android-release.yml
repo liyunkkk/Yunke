@@ -79,6 +79,12 @@ jobs:
             echo "ETA_RELEASE_KEY_PASSWORD=$temporary_password"
           } >> "$GITHUB_ENV"
 
+      - name: 验证功能移除与保留能力
+        run: |
+          python3 -m unittest discover -s app/src/test/python -p 'test_removed_integrations_contract.py' -v
+          python3 -m unittest discover -s app/src/test/python -p 'test_top_bar_interactive_mode_contract.py' -v
+          python3 -m unittest discover -s app/src/test/python -p 'test_eta_file_tools_port_contract.py' -v
+
       - name: 运行单元测试
         timeout-minutes: 20
         run: >-

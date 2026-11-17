@@ -196,11 +196,6 @@ class TopBarOverflowMenuInteractiveModeTest {
                             TopBarOverflowMenu(
                                 onNewConversation = {},
                                 onOpenTerminal = { terminalOpens++ },
-                                onLaunchKimiWeb = {},
-                                kimiWebLabel = "Kimi Web",
-                                canStopKimiWeb = false,
-                                onStopKimiWeb = {},
-                                onRefreshKimiWeb = {},
                                 onOpenBrowser = {},
                                 onOpenWorkspace = {},
                                 autoCompressEnabled = false,

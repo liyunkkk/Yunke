@@ -76,7 +76,6 @@
   </plurals>
   <string name="context_compacted_summary_title">壓縮摘要</string>
   <string name="context_compacted_summary_action">查看摘要</string>
-  <string name="action_launch_kimi_web">啟動 Kimi Web</string>
   <string name="action_sub_agent_status">子代理狀態</string>
   <string name="sub_agent_status_empty">這個工作階段還沒有子代理</string>
   <string name="sub_agent_status_close">關閉</string>
@@ -1154,15 +1153,7 @@
   <string name="linux_ssh_tools">SSH 遠端連線</string>
   <string name="linux_ssh_tools_summary">安裝完整 OpenSSH（sshd、ssh-keygen、ssh-agent 與 sftp-server）；基礎環境已含 ssh/scp/sftp 用戶端</string>
   <string name="linux_ssh_tools_ready">sshd、ssh-keygen 與 ssh-agent 已就緒</string>
-  <string name="linux_kimi_tools">Kimi Code</string>
-  <string name="linux_kimi_tools_summary">透過 npm 安裝最新正式版 Kimi Code；需要先安裝 Node.js 環境</string>
-  <string name="linux_kimi_tools_ready">Kimi Code 已就緒，在終端機執行 kimi 即可開始</string>
   <string name="linux_profile_dependency_missing">請先安裝 %1$s</string>
-  <string name="linux_kimi_web_launch">啟動 Web UI</string>
-  <string name="linux_kimi_web_starting">正在啟動…</string>
-  <string name="linux_kimi_web_failed_start">Kimi Web 啟動失敗</string>
-  <string name="linux_kimi_web_failed_url">未取得 Web UI 位址，請到背景任務查看日誌</string>
-  <string name="linux_kimi_web_failed_browser">沒有可用的瀏覽器</string>
   <string name="linux_profile_stage_checking">檢查 Linux 基礎環境</string>
   <string name="linux_profile_stage_downloading">下載%1$s</string>
   <string name="linux_profile_stage_downloading_percent">下載%1$s · %2$d%%</string>
@@ -1523,7 +1514,6 @@
   <string name="functional_model_translation">螢幕翻譯</string>
   <string name="functional_model_set_as_translation">設為螢幕翻譯模型</string>
   <string name="screen_translation_cleared_translation_api">已取消獨立翻譯 API，恢復默認供應商</string>
-  <string name="settings_kimi_web_builtin_browser">Kimi Web 預設使用內置瀏覽器</string>
   <string name="settings_model_features">模型功能</string>
   <string name="auxiliary_vision_title">輔助視覺模型</string>
   <string name="title_model_title">標題模型</string>
@@ -1625,11 +1615,6 @@
   <string name="route_subagents">子代理</string>
   <string name="settings_model_retry_title">模型請求重試次數</string>
   <string name="settings_model_retry_summary">網路或中轉站不穩時可調高；0 表示不自動重試。</string>
-  <string name="settings_kimi_auth_title">Kimi 授權模式</string>
-  <string name="settings_kimi_auth_summary">預設自動批准，遇到高風險操作可切到「每次確認」。</string>
-  <string name="settings_kimi_auth_yolo">自動批准（yolo）</string>
-  <string name="settings_kimi_auth_auto">自動（auto）</string>
-  <string name="settings_kimi_auth_manual">每次確認（manual）</string>
   <string name="settings_about_version">版本</string>
   <string name="settings_about_feedback">問題反饋</string>
 </resources>

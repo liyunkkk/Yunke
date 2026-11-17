@@ -78,8 +78,6 @@ class TopBarInteractiveModeContractTest(unittest.TestCase):
                 label = re.search(r"text\s*=\s*\{\s*Text\(stringResource\(R\.string\.(\w+)\)\)", entry)
                 if label:
                     cls.sequence.append(label.group(1))
-                elif "text = { Text(kimiWebLabel) }" in entry:
-                    cls.sequence.append("kimiWebLabel")
                 else:
                     raise AssertionError("Unexpected menu row label")
         interactive = [entry for entry in cls.entries if "R.string.action_interactive_mode" in entry]
@@ -87,21 +85,17 @@ class TopBarInteractiveModeContractTest(unittest.TestCase):
             raise AssertionError("Expected exactly one interactive-mode menu row")
         cls.interactive = interactive[0]
 
-    def test_exact_menu_order_restores_only_the_two_missing_group_lines(self):
+    def test_exact_menu_order_preserves_general_tools_without_kimi_web(self):
         self.assertEqual([
             "action_new_conversation", "action_search_history",
             "divider", "action_interactive_mode", "divider",
             "action_open_terminal", "action_open_browser", "action_browse_workspace_files",
-            "action_sub_agent_status", "kimiWebLabel", "divider", "action_token_usage",
+            "action_sub_agent_status", "divider", "action_token_usage",
             "action_compress_conversation", "action_auto_compress_context",
-            "divider", "capability_kimi_stop",
         ], self.sequence)
-        stop_at = self.content.index("if (canStopKimiWeb)")
-        stop = balanced(self.content, self.content.index("{", stop_at))
-        self.assertEqual(1, stop.count("MenuSectionDivider()"))
-        self.assertIn("R.string.capability_kimi_stop", stop)
-        self.assertEqual(3, self.content[:stop_at].count("MenuSectionDivider()"))
-        self.assertEqual(4, self.content.count("MenuSectionDivider()"))
+        self.assertEqual(3, self.content.count("MenuSectionDivider()"))
+        self.assertNotIn("KimiWeb", self.menu)
+        self.assertNotIn("kimiWeb", self.menu)
 
     def test_divider_uses_the_existing_helper_and_exact_original_style(self):
         helper_at = self.menu.index("private fun MenuSectionDivider()")
@@ -208,8 +202,7 @@ class TopBarInteractiveModeContractTest(unittest.TestCase):
     def test_menu_call_parameters_keep_existing_actions_and_avoid_lifted_toggle_state(self):
         declaration = arguments(self.menu, "TopBarOverflowMenu")
         caller = arguments(read("ui/app/AgentAppShell.kt"), "TopBarOverflowMenu")
-        for name in ("onNewConversation", "onOpenTerminal", "onLaunchKimiWeb", "kimiWebLabel",
-                     "canStopKimiWeb", "onStopKimiWeb", "onRefreshKimiWeb", "onOpenBrowser",
+        for name in ("onNewConversation", "onOpenTerminal", "onOpenBrowser",
                      "onOpenWorkspace", "autoCompressEnabled", "isCompressingContext",
                      "onToggleAutoCompress", "onCompressConversation", "onSearchHistory",
                      "onOpenHistoryHit", "tokenUsage", "subAgentStatuses"):

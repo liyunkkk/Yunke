@@ -107,11 +107,6 @@ internal fun SettingsModelScreen(
                     onClick = { onNavigate(AppRoute.SubAgents) },
                 )
                 ArrowPreference(
-                    title = "浮窗模型与思考",
-                    startAction = { PreferenceIcon(icon = Icons.Rounded.Psychology) },
-                    onClick = { onNavigate(AppRoute.AssistantOverlayModel) },
-                )
-                ArrowPreference(
                     title = "自动会话标题",
                     startAction = { PreferenceIcon(icon = Icons.Rounded.AutoAwesome) },
                     onClick = { onNavigate(AppRoute.TitleModel) },
