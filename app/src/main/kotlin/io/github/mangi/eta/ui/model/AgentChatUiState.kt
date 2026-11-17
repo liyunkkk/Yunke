@@ -197,13 +197,63 @@ data class TokenUsageUi(
     val outputTokens: Int? = null,
     val reasoningTokens: Int? = null,
     val cachedTokens: Int? = null,
+    /* ---- 展示用耗时统计。旧会话记录没有这些字段，全部默认 null。 ---- */
+    /** 本轮已完成的模型步数。 */
+    val stepCount: Int? = null,
+    /** 模型请求累计耗时（不含工具与等待用户）。 */
+    val llmMs: Long? = null,
+    /** 工具批次累计耗时。 */
+    val toolMs: Long? = null,
+    /** 首 token 延迟累计。 */
+    val ttftMs: Long? = null,
+    /** 参与首 token 平均的步数。 */
+    val ttftSteps: Int? = null,
+    /** 解码阶段累计耗时。 */
+    val decodeMs: Long? = null,
+    /** 解码阶段累计输出 token。 */
+    val decodeTokens: Int? = null,
 ) {
     val isEmpty: Boolean
         get() = contextTokens == null &&
             inputTokens == null &&
             outputTokens == null &&
             reasoningTokens == null &&
-            cachedTokens == null
+            cachedTokens == null &&
+            stepCount == null &&
+            llmMs == null &&
+            toolMs == null &&
+            ttftMs == null &&
+            ttftSteps == null &&
+            decodeMs == null &&
+            decodeTokens == null
+
+    /**
+     * 只要有一项真实耗时就算有性能数据。零值不算：工具用时 0 或首 token 缺失时不画胶囊，
+     * 避免给「只回了 token 的旧记录」配一排 0 秒。
+     */
+    val hasPerformanceStats: Boolean
+        get() = (llmMs != null && llmMs > 0L) ||
+            (toolMs != null && toolMs > 0L) ||
+            (ttftMs != null && ttftMs > 0L) ||
+            (decodeMs != null && decodeMs > 0L && (decodeTokens ?: 0) > 0)
+
+    /** 首 token 平均延迟；没有首 token 样本时为 null。 */
+    val averageTtftMs: Long?
+        get() {
+            val total = ttftMs ?: return null
+            val steps = ttftSteps ?: 1
+            if (steps <= 0 || total <= 0L) return null
+            return total / steps
+        }
+
+    /** 输出速度（token/秒）；分母为解码阶段耗时，不含首 token 等待。 */
+    val tokensPerSecond: Double?
+        get() {
+            val ms = decodeMs?.takeIf { it > 0L } ?: return null
+            val tokens = decodeTokens ?: outputTokens ?: return null
+            if (tokens <= 0) return null
+            return tokens.toDouble() / (ms.toDouble() / 1_000.0)
+        }
 }
 
 @Immutable

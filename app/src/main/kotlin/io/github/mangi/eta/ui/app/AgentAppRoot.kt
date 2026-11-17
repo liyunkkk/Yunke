@@ -975,6 +975,8 @@ fun AgentAppRoot(
                     context = context,
                     onNavigate = { route -> pushRoute(route) },
                     onBack = ::popRoute,
+                    currentProviderId = shellHomeState.providerId,
+                    currentModelId = shellHomeState.modelId,
                 )
             }
             entry<AppRoute.SettingsModel>(swipeDismiss = swipeDismiss) {

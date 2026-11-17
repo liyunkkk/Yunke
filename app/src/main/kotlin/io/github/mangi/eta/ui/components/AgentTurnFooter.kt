@@ -38,6 +38,7 @@ import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
+import io.github.mangi.eta.ui.model.TokenUsageUi
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -118,6 +119,9 @@ internal fun AgentTurnFooter(
         onDelete = { actions.onDeleteMessage(message.id) },
         onRegenerate = { actions.onRegenerateMessage(message.id) },
         onBranch = { actions.onBranchMessage(message.id) },
+        // 单轮性能胶囊只挂在「这一轮最后一条真正的回答」的底部。
+        // usage 为空或没有耗时数据（旧记录）时 TurnStatsPill 自己不渲染。
+        statsUsage = (message as? AgentMessageUi)?.usage,
         modifier = modifier
             .testTag("turn-footer:${message.id}")
             .padding(horizontal = 20.dp, vertical = 7.dp),
@@ -140,6 +144,8 @@ internal fun AgentMessageActionRow(
     onBranch: () -> Unit,
     modifier: Modifier = Modifier,
     showCopyAction: Boolean = true,
+    /** 单轮耗时用量；只有这一条消息真的带耗时数据时才画出统计胶囊。 */
+    statsUsage: TokenUsageUi? = null,
 ) {
     @Suppress("DEPRECATION")
     val clipboardManager = LocalClipboardManager.current
@@ -218,6 +224,9 @@ internal fun AgentMessageActionRow(
                     )
                 }
             }
+        }
+        statsUsage?.takeIf { it.hasPerformanceStats }?.let { usage ->
+            TurnStatsPill(usage = usage, modifier = Modifier.padding(start = 6.dp))
         }
         if (LocalAppearanceSettings.current.messageTimestampsEnabled) {
             val timestamp = generatedAtMillis?.takeIf { it > 0L }

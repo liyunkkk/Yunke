@@ -7536,6 +7536,13 @@ private fun AgentTokenUsage.toUi(): TokenUsageUi =
         outputTokens = outputTokens,
         reasoningTokens = reasoningTokens,
         cachedTokens = cachedTokens,
+        stepCount = stepCount,
+        llmMs = llmMs,
+        toolMs = toolMs,
+        ttftMs = ttftMs,
+        ttftSteps = ttftSteps,
+        decodeMs = decodeMs,
+        decodeTokens = decodeTokens,
     )
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean {

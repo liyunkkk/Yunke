@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RecordVoiceOver
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.SmartToy
@@ -47,6 +48,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import top.yukonga.miuix.kmp.basic.DropdownItem
+import io.github.mangi.eta.ui.components.WindowSpinnerPreference
+import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.agent.model.ModelRetrySettings
 import io.github.mangi.eta.core.AppFileLogger
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AppUpdateOffer
@@ -100,6 +105,8 @@ internal fun SettingsScreen(
     context: Context,
     onNavigate: (AppRoute) -> Unit,
     onBack: () -> Unit,
+    currentProviderId: String? = null,
+    currentModelId: String? = null,
 ) {
     // Read only attach/detach generation so idle sections rebuild observer identities.
     StreamPerformanceDiagnostics.sessionGeneration.longValue
@@ -110,6 +117,14 @@ internal fun SettingsScreen(
         }
     }
     val coroutineScope = rememberCoroutineScope()
+    val agentPrefs = remember { Prefs.localAgentPreferences() }
+    var modelRetryCount by remember(agentPrefs) {
+        mutableStateOf(
+            ModelRetrySettings.parseCount(
+                agentPrefs?.getString(Prefs.Keys.MODEL_RETRY_COUNT, ModelRetrySettings.DEFAULT_COUNT.toString()),
+            ),
+        )
+    }
     val permissionState = rememberPermissionSummaryState(context)
     val currentVersion = remember { AppUpdateRepository.currentVersionName(context) }
     var checkingUpdate by remember { mutableStateOf(false) }
@@ -167,11 +182,17 @@ internal fun SettingsScreen(
             item(key = "section_conversation") {
                 SmallTitle("对话与模型")
                 Card(modifier = Modifier.settingsSectionDiagnostics("conversation").padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    ArrowPreference(
-                        title = stringResource(R.string.settings_category_model_conversation),
-                        summary = "提供商、默认思考与重试",
-                        startAction = { PreferenceIcon(icon = Icons.Rounded.Psychology) },
-                        onClick = { onNavigate(AppRoute.SettingsModel) },
+                    // 模型与对话二级页已拆散：提供商入口和默认推理、重试次数直接放在这里，
+                    // 其余模型功能与下面各组合并，不再有一个同名二级页重复收纳。
+                    SettingsProviderEntry(currentProviderId, currentModelId) {
+                        onNavigate(AppRoute.ModelProviders)
+                    }
+                    SwitchPref(
+                        context = context,
+                        prefs = agentPrefs,
+                        title = stringResource(R.string.ui_deep_thinking_enabled_by_default_c032d6),
+                        key = Prefs.Keys.AGENT_THINKING_ENABLED,
+                        icon = Icons.Rounded.Psychology,
                     )
                     ArrowPreference(
                         title = stringResource(R.string.route_context_compression),
@@ -197,6 +218,30 @@ internal fun SettingsScreen(
                         title = stringResource(R.string.error_reconnect_title),
                         startAction = { PreferenceIcon(icon = Icons.Rounded.Sync) },
                         onClick = { onNavigate(AppRoute.ErrorReconnectSettings) },
+                    )
+                    WindowSpinnerPreference(
+                        title = stringResource(R.string.settings_model_retry_title),
+                        summary = stringResource(R.string.settings_model_retry_summary),
+                        items = ModelRetrySettings.allowedCounts.map { DropdownItem(text = it.toString()) },
+                        selectedIndex = ModelRetrySettings.allowedCounts.indexOf(modelRetryCount).coerceAtLeast(0),
+                        onSelectedIndexChange = { index ->
+                            val count = ModelRetrySettings.allowedCounts.getOrNull(index)
+                                ?: return@WindowSpinnerPreference
+                            val targetPrefs = agentPrefs ?: return@WindowSpinnerPreference
+                            if (putStringSync(targetPrefs, Prefs.Keys.MODEL_RETRY_COUNT, count.toString())) {
+                                modelRetryCount = count
+                            } else {
+                                Toast.makeText(
+                                    context.applicationContext,
+                                    context.getString(R.string.settings_write_failed),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        },
+                        startAction = {
+                            PreferenceIcon(icon = Icons.Rounded.Refresh, enabled = agentPrefs != null)
+                        },
+                        enabled = agentPrefs != null,
                     )
                 }
             }

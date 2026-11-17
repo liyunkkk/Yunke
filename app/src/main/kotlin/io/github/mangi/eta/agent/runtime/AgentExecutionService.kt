@@ -8,16 +8,22 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import androidx.annotation.RequiresApi
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.roundToInt
 import org.json.JSONObject
 
 /** 只在用户任务存活期间持有前台执行生命周期；进程被系统停止后不重放任务。 */
@@ -28,6 +34,7 @@ internal class AgentExecutionService : Service() {
     private val owner = ownerSequence.incrementAndGet()
     private var foregroundActive = false
     @Volatile private var startRejected = false
+    private var cachedLargeIcon: Icon? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -67,6 +74,7 @@ internal class AgentExecutionService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        cachedLargeIcon = null
         // 销毁时同样收回本服务拥有的任务。回收在独立有界工作线程上完成，不阻塞 Main。
         stopQueue.close(leases.drainOwner(owner))
         super.onDestroy()
@@ -141,7 +149,24 @@ internal class AgentExecutionService : Service() {
         }
 
         val expanded = state.expandedSnippet?.takeIf { it.isNotBlank() }
-        if (expanded != null) {
+        val promote = AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT)
+        if (promote) {
+            // Agent run 在跑：申请提升为 Live Update（状态栏胶囊 / 灵动岛 / 锁屏实时活动）。
+            // 刻意不用无进度的 ProgressStyle——那会让卡片下方渲染出一条空进度白条；
+            // 统一用 BigTextStyle，展开态有正文就用正文，没有就用当前详情。
+            builder.setColor(BRAND_COLOR)
+            builder.setStyle(
+                Notification.BigTextStyle()
+                    .setBigContentTitle(appTitle)
+                    .bigText(expanded ?: detailWithVirtualDisplay)
+                    .setSummaryText(actionText),
+            )
+            // 判断逻辑是纯函数（可单测）；这里同时保留显式版本闸门，保证低版本一行 API 36 代码都不碰。
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+                promoteToLiveUpdate(builder, state.shortText())
+            }
+        } else if (expanded != null) {
+            // 低版本与非运行态：沿用原有构建路径，行为不变。
             builder.setStyle(
                 Notification.BigTextStyle()
                     .setBigContentTitle(appTitle)
@@ -173,6 +198,39 @@ internal class AgentExecutionService : Service() {
         builder.extras.putBundle("miui.focus.actions", Bundle.EMPTY)
 
         return builder.build()
+    }
+
+    /**
+     * 把通知标记为 Live Update：胶囊短文本 + 桌面同款大图标 + 提升 extra。
+     *
+     * 请求提升的公开方法（requestPromotedOngoing）到 API 36.1 才公开，所以这里按 Eta 的做法
+     * 用标准 extra `android.requestPromotedOngoing`，API 36 的系统同样读取它。
+     */
+    @RequiresApi(Build.VERSION_CODES.BAKLAVA)
+    private fun promoteToLiveUpdate(builder: Notification.Builder, shortText: String) {
+        if (shortText.isNotEmpty()) {
+            builder.setShortCriticalText(shortText)
+        }
+        launcherLargeIcon()?.let(builder::setLargeIcon)
+        builder.extras.putBoolean(PROMOTED_ONGOING_EXTRA, true)
+    }
+
+    /**
+     * 桌面同款自适应图标（白底 + 前景）作为 Live Update 大图标，给卡片一个视觉锚点。
+     * 位图按当前密度生成一次并缓存，避免每次刷新通知都重新画。
+     */
+    private fun launcherLargeIcon(): Icon? {
+        cachedLargeIcon?.let { return it }
+        val foreground = getDrawable(R.drawable.ic_launcher_foreground) ?: return null
+        val sizePx = (resources.displayMetrics.density * LARGE_ICON_DP).roundToInt().coerceIn(96, 192)
+        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.WHITE)
+        // AdaptiveIcon 前景画布为 108dp，中间 72dp 对应桌面视口；外扩 1/4 边距使构图与桌面图标一致。
+        val inset = sizePx / 4
+        foreground.setBounds(-inset, -inset, sizePx + inset, sizePx + inset)
+        foreground.draw(canvas)
+        return Icon.createWithBitmap(bitmap).also { cachedLargeIcon = it }
     }
 
     /** HyperOS 4 焦点通知 protocol 3 参数；结构对齐系统实测样本，只保留文字与一个图标。 */
@@ -243,6 +301,12 @@ internal class AgentExecutionService : Service() {
         const val CHANNEL = "eta_execution"
         private const val NOTIFICATION_ID = 1107
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
+        /** 品牌色，沿用主题种子 #3482FF（0xFF3482FF 作 UInt32 字面量会溢出，用 val 而非 const）。 */
+        private val BRAND_COLOR = 0xFF3482FF.toInt()
+        /** 大图标边长（dp），按密度换算后夹在 96–192px。 */
+        private const val LARGE_ICON_DP = 48f
+        /** API 36 系统读取的提升标记；公开的 requestPromotedOngoing() 到 36.1 才存在。 */
+        private const val PROMOTED_ONGOING_EXTRA = "android.requestPromotedOngoing"
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()
         private val mainHandler = Handler(Looper.getMainLooper())
@@ -267,6 +331,8 @@ internal class AgentExecutionService : Service() {
         private const val COMPLETION_NOTIFICATION_ID_BASE = 20000
         private const val FOCUS_PIC_ICON = "eta_island_icon"
         @Volatile private var executionState = AgentExecutionState()
+        /** 最近一次真正下发给通知的执行状态，用于同值去重（避免流式增量把通知推到系统限流）。 */
+        @Volatile private var publishedExecutionState: AgentExecutionState? = null
         /**
          * 副屏是否活跃。由 AgentRuntimeService 在快照变化时写入；
          * 通知构建路径只读这个标记，避免在主线程上抢 VirtualDisplaySession 的监视器锁。
@@ -369,11 +435,16 @@ internal class AgentExecutionService : Service() {
 
         fun updateExecutionState(state: AgentExecutionState) {
             executionState = state
+            // 流式增量常常产出完全相同的状态（同一段文案、同一 phase），重复下发只会撞系统限流；
+            // 真正的节流在 AgentExecutionNotificationTracker 里（≥1s 一次），这里只做同值去重。
+            if (publishedExecutionState == state) return
+            publishedExecutionState = state
             mainHandler.post { instance?.refreshNotification() }
         }
 
         fun resetExecutionState() {
             executionState = AgentExecutionState()
+            publishedExecutionState = null
             mainHandler.post { instance?.refreshNotification() }
         }
 
@@ -403,6 +474,7 @@ internal class AgentExecutionService : Service() {
             leases.release(id)
             if (leases.count() == 0) {
                 executionState = AgentExecutionState()
+                publishedExecutionState = null
                 currentSource = AgentNotificationTrampolineActivity.SOURCE_MAIN
             }
             mainHandler.post { instance?.refreshNotification() }
