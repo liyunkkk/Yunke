@@ -218,7 +218,14 @@ data class TokenUsageUi(
             inputTokens == null &&
             outputTokens == null &&
             reasoningTokens == null &&
-            cachedTokens == null
+            cachedTokens == null &&
+            stepCount == null &&
+            llmMs == null &&
+            toolMs == null &&
+            ttftMs == null &&
+            ttftSteps == null &&
+            decodeMs == null &&
+            decodeTokens == null
 
     /** 只并入展示用耗时，保留已有 token 字段（不参与计费与上下文判定）。 */
     fun withTimingsFrom(source: TokenUsageUi): TokenUsageUi = copy(
@@ -229,14 +236,7 @@ data class TokenUsageUi(
         ttftSteps = source.ttftSteps ?: ttftSteps,
         decodeMs = source.decodeMs ?: decodeMs,
         decodeTokens = source.decodeTokens ?: decodeTokens,
-    ) &&
-            stepCount == null &&
-            llmMs == null &&
-            toolMs == null &&
-            ttftMs == null &&
-            ttftSteps == null &&
-            decodeMs == null &&
-            decodeTokens == null
+    )
 
     /**
      * 只要有一项真实耗时就算有性能数据。零值不算：工具用时 0 或首 token 缺失时不画胶囊，
