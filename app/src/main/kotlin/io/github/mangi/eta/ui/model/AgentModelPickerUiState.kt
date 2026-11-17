@@ -53,6 +53,10 @@ internal data class AgentContextUsageUi(
     val contextWindow: Int?,
     val estimated: Boolean = false,
     val firstTurn: Boolean = false,
+    /** 已回执的历史消息 token（分项展示用，独立估算）。 */
+    val historyTokens: Int? = null,
+    /** 已回执的固定请求开销 token（系统提示 + 工具 schema 等）。 */
+    val overheadTokens: Int? = null,
 ) {
     val progress: Float?
         get() = contextUsageProgress(contextTokens, contextWindow)
@@ -283,12 +287,16 @@ internal fun liveContextUsage(
     activeRunContextWindow: Int? = null,
     selectedModel: AgentModelOptionUi? = null,
     contextDisplayPolicy: ContextDisplayPolicy = ContextDisplayPolicy(),
+    billedHistoryTokens: Int? = null,
+    billedOverheadTokens: Int? = null,
 ): AgentContextUsageUi {
     // An in-flight run keeps the window it was launched with, so a mid-run settings
     // change must not restate the percentage of a request that never saw the new limit.
     val window = activeRunContextWindow?.takeIf { it > 0 } ?: selectedModel?.contextWindow
+    val history = billedHistoryTokens?.takeIf { it >= 0 }
+    val overhead = billedOverheadTokens?.takeIf { it >= 0 }
     if (billedContextTokens != null && billedContextTokens > 0) {
-        return AgentContextUsageUi(billedContextTokens, window)
+        return AgentContextUsageUi(billedContextTokens, window, historyTokens = history, overheadTokens = overhead)
     }
     if (contextDisplayPolicy.awaitingReceipt) return AgentContextUsageUi(null, window)
     return AgentContextUsageUi(null, window, firstTurn = contextDisplayPolicy.firstTurn)

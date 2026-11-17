@@ -397,6 +397,8 @@ internal fun AgentContextUsageButton(
 ) {
     val menuState = rememberEtaMenuState()
     val selectorState = rememberEtaMenuState()
+    // 单击圆环打开完整用量面板；长按仍保留「选择上下文统计对象」。
+    var showUsagePanel by remember { mutableStateOf(false) }
     val telemetry = LocalAgentContextTelemetry.current
     val owner = LocalConversationSubAgentEditor.current?.owner
     var localSelectedTaskId by remember(owner) { mutableStateOf<String?>(null) }
@@ -443,9 +445,9 @@ internal fun AgentContextUsageButton(
     Box(modifier = modifier) {
         ChatInputNonFocusableIconButton(
             onClick = {
-                keepIme()
                 selectorState.dismiss()
-                menuState.onAnchorClick()
+                menuState.dismiss()
+                showUsagePanel = true
             },
             longClickLabel = "选择上下文统计对象",
             onLongClick = {
@@ -487,6 +489,13 @@ internal fun AgentContextUsageButton(
                 style = MiuixTheme.textStyles.body2,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+            )
+        }
+        if (showUsagePanel) {
+            UsagePanelSheet(
+                usage = displayedUsage,
+                modelName = selectedLabel,
+                onDismiss = { showUsagePanel = false },
             )
         }
         EtaDropdownMenu(

@@ -132,7 +132,6 @@ internal class AgentExecutionService : Service() {
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(appTitle)
-            .setSubText(actionText)
             .setContentText(detailWithVirtualDisplay)
             .setContentIntent(open)
             .setOngoing(true)
@@ -150,54 +149,84 @@ internal class AgentExecutionService : Service() {
 
         val expanded = state.expandedSnippet?.takeIf { it.isNotBlank() }
         val promote = AgentExecutionState.shouldPromoteToLiveUpdate(state, Build.VERSION.SDK_INT)
+        // 提升态不设 subText：Eta 的构建链里只有 title/contentText，没有 subText；而且 subText 与
+        // BigTextStyle().setSummaryText(actionText) 是同一句话，展开卡上会重复一行。非提升态保持原样。
+        if (!promote) {
+            builder.setSubText(actionText)
+        }
         if (promote) {
-            // Agent run 在跑：申请提升为 Live Update（状态栏胶囊 / 灵动岛 / 锁屏实时活动）。
-            // 刻意不用无进度的 ProgressStyle——那会让卡片下方渲染出一条空进度白条；
-            // 统一用 BigTextStyle，展开态有正文就用正文，没有就用当前详情。
+            // Agent run 在跑：品牌色 + 提升为 Live Update（状态栏胶囊 / 锁屏实时活动）。
             builder.setColor(BRAND_COLOR)
+        }
+        // 一律 BigTextStyle：刻意不用无进度的 ProgressStyle，否则提升卡下方会渲染出一条空进度白条。
+        if (ExecutionNotificationPlan.style(promote, expanded != null) == ExecutionNotificationStyle.BIG_TEXT) {
             builder.setStyle(
                 Notification.BigTextStyle()
                     .setBigContentTitle(appTitle)
                     .bigText(expanded ?: detailWithVirtualDisplay)
                     .setSummaryText(actionText),
             )
-            // 判断逻辑是纯函数（可单测）；这里同时保留显式版本闸门，保证低版本一行 API 36 代码都不碰。
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-                promoteToLiveUpdate(builder, state.shortText())
-            }
-        } else if (expanded != null) {
-            // 低版本与非运行态：沿用原有构建路径，行为不变。
-            builder.setStyle(
-                Notification.BigTextStyle()
-                    .setBigContentTitle(appTitle)
-                    .bigText(expanded)
-                    .setSummaryText(actionText),
-            )
         }
 
-        // 小米焦点通知（灵动岛）扩展。HyperOS 4 的上岛判定分两个进程、两道闸门：
-        //   ① SystemUI 主进程 FocusUtils.isFocusNotification：只认
-        //      extras["miui.focus.rv"] 是 RemoteViews，或 extras["miui.focus.isFocus"] 为 true；
-        //      随后 showOnStatusBar 还要求 miui.focus.ticker 非空（或 miui.focus.rvBar 是 RemoteViews）。
-        //   ② 系统插件 miui.systemui.plugin 的 FocusNotifPreHandler.onNotificationPosted：
-        //      有 miui.focus.rv 走 buildNoParamsFocusNotification，
-        //      否则读 extras["miui.focus.param"]（protocol 3 JSON）走 buildParamsFocusNotification；
-        //      两者都没有则直接 return false，通知永远渲染不出岛。
-        // 只写 isFocus / ticker 只能过①，过不了②，所以必须同时提供 miui.focus.param。
-        // 下方 JSON 按 param_v2（protocol 3）组织，命中 V3 模板路径（不需要 scene）。
-        // 图片经 miui.focus.pics（Bundle: pic 名 -> Icon）提供，JSON 中 pic/src/aodPic 引用同名键。
-        // 旧 key（miui.focusNotification / .subTitle）保留，兼容 HyperOS 3 / MIUI 14-15。
-        // miui.enableFloat 在 HyperOS 3/4 的 ExpandedNotification.canFloat() 中均被读取，保持 false 不弹浮窗。
-        builder.extras.putBoolean("miui.focusNotification", true)
-        builder.extras.putString("miui.focusNotification.subTitle", actionText)
-        builder.extras.putBoolean("miui.focus.isFocus", true)
-        builder.extras.putString("miui.focus.ticker", actionText)
-        builder.extras.putBoolean("miui.enableFloat", false)
-        builder.extras.putString("miui.focus.param", focusParamJson(appTitle, actionText))
-        builder.extras.putBundle("miui.focus.pics", focusPics())
-        builder.extras.putBundle("miui.focus.actions", Bundle.EMPTY)
+        // 提升态一个 miui.* 扩展都不写：HyperOS 的 FocusNotifPreHandler 只要看到 miui.focus.* 就自己接管渲染，
+        // 原生 Live Update 提升会被压掉。非提升态保持原有 MIUI 焦点通知（超级岛）行为，键集合与写入顺序不变。
+        val miuiFocusKeys = ExecutionNotificationPlan.miuiFocusKeys(promote)
+        if (miuiFocusKeys.isNotEmpty()) {
+            applyMiuiFocusExtras(builder, miuiFocusKeys, appTitle, actionText)
+        }
+
+        // 判断逻辑是纯函数（可单测）；这里同时保留显式版本闸门，保证低版本一行 API 36 代码都不碰。
+        if (promote && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            promoteToLiveUpdate(builder, state.shortText())
+        }
 
         return builder.build()
+    }
+
+    /**
+     * 写入 MIUI 焦点通知（灵动岛）扩展。HyperOS 4 的上岛判定分两个进程、两道闸门：
+     *   ① SystemUI 主进程 FocusUtils.isFocusNotification：只认
+     *      extras["miui.focus.rv"] 是 RemoteViews，或 extras["miui.focus.isFocus"] 为 true；
+     *      随后 showOnStatusBar 还要求 miui.focus.ticker 非空（或 miui.focus.rvBar 是 RemoteViews）。
+     *   ② 系统插件 miui.systemui.plugin 的 FocusNotifPreHandler.onNotificationPosted：
+     *      有 miui.focus.rv 走 buildNoParamsFocusNotification，
+     *      否则读 extras["miui.focus.param"]（protocol 3 JSON）走 buildParamsFocusNotification；
+     *      两者都没有则直接 return false，通知永远渲染不出岛。
+     * 只写 isFocus / ticker 只能过①，过不了②，所以必须同时提供 miui.focus.param。
+     * 下方 JSON 按 param_v2（protocol 3）组织，命中 V3 模板路径（不需要 scene）。
+     * 图片经 miui.focus.pics（Bundle: pic 名 -> Icon）提供，JSON 中 pic/src/aodPic 引用同名键。
+     * 旧 key（miui.focusNotification / .subTitle）保留，兼容 HyperOS 3 / MIUI 14-15。
+     * miui.enableFloat 在 HyperOS 3/4 的 ExpandedNotification.canFloat() 中均被读取，保持 false 不弹浮窗。
+     *
+     * 只在非提升态调用；提升态交给系统原生 Live Update，这些键一个都不写。
+     */
+    private fun applyMiuiFocusExtras(
+        builder: Notification.Builder,
+        keys: List<String>,
+        appTitle: String,
+        actionText: String,
+    ) {
+        for (key in keys) {
+            when (key) {
+                ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION ->
+                    builder.extras.putBoolean(key, true)
+                ExecutionNotificationPlan.MIUI_FOCUS_NOTIFICATION_SUBTITLE ->
+                    builder.extras.putString(key, actionText)
+                ExecutionNotificationPlan.MIUI_FOCUS_IS_FOCUS ->
+                    builder.extras.putBoolean(key, true)
+                ExecutionNotificationPlan.MIUI_FOCUS_TICKER ->
+                    builder.extras.putString(key, actionText)
+                ExecutionNotificationPlan.MIUI_ENABLE_FLOAT ->
+                    builder.extras.putBoolean(key, false)
+                ExecutionNotificationPlan.MIUI_FOCUS_PARAM ->
+                    builder.extras.putString(key, focusParamJson(appTitle, actionText))
+                ExecutionNotificationPlan.MIUI_FOCUS_PICS ->
+                    builder.extras.putBundle(key, focusPics())
+                ExecutionNotificationPlan.MIUI_FOCUS_ACTIONS ->
+                    builder.extras.putBundle(key, Bundle.EMPTY)
+                else -> Unit
+            }
+        }
     }
 
     /**
@@ -496,4 +525,50 @@ enum class IslandAvailability {
     NO_PERMISSION,
     /** 非小米系/HyperOS 系统，或版本过低，焦点通知不会上岛。 */
     UNSUPPORTED,
+}
+
+/**
+ * 执行通知的构建规划：哪些 extras 该写、用哪种样式。
+ *
+ * 抽成纯函数是为了让「提升态不写 miui.*」「低版本样式不变」这两条能在 JVM 单测里直接断言，
+ * 不必把 Notification.Builder / Bundle 拖进测试。
+ */
+internal object ExecutionNotificationPlan {
+    internal const val MIUI_FOCUS_NOTIFICATION = "miui.focusNotification"
+    internal const val MIUI_FOCUS_NOTIFICATION_SUBTITLE = "miui.focusNotification.subTitle"
+    internal const val MIUI_FOCUS_IS_FOCUS = "miui.focus.isFocus"
+    internal const val MIUI_FOCUS_TICKER = "miui.focus.ticker"
+    internal const val MIUI_ENABLE_FLOAT = "miui.enableFloat"
+    internal const val MIUI_FOCUS_PARAM = "miui.focus.param"
+    internal const val MIUI_FOCUS_PICS = "miui.focus.pics"
+    internal const val MIUI_FOCUS_ACTIONS = "miui.focus.actions"
+
+    /** 非提升态要写的 MIUI 焦点通知键，顺序即写入顺序。 */
+    internal val MIUI_FOCUS_KEYS = listOf(
+        MIUI_FOCUS_NOTIFICATION,
+        MIUI_FOCUS_NOTIFICATION_SUBTITLE,
+        MIUI_FOCUS_IS_FOCUS,
+        MIUI_FOCUS_TICKER,
+        MIUI_ENABLE_FLOAT,
+        MIUI_FOCUS_PARAM,
+        MIUI_FOCUS_PICS,
+        MIUI_FOCUS_ACTIONS,
+    )
+
+    /**
+     * 提升态恒为空：HyperOS 的 FocusNotifPreHandler 见到 miui.focus.* 就接管渲染，
+     * 原生 Live Update 会被压掉。非提升态保持原有全部键。
+     */
+    internal fun miuiFocusKeys(promoted: Boolean): List<String> =
+        if (promoted) emptyList() else MIUI_FOCUS_KEYS
+
+    /** 提升态与「有展开正文」态用 BigTextStyle；其余不设样式（改动前行为）。 */
+    internal fun style(promoted: Boolean, hasExpandedSnippet: Boolean): ExecutionNotificationStyle =
+        if (promoted || hasExpandedSnippet) ExecutionNotificationStyle.BIG_TEXT else ExecutionNotificationStyle.NONE
+}
+
+/** 执行通知的样式种类；刻意不提供无进度的 ProgressStyle（会渲染空进度白条）。 */
+internal enum class ExecutionNotificationStyle {
+    BIG_TEXT,
+    NONE,
 }

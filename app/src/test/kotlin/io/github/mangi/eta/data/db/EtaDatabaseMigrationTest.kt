@@ -72,6 +72,7 @@ class EtaDatabaseMigrationTest {
                 EtaDatabase.MIGRATION_32_33,
                 EtaDatabase.MIGRATION_33_34,
                 EtaDatabase.MIGRATION_34_35,
+                EtaDatabase.MIGRATION_35_36,
             )
             .build()
         } catch (error: Throwable) {
@@ -405,10 +406,10 @@ class EtaDatabaseMigrationTest {
                 .addMigrations(EtaDatabase.MIGRATION_28_29, EtaDatabase.MIGRATION_29_30,
                     EtaDatabase.MIGRATION_30_31, EtaDatabase.MIGRATION_31_32,
                     EtaDatabase.MIGRATION_32_33, EtaDatabase.MIGRATION_33_34,
-                    EtaDatabase.MIGRATION_34_35)
+                    EtaDatabase.MIGRATION_34_35, EtaDatabase.MIGRATION_35_36)
                 .build()
             try {
-                assertEquals(35, database.openHelper.writableDatabase.version)
+                assertEquals(36, database.openHelper.writableDatabase.version)
                 runBlocking(Dispatchers.IO) {
                     val result = database.runtimeRunDao().runtimeResults().single()
                     val archive = database.runtimeRunDao().archivedRunHeaders().single()

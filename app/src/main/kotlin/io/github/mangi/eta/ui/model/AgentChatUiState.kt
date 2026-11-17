@@ -227,8 +227,8 @@ data class TokenUsageUi(
             decodeMs == null &&
             decodeTokens == null
 
-    /** 只并入展示用耗时，保留已有 token 字段（不参与计费与上下文判定）。 */
-    fun withTimingsFrom(source: TokenUsageUi): TokenUsageUi = copy(
+    /** 只并入展示用耗时，保留已有 token 字段（不参与计费与上下文判定）；来源为 null 时原样返回。 */
+    fun withTimingsFrom(source: TokenUsageUi?): TokenUsageUi = if (source == null) this else copy(
         stepCount = source.stepCount ?: stepCount,
         llmMs = source.llmMs ?: llmMs,
         toolMs = source.toolMs ?: toolMs,

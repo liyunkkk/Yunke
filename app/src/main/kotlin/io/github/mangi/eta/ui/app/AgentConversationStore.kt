@@ -35,6 +35,7 @@ import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
+import io.github.mangi.eta.ui.model.UsageTimingsJson
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.AgentQuestionMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
@@ -663,6 +664,8 @@ internal object AgentConversationStore {
                         reasoningTokens = usage?.reasoningTokens,
                         cachedTokens = usage?.cachedTokens,
                         generatedAtMillis = generatedAtMillis,
+                        // 只存展示用耗时；token 已进上面的列，不重复。无耗时写空串。
+                        usageTimingsJson = UsageTimingsJson.encode(usage).takeIf { it.isNotEmpty() },
                     )
                 }
             }
@@ -761,13 +764,14 @@ internal object AgentConversationStore {
                 isStreaming = false,
                 renderMarkdown = renderMarkdown ?: true,
                 generatedAtMillis = generatedAtMillis,
+                // 耗时列可能为空（迁移前的旧消息）或损坏：读回 null，胶囊自然不画。
                 usage = TokenUsageUi(
                     contextTokens = contextTokens,
                     inputTokens = inputTokens,
                     outputTokens = outputTokens,
                     reasoningTokens = reasoningTokens,
                     cachedTokens = cachedTokens,
-                ).takeUnless { it.isEmpty },
+                ).withTimingsFrom(UsageTimingsJson.decode(usageTimingsJson)).takeUnless { it.isEmpty },
             )
 
             TYPE_SYSTEM_NOTICE -> SystemNoticeCode.fromWireValue(content)?.let { code ->
